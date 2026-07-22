@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: closed
+Status: active — Milestone 011 evidence correctness and mechanism verification closure
 
 Long-term references:
 
@@ -11,7 +11,7 @@ Long-term references:
 
 Related ADRs:
 
-- None required for M010. Create an ADR only if work changes authoritative replay ownership, replaces SQLite, promises deployment-global ordering, or changes projection retention into audit retention.
+- None required for M011. Create an ADR only if work changes replay authority, persistence ownership, deployment-global ordering, retention semantics, or the public projection protocol.
 
 ## 1. Purpose and ownership boundary
 
@@ -31,7 +31,7 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - Project/session subscriptions avoid unrelated traffic.
 - A live projection envelope reaches only the connection that owns its daemon-issued subscription.
 - Subscription ID, stream ID, project ID, session ID, client ID, and transport connection ID remain distinct.
-- Transports preserve the real persisted stream ID and never synthesize it from a subscription ID.
+- Transports preserve the persisted stream ID and never synthesize it from a subscription ID.
 - Generic raw event broadcasts never carry subscription-private projection events.
 - A subscription cannot become live before its canonical snapshot/replay response is successfully delivered.
 - Critical control failure rolls back connection ownership and daemon subscription state.
@@ -41,18 +41,20 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - Raw compatibility traffic is explicitly scoped by connection/session/filter selection.
 - Changing a TUI raw session route invalidates queued events from prior route generations.
 - Reconnect replay delivers exactly the missing committed envelopes once and transitions to the next live sequence without a gap or duplicate.
-- A queue-saturation claim requires observed channel fullness and a direct production timeout result.
-- A peer-disconnect claim requires a real peer close or socket failure before the named operation completes.
-- A raw-source-first claim requires actual raw-source termination and observed first task kind.
-- Every real staged failure returns connection tasks, forwarders, receivers, ownership, queues, and daemon subscriptions to baseline.
+- A queue-timeout claim must correlate observed fullness to the exact production send and identify whether timeout occurred before enqueue or during writer receipt.
+- A peer-failure claim must fail the real peer or production I/O operation before the named response completes.
+- A raw-source-first claim must terminate the actual raw source while the peer remains healthy and record `RawEvent` as first exit.
+- Task-owner evidence must execute the production cancel/abort-and-await path and prove sibling joins.
+- Every real staged failure returns per-connection tasks, forwarders, receivers, ownership, queues, and daemon subscriptions to baseline.
+- Unrelated clients remain live through another client's failure.
 - No WebSocket server adapter uses an unbounded outbound queue.
-- Closure evidence names exact tests, commands, counts, commits, mechanisms, exceptions, and residual failures truthfully.
+- Closure evidence names exact tests, commands, counts, commits, mechanisms, repetitions, exceptions, and CI availability truthfully.
 
 ## 3. Current state
 
 ### Closed foundations
 
-- **M1** delivered versioned bounded projection DTOs, capability negotiation, canonical reducer semantics, snapshot builders, adapters, and independent-consumer fixtures.
+- **M1** delivered projection contracts, capability negotiation, canonical reducer semantics, snapshot builders, adapters, and independent-consumer fixtures.
 - **M2** delivered durable replay storage, cursor validation, retention/checkpoints, daemon publication, binding resolution, subscription receivers, and replay protocol tests.
 - **M3** delivered disclosure/redaction policy, artifact handles, bounded reads, and negative persistence tests.
 - **M4** delivered the shared projection controller and local/remote frontend adoption.
@@ -60,24 +62,25 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - **M6 implementation** delivered critical writer receipts, activation-after-delivery, rollback, normal-flow transport isolation, raw scoping, and bounded legacy `/ws` output.
 - **M7 implementation** delivered joined Unix raw lifecycle, TUI route generations, deterministic lifecycle seams, blocked-response tests, foreign-operation coverage, reconnect fixtures, and evidence reconciliation.
 - **M8 implementation** delivered shared joined `/core` and `/tui` task ownership plus exact envelope-level replay continuity.
-- **M9 implementation** delivered connection probes, real WebSocket peer-close and churn coverage, two-client continuity, additional cancellation fixtures, exact `/core` interrupted replay retry, and fresh `/core` connection identity.
+- **M9 implementation** delivered connection probes, real WebSocket peer-close and churn coverage, two-client continuity, cancellation fixtures, exact `/core` interrupted replay retry, and fresh `/core` connection identity.
+- **M10 implementation** delivered connection-local transport controls, capacity-one `Full` observation, writer barriers, first-task-kind recording, `/core` raw-source control, TUI pending-response interruption, broader Unix regression fixtures, a full focused local matrix, and a probe scheduling-flake correction.
 
 ### Conditional closure history
 
-M6 and M7 remain valid implementation foundations with historical conditional records. Their principal production findings were addressed by later milestones.
+M6–M8 remain valid implementation foundations with historical conditional records. Their principal production findings were addressed by later milestones.
 
-M8 materially fixed the final known WebSocket abort-without-await defect and strengthened exact replay evidence. Its closure remains conditional because M9 was required for production-shaped verification.
+M9 remains conditionally closed; M10 addressed many of its verification gaps but did not establish every mechanism causally.
 
-M9 materially improved WebSocket lifecycle evidence but remains conditionally closed after source inspection found mechanism and evidence defects:
+M10 remains conditionally closed because post-closure review found evidence-attribution and completeness defects rather than a new architecture defect:
 
-- the `/core` queue test does not fill the actual queue or directly assert the production timeout result;
-- `/tui` has no actual bounded-queue saturation fixture;
-- Unix peer-close/write/flush/race/interrupted-replay fixtures are absent;
-- shared first-exit coverage is send-first only and adapter raw-first tests do not terminate the raw source first;
-- TUI pending setup/replay is not interrupted before canonical response completion;
-- the complete rollback helper is incomplete and not consistently used;
-- static guards are mostly name-oriented;
-- M009 plan, closure, registry, commits, test counts, commands, and CI evidence are inconsistent.
+- `/core` queue timeout may occur during writer receipt rather than blocked enqueue on a full queue;
+- `/tui` actual full-queue timeout is absent;
+- the six-case task-owner matrix does not execute all clean/panic cases through production joins;
+- `/tui` raw-source-first remains peer-close coverage;
+- Unix fixtures do not prove pre-response actual I/O failure, forced completion/cancellation orders, interrupted second replay, or repeated convergence;
+- rollback assertions are incomplete and may use aggregate probes shared by multiple connections;
+- guards do not reject these false-positive patterns;
+- closure, registry, final commits, and CI evidence required correction.
 
 Authoritative documents:
 
@@ -85,57 +88,44 @@ Authoritative documents:
 - M7 conditional record: `plans/closure/session-projections/007-status.md`
 - M8 conditional record: `plans/closure/session-projections/008-status.md`
 - M9 conditional record: `plans/closure/session-projections/009-status.md`
-- M10 final handoff: `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
+- M10 conditional record: `plans/closure/session-projections/010-status.md`
+- M11 handoff: `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
 
-M10 does not reopen projection storage, reducer semantics, disclosure policy, replay authority, cursor/sequence meaning, or protocol DTOs.
+M11 does not reopen projection storage, reducer semantics, disclosure policy, replay authority, cursor/sequence meaning, or protocol DTOs.
 
-## 4. Target architecture and verification boundary
+## 4. Target verification boundary
 
 ```text
 Projection store / replay service
-|-- real project/session stream descriptors
-|-- per-stream sequence and cursor authority
-|-- bounded retained events/checkpoints
-|-- fail-closed disclosure and artifact policy
+|-- persisted stream identity
+|-- sequence and cursor authority
+|-- retained events/checkpoints
+|-- disclosure/artifact policy
 `-- daemon-issued subscription receiver
 
 Transport connection
-|-- trusted connection/client identity
-|-- negotiated projection version/mode
-|-- bounded owned subscription map
+|-- trusted client/connection identity
+|-- bounded owned-subscription map
 |-- staged Initializing subscription
-|-- critical control writer with timeout/cancellation/receipt
-|-- mark-live only after canonical response delivery success
+|-- bounded critical sender
+|-- live only after canonical delivery success
 |-- owned send/receive/raw task set
-|-- one owned receiver-forwarder per live subscription
-|-- generation-scoped TUI raw routing
-|-- session/filter-scoped raw compatibility
-|-- connection cancellation before task teardown
-`-- deterministic rollback/unsubscribe/abort-and-await cleanup
+|-- owned projection forwarders
+|-- cancellation before sibling teardown
+`-- idempotent rollback and joined cleanup
 
-Mechanism-faithful verification
-|-- connection-local queue capacity and writer controls
-|-- fill-to-Full observation
-|-- direct CriticalDeliveryError::Timeout assertion
-|-- explicit first terminal task kind
-|-- actual raw-source termination
-|-- real WebSocket and Unix peer/socket failure
-|-- pending-response interruption before delivery success
-|-- complete rollback harness
+M011 evidence chain
+|-- per-connection probe
+|-- exact mechanism precondition
+|-- operation-correlated observation
+|-- exact typed result
+|-- production task teardown
+|-- ownership/receiver/forwarder convergence
 |-- unrelated-client continuity
-|-- interrupted replay cleanup and retry
-`-- exact executable evidence and closure record
-
-Replay-to-live handoff
-|-- stable stream identity
-|-- fresh connection identity where exposed
-|-- new subscription identity
-|-- exact missing envelope range
-|-- monotonic sequence continuity
-`-- first live envelope = replay_end_seq + 1, no duplicates
+|-- replay durability and identity
+|-- repeated stability runs
+`-- exact closure and CI/local evidence
 ```
-
-Projection storage remains separate from chat/message storage and final audit retention.
 
 ## 5. Dependency graph
 
@@ -164,13 +154,16 @@ M7 lifecycle ownership, route epochs, race evidence         [conditionally close
 M8 joined WebSocket teardown and exact replay evidence       [conditionally closed; principal findings addressed]
         |
         v
-M9 production-shaped WebSocket verification                 [conditionally closed; mechanism gaps remain]
+M9 production-shaped transport verification                 [conditionally closed; principal findings addressed]
         |
         v
-M10 mechanism-faithful queues, Unix races, rollback closure [ready]
+M10 transport instrumentation and broader mechanism tests   [conditionally closed; evidence defects remain]
+        |
+        v
+M11 evidence correctness and final verification closure     [ready]
 ```
 
-M10 has no unmet design dependency. It consumes the M8 task owner and replay fixtures plus the M9 probes, churn, peer-close, continuity, and interrupted-replay foundations.
+M11 has no unmet design dependency. It consumes M8 task ownership, M9 lifecycle/replay fixtures, and M10 writer gates, observers, raw-source controls, and first-task recording.
 
 ## 6. Milestones
 
@@ -186,7 +179,7 @@ Status: closed.
 
 ### Milestone 6 — Atomic control delivery and transport hardening
 
-Status: conditionally closed; principal findings addressed by M7/M8.
+Status: conditionally closed; principal findings addressed by later milestones.
 
 - Plan: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
 - Closure: `plans/closure/session-projections/006-status.md`
@@ -208,66 +201,80 @@ Status: conditionally closed; principal task-join and replay findings addressed.
 - Closure: `plans/closure/session-projections/008-status.md`
 - Implementation: `6975050af530eb5bd7a640c1f7ac9a31859dfda3`
 
-Accepted outcomes include shared joined WebSocket task ownership, joined Unix raw/client lifecycle, bounded critical delivery, activation-after-delivery, route-generation stale rejection, and exact replay-to-live sequence continuity.
+### Milestone 9 — Production-shaped transport verification
 
-### Milestone 9 — Production-shaped transport verification and strict closure
-
-Status: conditionally closed; principal findings resolved by M10.
+Status: conditionally closed; principal findings addressed by M10/M11.
 
 - Plan: `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
-- Conditional closure: `plans/closure/session-projections/009-status.md`
+- Closure: `plans/closure/session-projections/009-status.md`
 - Implementation/evidence: `3406c742a23b6470def32fb7a04cdc7b72a40dea`, `426dfffec05c9d694f54a816213a6cca514e91b4`
 
-Accepted outcomes include connection-local probes, real WebSocket peer close/drop, 100-cycle `/core` and `/tui` churn, two-client continuity, exact `/core` interrupted replay retry, successful TUI replay durability, and fresh `/core` connection identity.
+### Milestone 10 — Mechanism-faithful transport verification
 
-Residual findings (queue fill, task-kind, Unix fixtures, TUI pending interruption, rollback harness, semantic guards, exact closure evidence) are addressed by M10 closure: `plans/closure/session-projections/010-status.md`.
+Status: conditionally closed; strict evidence superseded by M11.
 
-### Milestone 10 — Mechanism-faithful transport verification and final closure
+- Plan: `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
+- Closure: `plans/closure/session-projections/010-status.md`
+- Final reviewed M10 head: `8bd59b22662a289f3124c9b3113e545faa9446d7`
 
-Status: closed.
+Accepted M10 outcomes:
+
+- connection-local capacity and writer controls;
+- pre-`recv()` full-channel observation;
+- lifecycle observers and first-task-kind recording;
+- `/core` raw-source cancellation;
+- TUI pending snapshot/replay interruption;
+- additional Unix lifecycle/replay regression tests;
+- full focused local matrix;
+- repeated-run scheduling-flake correction.
+
+Residual evidence findings are owned exclusively by M11.
+
+### Milestone 11 — Evidence correctness and mechanism verification closure
+
+Status: ready.
 
 Implementation plan:
 
-- `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
+- `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
 
-Closure: `plans/closure/session-projections/010-status.md`
+Class: verification correction / mechanism attribution / per-connection evidence / Unix I/O races / closure integrity
 
-Class: verification correction / bounded-queue mechanics / Unix transport races / lifecycle observability / closure reconciliation
+Repository baseline: `8bd59b22662a289f3124c9b3113e545faa9446d7`
 
-Repository baseline: `426dfffec05c9d694f54a816213a6cca514e91b4`
+Objective: prove each failure claim through a causal chain of exact precondition, exact production operation, exact typed result, and complete per-connection convergence.
 
-Objective: replace nominal queue, first-exit, TUI interruption, Unix lifecycle, rollback, guard, and evidence claims with direct production-mechanism proof.
+Required deliverables:
 
-Required deliverables (all accepted):
+- one probe per upgraded connection;
+- operation-correlated critical-send observations;
+- deterministic `/core` and `/tui` full-queue enqueue timeout fixtures;
+- six production-path task-owner clean/panic first-exit tests;
+- real raw-source-first for both adapters;
+- actual Unix pre-response I/O failure, forced completion/cancellation orders, interrupted replay, and repeated convergence;
+- complete rollback/non-interference harness used by every real failure fixture;
+- guards rejecting M10 false-positive patterns;
+- full verification matrix and 25-run stability loops;
+- exact M10/M11 planning and closure evidence.
 
-- connection-local queue capacity, writer, raw-source, and first-task controls;
-- actual `/core` and `/tui` fill-to-full tests with direct production `Timeout` result assertion;
-- six-case task-owner first-exit/panic matrix;
-- real raw-source-first adapter fixtures;
-- true TUI snapshot/replay pending-delivery interruption;
-- real Unix peer-close, write/flush, cancellation/completion race, churn, fresh identity, and interrupted replay retry;
-- complete rollback harness used by every real failure fixture;
-- semantic lifecycle guards;
-- exact full verification and M010 closure evidence.
+Exit conditions:
 
-Exit conditions (all met):
-
-- actual queue fullness causes and directly returns the production timeout in both WebSocket adapters;
-- all task first-exit and panic cases cancel and join siblings;
-- actual raw-source termination selects raw-event-first;
-- WebSocket and Unix peer/socket failures prove complete cleanup;
-- TUI canonical setup/replay is interrupted before delivery success;
-- Unix replay interruption retains durable history and retries exactly;
-- every real failure invokes the complete rollback harness;
-- all transient resources and unrelated clients satisfy baseline/non-interference invariants;
-- focused suites and guards pass;
-- closure evidence matches exact commits, tests, counts, commands, outputs, and CI status;
-- no unresolved high or medium M10 finding remains;
-- M10 closure returns roadmap and registry to strict closed status.
+- both WebSocket adapters prove fullness before target send and an enqueue-stage `Timeout` for that operation;
+- all six task-owner cases execute production cancellation and joins;
+- both adapters prove raw-source-first while peer remains healthy;
+- Unix tests use actual peer-induced I/O errors and interrupt the resumed replay response;
+- forced Unix race orders converge identically over repeated cycles;
+- all closure-relevant failures use per-connection complete rollback assertions;
+- unrelated clients remain live;
+- guards reject prior ambiguous/injected patterns;
+- complete matrix and stability loops pass;
+- exact commits and CI/local evidence are reconciled;
+- no unresolved high or medium M11 finding remains;
+- M11 closure returns the roadmap and registry to strict closed status.
 
 ## 7. Deferred product work
 
-These items are outside M10:
+These items remain outside M11:
 
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
@@ -280,46 +287,45 @@ These items are outside M10:
 
 ### Protocol and compatibility
 
-Do not increment the projection protocol or remove version-4 compatibility. M10 changes test controls, verification depth, and closure evidence—not wire meaning.
+Do not increment the projection protocol or remove version-4 compatibility. M11 changes test instrumentation, verification, and closure evidence—not wire meaning.
 
 ### Security and authorization
 
-Connection authentication is not subscription ownership. Foreign lifecycle and artifact operations remain fail-closed. Probes must not retain payload bodies, artifact bytes, hidden reasoning, or secrets.
+Connection authentication is not subscription ownership. Foreign lifecycle and artifact operations remain fail-closed. Probes retain no payload bodies, artifact bytes, hidden reasoning, or secrets.
 
 ### Concurrency, cancellation, and recovery
 
-Persistence and receiver installation precede response staging; successful response delivery precedes live release. Connection cancellation precedes sibling teardown. Every retained task is awaited. No state lock is held across socket I/O or task join. Test controls are connection-local and bounded.
+Persistence and receiver installation precede response staging; successful response delivery precedes live release. Connection cancellation precedes sibling teardown. Every retained task is awaited. No state lock is held across socket I/O or task join. Test controls remain connection-local and bounded.
 
 ### Performance
 
-Production queue capacities and critical-send behavior remain unchanged. Test-only capacity reduction, gates, and observers must add no production queue growth, per-event task creation, or runtime-global mutable state.
+Production queue capacities and timeout behavior remain unchanged. Test controls must add no production queue growth, per-event task creation, or runtime-global mutable state.
 
 ### Documentation
 
-Maintain transport state-machine, task ownership, queue, route-generation, replay continuity, compatibility, mechanism-verification, and test matrices. Closure evidence must include exact implementation and closure commits.
+Closure evidence must include exact implementation, follow-up, closure, and reviewed-head commits; exact tests/counts/commands; repeated-run results; and truthful CI availability.
 
 ## 9. Verification strategy
 
 Use:
 
-- connection-local capacity-1/capacity-2 queue fixtures;
-- explicit fill-until-Full assertions;
-- direct adapter `Timeout` result assertions;
-- real WebSocket and Unix peer/socket failure;
-- deterministic send/receive/raw/panic first-exit tests;
-- actual raw-source termination;
-- pending TUI response interruption before delivery success;
-- task/drop/forwarder/receiver/ownership baselines;
-- 100-cycle WebSocket churn and repeated Unix races;
-- two-client non-interference;
-- exact reconnect and interrupted replay retry;
-- existing replay, disclosure, artifact, TUI, raw compatibility, and static guards.
+- operation-correlated queue observations;
+- full-before-request ordering;
+- per-connection probe ownership;
+- production-path first-exit teardown tests;
+- real raw-source termination for both adapters;
+- actual Unix peer-induced I/O errors;
+- forced completion-first/cancellation-first barriers;
+- interrupted second replay and third-connection retry;
+- complete rollback and unrelated-client assertions;
+- 100-cycle WebSocket churn, 50-cycle Unix convergence, and 25 repeated suite runs;
+- existing replay, disclosure, artifact, TUI, raw compatibility, and boundary guards.
 
-Injected lifecycle seams remain valid for boundary reachability, serialization-equivalent failure, and deterministic pre-activation rollback. They are not substitutes for real queue, raw-source, or socket mechanisms.
+Injected lifecycle seams remain valid for boundary reachability and serialization-equivalent tests. They cannot satisfy real I/O or queue-mechanism closure requirements.
 
 ## 10. Completion definition
 
-This roadmap returns to strict closed status when all three production transports are bounded and connection-owned at subscription and task levels; actual channel fullness, raw-source termination, peer/socket failure, and pending-response interruption prove complete cleanup; replay interruption preserves durable history; all transient resources return to baseline; and closure evidence precisely matches the executable repository.
+This roadmap returns to strict closed status when the same fixture proves the exact mechanism precondition, invokes the exact production operation, observes the exact typed result, and verifies complete per-connection convergence for all closure-critical paths; all three transports satisfy replay and failure invariants; guards reject prior false-positive patterns; and closure evidence matches executable and independently available evidence.
 
 ## 11. Milestone status
 
@@ -332,6 +338,7 @@ This roadmap returns to strict closed status when all three production transport
 | 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |
 | 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | principal findings addressed by later milestones |
 | 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | principal findings addressed by M8 |
-| 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | principal findings addressed by M9/M10 |
-| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | All principal findings addressed by M10 |
-| 10 | closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | — |
+| 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | principal findings addressed by M9–M11 |
+| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | principal findings addressed by M10/M11 |
+| 10 | conditionally closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | M11 evidence correctness and final closure |
+| 11 | ready | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | — | — |
