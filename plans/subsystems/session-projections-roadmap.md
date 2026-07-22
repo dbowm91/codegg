@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: closed — Milestone 007 corrective transport lifecycle and evidence closure accepted
+Status: active — Milestone 008 final transport lifecycle and replay evidence polish
 
 Long-term references:
 
@@ -35,11 +35,12 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - Generic raw event broadcasts never carry subscription-private projection events.
 - A subscription cannot become live before its canonical snapshot/replay response is successfully delivered.
 - Critical control failure rolls back connection ownership and daemon subscription state.
-- Every connection-scoped raw and projection forwarder has explicit ownership, cancellation, and teardown.
+- Every connection-scoped send, receive, raw, and projection task has explicit ownership, cancellation, and joined teardown.
 - Disconnect removes transient receivers and tasks without deleting replay history.
 - Transport queues and per-connection tasks remain bounded.
 - Raw compatibility traffic is explicitly scoped by connection/session/filter selection.
 - Changing a TUI raw session route invalidates queued events from prior route generations.
+- Reconnect replay delivers exactly the missing committed envelopes once and transitions to the next live sequence without a gap or duplicate.
 - No WebSocket server adapter uses an unbounded outbound queue.
 - Closure evidence names exact tests, commands, counts, commits, and residual failures truthfully.
 
@@ -53,25 +54,26 @@ It consumes stable project/session identities, daemon events, turn/tool/run/job 
 - **M3** landed through `bac73ce`: capability context, fail-closed disclosure/redaction, artifact handles, bounded reads, and negative persistence tests.
 - **M4** landed at `bdc2138`: shared projection controller, local TUI projection state, remote protocol additions, independent controller/reducer equivalence, and bounded frontend artifact caches.
 - **M5** landed at `4c751ff`: connection-local receiver ownership, exact stream identity, cursor resume, typed lifecycle operations, bounded queues, raw projection filtering, and disconnect cleanup.
-- **M6 implementation** landed at `8ca570f`: critical writer receipts, activation-after-delivery transitions, rollback paths, real normal-flow Unix/WebSocket isolation tests, raw compatibility scoping, and bounded legacy `/ws` output.
+- **M6 implementation** landed at `8ca570f`: critical writer receipts, activation-after-delivery transitions, rollback paths, normal-flow transport isolation tests, raw compatibility scoping, and bounded legacy `/ws` output.
+- **M7 implementation** landed at `9887c2d`: joined Unix raw lifecycle, TUI route generations, deterministic lifecycle seams, blocked-response tests, expanded foreign-operation coverage, reconnect fixtures, and closure-evidence reconciliation.
 
-### M6 conditional closure
+### Conditional closure history
 
-M6 remains a valid implementation foundation. Its historical closure record is conditionally closed because post-closure inspection found:
+M6 remains a valid implementation foundation. Its historical closure record is conditionally closed because M7 was required to resolve Unix task ownership, TUI route generations, production-shaped race evidence, foreign-operation coverage, reconnect fixtures, and evidence reconciliation.
 
-- the Unix raw forwarder is detached from connection teardown and may retain writer/filter/event-receiver state after peer disconnect;
-- `/tui` raw events have no route generation, so an event queued for session A may drain after `SessionInfo` switches the connection to session B;
-- helper-level critical-send failure tests do not prove staged daemon subscription rollback through each production adapter;
-- real tests publish only after consuming the initial response and therefore do not exercise the response-blocked replay-to-live race;
-- real foreign ack/resume/status/artifact and reconnect/exact-replay coverage is incomplete;
-- the M6 closure record requires test-count and protocol-version failure reconciliation.
+M7 resolved those findings materially. Post-closure inspection identified three narrower polish items:
+
+- `/core` and `/tui` abort sibling connection tasks but do not await the aborted handles before completing connection cleanup;
+- helper and selected adapter tests do not yet constitute the complete staged-subscription queue/cancellation/serialization/disconnect matrix prescribed by M7;
+- reconnect fixtures verify replay range metadata and a subsequent live subscription ID, but do not directly prove full envelope identity, exact sequence continuity, and absence of duplication.
 
 Authoritative documents:
 
-- Conditional M6 record: `plans/closure/session-projections/006-status.md`
-- M7 corrective closure: `plans/closure/session-projections/007-status.md`
+- M6 conditional record: `plans/closure/session-projections/006-status.md`
+- M7 conditional record: `plans/closure/session-projections/007-status.md`
+- M8 final polish handoff: `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
 
-M7 resolved these findings without reopening storage, reducer, disclosure, replay authority, or protocol DTO meaning.
+M8 does not reopen storage, reducer, disclosure, replay authority, sequence semantics, or protocol DTO meaning.
 
 ## 4. Target architecture
 
@@ -90,11 +92,19 @@ Transport connection
 |-- staged Initializing subscription
 |-- critical control writer with timeout/cancellation/receipt
 |-- mark-live only after snapshot/replay delivery success
+|-- owned send/receive/raw task set
 |-- one owned receiver-forwarder per live subscription
-|-- one owned raw forwarder with connection cancellation
 |-- generation-scoped TUI raw routing
 |-- session/filter-scoped raw compatibility
-`-- deterministic rollback/unsubscribe/joined cleanup
+|-- connection cancellation before task teardown
+`-- deterministic rollback/unsubscribe/abort-and-await cleanup
+
+Replay-to-live handoff
+|-- stable stream identity
+|-- new connection and subscription identity
+|-- exact missing envelope range
+|-- monotonic sequence continuity
+`-- first live envelope = replay_end_seq + 1, no duplicates
 
 Frontend controller
 |-- canonical reducer
@@ -123,13 +133,16 @@ M4 frontend adoption/controller                             [closed]
 M5 remote transport isolation, resume, compatibility        [closed]
         |
         v
-M6 atomic control delivery and transport hardening          [conditionally closed; findings resolved by M7]
+M6 atomic control delivery and transport hardening          [conditionally closed; findings addressed by M7]
         |
         v
-M7 lifecycle ownership, route epochs, exact race evidence   [closed]
+M7 lifecycle ownership, route epochs, race evidence         [conditionally closed; final polish required]
+        |
+        v
+M8 joined WebSocket teardown and exact replay evidence       [ready]
 ```
 
-M7 has no unmet design dependency. It consumes the M6 critical-send and activation state machine and tightens production lifecycle ownership and evidence.
+M8 has no unmet design dependency. It consumes the M6 critical-send/activation state machine and the M7 lifecycle seam, route generation, foreign-operation, and reconnect foundations.
 
 ## 6. Milestones
 
@@ -175,74 +188,83 @@ Accepted outcomes include connection-local ownership, exact stream/subscription 
 
 ### Milestone 6 — Atomic control delivery, transport verification, and raw compatibility hardening
 
-Status: conditionally closed; findings resolved by corrective M007.
+Status: conditionally closed; corrective findings were materially addressed by M7.
 
 - Plan: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
 - Conditional closure: `plans/closure/session-projections/006-status.md`
 - Implementation: `8ca570fddc08eb9663b894f3190ae0ed0af2b98b`
 
-Accepted outcomes:
-
-- bounded critical-send primitive with timeout/cancellation;
-- WebSocket writer receipts;
-- `Initializing -> Live` after successful initial response delivery;
-- rollback paths on critical failure;
-- real normal-flow two-client `/tui`, `/core`, and Unix isolation fixtures;
-- current-session raw filtering and projection-primary suppression;
-- shared `/core` replay/live filtering;
-- bounded deprecated `/ws` output;
-- static guards against unbounded server WebSocket channels.
-
-The linked M006 record remains a historical conditional record. Its named lifecycle and evidence findings were resolved by M007; the subsystem is strictly closed by the M007 closure record.
+Accepted outcomes include bounded critical sends, WebSocket writer receipts, activation after canonical response delivery, rollback on critical failure, normal-flow transport isolation, raw filtering, projection-primary suppression, and bounded legacy `/ws` output.
 
 ### Milestone 7 — Corrective transport lifecycle and evidence closure
 
-Status: closed.
+Status: conditionally closed; final task-lifecycle and replay-evidence polish is owned by M8.
+
+- Plan: `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+- Conditional closure: `plans/closure/session-projections/007-status.md`
+- Implementation: `9887c2d581a3d01280485523161695d08469c34f`
+
+Accepted outcomes include:
+
+- owned/cancelled/joined Unix raw forwarder;
+- generation-tagged `/tui` raw routing and final-boundary stale rejection;
+- connection-local deterministic lifecycle seams;
+- blocked-response ordering tests for all three transports;
+- selected production-adapter rollback tests;
+- expanded foreign ack/resume/unsubscribe/status/artifact coverage;
+- reconnect/resume fixtures with fresh connection/subscription identity;
+- corrected protocol-version expectation and transport test count;
+- lifecycle static guard.
+
+Residual M7 polish findings:
+
+- WebSocket sibling tasks are aborted but not awaited;
+- the adapter-level staged failure matrix is incomplete;
+- reconnect tests do not assert full envelope sequence continuity and no duplication.
+
+### Milestone 8 — Final transport lifecycle and replay evidence polish
+
+Status: ready for handoff.
 
 Implementation plan:
 
-- `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+- `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
 
-Closure:
+Class: correctness polish / task lifecycle / adapter verification / closure reconciliation
 
-- `plans/closure/session-projections/007-status.md`
+Repository baseline: `8b547a3d02e571a480a826f5dea9c81d79d95cc4`
 
-Class: correctness / lifecycle cleanup / transport verification
-
-Repository baseline: `dbbaabdde51db09f0c5beb704234ce1d94d01c9a`
-
-Objective: make every connection-scoped task deterministically owned and terminated, make TUI raw session switching epoch-safe, prove critical failure rollback and response-before-live ordering through production adapters, complete foreign-operation and reconnect coverage, and correct closure evidence.
+Objective: complete joined `/core` and `/tui` task teardown, finish the production-adapter critical failure matrix, prove reconnect replay-to-live continuity at full envelope/sequence level, and produce final closure evidence matching the executable repository.
 
 Required deliverables:
 
-- owned/cancelled/joined Unix raw forwarder;
-- teardown tests proving no retained writer/filter/event-receiver state;
-- generation-tagged `/tui` raw outbound routing with final-boundary stale rejection;
-- deterministic production-adapter fault injection;
-- response-blocked live publication tests for `/tui`, `/core`, and Unix;
-- queue-full, writer-close, cancellation, serialization, timeout, and disconnect rollback tests against staged daemon subscriptions;
-- real foreign ack/resume/unsubscribe/status/artifact rejection coverage;
-- disconnect/reconnect exact missing-range replay and gap-free replay-to-live tests;
-- resource-leak and cross-client non-interference tests;
-- extended static guards;
-- reconciled test counts and protocol-version expectations;
-- dedicated M7 closure record.
+- shared or equivalent structured cancel/abort-and-await teardown for `/core` and `/tui`;
+- repeated connection churn/drop-probe tests;
+- adapter-level queue timeout, writer failure, cancellation, serialization-equivalent, disconnect-during-install, and pre-activation rollback tests where applicable;
+- assertions for connection ownership removal, daemon subscription removal, receiver non-reuse, forwarder/task termination, and idempotent cleanup;
+- exact replay envelope sequence and unique event-identity assertions for Unix, `/core`, and `/tui`;
+- first-live sequence `replay_end_seq + 1` and bounded no-duplicate checks;
+- replay handoff race and disconnect-during-replay cleanup coverage;
+- lifecycle static guard extension rejecting WebSocket abort-without-await cleanup;
+- corrected M7 record and dedicated M8 closure record.
 
 Exit conditions:
 
-- no connection-scoped raw or projection task survives teardown;
-- no stale queued TUI raw event crosses a committed session-route generation;
-- no live event can overtake a blocked canonical response;
-- all critical failure boundaries remove transport and daemon subscription state;
-- foreign operations are fail-closed and side-effect free;
-- reconnect resumes exactly the missing committed range and transitions live without gap or duplication;
-- closure evidence matches executable tests and command output;
-- no unresolved high or medium M7 finding remains;
-- M6 and M7 records support strict subsystem closure.
+- no `/core` or `/tui` connection task survives handler teardown;
+- no abort-only sibling task cleanup remains;
+- all material staged critical failure classes remove transport and daemon state;
+- no failed receiver can be reused and no projection forwarder remains alive;
+- reconnect replay contains exactly the missing committed envelopes once, in sequence;
+- the first live envelope follows replay without a gap, duplicate, or reorder;
+- stream identity remains stable while connection/subscription identities change;
+- focused suites and guards pass;
+- closure evidence matches executable test names, counts, commands, and commits;
+- no unresolved high or medium M8 finding remains;
+- M8 closure returns the roadmap and registry to strict closed status.
 
 ## 7. Deferred product work
 
-These items are not part of M7:
+These items are not part of M8:
 
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
@@ -255,27 +277,27 @@ These items are not part of M7:
 
 ### Protocol and compatibility
 
-Do not increment the projection protocol or remove version-4 compatibility. M7 changes lifecycle ownership, route invalidation, verification, and evidence—not wire meaning.
+Do not increment the projection protocol or remove version-4 compatibility. M8 changes task teardown, verification depth, and closure evidence—not wire meaning.
 
 ### Security and authorization
 
-Connection authentication is not subscription ownership. Raw route generations must only reduce stale visibility. Foreign ack/resume/unsubscribe/status/artifact operations remain fail-closed.
+Connection authentication is not subscription ownership. Foreign ack/resume/unsubscribe/status/artifact operations remain fail-closed. Replay assertions must not expose artifact contents, secrets, or hidden reasoning.
 
 ### Concurrency, cancellation, and recovery
 
-Persistence and receiver installation precede response staging; successful response delivery precedes live release. Every connection task is owned. Every failure path has bounded cancellation and idempotent rollback. No state lock is held across socket I/O or task join.
+Persistence and receiver installation precede response staging; successful response delivery precedes live release. Connection cancellation precedes sibling task teardown. Every retained task is awaited. Every failure path has bounded cancellation and idempotent rollback. No state lock is held across socket I/O or task join.
 
 ### Observability
 
-Expose bounded reason codes for task cancellation, critical-send failure, activation rollback, stale raw generation rejection, foreign-operation rejection, reconnect replay, and resource cleanup. Never log payload bodies, artifact bytes, or secrets.
+Expose bounded reason codes for task cancellation, task panic/error, critical-send failure, activation rollback, stale raw generation rejection, foreign-operation rejection, reconnect replay, and resource cleanup. Never log payload bodies, artifact bytes, or secrets.
 
 ### Performance
 
-Critical sends remain bounded and prioritized. Raw route generation checks must be constant-time and must not reintroduce unbounded queues or per-event unbounded task creation.
+Critical sends remain bounded and prioritized. Task ownership and replay assertions must not introduce unbounded queues, per-event unbounded task creation, or production-only test bookkeeping.
 
 ### Documentation
 
-Maintain transport state-machine, task ownership, queue, route-generation, compatibility, and test matrices. Closure evidence must include exact production and closure commits.
+Maintain transport state-machine, task ownership, queue, route-generation, replay continuity, compatibility, and test matrices. Closure evidence must include exact production and closure commits.
 
 ## 9. Verification strategy
 
@@ -285,27 +307,28 @@ Use:
 - daemon replay/storage/failpoint tests;
 - real two-client Unix, `/core`, and `/tui` fixtures;
 - deterministic response-blocking and fault-injection hooks;
-- queue-full, writer-close, cancellation, timeout, serialization, and disconnect tests;
+- queue-full, writer-close, cancellation, timeout, serialization-equivalent, pre-activation, and disconnect tests;
+- task/drop probes and repeated connection churn;
 - route-generation session-switch tests;
 - foreign-operation matrix tests;
-- reconnect and replay-to-live race tests;
-- repeated teardown/resource-baseline tests;
+- exact reconnect and replay-to-live sequence tests;
+- replay-response pause and disconnect-during-replay tests;
 - legacy `/ws` and raw compatibility regressions;
 - disclosure and static guards.
 
 ## 10. Risks and decision points
 
-- Aborting a task without awaiting it can still retain resources until scheduling completes; teardown must join or abort-and-await.
-- Filtering before queue insertion is insufficient when route identity can change while items wait in the queue.
+- Aborting a task without awaiting it can retain resources until the runtime polls the cancellation; teardown must join or abort-and-await.
+- Awaiting task handles while holding connection-state locks can deadlock cleanup.
+- Synthetic serialization failure must represent the real staged serialization boundary without distorting production protocol types.
+- Replay range metadata alone does not prove exact event identity or absence of duplication.
+- A live helper returning only subscription ID cannot prove sequence continuity.
 - Test-only fault hooks must remain connection-local and must not introduce production global mutable state.
-- A normal-flow socket test is not evidence for a blocked-response race.
-- Foreign-operation tests must verify both rejection and lack of side effects on the owner.
-- Reconnect tests must distinguish stream identity from the new subscription identity.
-- A replay-authority or storage change requires an ADR; M7 should require neither.
+- A replay-authority or storage change requires an ADR; M8 should require neither.
 
 ## 11. Completion definition
 
-This roadmap returns to strict closed status when the projection transport is connection-owned at both subscription and task-lifecycle levels, canonical state delivery is proven before live release under actual races and failures, raw session switching rejects stale queued traffic, reconnect replay is exact, foreign operations are fail-closed, and closure evidence precisely matches the repository.
+This roadmap returns to strict closed status when all three transports are bounded and connection-owned at both subscription and task levels, every retained connection task is deterministically terminated, critical setup failures are proven against staged daemon subscriptions, raw session switching rejects stale queued traffic, replay-to-live continuity is exact at envelope and sequence level without gaps or duplicates, foreign operations remain fail-closed, and closure evidence precisely matches the repository.
 
 ## 12. Milestone status
 
@@ -316,5 +339,6 @@ This roadmap returns to strict closed status when the projection transport is co
 | 3 | closed | `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md` | `plans/closure/session-projections/003-status.md` | — |
 | 4 | closed | `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md` | `plans/closure/session-projections/004-status.md` | — |
 | 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |
-| 6 | conditionally closed; findings resolved by M7 | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | —; strict subsystem closure is recorded by M7 |
-| 7 | closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | — |
+| 6 | conditionally closed; findings addressed by M7 | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | strict subsystem closure deferred to M8 |
+| 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | M8 final task-lifecycle and replay-evidence polish |
+| 8 | ready | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | — | — |
