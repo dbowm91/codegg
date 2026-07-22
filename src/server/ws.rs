@@ -263,11 +263,15 @@ impl WriterGate {
                     .store(false, std::sync::atomic::Ordering::Release);
                 return;
             }
-            tokio::select! {
+            let cancellation_fired = tokio::select! {
                 biased;
-                _ = cancellation.cancelled() => return,
-                _ = notified => {}
+                _ = cancellation.cancelled() => true,
+                _ = notified => false,
+            };
+            if cancellation_fired {
+                return;
             }
+            // notify fired: re-check `released` at the top of the loop.
         }
     }
 
@@ -304,11 +308,15 @@ impl WriterGate {
                     .store(false, std::sync::atomic::Ordering::Release);
                 return;
             }
-            tokio::select! {
+            let cancellation_fired = tokio::select! {
                 biased;
-                _ = cancellation.cancelled() => return,
-                _ = notified => {}
+                _ = cancellation.cancelled() => true,
+                _ = notified => false,
+            };
+            if cancellation_fired {
+                return;
             }
+            // notify fired: re-check `released` at the top of the loop.
         }
     }
 }
@@ -889,33 +897,34 @@ async fn run_observed_staged_send<T: serde::Serialize>(
 
     observation.enqueue_started = true;
 
-    // Run the checkpoint + tx.send with its own bounded timeout. We capture
-    // the point at which enqueue returns so we can distinguish queue
-    // reservation timeouts from receipt-wait timeouts.
+    // Run the checkpoint + tx.send under a single bounded timeout. We
+    // capture the result of the await inside the async block so that
+    // `bounded_critical_delivery` actually races the in-progress send
+    // against the timeout. Awaiting `tx.send` outside the block would
+    // park the recv task forever on a saturated queue and bypass the
+    // timeout.
     let before_enqueue: Result<(), CriticalDeliveryError> = seam
         .checkpoint(
             ProjectionLifecycleBoundary::BeforeControlEnqueue,
             cancellation,
         )
         .await;
-    let enqueue_inner: Result<(), CriticalSendFailure> = match before_enqueue {
-        Ok(()) => match tx.send(outbound).await {
-            Ok(()) => Ok(()),
-            Err(_) => Err(CriticalSendFailure::QueueClosed),
-        },
-        Err(_) => Err(CriticalSendFailure::WriterClosed),
-    };
     let enqueue_outcome: Result<(), CriticalSendFailure> =
-        bounded_critical_delivery(cancellation, async move { enqueue_inner }).await;
+        bounded_critical_delivery(cancellation, async move {
+            match before_enqueue {
+                Ok(()) => match tx.send(outbound).await {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(CriticalSendFailure::QueueClosed),
+                },
+                Err(_) => Err(CriticalSendFailure::WriterClosed),
+            }
+        })
+        .await;
 
     match enqueue_outcome {
         Err(error @ CriticalSendFailure::Timeout) => {
             observation.enqueue_completed = false;
             observation.receipt_wait_started = false;
-            // Re-check queue state: it should still be full.
-            if let Some(observer) = observer {
-                let _ = observer;
-            }
             return Err(error);
         }
         Err(error) => {
@@ -934,15 +943,17 @@ async fn run_observed_staged_send<T: serde::Serialize>(
             cancellation,
         )
         .await;
-    let receipt_outcome_inner: Result<(), CriticalSendFailure> = match after_enqueue_check {
-        Ok(()) => match receipt_rx.await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) | Err(_) => Err(CriticalSendFailure::WriterClosed),
-        },
-        Err(_) => Err(CriticalSendFailure::WriterClosed),
-    };
     let receipt_outcome: Result<(), CriticalSendFailure> =
-        bounded_critical_delivery(cancellation, async move { receipt_outcome_inner }).await;
+        bounded_critical_delivery(cancellation, async move {
+            match after_enqueue_check {
+                Ok(()) => match receipt_rx.await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(_)) | Err(_) => Err(CriticalSendFailure::WriterClosed),
+                },
+                Err(_) => Err(CriticalSendFailure::WriterClosed),
+            }
+        })
+        .await;
 
     receipt_outcome
 }
@@ -3445,6 +3456,7 @@ async fn upgrade_core_ws(
             }
             tokio::select! {
                 biased;
+                _ = connection_cancel_for_writer.cancelled() => break,
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
                     if let Some(gate) = writer_gate.as_ref() {

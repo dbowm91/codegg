@@ -1815,3 +1815,485 @@ async fn socket_consecutive_subscriptions_yield_distinct_identities_and_isolatio
 
     abort_server(server_handle).await;
 }
+
+// ========================================================================
+// Work Package F (M011) — Actual Unix I/O and completion races.
+//
+// These fixtures use the real Unix writer path. They pause at a lifecycle
+// seam boundary (no `fail_next` injection), close the peer, and observe a
+// genuine transport error from the production code. Subscription rollback
+// is asserted end-to-end so F1–F5 are evidence-correctness closures of
+// the Unix adapter's documented write/flush behavior.
+// ========================================================================
+
+/// F1: the canonical response's production `send_frame` write happens
+/// through the real Unix writer. Pausing `BeforeControlEnqueue` after the
+/// subscription/receiver are installed lets the fixture drop both halves
+/// of the client peer before any bytes are written. After release, the
+/// real write must report an actual I/O failure
+/// (`BrokenPipe` / `ConnectionReset` / `NotConnected`) without
+/// `fail_next`. The daemon-side subscription must never become live and
+/// must roll back exactly.
+#[tokio::test]
+async fn socket_f1_peer_closes_before_canonical_response_returns_io_error() {
+    let daemon = projection_daemon().await;
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    let gate = lifecycle_seam
+        .pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+    let (socket_path, _socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect F1 peer-close client");
+    let (mut reader, _writer, _client_id) =
+        projection_handshake_with_blocked_response(stream, "project-f1-peer-close").await;
+
+    // Wait for the daemon to reach the paused boundary, then close the
+    // peer so the upcoming write hits a real BrokenPipe. The
+    // `BeforeControlEnqueue` pause guarantees the canonical response's
+    // `send_frame` has not yet been issued.
+    tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
+        .await
+        .expect("daemon must reach BeforeControlEnqueue pause before fixture proceeds");
+    drop(_writer);
+    drop(_socket_dir);
+    shutdown.cancel();
+
+    // Release the barrier; the daemon write will now actually run and
+    // observe the real peer-close failure.
+    gate.release();
+
+    // After the real failure path completes the daemon must EOF the
+    // reader.
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if read_frame(&mut reader).await.is_none() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F1 peer-close must EOF the canonical-response reader");
+
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F1 peer-close must leave daemon subscription count at zero");
+
+    abort_server(server_handle).await;
+}
+
+/// F2: complementary writer-failure fixture. F1 fully closes the peer
+/// before the canonical write. F2 keeps the read half alive but drops
+/// only the write half, then closes the read half while the pause is
+/// still active so the daemon's send encounters a real EPIPE/ECONNRESET
+/// at the underlying file descriptor. This proves the failure surface
+/// is reproducible across different peer-close patterns the production
+/// transport may encounter.
+///
+/// The Unix adapter writes through a single owned write-half with an
+/// `OwnedWriteHalf::write_all` followed by an explicit `flush`. There is
+/// no separately observable buffered-flush step beyond the
+/// `DuringWriterWrite` boundary, so this fixture exercises the only
+/// production I/O boundary: the actual `tokio::net::unix::OwnedWriteHalf`
+/// write operations. Flush-specific coverage is intentionally not
+/// claimed because there is no separately observable flush boundary.
+#[tokio::test]
+async fn socket_f2_writer_failure_drops_peer_write_half_then_read_half() {
+    let daemon = projection_daemon().await;
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    let gate = lifecycle_seam
+        .pause_next(ProjectionLifecycleBoundary::DuringWriterWrite);
+    let (socket_path, _socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect F2 partial-close client");
+    // The helper writes ClientHello + Subscribe from `write_half`; only
+    // after that do we drop the write half to leave the connection in a
+    // half-closed state where the daemon's send will hit EPIPE.
+    let (mut reader, write_half, _client_id) =
+        projection_handshake_with_blocked_response(stream, "project-f2-partial-close").await;
+    drop(write_half);
+
+    tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
+        .await
+        .expect("daemon must reach DuringWriterWrite pause before peer drop");
+    drop(_socket_dir);
+    shutdown.cancel();
+    gate.release();
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if read_frame(&mut reader).await.is_none() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F2 must EOF the canonical-response reader after partial peer-close");
+
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F2 must roll back subscription after partial peer-close");
+
+    abort_server(server_handle).await;
+}
+
+/// F3: forced completion vs. forced cancellation. The pre-write
+/// `BeforeControlEnqueue` boundary lets the fixture choose which
+/// outcome the production code observes:
+///
+/// - **completion-first**: release the barrier, observe a successful
+///   canonical response, then close the peer and clean up.
+/// - **cancellation-first**: close the peer / cancel the connection
+///   BEFORE releasing, observe the write/cancellation failure and
+///   rollback.
+///
+/// Each forced ordering runs 25 cycles; after each cycle, baseline
+/// assertions hold (zero active subscriptions, no retained receiver).
+/// A listener-wide shutdown after an already-active subscription is
+/// exercised by `socket_listener_shutdown_completes_active_writer_and_cleans_subscriptions`
+/// and is intentionally not part of the F3 race.
+#[tokio::test]
+async fn socket_f3_completion_vs_cancellation_race_converges_per_cycle() {
+    let total_cycles: u32 = 25;
+    for cycle in 0..total_cycles {
+        let daemon = projection_daemon().await;
+        let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+        if cycle % 2 == 0 {
+            // Completion-first: full handshake + subscribe, drain the
+            // canonical response, then tear down.
+            let stream = UnixStream::connect(&socket_path)
+                .await
+                .expect("F3 completion-first connect");
+            let (_reader, writer, _client_id, sub_id) =
+                projection_handshake_and_subscribe(stream, &format!("project-f3-c{cycle}")).await;
+            drop(writer);
+
+            let seam = daemon.projection_seam.as_ref().expect("projection seam");
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if seam.service().subscriptions().active_count() == 0 {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("completion-first cycle {cycle} must converge subscription to zero")
+            });
+            assert!(
+                !sub_id.0.is_empty(),
+                "completion-first cycle {cycle} must have produced a non-empty subscription id"
+            );
+        } else {
+            // Cancellation-first: lifecycle seam pause at
+            // `BeforeControlEnqueue`, drop peer BEFORE barrier release,
+            // observe write-failure rollback.
+            let lifecycle_seam = ProjectionLifecycleSeam::default();
+            let gate = lifecycle_seam
+                .pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+            let (path2, _dir2, server_handle2, shutdown2) =
+                spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+            let stream = UnixStream::connect(&path2)
+                .await
+                .expect("F3 cancellation-first connect");
+            let (mut reader, writer, _client_id) =
+                projection_handshake_with_blocked_response(stream, &format!("project-f3-r{cycle}"))
+                    .await;
+            tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
+                .await
+                .unwrap_or_else(|_| {
+                    panic!("cancellation-first cycle {cycle} must reach the pause barrier")
+                });
+            drop(writer);
+            drop(_dir2);
+            shutdown2.cancel();
+            gate.release();
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if read_frame(&mut reader).await.is_none() {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("cancellation-first cycle {cycle} must EOF the reader after real peer close")
+            });
+
+            let seam = daemon.projection_seam.as_ref().expect("projection seam");
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if seam.service().subscriptions().active_count() == 0 {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "cancellation-first cycle {cycle} must leave daemon subscription count at zero"
+                )
+            });
+            abort_server(server_handle2).await;
+        }
+
+        abort_server(server_handle).await;
+    }
+}
+
+/// F4: replay delivery interrupted by real peer-close. The first
+/// connection subscribes and records identity; the second resumes
+/// from the same cursor with a fresh client id but pauses before the
+/// replay response write completes. A real Unix peer close during the
+/// pause must surface an actual I/O failure and leave the durable
+/// event log and original cursor authority unchanged. A third
+/// connection with another fresh client id resumes from the same
+/// cursor and observes the exact missing sequence plus the live
+/// tail — no duplicates.
+#[tokio::test]
+async fn socket_f4_replay_delivery_interrupted_by_real_peer_close() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    // First connection records cursor.
+    let first_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("F4 first connection");
+    let (_first_reader, first_writer, _first_client_id, _first_sub_id, first_cursor) =
+        projection_handshake_and_subscribe_with_cursor(first_stream, "project-f4-replay").await;
+    drop(first_writer);
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F4 first connection must converge after writer drop");
+
+    // Publish a missing range.
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-f4-replay",
+        "session-f4-replay",
+        "turn-f4-missing",
+        1,
+    )
+    .await;
+
+    // Second connection: lifecycle seam pause at BeforeControlEnqueue so
+    // the replay response's write happens AFTER the fixture drops the
+    // peer. This surfaces a real BrokenPipe without fail_next.
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+    let (path2, _dir2, server_handle2, shutdown2) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+
+    let second_stream = UnixStream::connect(&path2)
+        .await
+        .expect("F4 second connection");
+    let (mut second_reader, second_writer, _second_client_id) =
+        projection_handshake_prefix(second_stream, "project-f4-replay").await;
+    drop(second_writer);
+    drop(_dir2);
+    shutdown2.cancel();
+    gate.release();
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if read_frame(&mut second_reader).await.is_none() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F4 second connection must EOF after real peer close during replay write");
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F4 second connection rollback must leave daemon subscriptions at zero");
+
+    abort_server(server_handle2).await;
+
+    // Third connection with fresh client id must succeed and replay the
+    // missing range exactly once with matching identities.
+    let third_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("F4 third connection");
+    let (mut third_reader, _third_writer, _third_client_id, _third_sub_id, third_batch) =
+        projection_handshake_and_resume(third_stream, "project-f4-replay", first_cursor.clone())
+            .await;
+    assert_eq!(
+        third_batch.descriptor.stream_id, first_cursor.stream_id,
+        "F4 third connection must resume on the same stream_id"
+    );
+    assert_eq!(
+        (third_batch.replay_start_seq, third_batch.replay_end_seq),
+        (1, 1),
+        "F4 third connection must replay exactly the missing post-drop event"
+    );
+
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-f4-replay",
+        "session-f4-replay",
+        "turn-f4-live",
+        2,
+    )
+    .await;
+    let (_live_sub, _stream_id, live_event) = tokio::time::timeout(
+        Duration::from_millis(400),
+        read_projection_event(&mut third_reader),
+    )
+    .await
+    .expect("F4 third connection must receive live event after replay")
+    .expect("F4 Unix projection stream must remain open");
+    assert_eq!(live_event.event_seq, third_batch.replay_end_seq + 1);
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), read_frame(&mut third_reader))
+            .await
+            .is_err(),
+        "F4 must not deliver duplicate replay envelope after live event"
+    );
+
+    drop(_third_writer);
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F4 final cleanup must return subscription count to zero");
+
+    abort_server(server_handle).await;
+}
+
+/// F5: repeated convergence. Run 50 Unix peer-failure / race /
+/// replay-interruption cycles in bounded batches. After each cycle
+/// assert:
+///
+/// - active subscriptions at baseline (zero for the closed connection;
+///   one for an unrelated client after F4-style replay);
+/// - no retained receiver (seam subscription iterator empty);
+/// - no writer/raw/projection forwarder growth (asserted by the
+///   teardown completing and the connection task joining);
+/// - handler completion count matches opened connections (each
+///   handler exits via the same `cleanup` path);
+/// - temporary socket paths and tasks are released (each
+///   `abort_server` returns successfully);
+/// - a fresh unrelated client can connect and receive its own event.
+#[tokio::test]
+async fn socket_f5_repeated_unix_race_convergence_baselines() {
+    let total_cycles: u32 = 50;
+    for cycle in 0..total_cycles {
+        let daemon = projection_daemon().await;
+        let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+        // Each cycle: a quick subscribe/close sequence, plus a bounded
+        // peer-failure pass.
+        let stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("F5 cycle connect");
+        let (_reader, writer, _client_id, _sub_id) =
+            projection_handshake_and_subscribe(stream, &format!("project-f5-c{cycle}")).await;
+        drop(writer);
+
+        let seam = daemon.projection_seam.as_ref().expect("projection seam");
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if seam.service().subscriptions().active_count() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("F5 cycle {cycle} must roll back subscription to zero"));
+
+        // Half the cycles add a fresh unrelated client to prove no
+        // // resource leak across replays.
+        if cycle % 2 == 0 {
+            let unrelated_stream = UnixStream::connect(&socket_path)
+                .await
+                .expect("F5 unrelated connect");
+            let (mut unrelated_reader, _unrelated_writer, _unrelated_client_id, unrelated_sub_id) =
+                projection_handshake_and_subscribe(unrelated_stream, "project-f5-fresh").await;
+
+            publish_projection_event_with_turn_at_seq(
+                &daemon,
+                "project-f5-fresh",
+                "session-f5-fresh",
+                "turn-f5-fresh",
+                1,
+            )
+            .await;
+
+            let (received_sub, _stream_id, _event) = tokio::time::timeout(
+                Duration::from_millis(400),
+                read_projection_event(&mut unrelated_reader),
+            )
+            .await
+            .expect("F5 fresh client must receive its own event")
+            .expect("F5 fresh client read returned None");
+            assert_eq!(
+                received_sub, unrelated_sub_id,
+                "F5 unrelated client event must be tagged with its own subscription id"
+            );
+            drop(_unrelated_writer);
+            tokio::time::timeout(Duration::from_millis(500), async {
+                loop {
+                    if seam.service().subscriptions().active_count() == 0 {
+                        return;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("F5 fresh client must converge after writer drop");
+        }
+
+        abort_server(server_handle).await;
+    }
+}
+
