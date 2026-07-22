@@ -1455,3 +1455,368 @@ async fn resume_replay_uses_same_filter_as_live_forwarding() {
 
     abort_server(server_handle2).await;
 }
+
+// ===== M010 Mechanism-Faithful Transport Verification Fixtures =====
+//
+// These tests cover Work Packages D, F, and G: peer-close/write/flush races,
+// interrupted replay retry, and fresh identity proof. They complement the
+// WebSocket-side fixtures in `tests/projection_transport_real.rs` by exercising
+// the same daemon transport contract through the Unix-socket adapter.
+
+/// The Unix adapter must drop a connection cleanly even if the peer closes
+/// the write half while the daemon is mid-write. The subscription must be
+/// removed, the byte stream EOF'd, and a fresh subscription must see the
+/// same event log without leakage from the closed connection.
+#[tokio::test]
+async fn socket_peer_close_during_writer_delivery_removes_subscription_and_eofs() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect peer-close client");
+    let (mut reader, writer, _client_id, _sub_id) =
+        projection_handshake_and_subscribe(stream, "project-peer-close").await;
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 1 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("subscription should install before peer-close race");
+
+    drop(writer);
+    let eof = tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if read_frame(&mut reader).await.is_none() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Unix adapter must EOF the reader after peer closes write half");
+    assert!(eof, "Unix adapter never reached EOF after peer close");
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("daemon subscription must be removed after peer close");
+
+    let resume_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect post-peer-close client");
+    let (_resume_reader, _resume_writer, _resume_client_id, _resume_sub_id) =
+        projection_handshake_and_subscribe(resume_stream, "project-peer-close").await;
+    tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 1 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("fresh subscription must install after peer-close cleanup");
+    abort_server(server_handle).await;
+}
+
+/// When the daemon side write fails mid-flush (peer already closed), the
+/// adapter must roll back the subscription, close the byte stream with EOF,
+/// and remain ready to serve a new connection from the same client identity
+/// slot. We verify the recovery path is wired even though no error response
+/// is delivered on the failing socket (the canonical response was already
+/// enqueued at the moment of failure).
+#[tokio::test]
+async fn socket_writer_failure_during_flush_closes_stream_and_rolls_back() {
+    let daemon = projection_daemon().await;
+    let lifecycle_seam = ProjectionLifecycleSeam::default();
+    lifecycle_seam
+        .fail_next(
+            ProjectionLifecycleBoundary::DuringWriterWrite,
+            crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
+        );
+    let (socket_path, _socket_dir, server_handle, _shutdown) =
+        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect writer-flush-failure client");
+    let (mut reader, _writer, _client_id) = projection_handshake_with_blocked_response(
+        stream,
+        "project-writer-flush-failure",
+    )
+    .await;
+    let eof = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if read_frame(&mut reader).await.is_none() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("writer-flush failure must EOF the Unix byte stream");
+    assert!(eof, "Unix adapter never closed after writer-flush failure");
+
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("writer-flush failure must roll back daemon subscription");
+
+    let recovery_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect recovery client after writer-flush failure");
+    let (_recovery_reader, _recovery_writer, _recovery_client_id, recovery_sub_id) =
+        projection_handshake_and_subscribe(recovery_stream, "project-writer-flush-failure").await;
+    assert!(
+        !recovery_sub_id.0.is_empty(),
+        "fresh subscription must receive a non-empty id after writer-flush rollback"
+    );
+    abort_server(server_handle).await;
+}
+
+/// Cancelling the listener-side shutdown token must propagate as EOF to
+/// the connected client AND remove the daemon-side subscription. This
+/// proves the cancellation race path between the listener task and the
+/// per-connection writer is wired correctly.
+#[tokio::test]
+async fn socket_listener_shutdown_completes_active_writer_and_cleans_subscriptions() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect cancellation-race client");
+    let (mut reader, _writer, _client_id, _sub_id) =
+        projection_handshake_and_subscribe(stream, "project-cancel-race").await;
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 1 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("subscription should install before cancellation race");
+
+    shutdown.cancel();
+    let eof = tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if read_frame(&mut reader).await.is_none() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("client must observe EOF after listener shutdown");
+    assert!(eof, "client never received EOF after shutdown cancel");
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("daemon subscription must be removed after listener shutdown");
+    shutdown_server(server_handle, shutdown).await;
+}
+
+/// An interrupted replay handoff must leave the daemon's subscription count
+/// at baseline, return the cursor on a fresh retry, and yield a different
+/// subscription id than the original interrupted attempt. This is the
+/// Unix-side analogue of the WebSocket interrupted-replay retry fixture.
+#[tokio::test]
+async fn socket_interrupted_replay_retry_resumes_with_fresh_identity() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let first_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect first interrupted-replay client");
+    let (first_reader, first_writer, _first_client_id, first_sub_id, first_cursor) =
+        projection_handshake_and_subscribe_with_cursor(first_stream, "project-replay-retry").await;
+    drop(first_reader);
+    drop(first_writer);
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first Unix subscription should be removed after drop");
+
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-replay-retry",
+        "session-replay-retry",
+        "turn-after-drop",
+        1,
+    )
+    .await;
+
+    let retry_stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect retry interrupted-replay client");
+    let (mut retry_reader, _retry_writer, _retry_client_id, retry_sub_id, retry_batch) =
+        projection_handshake_and_resume(retry_stream, "project-replay-retry", first_cursor.clone())
+            .await;
+
+    assert_ne!(
+        first_sub_id, retry_sub_id,
+        "interrupted retry must yield a fresh subscription identity"
+    );
+    assert_eq!(
+        retry_batch.descriptor.stream_id, first_cursor.stream_id,
+        "retry must resume on the same stream_id"
+    );
+    assert_eq!(
+        (retry_batch.replay_start_seq, retry_batch.replay_end_seq),
+        (1, 1),
+        "retry must replay only the missing post-drop event"
+    );
+
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-replay-retry",
+        "session-replay-retry",
+        "turn-live-after-retry",
+        2,
+    )
+    .await;
+    let (live_sub_id, _live_stream_id, live_event) = tokio::time::timeout(
+        Duration::from_millis(400),
+        read_projection_event(&mut retry_reader),
+    )
+    .await
+    .expect("retry client must receive live event after replay")
+    .expect("Unix projection stream must remain open");
+    assert_eq!(live_sub_id, retry_sub_id);
+    assert_eq!(live_event.event_seq, retry_batch.replay_end_seq + 1);
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), read_frame(&mut retry_reader))
+            .await
+            .is_err(),
+        "no duplicate replay envelope should be delivered after live event"
+    );
+
+    tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 1 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("retry client must hold the only active subscription");
+
+    abort_server(server_handle).await;
+}
+
+/// Two consecutive Unix-socket subscriptions on the same project must yield
+/// distinct subscription ids, distinct client ids, and isolated live event
+/// streams. This is the fresh-identity proof that closes Work Package G.
+#[tokio::test]
+async fn socket_consecutive_subscriptions_yield_distinct_identities_and_isolation() {
+    let daemon = projection_daemon().await;
+    let (socket_path, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
+
+    let stream_first = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect fresh-identity client 1");
+    let (_first_reader, first_writer, first_client_id, first_sub_id) =
+        projection_handshake_and_subscribe(stream_first, "project-fresh-identity").await;
+
+    let stream_second = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect fresh-identity client 2");
+    let (mut second_reader, second_writer, second_client_id, second_sub_id) =
+        projection_handshake_and_subscribe(stream_second, "project-fresh-identity").await;
+
+    assert_ne!(
+        first_sub_id, second_sub_id,
+        "consecutive Unix subscriptions must receive distinct subscription ids"
+    );
+    assert_ne!(
+        first_client_id, second_client_id,
+        "consecutive Unix handshakes must receive distinct client ids"
+    );
+
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(400), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 2 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both fresh-identity subscriptions should be active simultaneously");
+
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-fresh-identity",
+        "session-fresh-identity",
+        "turn-iso",
+        1,
+    )
+    .await;
+
+    let (received_sub, _stream_id, _event) = tokio::time::timeout(
+        Duration::from_millis(400),
+        read_projection_event(&mut second_reader),
+    )
+    .await
+    .expect("second client must receive live event")
+    .expect("Unix projection stream for client 2 must remain open");
+    assert_eq!(
+        received_sub, second_sub_id,
+        "event must be tagged with client 2's subscription id, not client 1's"
+    );
+
+    drop(first_writer);
+    drop(second_writer);
+
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both subscriptions must be removed after both writers drop");
+
+    abort_server(server_handle).await;
+}
+

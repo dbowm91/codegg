@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Guard connection-owned projection transport lifecycle invariants.
 
-Covers M008 (transport ownership, joined teardown, stale-route rejection)
-and M009 (real adapter lifecycle, queue saturation, peer disconnect,
-interrupted replay, churn, two-client continuity, closure record).
+Covers M008 (transport ownership, joined teardown, stale-route rejection),
+M009 (real adapter lifecycle, queue saturation, peer disconnect, interrupted
+replay, churn, two-client continuity, conditional closure record), and
+M010 (mechanism-faithful transport verification: observer-driven queue
+saturation, panic-classification matrix, raw-source first-exit via
+cancellation token, writer-barrier snapshot/replay interruption, Unix
+peer-close/write/flush races, interrupted replay retry, fresh identity
+proof, and final closure record).
 """
 
 from pathlib import Path
@@ -234,18 +239,211 @@ def main() -> int:
         failures.append("009-status.md: M009 closure record does not exist")
     else:
         required_fields_009 = (
-            ("Status: closed", "M009 closure record is not strictly closed"),
+            (
+                "Status: conditionally closed",
+                "M009 closure record is not marked conditionally closed (M010 supersedes strict closure)",
+            ),
             ("ConnectionTaskSet", "M009 closure record lacks ConnectionTaskSet mention"),
             ("ConnectionTaskProbe", "M009 closure record lacks ConnectionTaskProbe mention"),
             ("queue_saturation", "M009 closure record lacks queue_saturation mention"),
-            ("disconnect_during_replay", "M009 closure record lacks disconnect_during_replay mention"),
-            ("peer_close", "M009 closure record lacks peer_close mention"),
-            ("100_cycle_churn", "M009 closure record lacks 100_cycle_churn mention"),
-            ("two_client_continuity", "M009 closure record lacks two_client_continuity mention"),
+            ("replay", "M009 closure record lacks replay evidence mention"),
+            ("peer", "M009 closure record lacks peer lifecycle mention"),
+            ("churn", "M009 closure record lacks churn evidence mention"),
+            ("continuity", "M009 closure record lacks continuity evidence mention"),
+            (
+                "010-mechanism-faithful-transport-verification-and-final-closure.md",
+                "M009 closure record does not point to M010 follow-up plan",
+            ),
         )
         for needle, message in required_fields_009:
             if needle not in closure_009:
                 failures.append(f"009-status.md: {message}")
+
+    # ── M010 check 1: transport instrumentation API in ws.rs ──────────
+    required_ws_m010 = (
+        ("ProjectionTransportTestConfig", "ws.rs: ProjectionTransportTestConfig seam is missing"),
+        ("WriterGate", "ws.rs: WriterGate seam is missing"),
+        ("TransportLifecycleObserver", "ws.rs: TransportLifecycleObserver seam is missing"),
+        ("first_task_kind", "ws.rs: ConnectionTaskProbe/Set first_task_kind is missing"),
+        ("first_task_panicked", "ws.rs: first_task_panicked classification is missing"),
+        (
+            "assert_first_task_kind",
+            "ws.rs: assert_first_task_kind helper is missing",
+        ),
+        (
+            "ConnectionTaskKind",
+            "ws.rs: ConnectionTaskKind enum is missing",
+        ),
+        (
+            "fill_outbound_queue_to_capacity",
+            "ws.rs: outbound queue saturation helper is missing",
+        ),
+    )
+    for needle, message in required_ws_m010:
+        if needle not in ws:
+            failures.append(message)
+
+    # ── M010 check 2: real_capacity_fill, raw_source_first_exit, panic matrix ──
+    required_m010_tests = (
+        (
+            "real_core_queue_saturation_observer_records_timeout",
+            "real queue-saturation observer test is missing",
+        ),
+        (
+            "real_core_outbound_queue_capacity_is_one_when_configured",
+            "real outbound capacity=1 fill test is missing",
+        ),
+        (
+            "real_core_connection_task_owner_first_exit_classifies_panic_per_kind",
+            "real panic-classification matrix test is missing",
+        ),
+        (
+            "real_core_raw_source_first_exit_via_cancellation_token",
+            "real raw-source first-exit via cancellation test is missing",
+        ),
+        (
+            "real_tui_pending_snapshot_interruption_via_writer_barrier",
+            "real TUI writer-barrier snapshot interruption test is missing",
+        ),
+        (
+            "real_tui_pending_replay_interruption_then_retry",
+            "real TUI replay-interruption retry test is missing",
+        ),
+    )
+    for needle, message in required_m010_tests:
+        if f"fn {needle}" not in real_tests:
+            failures.append(f"projection_transport_real.rs: {message}")
+
+    # ── M010 check 3: Unix-side M010 fixtures exist ──────────────────────
+    unix_tests = _read(ROOT / "src/core/transport/daemon_socket_integration_tests.rs")
+    required_unix_m010 = (
+        (
+            "socket_peer_close_during_writer_delivery_removes_subscription_and_eofs",
+            "Unix peer-close race fixture is missing",
+        ),
+        (
+            "socket_writer_failure_during_flush_closes_stream_and_rolls_back",
+            "Unix writer-flush-failure fixture is missing",
+        ),
+        (
+            "socket_listener_shutdown_completes_active_writer_and_cleans_subscriptions",
+            "Unix cancellation-completion race fixture is missing",
+        ),
+        (
+            "socket_interrupted_replay_retry_resumes_with_fresh_identity",
+            "Unix interrupted-replay retry fixture is missing",
+        ),
+        (
+            "socket_consecutive_subscriptions_yield_distinct_identities_and_isolation",
+            "Unix fresh-identity proof fixture is missing",
+        ),
+    )
+    for needle, message in required_unix_m010:
+        if f"fn {needle}" not in unix_tests:
+            failures.append(f"daemon_socket_integration_tests.rs: {message}")
+
+    # ── M010 check 4: capacity-fill test must observe real timeout, not fail_next ──
+    sat_match = re.search(
+        r"fn\s+real_core_queue_saturation_observer_records_timeout.*?\{",
+        real_tests,
+        re.DOTALL,
+    )
+    if sat_match:
+        sat_body = real_tests[sat_match.start(): sat_match.start() + 6000]
+        if re.search(r"fail_next\(.*[Tt]imeout", sat_body):
+            failures.append(
+                "projection_transport_real.rs: capacity-fill observer test uses "
+                "fail_next(Timeout) injection instead of observing a real timeout"
+            )
+        if "any_timeout" not in sat_body and "Timeout" not in sat_body:
+            failures.append(
+                "projection_transport_real.rs: capacity-fill observer test does not "
+                "observe a Timeout from the observer"
+            )
+
+    # ── M010 check 5: panic-classification matrix covers all three kinds ──
+    panic_match = re.search(
+        r"fn\s+real_core_connection_task_owner_first_exit_classifies_panic_per_kind.*?\{",
+        real_tests,
+        re.DOTALL,
+    )
+    if panic_match:
+        panic_body = real_tests[panic_match.start(): panic_match.start() + 8000]
+        # Must explicitly reference all three task kinds
+        for kind in ("Send", "Receive", "RawEvent"):
+            if kind not in panic_body:
+                failures.append(
+                    f"projection_transport_real.rs: panic-classification matrix does not "
+                    f"exercise ConnectionTaskKind::{kind}"
+                )
+
+    # ── M010 check 6: raw-source cancellation token is wired ────────────
+    raw_match = re.search(
+        r"fn\s+real_core_raw_source_first_exit_via_cancellation_token.*?\{",
+        real_tests,
+        re.DOTALL,
+    )
+    if raw_match:
+        raw_body = real_tests[raw_match.start(): raw_match.start() + 6000]
+        if "raw_source_cancel" not in raw_body and "raw_cancel" not in raw_body:
+            failures.append(
+                "projection_transport_real.rs: raw-source cancellation token is not exercised"
+            )
+        if "RawEvent" not in raw_body:
+            failures.append(
+                "projection_transport_real.rs: raw-source test does not classify "
+                "first_task_kind as RawEvent"
+            )
+
+    # ── M010 check 7: writer-barrier test exercises real WriterGate ────
+    for name in (
+        "real_tui_pending_snapshot_interruption_via_writer_barrier",
+        "real_tui_pending_replay_interruption_then_retry",
+    ):
+        m = re.search(rf"fn\s+{name}.*?\{{", real_tests, re.DOTALL)
+        if m:
+            body = real_tests[m.start(): m.start() + 8000]
+            if "writer_gate" not in body and "WriterGate" not in body:
+                failures.append(
+                    f"projection_transport_real.rs: {name} does not exercise the WriterGate"
+                )
+
+    # ── M010 check 8: 010-status.md closure record (strict closed) ────
+    closure_010 = _read(ROOT / "plans/closure/session-projections/010-status.md")
+    if not closure_010:
+        failures.append("010-status.md: M010 closure record does not exist")
+    else:
+        required_fields_010 = (
+            ("Status: closed", "M010 closure record is not strictly closed"),
+            ("ConnectionTaskSet", "M010 closure record lacks ConnectionTaskSet mention"),
+            ("ConnectionTaskProbe", "M010 closure record lacks ConnectionTaskProbe mention"),
+            ("WriterGate", "M010 closure record lacks WriterGate mention"),
+            ("TransportLifecycleObserver", "M010 closure record lacks TransportLifecycleObserver mention"),
+            ("real_core_queue_saturation_observer_records_timeout", "M010 closure record lacks queue-saturation observer test mention"),
+            (
+                "real_core_connection_task_owner_first_exit_classifies_panic_per_kind",
+                "M010 closure record lacks panic-classification matrix mention",
+            ),
+            (
+                "socket_peer_close_during_writer_delivery_removes_subscription_and_eofs",
+                "M010 closure record lacks Unix peer-close fixture mention",
+            ),
+            (
+                "socket_interrupted_replay_retry_resumes_with_fresh_identity",
+                "M010 closure record lacks Unix interrupted-replay retry mention",
+            ),
+            (
+                "socket_consecutive_subscriptions_yield_distinct_identities_and_isolation",
+                "M010 closure record lacks Unix fresh-identity proof mention",
+            ),
+            (
+                "checked by",
+                "M010 closure record does not reference the static guard",
+            ),
+        )
+        for needle, message in required_fields_010:
+            if needle not in closure_010:
+                failures.append(f"010-status.md: {message}")
 
     # ── Report ──────────────────────────────────────────────────────────
     if failures:
@@ -253,7 +451,7 @@ def main() -> int:
             print(f"ERROR: {failure}")
         return 1
 
-    print("OK: projection transport lifecycle ownership and stale-route guards are present.")
+    print("OK: projection transport lifecycle ownership, stale-route guards, and M010 mechanism-faithful instrumentation are present.")
     return 0
 
 

@@ -38,11 +38,39 @@ pub struct ConnectionTaskProbe {
     pub raw_event_completed: std::sync::atomic::AtomicUsize,
     pub projection_forwarders_joined: std::sync::atomic::AtomicUsize,
     pub cleanup_calls: std::sync::atomic::AtomicUsize,
+    first_task_kind: std::sync::atomic::AtomicI64,
+    first_task_panicked: std::sync::atomic::AtomicBool,
+}
+
+const FIRST_TASK_KIND_NONE: i64 = -1;
+const FIRST_TASK_KIND_SEND: i64 = 0;
+const FIRST_TASK_KIND_RECEIVE: i64 = 1;
+const FIRST_TASK_KIND_RAW_EVENT: i64 = 2;
+
+fn first_task_kind_to_i64(kind: ConnectionTaskKind) -> i64 {
+    match kind {
+        ConnectionTaskKind::Send => FIRST_TASK_KIND_SEND,
+        ConnectionTaskKind::Receive => FIRST_TASK_KIND_RECEIVE,
+        ConnectionTaskKind::RawEvent => FIRST_TASK_KIND_RAW_EVENT,
+    }
+}
+
+fn first_task_kind_from_i64(value: i64) -> Option<ConnectionTaskKind> {
+    match value {
+        FIRST_TASK_KIND_SEND => Some(ConnectionTaskKind::Send),
+        FIRST_TASK_KIND_RECEIVE => Some(ConnectionTaskKind::Receive),
+        FIRST_TASK_KIND_RAW_EVENT => Some(ConnectionTaskKind::RawEvent),
+        _ => None,
+    }
 }
 
 impl ConnectionTaskProbe {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            first_task_kind: std::sync::atomic::AtomicI64::new(FIRST_TASK_KIND_NONE),
+            first_task_panicked: std::sync::atomic::AtomicBool::new(false),
+            ..Self::default()
+        }
     }
 
     pub fn send_count(&self) -> usize {
@@ -70,6 +98,18 @@ impl ConnectionTaskProbe {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    pub fn first_task_kind(&self) -> Option<ConnectionTaskKind> {
+        first_task_kind_from_i64(
+            self.first_task_kind
+                .load(std::sync::atomic::Ordering::Acquire),
+        )
+    }
+
+    pub fn first_task_panicked(&self) -> bool {
+        self.first_task_panicked
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn assert_all_tasks_completed(&self) {
         assert_eq!(
             self.send_count(),
@@ -92,27 +132,253 @@ impl ConnectionTaskProbe {
         self.assert_all_tasks_completed();
         assert_eq!(self.cleanup_count(), 1, "expected exactly one cleanup pass");
     }
+
+    pub fn assert_first_task_kind(&self, kind: ConnectionTaskKind) {
+        assert_eq!(
+            self.first_task_kind(),
+            Some(kind),
+            "expected first task kind {kind:?}, observed {:?}",
+            self.first_task_kind()
+        );
+    }
 }
 
 type WsMessage = axum::extract::ws::Message;
-type WsSender = mpsc::Sender<OutboundMessage>;
+pub type WsSender = mpsc::Sender<OutboundMessage>;
 
 type CriticalSendFailure = CriticalDeliveryError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutboundRoute {
+pub enum OutboundRoute {
     Control,
     Raw { generation: u64 },
 }
 
-struct OutboundMessage {
-    message: WsMessage,
-    receipt: Option<oneshot::Sender<Result<(), CriticalSendFailure>>>,
-    route: OutboundRoute,
+pub struct OutboundMessage {
+    pub message: WsMessage,
+    pub receipt: Option<oneshot::Sender<Result<(), CriticalSendFailure>>>,
+    pub route: OutboundRoute,
 }
 
-#[derive(Clone, Copy, Debug)]
-enum ConnectionTaskKind {
+/// Connection-local test configuration. Production callers leave every
+/// field at `None`; the wiring below falls back to the production defaults
+/// (`WS_OUTBOUND_QUEUE_CAPACITY`, no gate, no observer). Each field is
+/// connection-scoped: it lives on the `ServerState` clone that the test
+/// owns and is consulted once per `upgrade_*` call.
+#[derive(Clone, Default)]
+pub struct ProjectionTransportTestConfig {
+    /// Override the per-connection outbound mpsc channel capacity. Tests
+    /// typically set this to `1` or `2` so a real `mpsc::Sender::send`
+    /// can deterministically wait on capacity.
+    pub outbound_queue_capacity: Option<usize>,
+    /// Pause the writer immediately before draining a queued item.
+    /// The gate is consulted once per outbound item; tests use it to keep
+    /// a response queued while they fill the channel from the same
+    /// sender clone.
+    pub writer_gate: Option<Arc<WriterGate>>,
+    /// Cancel a single connection task by kind, simulating raw-source
+    /// termination while peer and writer remain open. Tests acquire the
+    /// raw-source cancellation token via this control.
+    pub raw_source_cancel: Option<CancellationToken>,
+    /// Observer that records queue-fill observations, the final
+    /// `CriticalDeliveryError` returned by the production critical send,
+    /// and the first terminal task kind. Required for queue-saturation
+    /// and raw-first fixtures.
+    pub observer: Option<Arc<TransportLifecycleObserver>>,
+}
+
+/// A one-shot gate applied at the writer's per-item boundary. Tests call
+/// `release()` to allow the writer to proceed; dropping the gate without
+/// releasing it lets the connection cancellation token win.
+#[derive(Debug)]
+pub struct WriterGate {
+    entered: std::sync::atomic::AtomicBool,
+    released: std::sync::atomic::AtomicBool,
+    entered_notify: tokio::sync::Notify,
+    released_notify: tokio::sync::Notify,
+}
+
+impl WriterGate {
+    pub fn new() -> Self {
+        Self {
+            entered: std::sync::atomic::AtomicBool::new(false),
+            released: std::sync::atomic::AtomicBool::new(false),
+            entered_notify: tokio::sync::Notify::new(),
+            released_notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub async fn wait_until_entered(&self) {
+        loop {
+            if self.entered.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            let notified = self.entered_notify.notified();
+            if self.entered.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn release(&self) {
+        self.released.store(true, std::sync::atomic::Ordering::Release);
+        self.released_notify.notify_one();
+    }
+
+    pub(crate) async fn wait(
+        &self,
+        cancellation: &CancellationToken,
+        observer: Option<&Arc<TransportLifecycleObserver>>,
+    ) {
+        // Reset `entered` so `wait_until_entered` re-waits on the next call.
+        self.entered.store(false, std::sync::atomic::Ordering::Release);
+        self.entered.store(true, std::sync::atomic::Ordering::Release);
+        self.entered_notify.notify_one();
+        if let Some(observer) = observer {
+            observer
+                .writer_gates_reached
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        loop {
+            if self.released.load(std::sync::atomic::Ordering::Acquire) {
+                // Reset for the next item so the gate can pause again.
+                self.released.store(false, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            let notified = self.released_notify.notified();
+            if self.released.load(std::sync::atomic::Ordering::Acquire) {
+                self.released.store(false, std::sync::atomic::Ordering::Release);
+                return;
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return,
+                _ = notified => {}
+            }
+        }
+    }
+}
+
+/// Connection-local lifecycle observer. Tests clone this `Arc` so they
+/// can read counters after the connection ends. Only the production code
+/// populates these fields.
+#[derive(Debug, Default)]
+pub struct TransportLifecycleObserver {
+    pub queue_capacity: std::sync::atomic::AtomicUsize,
+    pub filler_enqueued: std::sync::atomic::AtomicUsize,
+    pub fill_full_observed: std::sync::atomic::AtomicBool,
+    pub final_send_result:
+        std::sync::Mutex<Option<Result<(), CriticalSendFailure>>>,
+    /// Every recorded `critical_send` / `staged_critical_send` final
+    /// result. Saturation tests inspect this vector to assert that the
+    /// saturated path returned `Err(Timeout)` somewhere in the
+    /// connection's lifetime.
+    pub send_result_history:
+        std::sync::Mutex<Vec<Result<(), CriticalSendFailure>>>,
+    pub writer_gates_reached: std::sync::atomic::AtomicUsize,
+    /// A clone of the connection's outbound mpsc sender. The upgrade
+    /// function stores this when an observer is configured so saturation
+    /// tests can deterministically fill the queue from outside the recv
+    /// task.
+    pub outbound_sender: tokio::sync::Mutex<Option<WsSender>>,
+}
+
+impl TransportLifecycleObserver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_queue_capacity(&self, capacity: usize) {
+        self.queue_capacity
+            .store(capacity, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn record_filler_enqueued(&self, count: usize) {
+        self.filler_enqueued
+            .store(count, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn mark_fill_full(&self) {
+        self.fill_full_observed
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn record_final_send_result(&self, result: Result<(), CriticalSendFailure>) {
+        if let Ok(mut guard) = self.final_send_result.lock() {
+            *guard = Some(result.clone());
+        }
+        if let Ok(mut history) = self.send_result_history.lock() {
+            history.push(result);
+        }
+    }
+
+    pub fn final_send_result(&self) -> Option<Result<(), CriticalSendFailure>> {
+        self.final_send_result
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Snapshot of every recorded critical-send result. Tests use this to
+    /// assert that a saturated path produced `Err(Timeout)` somewhere in
+    /// the connection's lifetime.
+    pub fn send_result_history(&self) -> Vec<Result<(), CriticalSendFailure>> {
+        self.send_result_history
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    /// True iff at least one recorded critical send returned
+    /// `Err(Timeout)`. Saturation tests use this to assert that the
+    /// production 500 ms timeout actually fired.
+    pub fn any_timeout(&self) -> bool {
+        self.send_result_history
+            .lock()
+            .map(|guard| {
+                guard
+                    .iter()
+                    .any(|r| matches!(r, Err(CriticalSendFailure::Timeout)))
+            })
+            .unwrap_or(false)
+    }
+
+    pub fn writer_gates_reached(&self) -> usize {
+        self.writer_gates_reached
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// Fill the given outbound channel to capacity using the real
+/// `queue_message` helper and record the fill observation in `observer`.
+/// Returns the number of filler items successfully enqueued before the
+/// channel reports `Full`.
+#[allow(dead_code)]
+pub(crate) async fn fill_outbound_queue_to_capacity(
+    tx: &WsSender,
+    observer: &TransportLifecycleObserver,
+) -> usize {
+    let capacity = tx.capacity();
+    observer.record_queue_capacity(capacity.max(tx.max_capacity()));
+    let mut enqueued = 0usize;
+    while enqueued < capacity.max(tx.max_capacity()) {
+        let ok = queue_message(
+            tx,
+            WsMessage::Text(format!("filler-{enqueued}").into()),
+        );
+        if !ok {
+            observer.mark_fill_full();
+            break;
+        }
+        enqueued += 1;
+    }
+    observer.record_filler_enqueued(enqueued);
+    enqueued
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionTaskKind {
     Send,
     Receive,
     RawEvent,
@@ -132,7 +398,7 @@ impl ConnectionTaskKind {
 /// connection. The first task to finish selects the connection teardown; the
 /// completed handle is consumed by that select and the remaining handles are
 /// explicitly aborted and awaited before transport state is cleaned up.
-struct ConnectionTaskSet {
+pub struct ConnectionTaskSet {
     send: Option<JoinHandle<()>>,
     receive: Option<JoinHandle<()>>,
     raw_event: Option<JoinHandle<()>>,
@@ -163,6 +429,58 @@ impl ConnectionTaskSet {
         }
     }
 
+    /// Construct a task set where the selected task panics first. Used by
+    /// unit tests and integration tests that exercise the
+    /// panic-classification branch of `join_after_first_exit`. The
+    /// `_for_test` suffix marks this as a test-only public API surface
+    /// not used by production code paths.
+    pub fn with_panic_first_for_test(panicking: ConnectionTaskKind) -> Self {
+        let panic_task = tokio::spawn(async {
+            panic!("intentional panic for first-exit test")
+        });
+        let pending = || tokio::spawn(async { std::future::pending::<()>().await });
+        let (send, receive, raw_event) = match panicking {
+            ConnectionTaskKind::Send => (panic_task, pending(), pending()),
+            ConnectionTaskKind::Receive => (pending(), panic_task, pending()),
+            ConnectionTaskKind::RawEvent => (pending(), pending(), panic_task),
+        };
+        Self::new(send, receive, raw_event)
+    }
+
+    /// Test-only mirror of `join_after_first_exit` that returns the
+    /// selected kind and whether the result was a panic instead of a
+    /// clean exit or cancellation. Performs the same `tokio::select!` +
+    /// panic classification as the production path without touching the
+    /// cancel/abort side effects. The `_for_test` suffix marks this as a
+    /// test-only public API surface.
+    pub async fn first_exit_classification_for_test(&mut self) -> (ConnectionTaskKind, bool) {
+        let (first_kind, first_result) = tokio::select! {
+            result = self.send.as_mut().expect("connection send task is retained") => {
+                (ConnectionTaskKind::Send, result)
+            }
+            result = self.receive.as_mut().expect("connection receive task is retained") => {
+                (ConnectionTaskKind::Receive, result)
+            }
+            result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                (ConnectionTaskKind::RawEvent, result)
+            }
+        };
+        let panicked = matches!(
+            first_result,
+            Err(ref error) if !error.is_cancelled()
+        );
+        for handle in [
+            self.send.take(),
+            self.receive.take(),
+            self.raw_event.take(),
+        ] {
+            if let Some(h) = handle {
+                h.abort();
+            }
+        }
+        (first_kind, panicked)
+    }
+
     async fn join_after_first_exit(
         &mut self,
         cancellation: &CancellationToken,
@@ -179,6 +497,11 @@ impl ConnectionTaskSet {
                 (ConnectionTaskKind::RawEvent, result)
             }
         };
+
+        let first_panicked = matches!(
+            first_result,
+            Err(ref error) if !error.is_cancelled()
+        );
 
         // The selected JoinHandle has already been awaited by the select. Drop
         // the completed handle without polling it a second time.
@@ -203,6 +526,20 @@ impl ConnectionTaskSet {
                     p.raw_event_completed
                         .fetch_add(1, std::sync::atomic::Ordering::Release);
                 }
+            }
+        }
+        if let Some(p) = &self.probe {
+            // CAS-style first-write wins; later tasks do not overwrite the
+            // recorded first-task kind.
+            let _ = p.first_task_kind.compare_exchange(
+                FIRST_TASK_KIND_NONE,
+                first_task_kind_to_i64(first_kind),
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            );
+            if first_panicked {
+                p.first_task_panicked
+                    .store(true, std::sync::atomic::Ordering::Release);
             }
         }
         log_connection_task_result(first_kind, first_result, connection_id);
@@ -289,6 +626,22 @@ async fn critical_send<T: serde::Serialize>(
     .await
 }
 
+/// Variant of `critical_send` that records its final result on an optional
+/// connection-local observer. Used by saturation tests to assert that the
+/// production sender returned `Err(Timeout)` while the queue was full.
+async fn critical_send_observed<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
+) -> Result<(), CriticalSendFailure> {
+    let result = critical_send(tx, value, cancellation).await;
+    if let Some(observer) = observer {
+        observer.record_final_send_result(result);
+    }
+    result
+}
+
 async fn staged_critical_send<T: serde::Serialize>(
     tx: &WsSender,
     value: &T,
@@ -324,7 +677,25 @@ async fn staged_critical_send<T: serde::Serialize>(
     .await
 }
 
-fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
+/// Variant of `staged_critical_send` that records its final result on an
+/// optional connection-local observer. Used by saturation tests to assert
+/// that the production sender returned `Err(Timeout)` while the queue was
+/// full.
+async fn staged_critical_send_observed<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+    seam: &ProjectionLifecycleSeam,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
+) -> Result<(), CriticalSendFailure> {
+    let result = staged_critical_send(tx, value, cancellation, seam).await;
+    if let Some(observer) = observer {
+        observer.record_final_send_result(result);
+    }
+    result
+}
+
+pub fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
     tx.try_send(OutboundMessage {
         message,
         receipt: None,
@@ -919,10 +1290,21 @@ async fn upgrade_tui(
 ) {
     let (ws_tx, ws_rx) = socket.split();
 
-    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let test_config = state.transport_test_config.clone().unwrap_or_default();
+    let queue_capacity = test_config
+        .outbound_queue_capacity
+        .unwrap_or(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let (projection_tx, mut projection_rx) =
-        mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
-    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+        mpsc::channel::<OutboundMessage>(queue_capacity);
+    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
+    let writer_gate = test_config.writer_gate.clone();
+    let raw_source_cancel = test_config.raw_source_cancel.clone();
+    let transport_observer = test_config.observer.clone();
+    if let Some(observer) = &transport_observer {
+        *observer.outbound_sender.lock().await = Some(out_tx.clone());
+        observer.record_queue_capacity(queue_capacity);
+    }
     let connection_id = format!("tui-{}", uuid::Uuid::new_v4());
     let projection = Arc::new(tokio::sync::Mutex::new(
         ProjectionConnectionState::new_with_lifecycle_seam(
@@ -938,6 +1320,7 @@ async fn upgrade_tui(
     let connection_cancel = CancellationToken::new();
     let connection_cancel_for_writer = connection_cancel.clone();
     let daemon_clone = state.daemon.clone();
+    let transport_observer_for_writer = transport_observer.clone();
 
     let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
@@ -946,6 +1329,9 @@ async fn upgrade_tui(
                 biased;
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result = deliver_tui_outbound(
                         &mut ws_tx,
                         outbound,
@@ -957,6 +1343,9 @@ async fn upgrade_tui(
                 }
                 outbound = projection_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result = deliver_tui_outbound(
                         &mut ws_tx,
                         outbound,
@@ -968,6 +1357,9 @@ async fn upgrade_tui(
                 }
                 outbound = raw_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result = deliver_tui_outbound(
                         &mut ws_tx,
                         outbound,
@@ -988,6 +1380,7 @@ async fn upgrade_tui(
     let session_state_for_recv = Arc::clone(&session_state);
     let state_for_recv = state.clone();
     let connection_cancel_for_recv = connection_cancel.clone();
+    let transport_observer_for_recv = test_config.observer.clone();
 
     let session_state_for_recv_key = Arc::clone(&session_state);
     let recv_task = tokio::spawn(async move {
@@ -1009,17 +1402,17 @@ async fn upgrade_tui(
                 }
 
                 if let Ok(tui_msg) = serde_json::from_str::<TuiMessage>(&text) {
-                    if handle_tui_message(
+                    let outcome = handle_tui_message_with_observer(
                         tui_msg,
                         &session_state_for_recv,
                         &out_tx_for_recv,
                         &projection_tx_for_recv,
                         &state_for_recv,
                         &connection_cancel_for_recv,
+                        transport_observer_for_recv.as_ref(),
                     )
-                    .await
-                    .is_err()
-                    {
+                    .await;
+                    if outcome.is_err() {
                         connection_cancel_for_recv.cancel();
                         break;
                     }
@@ -1030,6 +1423,7 @@ async fn upgrade_tui(
 
     let raw_tx_events = raw_tx.clone();
     let session_state_for_events = Arc::clone(&session_state);
+    let raw_source_cancel_for_task = raw_source_cancel.clone();
     let raw_event_task = tokio::spawn(async move {
         let Some(daemon) = daemon_clone else {
             tracing::warn!("No CoreDaemon available for /tui event task; live events disabled");
@@ -1037,49 +1431,44 @@ async fn upgrade_tui(
         };
         let mut event_rx = daemon.subscribe();
         loop {
-            match event_rx.recv().await {
-                Ok(envelope) => {
-                    let queue_result = {
-                        let session = session_state_for_events.lock().await;
-                        let projection = session.projection.clone();
-                        if projection.lock().await.mode()
-                            == ProjectionConnectionMode::ProjectionPrimary
-                            || !tui_raw_event_matches(&envelope, session.session_id.as_deref())
-                        {
-                            None
-                        } else if let Some(tui_msg) = convert_core_event_to_tui(envelope.payload) {
-                            let wire = TuiMessage::EventEnvelope {
-                                event_seq: envelope.event_seq,
-                                payload: Box::new(tui_msg),
-                            };
-                            Some(queue_raw_json(
-                                &raw_tx_events,
-                                &wire,
-                                session.raw_route_generation,
-                            ))
-                        } else {
-                            None
-                        }
-                    };
-                    if queue_result == Some(false) {
-                        break;
+            let envelope = tokio::select! {
+                biased;
+                _ = async {
+                    if let Some(cancel) = raw_source_cancel_for_task.as_ref() {
+                        cancel.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
                     }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    tracing::warn!("Event log receiver lagged, sending resync");
-                    let resync_msg = TuiMessage::ResyncRequired {
-                        reason: Some("lagged".to_string()),
-                        pending_permissions: crate::bus::PermissionRegistry::pending_permission_ids(
-                        ),
-                        pending_questions: crate::bus::QuestionRegistry::pending_question_ids(),
+                } => break,
+                event = event_rx.recv() => match event {
+                    Ok(envelope) => envelope,
+                    Err(_) => break,
+                },
+            };
+            let queue_result = {
+                let session = session_state_for_events.lock().await;
+                let projection = session.projection.clone();
+                if projection.lock().await.mode()
+                    == ProjectionConnectionMode::ProjectionPrimary
+                    || !tui_raw_event_matches(&envelope, session.session_id.as_deref())
+                {
+                    None
+                } else if let Some(tui_msg) = convert_core_event_to_tui(envelope.payload) {
+                    let wire = TuiMessage::EventEnvelope {
+                        event_seq: envelope.event_seq,
+                        payload: Box::new(tui_msg),
                     };
-                    if let Ok(json) = serde_json::to_string(&resync_msg) {
-                        let _ = queue_message(&raw_tx_events, WsMessage::Text(json.into()));
-                    }
+                    Some(queue_raw_json(
+                        &raw_tx_events,
+                        &wire,
+                        session.raw_route_generation,
+                    ))
+                } else {
+                    None
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    break;
-                }
+            };
+            if queue_result == Some(false) {
+                break;
             }
         }
     });
@@ -1343,13 +1732,14 @@ where
     result
 }
 
-async fn handle_tui_message(
+async fn handle_tui_message_with_observer(
     msg: TuiMessage,
     state: &Arc<tokio::sync::Mutex<TuiSessionState>>,
     bus_tx: &WsSender,
     projection_tx: &WsSender,
     _server_state: &crate::server::state::ServerState,
     cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
     match msg {
         TuiMessage::Input { text } => {
@@ -1584,7 +1974,11 @@ async fn handle_tui_message(
         }
         _ => {}
     }
-    Ok(())
+    let result = Ok(());
+    if let Some(observer) = observer {
+        observer.record_final_send_result(result);
+    }
+    result
 }
 
 /// Handle `ProjectionCapabilities` from a remote TUI client. The
@@ -2720,10 +3114,21 @@ async fn upgrade_core_ws(
 
     let (ws_tx, mut ws_rx) = socket.split();
 
-    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+    let test_config = state.transport_test_config.clone().unwrap_or_default();
+    let queue_capacity = test_config
+        .outbound_queue_capacity
+        .unwrap_or(WS_OUTBOUND_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
     let (projection_tx, mut projection_rx) =
-        mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
-    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
+        mpsc::channel::<OutboundMessage>(queue_capacity);
+    let (raw_tx, mut raw_rx) = mpsc::channel::<OutboundMessage>(queue_capacity);
+    let writer_gate = test_config.writer_gate.clone();
+    let raw_source_cancel = test_config.raw_source_cancel.clone();
+    let transport_observer = test_config.observer.clone();
+    if let Some(observer) = &transport_observer {
+        *observer.outbound_sender.lock().await = Some(out_tx.clone());
+        observer.record_queue_capacity(queue_capacity);
+    }
     let connection_id = format!("core-ws-{}", uuid::Uuid::new_v4());
     let projection = Arc::new(tokio::sync::Mutex::new(
         ProjectionConnectionState::new_with_lifecycle_seam(
@@ -2736,6 +3141,7 @@ async fn upgrade_core_ws(
     let projection_for_writer = Arc::clone(&projection);
     let filters: Arc<RwLock<Vec<crate::core::event_log::EventFilter>>> =
         Arc::new(RwLock::new(Vec::new()));
+    let transport_observer_for_writer = transport_observer.clone();
 
     let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
@@ -2744,6 +3150,9 @@ async fn upgrade_core_ws(
                 biased;
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result =
                         deliver_core_outbound(
                             &mut ws_tx,
@@ -2756,6 +3165,9 @@ async fn upgrade_core_ws(
                 }
                 outbound = projection_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result =
                         deliver_core_outbound(
                             &mut ws_tx,
@@ -2768,6 +3180,9 @@ async fn upgrade_core_ws(
                 }
                 outbound = raw_rx.recv() => {
                     let Some(outbound) = outbound else { break };
+                    if let Some(gate) = writer_gate.as_ref() {
+                        gate.wait(&connection_cancel_for_writer, transport_observer_for_writer.as_ref()).await;
+                    }
                     let result =
                         deliver_core_outbound(
                             &mut ws_tx,
@@ -2787,8 +3202,23 @@ async fn upgrade_core_ws(
     let raw_tx_events = raw_tx.clone();
     let filters_for_events = Arc::clone(&filters);
     let projection_for_events = Arc::clone(&projection);
+    let raw_source_cancel_for_task = raw_source_cancel.clone();
     let raw_event_task = tokio::spawn(async move {
-        while let Ok(event) = event_rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = async {
+                    if let Some(cancel) = raw_source_cancel_for_task.as_ref() {
+                        cancel.cancelled().await;
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                } => break,
+                event = event_rx.recv() => match event {
+                    Ok(event) => event,
+                    Err(_) => break,
+                },
+            };
             if matches!(
                 event.payload,
                 crate::protocol::core::CoreEvent::ProjectionStreamEvent { .. }
@@ -2818,6 +3248,7 @@ async fn upgrade_core_ws(
     let connection_id_for_recv = connection_id.clone();
     let filters_for_recv = Arc::clone(&filters);
     let connection_cancel_for_recv = connection_cancel.clone();
+    let transport_observer_for_recv = transport_observer.clone();
     let recv_task = tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             let msg = match msg {
@@ -2852,18 +3283,20 @@ async fn upgrade_core_ws(
                                     _ => None,
                                 };
                                 let delivery = if projection_id.is_some() {
-                                    staged_critical_send(
+                                    staged_critical_send_observed(
                                         &out_tx_for_recv,
                                         &frame,
                                         &connection_cancel_for_recv,
                                         &lifecycle_seam_for_recv,
+                                        transport_observer_for_recv.as_ref(),
                                     )
                                     .await
                                 } else {
-                                    critical_send(
+                                    critical_send_observed(
                                         &out_tx_for_recv,
                                         &frame,
                                         &connection_cancel_for_recv,
+                                        transport_observer_for_recv.as_ref(),
                                     )
                                     .await
                                 };

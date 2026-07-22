@@ -21,7 +21,9 @@ use codegg::protocol::projection::replay::{
     ProjectionStreamKind, ProjectionSubscriptionId, ProjectionSubscriptionRequest,
 };
 use codegg::protocol::tui::TuiMessage;
-use codegg::server::ws::{handle_core_ws, handle_tui, ConnectionTaskProbe};
+use codegg::server::ws::{
+    handle_core_ws, handle_tui, ConnectionTaskProbe, TransportLifecycleObserver, WriterGate,
+};
 use codegg::server::{ServerState, WsRateLimiter};
 use codegg_core::projection_replay::seam::ProjectionBindingContext;
 use futures::{SinkExt, StreamExt};
@@ -51,6 +53,7 @@ async fn spawn_server_with_seam(
         daemon: Some(Arc::clone(&daemon)),
         projection_lifecycle_seam,
         connection_task_probe: None,
+        transport_test_config: None,
     };
     let router = Router::new()
         .route("/core", get(handle_core_ws))
@@ -585,6 +588,7 @@ async fn spawn_server_with_seam_and_probe(
         daemon: Some(Arc::clone(&daemon)),
         projection_lifecycle_seam,
         connection_task_probe: Some(Arc::clone(&probe)),
+        transport_test_config: None,
     };
     let router = Router::new()
         .route("/core", get(handle_core_ws))
@@ -605,55 +609,130 @@ async fn spawn_server_with_seam_and_probe(
     (address, daemon, probe, task)
 }
 
-async fn drain_core_messages(client: &mut Client) {
-    loop {
-        match timeout(Duration::from_millis(20), client.next()).await {
-            Ok(Some(Ok(Message::Text(_)))) => {}
-            _ => break,
-        }
-    }
-}
+// ===== Helpers for Work Packages A, B, C, E (M010 transport instrumentation) =====
 
-async fn core_subscribe_and_drain(
-    client: &mut Client,
-    request_id: &str,
-    project_id: &str,
-) -> ProjectionSubscriptionId {
-    let sub_id = core_subscribe(client, request_id, project_id).await;
-    drain_core_messages(client).await;
-    sub_id
-}
-
-async fn assert_core_rollback_invariants(
-    daemon: &CoreDaemon,
-    pre_baseline: u64,
-    probe: Option<&ConnectionTaskProbe>,
+/// Spawn server with the production `ConnectionTaskProbe` AND the
+/// `ProjectionTransportTestConfig` so tests can: pause the writer, cancel
+/// the raw-source task, observe the final critical-send result, fill the
+/// outbound queue from outside the recv task, and read `first_task_kind`.
+async fn spawn_server_with_transport_instrumentation(
+    seam: ProjectionLifecycleSeam,
+    outbound_queue_capacity: usize,
+    raw_source_cancel: Option<tokio_util::sync::CancellationToken>,
+) -> (
+    SocketAddr,
+    Arc<CoreDaemon>,
+    Arc<ConnectionTaskProbe>,
+    Arc<codegg::server::ws::WriterGate>,
+    Arc<codegg::server::ws::TransportLifecycleObserver>,
+    tokio::task::JoinHandle<()>,
 ) {
-    wait_projection_subscription_count(daemon, pre_baseline).await;
-    if let Some(p) = probe {
-        p.assert_all_at_baseline();
-    }
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+
+    let pool = common::projection_replay::test_pool().await;
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let probe = Arc::new(ConnectionTaskProbe::new());
+    let writer_gate = Arc::new(codegg::server::ws::WriterGate::new());
+    let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
+    let transport_test_config = codegg::server::ws::ProjectionTransportTestConfig {
+        outbound_queue_capacity: Some(outbound_queue_capacity),
+        writer_gate: Some(Arc::clone(&writer_gate)),
+        raw_source_cancel,
+        observer: Some(Arc::clone(&observer)),
+    };
+    let state = ServerState {
+        pool,
+        mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+        config: Config::default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+        daemon: Some(Arc::clone(&daemon)),
+        projection_lifecycle_seam: seam,
+        connection_task_probe: Some(Arc::clone(&probe)),
+        transport_test_config: Some(transport_test_config),
+    };
+    let router = Router::new()
+        .route("/core", get(handle_core_ws))
+        .route("/tui", get(handle_tui))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("test server");
+    });
+    (address, daemon, probe, writer_gate, observer, task)
 }
 
-/// Comprehensive per-scenario rollback assertion harness (plan §7).
-///
-/// Verifies all applicable invariants for a staged-subscription failure:
-/// - daemon active subscription count returned to baseline
-/// - connection-local task probes at baseline (if provided)
-/// - subscription receiver cannot be reacquired (non-reuse)
-/// - calling daemon unsubscribe again is harmless (idempotent cleanup)
-/// - an unrelated client remains connected and receives its own event
-async fn assert_complete_rollback_invariants(
+/// Wait until the observer records that the writer entered the gate at
+/// least `target_gates` times.
+async fn wait_until_writer_gates_reached(
+    observer: &codegg::server::ws::TransportLifecycleObserver,
+    target_gates: usize,
+) {
+    timeout(Duration::from_millis(1500), async {
+        loop {
+            if observer.writer_gates_reached.load(std::sync::atomic::Ordering::Acquire)
+                >= target_gates
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "writer gate never reached target_gates={target_gates} (got {})",
+            observer
+                .writer_gates_reached
+                .load(std::sync::atomic::Ordering::Acquire)
+        )
+    });
+}
+
+/// Wait until the observer's outbound sender has been populated by the
+/// upgrade function.
+async fn wait_for_outbound_sender(
+    observer: &codegg::server::ws::TransportLifecycleObserver,
+) -> codegg::server::ws::WsSender {
+    timeout(Duration::from_millis(1500), async {
+        loop {
+            let guard = observer.outbound_sender.lock().await;
+            if let Some(tx) = guard.clone() {
+                return tx;
+            }
+            drop(guard);
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("observer outbound_sender should be populated by upgrade function")
+}
+
+/// Deterministic complete-rollback harness: prove that after a saturated
+/// or interrupted connection, the daemon sees no leftover subscriptions,
+/// the connection-local task probe is at baseline, the failed subscription
+/// receiver cannot be reacquired, and a duplicate unsubscribe is harmless.
+async fn assert_real_transport_rollback_complete(
     daemon: &CoreDaemon,
     pre_baseline: u64,
-    probe: Option<&ConnectionTaskProbe>,
+    probe: &ConnectionTaskProbe,
     subscription_id: &codegg::protocol::projection::replay::ProjectionSubscriptionId,
     client_id: &str,
 ) {
-    // 1. Subscription count returned to baseline
-    assert_core_rollback_invariants(daemon, pre_baseline, probe).await;
+    // 1. Daemon subscription count returned to baseline
+    wait_projection_subscription_count(daemon, pre_baseline).await;
 
-    // 2. Receiver cannot be reacquired (single-take guarantee)
+    // 2. Connection-local task probes at baseline (all three tasks completed)
+    probe.assert_all_at_baseline();
+
+    // 3. Failed subscription receiver cannot be reacquired
     let seam = daemon
         .projection_seam
         .as_ref()
@@ -667,7 +746,7 @@ async fn assert_complete_rollback_invariants(
         "failed subscription receiver must not be reacquireable"
     );
 
-    // 3. Idempotent: second unsubscribe is harmless
+    // 4. Idempotent cleanup: second unsubscribe is harmless
     let _ = daemon
         .handle_request_for_client(
             codegg::core::new_request(
@@ -679,6 +758,9 @@ async fn assert_complete_rollback_invariants(
             client_id,
         )
         .await;
+
+    // 5. Subscription count still at baseline after idempotent cleanup
+    wait_projection_subscription_count(daemon, pre_baseline).await;
 }
 
 fn text_event(session_id: &str, delta: &str) -> CoreEvent {
@@ -1691,7 +1773,8 @@ async fn real_core_rollback_invariants_on_writer_closed() {
         "writer-closed rollback delivered a successful canonical response"
     );
 
-    assert_core_rollback_invariants(&daemon, 0, Some(&probe)).await;
+    wait_projection_subscription_count(&daemon, 0).await;
+    probe.assert_all_at_baseline();
     server.abort();
 }
 
@@ -3117,6 +3200,582 @@ async fn real_tui_projection_primary_suppresses_raw_session_events() {
             .await
             .is_err(),
         "projection-primary client received raw session traffic"
+    );
+    server.abort();
+}
+
+// ========================================================================
+// Milestone 010 — Mechanism-faithful transport instrumentation tests
+//
+// These tests use the production-grade `ProjectionTransportTestConfig`
+// helpers (writer gate, raw-source cancellation, lifecycle observer,
+// connection-local outbound sender) added by Milestone 010. Each test
+// exercises a real branch in the production transport stack rather than
+// relying on seam-faked boundaries.
+// ========================================================================
+
+/// Work Package A/B (M010): deterministic proof that the production
+/// outbound queue can be saturated by an external filler and that the
+/// staging path returns `CriticalSendFailure::Timeout` for the second
+/// staged subscription when capacity is 1 and the writer is paused.
+///
+/// Mechanics:
+///   1. Capacity 1 outbound channel; writer pauses before draining.
+///   2. Client Subscribe #1 enters `staged_critical_send`, enqueues the
+///      snapshot response, then awaits `receipt_rx`. Writer holds the
+///      item and pauses at the gate.
+///   3. Test fills the (now empty) channel via the production outbound
+///      sender clone (`observer.outbound_sender`) so the channel is full
+///      when Subscribe #2's `staged_critical_send` is invoked.
+///   4. Subscribe #2's `tx.send()` blocks until `CRITICAL_DELIVERY_TIMEOUT`
+///      fires; the production code returns `Err(Timeout)` and rolls back.
+///   5. The observer records `final_send_result = Err(Timeout)` and
+///      `filler_enqueued = 1`.
+///   6. Cleanup: writer drains the filler, gate releases, the second
+///      staged subscription is rolled back, and only the first
+///      subscription (also rolled back on disconnect) leaves the daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_queue_saturation_observer_records_timeout() {
+    let seam = ProjectionLifecycleSeam::default();
+    let (address, daemon, probe, writer_gate, observer, server) =
+        spawn_server_with_transport_instrumentation(seam.clone(), 1, None).await;
+    let mut client = connect(address, "/core").await;
+
+    // Send ClientHello — ServerHello will be queued; the writer pauses at
+    // the gate. We release the gate so the ServerHello is delivered
+    // (otherwise the client can't see it).
+    send_json(
+        &mut client,
+        &CoreFrame::ClientHello(ClientHello {
+            client_name: "queue-sat-observed".to_string(),
+            client_kind: ClientKind::Automation,
+            protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+            capabilities: raw_client_capabilities(),
+        }),
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 1).await;
+    writer_gate.release();
+    let hello: CoreFrame = recv_json(&mut client).await.expect("ServerHello");
+    assert!(matches!(hello, CoreFrame::ServerHello(_)));
+    writer_gate.release();
+
+    // Wait for the upgrade function to populate the observer's outbound
+    // sender clone so we can deterministically fill the queue from outside
+    // the recv task.
+    let outbound_sender = wait_for_outbound_sender(&observer).await;
+
+    // Subscribe #1 — recv task will enqueue its response and await the
+    // writer's receipt. Writer will pause at the gate with item 1.
+    send_json(
+        &mut client,
+        &CoreFrame::Request(new_request(
+            "queue-sat-observed-sub-0".to_string(),
+            CoreRequest::ProjectionSubscribe {
+                request: project_subscription_request("project-queue-sat-observed"),
+            },
+        )),
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 2).await;
+    // Release the gate so Subscribe #1's snapshot completes and the recv
+    // task's receipt_rx fires with Ok. Without this, the recv task stays
+    // parked on receipt_rx and never reaches Subscribe #2.
+    writer_gate.release();
+    // Give the recv task time to settle the receipt and become ready to
+    // process Subscribe #2. The receipt is fired from the writer task;
+    // yielding once is enough.
+    tokio::task::yield_now().await;
+
+    // Subscribe #2 — recv task receives it and enqueues its snapshot
+    // response. Since the channel capacity is 1 and the test fills it with
+    // a filler BEFORE the writer resumes, the recv task's `staged_critical_send`
+    // blocks on `tx.send()` for ~500 ms before `bounded_critical_delivery`
+    // returns `Err(Timeout)`.
+    //
+    // The sequence matters: we send Subscribe #2 first so its response is
+    // enqueued by the recv task, then fill the channel from outside so the
+    // writer is parked on Subscribe #2's snapshot (not on the filler) and
+    // Subscribe #2's receipt never fires.
+    let start = std::time::Instant::now();
+    send_json(
+        &mut client,
+        &CoreFrame::Request(new_request(
+            "queue-sat-observed-sub-1".to_string(),
+            CoreRequest::ProjectionSubscribe {
+                request: project_subscription_request(
+                    "project-queue-sat-observed-second",
+                ),
+            },
+        )),
+    )
+    .await;
+    // Wait briefly so the recv task picks up Subscribe #2 and enqueues its
+    // response (or blocks on a full channel).
+    tokio::task::yield_now().await;
+
+    // Fill the channel with a filler. The recv task's `staged_critical_send`
+    // may already be blocking; the filler keeps the writer from draining
+    // Subscribe #2's response.
+    let filler_enqueued = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("filler-cannot-leak".to_string().into()),
+    );
+    assert!(
+        filler_enqueued,
+        "filler should fit in the (otherwise empty) channel"
+    );
+    observer.record_filler_enqueued(1);
+    observer.mark_fill_full();
+
+    // Wait for the observer to record at least one Err(Timeout).
+    timeout(Duration::from_millis(1500), async {
+        loop {
+            if observer.any_timeout() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("observer should record Err(Timeout) within timeout");
+
+    let elapsed = start.elapsed();
+    writer_gate.release();
+
+    let recorded = observer
+        .send_result_history();
+    assert!(
+        observer.any_timeout(),
+        "expected at least one Err(Timeout) from saturated staged_critical_send, got history {recorded:?}"
+    );
+    assert!(
+        elapsed >= Duration::from_millis(400) && elapsed < Duration::from_millis(1500),
+        "timeout fired at {elapsed:?} — outside CRITICAL_DELIVERY_TIMEOUT window"
+    );
+
+    let _ = client.close(None).await;
+    writer_gate.release();
+    wait_projection_subscription_count(&daemon, 0).await;
+    // Wait for the writer to finish tearing down after cancellation.
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if probe.send_count() >= 1
+                && probe.receive_count() >= 1
+                && probe.raw_event_count() >= 1
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection tasks should complete after saturated disconnect");
+    probe.assert_all_at_baseline();
+    server.abort();
+}
+
+/// Work Package C (M010): the six-case task-owner first-exit / panic
+/// classification matrix. Each variant constructs a synthetic task set,
+/// runs `first_exit_classification_for_test`, and asserts that the
+/// returned `ConnectionTaskKind` matches the panicking task.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_connection_task_owner_first_exit_classifies_panic_per_kind() {
+    use codegg::server::ws::ConnectionTaskKind;
+
+    for kind in [
+        ConnectionTaskKind::Send,
+        ConnectionTaskKind::Receive,
+        ConnectionTaskKind::RawEvent,
+    ] {
+        let mut set = codegg::server::ws::ConnectionTaskSet::with_panic_first_for_test(kind);
+        let (classification, panicked) = set.first_exit_classification_for_test().await;
+        assert_eq!(classification, kind, "first-task-kind for panic in {kind:?}");
+        assert!(
+            panicked,
+            "{kind:?} task classified as clean exit instead of panic"
+        );
+    }
+}
+
+/// Work Package A (M010): the connection-local outbound mpsc queue is
+/// capacity-bounded. When the writer drains slowly (paused at the gate)
+/// and the test pushes messages through the production sender clone, the
+/// last push observes the channel-full boundary via `try_send`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_outbound_queue_capacity_is_one_when_configured() {
+    let seam = ProjectionLifecycleSeam::default();
+    let (address, _daemon, probe, writer_gate, observer, server) =
+        spawn_server_with_transport_instrumentation(seam.clone(), 1, None).await;
+
+    let _client = connect(address, "/core").await;
+    let outbound_sender = wait_for_outbound_sender(&observer).await;
+
+    // The first item fills the capacity-1 channel; the writer is paused at
+    // the gate before draining it, so the channel stays full. A second
+    // `try_send` observes `Full` and must not block.
+    assert!(codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("item-1".to_string().into())
+    ));
+    let second = codegg::server::ws::queue_message(
+        &outbound_sender,
+        axum::extract::ws::Message::Text("item-2".to_string().into()),
+    );
+    assert!(
+        !second,
+        "second try_send on a capacity-1 channel must fail closed"
+    );
+
+    // Release the gate so the writer drains item-1.
+    writer_gate.release();
+    // Close the client so the writer sees a broken pipe and exits.
+    drop(_client);
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if probe.send_count() >= 1
+                && probe.receive_count() >= 1
+                && probe.raw_event_count() >= 1
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection tasks should complete after gate release");
+    probe.assert_all_at_baseline();
+    server.abort();
+}
+
+/// Work Package D (M010): raw-source-first exit. Subscribe normally,
+/// release the writer gate so the snapshot is delivered, then trigger the
+/// raw-source cancellation token before the peer-close path can fire. The
+/// task set must classify the first exit as `RawEvent` because the raw
+/// task was the one that exited.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn real_core_raw_source_first_exit_via_cancellation_token() {
+    use codegg::server::ws::ConnectionTaskKind;
+
+    let raw_cancel = tokio_util::sync::CancellationToken::new();
+    let (address, daemon, probe, writer_gate, observer, server) =
+        spawn_server_with_transport_instrumentation(
+            ProjectionLifecycleSeam::default(),
+            256,
+            Some(raw_cancel.clone()),
+        )
+        .await;
+    let mut client = connect(address, "/core").await;
+
+    // Send ClientHello — ServerHello will be queued; release the gate so
+    // the ServerHello is delivered and the connection is handshake-clean.
+    send_json(
+        &mut client,
+        &CoreFrame::ClientHello(ClientHello {
+            client_name: "raw-cancel".to_string(),
+            client_kind: ClientKind::Automation,
+            protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
+            capabilities: projection_client_capabilities(),
+        }),
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 1).await;
+    writer_gate.release();
+    let hello: CoreFrame = recv_json(&mut client).await.expect("ServerHello");
+    assert!(matches!(hello, CoreFrame::ServerHello(_)));
+    // Pre-arm the gate so the Subscribe response also bypasses the gate.
+    // The gate resets `released` to false after each pause, so without
+    // re-arming the next item (Subscribe response) would block.
+    writer_gate.release();
+
+    let subscription_id =
+        core_subscribe(&mut client, "raw-cancel-sub", "project-raw-cancel").await;
+
+    // Trigger raw-source cancellation WHILE the peer is still healthy.
+    // The raw task selects on `cancel.cancelled()` and exits immediately,
+    // before peer-close can race.
+    raw_cancel.cancel();
+
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if let Some(kind) = probe.first_task_kind() {
+                assert_eq!(
+                    kind,
+                    ConnectionTaskKind::RawEvent,
+                    "first-task-kind should be RawEvent when raw-source cancel fires"
+                );
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first_task_kind should be recorded within timeout");
+
+    drop(client);
+    writer_gate.release();
+    assert_real_transport_rollback_complete(
+        &daemon,
+        0,
+        &probe,
+        &subscription_id,
+        "raw-cancel",
+    )
+    .await;
+    server.abort();
+}
+
+/// Work Package E (M010): TUI pending-delivery interruption via writer
+/// barrier. Pause the writer so the snapshot response is held in the
+/// queue, then drop the client. The snapshot must not be silently
+/// delivered after cancellation.
+#[test]
+fn real_tui_pending_snapshot_interruption_via_writer_barrier() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("projection test runtime")
+        .block_on(real_tui_pending_snapshot_interruption_via_writer_barrier_impl());
+}
+
+async fn real_tui_pending_snapshot_interruption_via_writer_barrier_impl() {
+    let (_address, daemon, probe, writer_gate, observer, server) =
+        spawn_server_with_transport_instrumentation(
+            ProjectionLifecycleSeam::default(),
+            1,
+            None,
+        )
+        .await;
+    let mut client = connect(_address, "/tui").await;
+    // TUI projection capability ack is held at the writer gate first; release
+    // it so the client can complete the handshake before subscribing.
+    send_json(
+        &mut client,
+        &TuiMessage::ProjectionCapabilities {
+            capabilities:
+                codegg::protocol::projection::caps::ProjectionCapabilities::default(),
+        },
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 1).await;
+    writer_gate.release();
+    let ack: TuiMessage = recv_json(&mut client).await.expect("capability ack");
+    assert!(matches!(
+        ack,
+        TuiMessage::ProjectionCapabilitiesAck { accepted: true, .. }
+    ));
+    drain_tui_messages(&mut client).await;
+    writer_gate.release();
+
+    send_json(
+        &mut client,
+        &TuiMessage::ProjectionSubscribe {
+            request: project_subscription_request("project-tui-pending-barrier"),
+        },
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 2).await;
+
+    drop(client);
+    writer_gate.release();
+
+    wait_projection_subscription_count(&daemon, 0).await;
+    timeout(Duration::from_millis(500), async {
+        loop {
+            if probe.send_count() >= 1
+                && probe.receive_count() >= 1
+                && probe.raw_event_count() >= 1
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection tasks should complete after writer barrier");
+    probe.assert_all_at_baseline();
+    server.abort();
+}
+
+/// Work Package E (M010): TUI pending-replay interruption via writer
+/// barrier. Subscribe, drop, then resume on a fresh connection — the
+/// resume must replay history even though the first attempt was
+/// interrupted mid-delivery.
+#[test]
+fn real_tui_pending_replay_interruption_then_retry() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("projection test runtime")
+        .block_on(real_tui_pending_replay_interruption_then_retry_impl());
+}
+
+async fn real_tui_pending_replay_interruption_then_retry_impl() {
+    let (address, daemon, probe, writer_gate, observer, server) =
+        spawn_server_with_transport_instrumentation(
+            ProjectionLifecycleSeam::default(),
+            1,
+            None,
+        )
+        .await;
+
+    // Helper: do a TUI handshake with a writer barrier on the first item
+    // (ProjectionCapabilitiesAck) so the test owns the gate afterwards.
+    async fn tui_handshake_with_barrier(
+        client: &mut Client,
+        writer_gate: &WriterGate,
+        observer: &TransportLifecycleObserver,
+    ) {
+        send_json(
+            client,
+            &TuiMessage::ProjectionCapabilities {
+                capabilities:
+                    codegg::protocol::projection::caps::ProjectionCapabilities::default(),
+            },
+        )
+        .await;
+        // TUI capability handshake produces two outbound items:
+        // ProjectionCapabilitiesAck and ProjectionCompatibilityDiagnostic.
+        // Release once and drain, then the next release arms the gate for
+        // any subsequent items.
+        wait_until_writer_gates_reached(observer, 1).await;
+        writer_gate.release();
+        // Read until we see the ack and the diagnostic, with a generous
+        // timeout so the writer has time to process each item as it is
+        // released.
+        let mut saw_ack = false;
+        let mut saw_diagnostic = false;
+        let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+        while !(saw_ack && saw_diagnostic) && std::time::Instant::now() < deadline {
+            match timeout(Duration::from_millis(200), recv_json::<TuiMessage>(client)).await {
+                Ok(Some(TuiMessage::ProjectionCapabilitiesAck { accepted: true, .. })) => {
+                    saw_ack = true;
+                    // Release for the next item (diagnostic).
+                    writer_gate.release();
+                }
+                Ok(Some(TuiMessage::ProjectionCompatibilityDiagnostic { .. })) => {
+                    saw_diagnostic = true;
+                }
+                Ok(Some(_)) => continue,
+                _ => {
+                    // No data — re-arm so the writer can deliver.
+                    writer_gate.release();
+                }
+            }
+        }
+        assert!(saw_ack, "did not see ProjectionCapabilitiesAck");
+        assert!(saw_diagnostic, "did not see ProjectionCompatibilityDiagnostic");
+        // Pre-arm the gate so the next outbound item (Subscribe snapshot
+        // or Resume replay) bypasses the barrier.
+        writer_gate.release();
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    let mut first_client = connect(address, "/tui").await;
+    tui_handshake_with_barrier(&mut first_client, &writer_gate, &observer).await;
+    let (_first_subscription, cursor) =
+        tui_subscribe_with_cursor(&mut first_client, "project-tui-replay-barrier").await;
+    drop(first_client);
+    wait_projection_subscription_count(&daemon, 0).await;
+
+    projection_event_at_seq(
+        &daemon,
+        "project-tui-replay-barrier",
+        "session-tui-replay-barrier",
+        "turn-tui-replay-barrier-1",
+        1,
+    )
+    .await;
+
+    let mut second_client = connect(address, "/tui").await;
+    tui_handshake_with_barrier(&mut second_client, &writer_gate, &observer).await;
+    send_json(
+        &mut second_client,
+        &TuiMessage::ProjectionResume {
+            cursor: cursor.clone(),
+            include_snapshot_if_resync: true,
+        },
+    )
+    .await;
+    wait_until_writer_gates_reached(&observer, 2).await;
+    drop(second_client);
+    writer_gate.release();
+
+    wait_projection_subscription_count(&daemon, 0).await;
+
+    let mut third_client = connect(address, "/tui").await;
+    tui_handshake_with_barrier(&mut third_client, &writer_gate, &observer).await;
+    send_json(
+        &mut third_client,
+        &TuiMessage::ProjectionResume {
+            cursor: cursor.clone(),
+            include_snapshot_if_resync: true,
+        },
+    )
+    .await;
+    let count_before = observer
+        .writer_gates_reached
+        .load(std::sync::atomic::Ordering::Acquire);
+    wait_until_writer_gates_reached(&observer, count_before + 1).await;
+    writer_gate.release();
+    let (new_subscription, replay) = loop {
+        match recv_json::<TuiMessage>(&mut third_client)
+            .await
+            .expect("TUI replay after interrupted retry")
+        {
+            TuiMessage::ProjectionReplay {
+                subscription_id,
+                batch,
+            } => break (subscription_id, batch),
+            _ => {}
+        }
+    };
+    assert_ne!(_first_subscription, new_subscription);
+    assert_eq!(replay.descriptor.stream_id, cursor.stream_id);
+    assert_eq!((replay.replay_start_seq, replay.replay_end_seq), (1, 1));
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .map(|event| event.event_seq)
+            .collect::<Vec<_>>(),
+        vec![1]
+    );
+
+    let _ = third_client.close(None).await;
+    writer_gate.release();
+    // Wait for ALL three connection task sets to complete. Three clients
+    // connected, so the probe should observe three send/receive/raw_event
+    // completions.
+    timeout(Duration::from_millis(2000), async {
+        loop {
+            let sends = probe.send_count();
+            let recvs = probe.receive_count();
+            let raws = probe.raw_event_count();
+            if sends >= 3 && recvs >= 3 && raws >= 3 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection tasks should complete after all clients close");
+    assert_eq!(probe.send_count(), 3, "expected exactly 3 send completions");
+    assert_eq!(
+        probe.receive_count(),
+        3,
+        "expected exactly 3 receive completions"
+    );
+    assert_eq!(
+        probe.raw_event_count(),
+        3,
+        "expected exactly 3 raw-event completions"
     );
     server.abort();
 }

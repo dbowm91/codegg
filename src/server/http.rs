@@ -209,6 +209,7 @@ pub async fn run_server(
         daemon,
         projection_lifecycle_seam: Default::default(),
         connection_task_probe: None,
+        transport_test_config: None,
     };
 
     let cors = build_cors(&server_config);

@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::config::schema::Config;
 use crate::core::transport::projection::ProjectionLifecycleSeam;
 use crate::mcp::McpService;
-use crate::server::ws::ConnectionTaskProbe;
+use crate::server::ws::{ConnectionTaskProbe, ProjectionTransportTestConfig};
 
 #[derive(Clone)]
 pub struct ServerState {
@@ -25,6 +25,12 @@ pub struct ServerState {
     /// receives its own clone of this Arc; tests read the counters after
     /// handler exit to verify lifecycle invariants.
     pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
+    /// Connection-local test configuration. Production callers leave this
+    /// at `None`; tests may opt into a smaller outbound queue capacity,
+    /// a writer gate, a raw-source cancellation token, and a lifecycle
+    /// observer. Each field is connection-scoped and removed with the
+    /// fixture.
+    pub transport_test_config: Option<ProjectionTransportTestConfig>,
 }
 
 #[derive(Clone)]

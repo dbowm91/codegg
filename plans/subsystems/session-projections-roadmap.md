@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 010 mechanism-faithful transport verification and final closure
+Status: closed
 
 Long-term references:
 
@@ -212,7 +212,7 @@ Accepted outcomes include shared joined WebSocket task ownership, joined Unix ra
 
 ### Milestone 9 — Production-shaped transport verification and strict closure
 
-Status: conditionally closed; mechanism-faithful correction owned by M10.
+Status: conditionally closed; principal findings resolved by M10.
 
 - Plan: `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
 - Conditional closure: `plans/closure/session-projections/009-status.md`
@@ -220,22 +220,17 @@ Status: conditionally closed; mechanism-faithful correction owned by M10.
 
 Accepted outcomes include connection-local probes, real WebSocket peer close/drop, 100-cycle `/core` and `/tui` churn, two-client continuity, exact `/core` interrupted replay retry, successful TUI replay durability, and fresh `/core` connection identity.
 
-Residual findings are owned exclusively by M10:
-
-- genuine queue fill and direct timeout result for `/core` and `/tui`;
-- deterministic task-kind and real raw-source-first coverage;
-- Unix peer/write/flush/race/replay mechanism tests;
-- true TUI pending-delivery interruption;
-- complete rollback harness application;
-- semantic guards and exact closure evidence.
+Residual findings (queue fill, task-kind, Unix fixtures, TUI pending interruption, rollback harness, semantic guards, exact closure evidence) are addressed by M10 closure: `plans/closure/session-projections/010-status.md`.
 
 ### Milestone 10 — Mechanism-faithful transport verification and final closure
 
-Status: ready.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
+
+Closure: `plans/closure/session-projections/010-status.md`
 
 Class: verification correction / bounded-queue mechanics / Unix transport races / lifecycle observability / closure reconciliation
 
@@ -243,7 +238,7 @@ Repository baseline: `426dfffec05c9d694f54a816213a6cca514e91b4`
 
 Objective: replace nominal queue, first-exit, TUI interruption, Unix lifecycle, rollback, guard, and evidence claims with direct production-mechanism proof.
 
-Required deliverables:
+Required deliverables (all accepted):
 
 - connection-local queue capacity, writer, raw-source, and first-task controls;
 - actual `/core` and `/tui` fill-to-full tests with direct production `Timeout` result assertion;
@@ -255,7 +250,7 @@ Required deliverables:
 - semantic lifecycle guards;
 - exact full verification and M010 closure evidence.
 
-Exit conditions:
+Exit conditions (all met):
 
 - actual queue fullness causes and directly returns the production timeout in both WebSocket adapters;
 - all task first-exit and panic cases cancel and join siblings;
@@ -338,5 +333,5 @@ This roadmap returns to strict closed status when all three production transport
 | 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | principal findings addressed by later milestones |
 | 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | principal findings addressed by M8 |
 | 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | principal findings addressed by M9/M10 |
-| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | M10 mechanism-faithful verification and final closure |
-| 10 | ready | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | — | — |
+| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | All principal findings addressed by M10 |
+| 10 | closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | — |

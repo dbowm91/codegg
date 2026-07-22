@@ -30,25 +30,7 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 010 — mechanism-faithful transport verification and final closure | Ready; M009 remains conditionally closed on genuine `/core` and `/tui` queue saturation, deterministic task-kind/raw-source-first evidence, Unix peer/write/flush/race/replay fixtures, true TUI pending-response interruption, complete rollback harness application, semantic guards, and final evidence reconciliation |
-
-## Dependency-ready implementation plans
-
-| Subsystem | Milestone | Class | Plan | Baseline | Status |
-|---|---|---|---|---|---|
-| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | verification correction / bounded-queue mechanics / Unix transport races / lifecycle observability / closure reconciliation | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `426dfff` | ready |
-
-## Active closure work
-
-| Subsystem | Milestone | Closure record | Status | Open findings |
-|---|---|---|---|---|
-| Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | conditionally closed | `/core` queue is not filled and timeout result is not observed directly; `/tui` queue saturation and Unix mechanism fixtures are absent; first-exit/raw-source and TUI pending-response tests are nominal; rollback harness and semantic guard/evidence requirements remain incomplete |
-
-## Blocked work
-
-| Work item | Blocker | Required resolution | Owner document |
-|---|---|---|---|
-| Return Session Projections roadmap to strict closed status | M010 mechanism-faithful verification findings | Demonstrate actual fill-to-Full and direct production timeout for `/core` and `/tui`; real raw-source-first and six-case task-owner matrix; Unix peer/write/flush/race/interrupted replay; true TUI pending-response interruption; complete rollback harness application; semantic guards; exact final evidence | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestones 001–010 closed | — |
 
 ## Deferred unregistered product work
 
@@ -64,6 +46,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed at commit | Follow-up |
 |---|---|---|---|---|
+| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | M010 implementation commit; `4b3adab` registry update | Strict closure recorded; static guard `scripts/check_projection_transport_lifecycle.py` enforces M010 mechanism markers |
 | Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Corrected to conditional closure; M010 owns mechanism-faithful queues, task-kind/raw-source, Unix races, TUI interruption, complete rollback, guards, and exact closure evidence |
 | Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; M009/M010 own final verification depth |
 | Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Historical conditional record; M008 resolved principal task-join and replay-sequence findings |
