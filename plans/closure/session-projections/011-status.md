@@ -23,6 +23,7 @@ Implementation, follow-up, closure, and final reviewed commits:
 - `b98a626217505f094a210a8c640e1f1530280cfb` — M011 Work Package G completion: `assert_tui_transport_rollback_complete` helper added for the TUI-shaped rollback path; TUI raw-source-first, TUI pending snapshot, and core writer-failure fixtures upgraded to use the complete harness. `tokio::task::sleep(...)` corrected to `tokio::time::sleep(...)` in the TUI raw-source fixture.
 - `0b61fbd97e41dca899a4626f81be420e018b1233` — M011 Work Package H: `scripts/check_projection_transport_lifecycle.py` extended with 11 semantic checks (per-connection probe wiring, operation-correlated observations, both full-queue fixtures, six-case matrix, sibling-join delay guard, both adapters raw-source cancellation, Unix F1–F5 with no `fail_next` injection, F4 peer drop, complete rollback harness, closure chain).
 - `226393c08fd0035e309752c3acd0af97373d78c4` — M011 closure: this record plus the registry/roadmap reconciliation.
+- `573d888` — M011 guard refinement: `check_projection_transport_lifecycle.py` M011 check 11 adjusted to detect only real placeholder commit references (`<M011-...-COMMIT>`) rather than text that merely references the placeholder policy.
 
 ## 1. Closure decision
 
