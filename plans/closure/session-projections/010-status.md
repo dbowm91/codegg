@@ -126,7 +126,7 @@ Full M010 verification matrix (from `plans/implementation/session-projections/01
 - `cargo test --test tui_project_routing -- --nocapture` — 27 passed.
 - `cargo test --test tui_project_tabs -- --nocapture` — 20 passed.
 - `cargo test --test single_daemon_lifecycle -- --test-threads=1` — 3 passed (1 pre-existing test-ordering flake when run without `--test-threads=1`; passes with `--test-threads=1`; unrelated to M010).
-- `cargo test --test projection_transport_real --features server -- --test-threads=1` — 48 passed on a clean run; the suite has a pre-existing timing flake where the 500ms `probe.send_count() >= 1 && receive_count() >= 1 && raw_event_count() >= 1` timeout in `real_tui_pending_snapshot_interruption_via_writer_barrier` and `real_core_rollback_invariants_on_writer_closed` occasionally fires under multi-thread scheduling pressure. The flake exists on commit `a3ab136` (before M010's pre-recv gate fix) and is unrelated to M010. The capacity-1 fixture `real_core_outbound_queue_capacity_is_one_when_configured` now passes deterministically with the pre-recv gate.
+- `cargo test --test projection_transport_real --features server -- --test-threads=1` — 48 passed (10/10 consecutive runs). The three tight 500ms probe-completion loops were fixed to use `sleep(5ms)` instead of `yield_now()` and a 2000ms timeout, eliminating the pre-existing scheduling flake.
 - `python3 scripts/check_projection_transport_isolation.py` — passes.
 - `python3 scripts/check_projection_transport_lifecycle.py` — passes.
 - `python3 scripts/check_websocket_bounds.py` — passes.
