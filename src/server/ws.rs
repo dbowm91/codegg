@@ -9,6 +9,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -41,6 +42,113 @@ struct OutboundMessage {
     message: WsMessage,
     receipt: Option<oneshot::Sender<Result<(), CriticalSendFailure>>>,
     route: OutboundRoute,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ConnectionTaskKind {
+    Send,
+    Receive,
+    RawEvent,
+}
+
+impl ConnectionTaskKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::Receive => "receive",
+            Self::RawEvent => "raw-event",
+        }
+    }
+}
+
+/// Own the three tasks that make up a projection-capable WebSocket
+/// connection. The first task to finish selects the connection teardown; the
+/// completed handle is consumed by that select and the remaining handles are
+/// explicitly aborted and awaited before transport state is cleaned up.
+struct ConnectionTaskSet {
+    send: Option<JoinHandle<()>>,
+    receive: Option<JoinHandle<()>>,
+    raw_event: Option<JoinHandle<()>>,
+}
+
+impl ConnectionTaskSet {
+    fn new(send: JoinHandle<()>, receive: JoinHandle<()>, raw_event: JoinHandle<()>) -> Self {
+        Self {
+            send: Some(send),
+            receive: Some(receive),
+            raw_event: Some(raw_event),
+        }
+    }
+
+    async fn join_after_first_exit(
+        &mut self,
+        cancellation: &CancellationToken,
+        connection_id: &str,
+    ) {
+        let (first_kind, first_result) = tokio::select! {
+            result = self.send.as_mut().expect("connection send task is retained") => {
+                (ConnectionTaskKind::Send, result)
+            }
+            result = self.receive.as_mut().expect("connection receive task is retained") => {
+                (ConnectionTaskKind::Receive, result)
+            }
+            result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                (ConnectionTaskKind::RawEvent, result)
+            }
+        };
+
+        // The selected JoinHandle has already been awaited by the select. Drop
+        // the completed handle without polling it a second time.
+        match first_kind {
+            ConnectionTaskKind::Send => drop(self.send.take()),
+            ConnectionTaskKind::Receive => drop(self.receive.take()),
+            ConnectionTaskKind::RawEvent => drop(self.raw_event.take()),
+        }
+        log_connection_task_result(first_kind, first_result, connection_id);
+
+        cancellation.cancel();
+        for handle in [&self.send, &self.receive, &self.raw_event] {
+            if let Some(handle) = handle.as_ref() {
+                handle.abort();
+            }
+        }
+
+        self.join_remaining(ConnectionTaskKind::Send, connection_id)
+            .await;
+        self.join_remaining(ConnectionTaskKind::Receive, connection_id)
+            .await;
+        self.join_remaining(ConnectionTaskKind::RawEvent, connection_id)
+            .await;
+    }
+
+    async fn join_remaining(&mut self, kind: ConnectionTaskKind, connection_id: &str) {
+        let handle = match kind {
+            ConnectionTaskKind::Send => self.send.take(),
+            ConnectionTaskKind::Receive => self.receive.take(),
+            ConnectionTaskKind::RawEvent => self.raw_event.take(),
+        };
+        let Some(handle) = handle else {
+            return;
+        };
+        let result = handle.await;
+        log_connection_task_result(kind, result, connection_id);
+    }
+}
+
+fn log_connection_task_result(
+    kind: ConnectionTaskKind,
+    result: Result<(), JoinError>,
+    connection_id: &str,
+) {
+    if let Err(error) = result {
+        if !error.is_cancelled() {
+            tracing::warn!(
+                connection_id,
+                task = kind.as_str(),
+                "WebSocket connection task terminated abnormally: {error}"
+            );
+        }
+    }
 }
 
 async fn critical_send<T: serde::Serialize>(
@@ -717,7 +825,7 @@ async fn upgrade_tui(
     let connection_cancel_for_writer = connection_cancel.clone();
     let daemon_clone = state.daemon.clone();
 
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
             tokio::select! {
@@ -768,7 +876,7 @@ async fn upgrade_tui(
     let connection_cancel_for_recv = connection_cancel.clone();
 
     let session_state_for_recv_key = Arc::clone(&session_state);
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
         while let Some(Ok(msg)) = ws_rx.next().await {
             if let axum::extract::ws::Message::Text(text) = msg {
@@ -808,7 +916,7 @@ async fn upgrade_tui(
 
     let raw_tx_events = raw_tx.clone();
     let session_state_for_events = Arc::clone(&session_state);
-    let mut event_task = tokio::spawn(async move {
+    let raw_event_task = tokio::spawn(async move {
         let Some(daemon) = daemon_clone else {
             tracing::warn!("No CoreDaemon available for /tui event task; live events disabled");
             return;
@@ -862,20 +970,10 @@ async fn upgrade_tui(
         }
     });
 
-    tokio::select! {
-        _ = (&mut send_task) => {
-            recv_task.abort();
-            event_task.abort();
-        }
-        _ = (&mut recv_task) => {
-            send_task.abort();
-            event_task.abort();
-        }
-        _ = (&mut event_task) => {
-            send_task.abort();
-            recv_task.abort();
-        }
-    }
+    let mut connection_tasks = ConnectionTaskSet::new(send_task, recv_task, raw_event_task);
+    connection_tasks
+        .join_after_first_exit(&connection_cancel, &connection_id)
+        .await;
 
     let subscription_ids: Vec<_> = session_state
         .lock()
@@ -2515,7 +2613,7 @@ async fn upgrade_core_ws(
     let filters: Arc<RwLock<Vec<crate::core::event_log::EventFilter>>> =
         Arc::new(RwLock::new(Vec::new()));
 
-    let mut send_task = tokio::spawn(async move {
+    let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
         loop {
             tokio::select! {
@@ -2565,7 +2663,7 @@ async fn upgrade_core_ws(
     let raw_tx_events = raw_tx.clone();
     let filters_for_events = Arc::clone(&filters);
     let projection_for_events = Arc::clone(&projection);
-    let mut event_task = tokio::spawn(async move {
+    let raw_event_task = tokio::spawn(async move {
         while let Ok(event) = event_rx.recv().await {
             if matches!(
                 event.payload,
@@ -2596,7 +2694,7 @@ async fn upgrade_core_ws(
     let connection_id_for_recv = connection_id.clone();
     let filters_for_recv = Arc::clone(&filters);
     let connection_cancel_for_recv = connection_cancel.clone();
-    let mut recv_task = tokio::spawn(async move {
+    let recv_task = tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             let msg = match msg {
                 Ok(m) => m,
@@ -2711,20 +2809,10 @@ async fn upgrade_core_ws(
         }
     });
 
-    tokio::select! {
-        _ = &mut send_task => {
-            recv_task.abort();
-            event_task.abort();
-        }
-        _ = &mut recv_task => {
-            send_task.abort();
-            event_task.abort();
-        }
-        _ = &mut event_task => {
-            send_task.abort();
-            recv_task.abort();
-        }
-    }
+    let mut connection_tasks = ConnectionTaskSet::new(send_task, recv_task, raw_event_task);
+    connection_tasks
+        .join_after_first_exit(&connection_cancel, &connection_id)
+        .await;
 
     let subscription_ids: Vec<_> = projection
         .lock()
@@ -3392,6 +3480,46 @@ mod tests {
             .await,
             Err(CriticalSendFailure::Timeout)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn connection_task_set_cancels_aborts_and_joins_all_tasks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        struct TaskProbe(Arc<AtomicUsize>);
+
+        impl Drop for TaskProbe {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let make_task = |finishes: bool| {
+            let active = Arc::clone(&active);
+            active.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let _probe = TaskProbe(active);
+                if finishes {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                } else {
+                    std::future::pending::<()>().await;
+                }
+            })
+        };
+
+        let cancellation = CancellationToken::new();
+        let mut tasks = ConnectionTaskSet::new(make_task(true), make_task(false), make_task(false));
+        tasks
+            .join_after_first_exit(&cancellation, "test-connection")
+            .await;
+
+        assert!(cancellation.is_cancelled());
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!(tasks.send.is_none());
+        assert!(tasks.receive.is_none());
+        assert!(tasks.raw_event.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

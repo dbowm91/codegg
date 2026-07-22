@@ -190,13 +190,23 @@ fn project_subscription_request(project_id: &str) -> ProjectionSubscriptionReque
 }
 
 async fn projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str, turn_id: &str) {
+    projection_event_at_seq(daemon, project_id, session_id, turn_id, 1).await;
+}
+
+async fn projection_event_at_seq(
+    daemon: &CoreDaemon,
+    project_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    event_seq: u64,
+) {
     let seam = daemon
         .projection_seam
         .as_ref()
         .expect("SQLite-backed daemon has projection seam");
     let envelope = EventEnvelope {
         protocol_version: codegg::protocol::core::PROTOCOL_VERSION,
-        event_seq: 1,
+        event_seq,
         timestamp_ms: 1,
         session_id: Some(session_id.to_string()),
         turn_id: Some(turn_id.to_string()),
@@ -257,6 +267,28 @@ async fn next_core_projection_event(client: &mut Client) -> Option<ProjectionSub
             } = event.payload
             {
                 return Some(subscription_id);
+            }
+        }
+    }
+}
+
+async fn next_core_projection_envelope(
+    client: &mut Client,
+) -> Option<(
+    ProjectionSubscriptionId,
+    codegg::protocol::projection::replay::ProjectionStreamId,
+    codegg::protocol::projection::event::ProjectionEnvelope,
+)> {
+    loop {
+        let frame: CoreFrame = recv_json(client).await?;
+        if let CoreFrame::Event(event) = frame {
+            if let CoreEvent::ProjectionStreamEvent {
+                subscription_id,
+                stream_id,
+                envelope,
+            } = event.payload
+            {
+                return Some((subscription_id, stream_id, envelope));
             }
         }
     }
@@ -441,6 +473,25 @@ async fn next_tui_projection_event(client: &mut Client) -> Option<ProjectionSubs
         } = message
         {
             return Some(subscription_id);
+        }
+    }
+}
+
+async fn next_tui_projection_envelope(
+    client: &mut Client,
+) -> Option<(
+    ProjectionSubscriptionId,
+    Option<codegg::protocol::projection::replay::ProjectionStreamId>,
+    codegg::protocol::projection::event::ProjectionEnvelope,
+)> {
+    loop {
+        match recv_json::<TuiMessage>(client).await? {
+            TuiMessage::ProjectionEvent {
+                subscription_id,
+                stream_id,
+                envelope,
+            } => return Some((subscription_id, stream_id, envelope)),
+            _ => {}
         }
     }
 }
@@ -637,10 +688,11 @@ async fn real_core_foreign_projection_operations_fail_closed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_core_reconnect_replays_exact_missing_range_then_live() {
-    let (address, daemon, server) = spawn_server().await;
+    let seam = ProjectionLifecycleSeam::default();
+    let (address, daemon, server) = spawn_server_with_seam(seam.clone()).await;
     let mut first_client = connect(address, "/core").await;
     core_projection_handshake(&mut first_client, "reconnect-first").await;
-    let (_sub_first, cursor) = core_subscribe_with_cursor(
+    let (first_subscription, cursor) = core_subscribe_with_cursor(
         &mut first_client,
         "reconnect-subscribe",
         "project-reconnect",
@@ -650,34 +702,58 @@ async fn real_core_reconnect_replays_exact_missing_range_then_live() {
         .close(None)
         .await
         .expect("close first core client");
+    wait_projection_subscription_count(&daemon, 0).await;
 
-    projection_event(
+    projection_event_at_seq(
         &daemon,
         "project-reconnect",
         "session-reconnect",
         "turn-missing-1",
+        1,
     )
     .await;
-    projection_event(
+    projection_event_at_seq(
         &daemon,
         "project-reconnect",
         "session-reconnect",
         "turn-missing-2",
+        2,
     )
     .await;
 
+    let gate = seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
     let mut resumed_client = connect(address, "/core").await;
     core_projection_handshake(&mut resumed_client, "reconnect-second").await;
     let request_id = "reconnect-resume";
-    let response = send_core_request(
+    send_json(
         &mut resumed_client,
-        request_id,
-        CoreRequest::ProjectionResume {
-            cursor,
-            include_snapshot_if_resync: true,
-        },
+        &CoreFrame::Request(new_request(
+            request_id.to_string(),
+            CoreRequest::ProjectionResume {
+                cursor: cursor.clone(),
+                include_snapshot_if_resync: true,
+            },
+        )),
     )
     .await;
+    gate.wait_until_entered().await;
+    projection_event_at_seq(
+        &daemon,
+        "project-reconnect",
+        "session-reconnect",
+        "turn-live-after-replay",
+        3,
+    )
+    .await;
+    assert!(
+        timeout(Duration::from_millis(100), resumed_client.next())
+            .await
+            .is_err(),
+        "replay/live traffic escaped while the replay response was paused"
+    );
+    gate.release();
+
+    let response = next_core_response(&mut resumed_client, request_id).await;
     let (new_subscription, batch) = match response {
         CoreResponse::ProjectionReplay {
             subscription_id: Some(subscription_id),
@@ -685,19 +761,62 @@ async fn real_core_reconnect_replays_exact_missing_range_then_live() {
         } => (subscription_id, batch),
         other => panic!("expected exact reconnect replay, got {other:?}"),
     };
-    assert_eq!(batch.events.len(), 2);
+    assert_ne!(first_subscription, new_subscription);
+    assert_eq!(batch.descriptor.stream_id, cursor.stream_id);
     assert_eq!((batch.replay_start_seq, batch.replay_end_seq), (1, 2));
-
-    projection_event(
-        &daemon,
-        "project-reconnect",
-        "session-reconnect",
-        "turn-live-after-replay",
-    )
-    .await;
     assert_eq!(
-        next_core_projection_event(&mut resumed_client).await,
-        Some(new_subscription)
+        batch
+            .events
+            .iter()
+            .map(|event| event.event_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .map(|event| match &event.payload {
+                codegg::protocol::projection::event::ProjectionEvent::TurnStarted { turn } => {
+                    turn.turn_id.as_str()
+                }
+                other => panic!("expected TurnStarted replay identity, got {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec!["turn-missing-1", "turn-missing-2"]
+    );
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .map(|event| match &event.payload {
+                codegg::protocol::projection::event::ProjectionEvent::TurnStarted { turn } => {
+                    turn.turn_id.as_str()
+                }
+                other => panic!("expected TurnStarted replay identity, got {other:?}"),
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        2
+    );
+
+    let (live_subscription, live_stream, live_envelope) =
+        next_core_projection_envelope(&mut resumed_client)
+            .await
+            .expect("live event after exact core replay");
+    assert_eq!(live_subscription, new_subscription);
+    assert_eq!(live_stream, batch.descriptor.stream_id);
+    assert_eq!(live_envelope.event_seq, batch.replay_end_seq + 1);
+    assert!(matches!(
+        &live_envelope.payload,
+        codegg::protocol::projection::event::ProjectionEvent::TurnStarted { turn }
+            if turn.turn_id == "turn-live-after-replay"
+    ));
+    assert!(
+        timeout(Duration::from_millis(250), resumed_client.next())
+            .await
+            .is_err(),
+        "core replay or live envelope was duplicated"
     );
     resumed_client
         .close(None)
@@ -787,6 +906,119 @@ async fn real_core_failed_critical_delivery_rolls_back_daemon_subscription() {
         "failed critical delivery must not expose a successful response"
     );
     server.abort();
+}
+
+#[test]
+fn real_core_staged_failure_matrix_rolls_back_every_material_class() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("projection test runtime")
+        .block_on(real_core_staged_failure_matrix_rolls_back_every_material_class_impl());
+}
+
+async fn real_core_staged_failure_matrix_rolls_back_every_material_class_impl() {
+    let scenarios = [
+        (
+            ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+            CriticalDeliveryError::QueueClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::AfterReceiverInstallation,
+            CriticalDeliveryError::WriterClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            CriticalDeliveryError::Timeout,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            CriticalDeliveryError::Serialization,
+        ),
+        (
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+            CriticalDeliveryError::Cancelled,
+        ),
+        (
+            ProjectionLifecycleBoundary::DuringWriterWrite,
+            CriticalDeliveryError::WriterClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeActivation,
+            CriticalDeliveryError::Cancelled,
+        ),
+    ];
+
+    for (index, (boundary, error)) in scenarios.into_iter().enumerate() {
+        let seam = ProjectionLifecycleSeam::default();
+        let (address, daemon, server) = spawn_server_with_seam(seam.clone()).await;
+        let mut client = connect(address, "/core").await;
+        core_projection_handshake(&mut client, &format!("core-failure-matrix-{index}")).await;
+        seam.fail_next(boundary, error);
+        send_json(
+            &mut client,
+            &CoreFrame::Request(new_request(
+                format!("core-failure-matrix-{index}"),
+                CoreRequest::ProjectionSubscribe {
+                    request: project_subscription_request(&format!("project-core-failure-{index}")),
+                },
+            )),
+        )
+        .await;
+
+        let canonical_response = timeout(Duration::from_millis(100), client.next()).await;
+        let rollback_after_delivery = matches!(
+            boundary,
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt
+                | ProjectionLifecycleBoundary::BeforeActivation
+        );
+        if !rollback_after_delivery {
+            assert!(
+                !matches!(
+                    canonical_response,
+                    Ok(Some(Ok(Message::Text(text))))
+                        if serde_json::from_str::<CoreFrame>(&text).is_ok_and(|frame| matches!(
+                            frame,
+                            CoreFrame::Response { response, .. }
+                                if matches!(*response, CoreResponse::ProjectionSubscribed { .. }
+                                    | CoreResponse::ProjectionReplay { .. })
+                        ))
+                ),
+                "scenario {index} delivered a successful canonical response"
+            );
+        }
+        wait_projection_subscription_count(&daemon, 0).await;
+        projection_event(
+            &daemon,
+            &format!("project-core-failure-{index}"),
+            "session-core-failure",
+            "turn-core-failure",
+        )
+        .await;
+        let leaked = timeout(Duration::from_millis(100), async {
+            loop {
+                match client.next().await {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(CoreFrame::Event(event)) = serde_json::from_str(&text) {
+                            if matches!(event.payload, CoreEvent::ProjectionStreamEvent { .. }) {
+                                return true;
+                            }
+                        }
+                    }
+                    Some(Ok(_)) | Some(Err(_)) | None => return false,
+                }
+            }
+        })
+        .await;
+        assert!(
+            !matches!(leaked, Ok(true)),
+            "failed core setup emitted live projection traffic"
+        );
+        let _ = client.close(None).await;
+        server.abort();
+    }
 }
 
 #[test]
@@ -1008,25 +1240,28 @@ async fn real_tui_reconnect_replays_exact_missing_range_then_live_impl() {
     let (address, daemon, server) = spawn_server().await;
     let mut first_client = connect(address, "/tui").await;
     tui_projection_handshake(&mut first_client).await;
-    let (_sub_first, cursor) =
+    let (first_subscription, cursor) =
         tui_subscribe_with_cursor(&mut first_client, "project-tui-reconnect").await;
     first_client
         .close(None)
         .await
         .expect("close first TUI client");
+    wait_projection_subscription_count(&daemon, 0).await;
 
-    projection_event(
+    projection_event_at_seq(
         &daemon,
         "project-tui-reconnect",
         "session-tui-reconnect",
         "turn-tui-missing-1",
+        1,
     )
     .await;
-    projection_event(
+    projection_event_at_seq(
         &daemon,
         "project-tui-reconnect",
         "session-tui-reconnect",
         "turn-tui-missing-2",
+        2,
     )
     .await;
 
@@ -1035,7 +1270,7 @@ async fn real_tui_reconnect_replays_exact_missing_range_then_live_impl() {
     send_json(
         &mut resumed_client,
         &TuiMessage::ProjectionResume {
-            cursor,
+            cursor: cursor.clone(),
             include_snapshot_if_resync: true,
         },
     )
@@ -1055,19 +1290,56 @@ async fn real_tui_reconnect_replays_exact_missing_range_then_live_impl() {
             _ => {}
         }
     };
-    assert_eq!(replay.events.len(), 2);
+    assert_ne!(first_subscription, new_subscription);
+    assert_eq!(replay.descriptor.stream_id, cursor.stream_id);
     assert_eq!((replay.replay_start_seq, replay.replay_end_seq), (1, 2));
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .map(|event| event.event_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .map(|event| match &event.payload {
+                codegg::protocol::projection::event::ProjectionEvent::TurnStarted { turn } => {
+                    turn.turn_id.as_str()
+                }
+                other => panic!("expected TurnStarted replay identity, got {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec!["turn-tui-missing-1", "turn-tui-missing-2"]
+    );
 
-    projection_event(
+    projection_event_at_seq(
         &daemon,
         "project-tui-reconnect",
         "session-tui-reconnect",
         "turn-tui-live-after-replay",
+        3,
     )
     .await;
-    assert_eq!(
-        next_tui_projection_event(&mut resumed_client).await,
-        Some(new_subscription)
+    let (live_subscription, live_stream, live_envelope) =
+        next_tui_projection_envelope(&mut resumed_client)
+            .await
+            .expect("live event after exact TUI replay");
+    assert_eq!(live_subscription, new_subscription);
+    assert_eq!(live_stream, Some(replay.descriptor.stream_id.clone()));
+    assert_eq!(live_envelope.event_seq, replay.replay_end_seq + 1);
+    assert!(matches!(
+        &live_envelope.payload,
+        codegg::protocol::projection::event::ProjectionEvent::TurnStarted { turn }
+            if turn.turn_id == "turn-tui-live-after-replay"
+    ));
+    assert!(
+        timeout(Duration::from_millis(250), resumed_client.next())
+            .await
+            .is_err(),
+        "TUI replay or live envelope was duplicated"
     );
     resumed_client
         .close(None)
@@ -1207,6 +1479,114 @@ async fn real_tui_failed_critical_delivery_rolls_back_daemon_subscription_impl()
     })
     .await;
     server.abort();
+}
+
+#[test]
+fn real_tui_staged_failure_matrix_rolls_back_every_material_class() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("projection test runtime")
+        .block_on(async {
+            let scenarios = [
+                (
+                    ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+                    CriticalDeliveryError::QueueClosed,
+                ),
+                (
+                    ProjectionLifecycleBoundary::AfterReceiverInstallation,
+                    CriticalDeliveryError::WriterClosed,
+                ),
+                (
+                    ProjectionLifecycleBoundary::BeforeControlEnqueue,
+                    CriticalDeliveryError::Timeout,
+                ),
+                (
+                    ProjectionLifecycleBoundary::BeforeControlEnqueue,
+                    CriticalDeliveryError::Serialization,
+                ),
+                (
+                    ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+                    CriticalDeliveryError::Cancelled,
+                ),
+                (
+                    ProjectionLifecycleBoundary::DuringWriterWrite,
+                    CriticalDeliveryError::WriterClosed,
+                ),
+                (
+                    ProjectionLifecycleBoundary::BeforeActivation,
+                    CriticalDeliveryError::Cancelled,
+                ),
+            ];
+
+            for (index, (boundary, error)) in scenarios.into_iter().enumerate() {
+                let seam = ProjectionLifecycleSeam::default();
+                let (address, daemon, server) = spawn_server_with_seam(seam.clone()).await;
+                let mut client = connect(address, "/tui").await;
+                tui_projection_handshake(&mut client).await;
+                seam.fail_next(boundary, error);
+                let project_id = format!("project-tui-failure-{index}");
+                send_json(
+                    &mut client,
+                    &TuiMessage::ProjectionSubscribe {
+                        request: project_subscription_request(&project_id),
+                    },
+                )
+                .await;
+
+                let canonical_response = timeout(Duration::from_millis(100), client.next()).await;
+                let rollback_after_delivery = matches!(
+                    boundary,
+                    ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt
+                        | ProjectionLifecycleBoundary::BeforeActivation
+                );
+                if !rollback_after_delivery {
+                    assert!(
+                        !matches!(
+                            canonical_response,
+                            Ok(Some(Ok(Message::Text(text))))
+                                if serde_json::from_str::<TuiMessage>(&text).is_ok_and(|message| matches!(
+                                    message,
+                                    TuiMessage::ProjectionSnapshot { .. }
+                                        | TuiMessage::ProjectionReplay { .. }
+                                ))
+                        ),
+                        "scenario {index} delivered a successful canonical response"
+                    );
+                }
+                wait_projection_subscription_count(&daemon, 0).await;
+                projection_event(
+                    &daemon,
+                    &project_id,
+                    "session-tui-failure",
+                    "turn-tui-failure",
+                )
+                .await;
+                let leaked = timeout(Duration::from_millis(100), async {
+                    loop {
+                        match client.next().await {
+                            Some(Ok(Message::Text(text))) => {
+                                if let Ok(TuiMessage::ProjectionEvent { .. }) =
+                                    serde_json::from_str(&text)
+                                {
+                                    return true;
+                                }
+                            }
+                            Some(Ok(_)) | Some(Err(_)) | None => return false,
+                        }
+                    }
+                })
+                .await;
+                assert!(
+                    !matches!(leaked, Ok(true)),
+                    "failed TUI setup emitted live projection traffic"
+                );
+                let _ = client.close(None).await;
+                server.abort();
+            }
+        });
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

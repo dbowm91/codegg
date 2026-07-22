@@ -32,6 +32,13 @@ def main() -> int:
         failures.append("daemon_socket.rs: raw forwarder is spawned without an owned handle")
 
     required_ws = (
+        ("struct ConnectionTaskSet", "WebSocket connection tasks lack a shared owner"),
+        (
+            "join_after_first_exit",
+            "WebSocket connection tasks do not use joined teardown",
+        ),
+        ("cancellation.cancel();", "connection cancellation is not required before joins"),
+        ("let result = handle.await;", "retained WebSocket task handles are not awaited"),
         ("OutboundRoute::Raw { generation", "raw outbound items lack a route generation"),
         ("async fn deliver_tui_outbound", "writer-side raw delivery check is missing"),
         ("raw_route_generation != generation", "stale raw generation is not rejected at write time"),
@@ -41,6 +48,29 @@ def main() -> int:
     for needle, message in required_ws:
         if needle not in ws:
             failures.append(f"ws.rs: {message}")
+
+    def function_body(name: str) -> str:
+        marker = f"async fn {name}"
+        start = ws.find(marker)
+        if start == -1:
+            return ""
+        brace = ws.find("{", start)
+        depth = 0
+        for index in range(brace, len(ws)):
+            if ws[index] == "{":
+                depth += 1
+            elif ws[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return ws[start : index + 1]
+        return ws[start:]
+
+    for adapter in ("upgrade_core_ws", "upgrade_tui"):
+        body = function_body(adapter)
+        if ".abort()" in body:
+            failures.append(f"ws.rs: {adapter} contains abort-only sibling cleanup")
+        if "ConnectionTaskSet::new" not in body or "join_after_first_exit" not in body:
+            failures.append(f"ws.rs: {adapter} does not use joined connection-task teardown")
     if re.search(r"(?:tokio::sync::)?mpsc::unbounded_channel", ws):
         failures.append("ws.rs: unbounded outbound channel is forbidden")
     if re.search(r"pub\s+fn\s+mark_live", projection):

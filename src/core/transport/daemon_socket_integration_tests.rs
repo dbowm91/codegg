@@ -447,6 +447,28 @@ async fn projection_handshake_and_resume(
     (reader, writer, client_id, subscription_id, batch)
 }
 
+async fn read_projection_event(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> Option<(
+    codegg_protocol::projection::replay::ProjectionSubscriptionId,
+    codegg_protocol::projection::replay::ProjectionStreamId,
+    codegg_protocol::projection::event::ProjectionEnvelope,
+)> {
+    loop {
+        let frame = read_frame(reader).await?;
+        if let CoreFrame::Event(envelope) = frame {
+            if let CoreEvent::ProjectionStreamEvent {
+                subscription_id,
+                stream_id,
+                envelope,
+            } = envelope.payload
+            {
+                return Some((subscription_id, stream_id, envelope));
+            }
+        }
+    }
+}
+
 async fn abort_server(handle: tokio::task::JoinHandle<()>) {
     handle.abort();
     let _ = tokio::time::timeout(Duration::from_millis(100), handle).await;
@@ -534,13 +556,23 @@ async fn publish_projection_event_with_turn(
     session_id: &str,
     turn_id: &str,
 ) {
+    publish_projection_event_with_turn_at_seq(daemon, project_id, session_id, turn_id, 1).await;
+}
+
+async fn publish_projection_event_with_turn_at_seq(
+    daemon: &CoreDaemon,
+    project_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    event_seq: u64,
+) {
     let seam = daemon
         .projection_seam
         .as_ref()
         .expect("SQLite-backed daemon has projection seam");
     let envelope = crate::protocol::core::EventEnvelope {
         protocol_version: crate::protocol::core::PROTOCOL_VERSION,
-        event_seq: 1,
+        event_seq,
         timestamp_ms: 1,
         session_id: Some(session_id.to_string()),
         turn_id: Some(turn_id.to_string()),
@@ -800,23 +832,43 @@ async fn socket_reconnect_replays_exact_missing_range_then_live() {
     let first_stream = UnixStream::connect(&socket_path)
         .await
         .expect("connect first reconnect client");
-    let (reader, writer, _client_id, _sub_id, cursor) =
+    let (reader, writer, _client_id, first_sub_id, cursor) =
         projection_handshake_and_subscribe_with_cursor(first_stream, "project-reconnect").await;
     drop(reader);
     drop(writer);
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if daemon
+                .projection_seam
+                .as_ref()
+                .expect("projection seam")
+                .service()
+                .subscriptions()
+                .active_count()
+                == 0
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first Unix subscription should be removed before reconnect");
 
-    publish_projection_event_with_turn(
+    publish_projection_event_with_turn_at_seq(
         &daemon,
         "project-reconnect",
         "session-reconnect",
         "turn-missing-1",
+        1,
     )
     .await;
-    publish_projection_event_with_turn(
+    publish_projection_event_with_turn_at_seq(
         &daemon,
         "project-reconnect",
         "session-reconnect",
         "turn-missing-2",
+        2,
     )
     .await;
 
@@ -824,26 +876,61 @@ async fn socket_reconnect_replays_exact_missing_range_then_live() {
         .await
         .expect("connect resumed reconnect client");
     let (mut reader, _writer, _client_id, new_sub_id, batch) =
-        projection_handshake_and_resume(resumed_stream, "project-reconnect", cursor).await;
-    assert_eq!(batch.events.len(), 2);
+        projection_handshake_and_resume(resumed_stream, "project-reconnect", cursor.clone()).await;
+    assert_ne!(first_sub_id, new_sub_id);
+    assert_eq!(batch.descriptor.stream_id, cursor.stream_id);
     assert_eq!((batch.replay_start_seq, batch.replay_end_seq), (1, 2));
-
-    publish_projection_event(&daemon, "project-reconnect", "session-reconnect").await;
-    let event_sub_id = tokio::time::timeout(Duration::from_millis(400), async {
-        loop {
-            if let Some(CoreFrame::Event(envelope)) = read_frame(&mut reader).await {
-                if let CoreEvent::ProjectionStreamEvent {
-                    subscription_id, ..
-                } = envelope.payload
-                {
-                    return subscription_id;
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .map(|event| event.event_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    assert_eq!(
+        batch
+            .events
+            .iter()
+            .map(|event| match &event.payload {
+                crate::protocol::projection::event::ProjectionEvent::TurnStarted { turn } => {
+                    turn.turn_id.as_str()
                 }
-            }
-        }
-    })
+                other => panic!("expected TurnStarted replay identity, got {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec!["turn-missing-1", "turn-missing-2"]
+    );
+
+    publish_projection_event_with_turn_at_seq(
+        &daemon,
+        "project-reconnect",
+        "session-reconnect",
+        "turn-live-after-replay",
+        3,
+    )
+    .await;
+    let (event_sub_id, event_stream_id, event) = tokio::time::timeout(
+        Duration::from_millis(400),
+        read_projection_event(&mut reader),
+    )
     .await
-    .expect("live event after Unix replay");
+    .expect("live event after Unix replay")
+    .expect("Unix projection stream should remain open");
     assert_eq!(event_sub_id, new_sub_id);
+    assert_eq!(event_stream_id, batch.descriptor.stream_id);
+    assert_eq!(event.event_seq, batch.replay_end_seq + 1);
+    assert!(matches!(
+        &event.payload,
+        crate::protocol::projection::event::ProjectionEvent::TurnStarted { turn }
+            if turn.turn_id == "turn-live-after-replay"
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(250), read_frame(&mut reader))
+            .await
+            .is_err(),
+        "Unix replay or live envelope was duplicated"
+    );
     abort_server(server_handle).await;
 }
 
@@ -937,6 +1024,110 @@ async fn socket_failed_receiver_install_rolls_back_daemon_subscription() {
     .await
     .expect("failed Unix setup must remove daemon subscription");
     abort_server(server_handle).await;
+}
+
+#[tokio::test]
+async fn socket_staged_failure_matrix_rolls_back_every_material_class() {
+    let scenarios = [
+        (
+            ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
+            crate::core::transport::projection::CriticalDeliveryError::QueueClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::AfterReceiverInstallation,
+            crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            crate::core::transport::projection::CriticalDeliveryError::Timeout,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeControlEnqueue,
+            crate::core::transport::projection::CriticalDeliveryError::Serialization,
+        ),
+        (
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
+            crate::core::transport::projection::CriticalDeliveryError::Cancelled,
+        ),
+        (
+            ProjectionLifecycleBoundary::DuringWriterWrite,
+            crate::core::transport::projection::CriticalDeliveryError::WriterClosed,
+        ),
+        (
+            ProjectionLifecycleBoundary::BeforeActivation,
+            crate::core::transport::projection::CriticalDeliveryError::Cancelled,
+        ),
+    ];
+
+    for (index, (boundary, error)) in scenarios.into_iter().enumerate() {
+        let daemon = projection_daemon().await;
+        let seam = ProjectionLifecycleSeam::default();
+        seam.fail_next(boundary, error);
+        let (socket_path, _socket_dir, server_handle, _shutdown) =
+            spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), seam).await;
+        let stream = UnixStream::connect(&socket_path)
+            .await
+            .expect("connect staged failure client");
+        let (mut reader, _writer, _client_id) = projection_handshake_with_blocked_response(
+            stream,
+            &format!("project-unix-failure-{index}"),
+        )
+        .await;
+
+        let canonical_response =
+            tokio::time::timeout(Duration::from_millis(500), read_frame(&mut reader)).await;
+        let rollback_after_delivery = matches!(
+            boundary,
+            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt
+                | ProjectionLifecycleBoundary::BeforeActivation
+        );
+        if !rollback_after_delivery {
+            if let Ok(Some(CoreFrame::Response { response, .. })) = canonical_response {
+                assert!(!matches!(
+                    *response,
+                    crate::protocol::core::CoreResponse::ProjectionSubscribed { .. }
+                        | crate::protocol::core::CoreResponse::ProjectionReplay { .. }
+                ));
+            }
+        }
+        let seam = daemon.projection_seam.as_ref().expect("projection seam");
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if seam.service().subscriptions().active_count() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failed Unix setup must remove daemon subscription");
+
+        publish_projection_event_with_turn(
+            &daemon,
+            &format!("project-unix-failure-{index}"),
+            "session-unix-failure",
+            "turn-unix-failure",
+        )
+        .await;
+        let leaked = tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                match read_frame(&mut reader).await {
+                    Some(CoreFrame::Event(event)) => {
+                        if matches!(event.payload, CoreEvent::ProjectionStreamEvent { .. }) {
+                            return true;
+                        }
+                    }
+                    Some(_) | None => return false,
+                }
+            }
+        })
+        .await;
+        assert!(
+            !matches!(leaked, Ok(true)),
+            "failed Unix setup emitted live traffic"
+        );
+        abort_server(server_handle).await;
+    }
 }
 
 /// Test for Pass I of the integration test matrix: two real Unix
