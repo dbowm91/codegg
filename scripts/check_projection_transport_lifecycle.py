@@ -3,12 +3,18 @@
 
 Covers M008 (transport ownership, joined teardown, stale-route rejection),
 M009 (real adapter lifecycle, queue saturation, peer disconnect, interrupted
-replay, churn, two-client continuity, conditional closure record), and
+replay, churn, two-client continuity, conditional closure record),
 M010 (mechanism-faithful transport verification: observer-driven queue
 saturation, panic-classification matrix, raw-source first-exit via
 cancellation token, writer-barrier snapshot/replay interruption, Unix
 peer-close/write/flush races, interrupted replay retry, fresh identity
-proof, and final closure record).
+proof, and final closure record), and
+M011 (evidence correctness and mechanism verification closure:
+operation-correlated /core and /tui full-queue timeout, six-case
+production-teardown matrix, per-connection probe ownership, raw-source
+cancellation for both adapters, real Unix peer/write races with
+fresh-unrelated-client convergence, repeated Unix race/churn baselines,
+complete rollback/non-interference harness).
 """
 
 from pathlib import Path
@@ -445,13 +451,312 @@ def main() -> int:
             if needle not in closure_010:
                 failures.append(f"010-status.md: {message}")
 
+    # ── M011 check 1: per-connection probe factory / registry ───────────
+    for needle, message in (
+        (
+            "ConnectionProbeFactory",
+            "ws.rs: per-connection probe factory type is missing",
+        ),
+        (
+            "ConnectionProbeRegistry",
+            "ws.rs: per-connection probe registry type is missing",
+        ),
+        (
+            "probe_factory",
+            "ws.rs: ServerState does not retain a probe_factory",
+        ),
+    ):
+        if needle not in ws:
+            failures.append(f"ws.rs: {message}")
+
+    # ── M011 check 2: operation-correlated critical-send observation ────
+    for needle, message in (
+        (
+            "struct CriticalSendObservation",
+            "ws.rs: CriticalSendObservation struct is missing",
+        ),
+        (
+            "queue_full_before_send",
+            "ws.rs: operation-correlated record must record queue_full_before_send",
+        ),
+        (
+            "is_timeout_during_enqueue",
+            "ws.rs: operation-correlated record must expose is_timeout_during_enqueue",
+        ),
+        (
+            "receipt_wait_started",
+            "ws.rs: operation-correlated record must record receipt_wait_started",
+        ),
+    ):
+        if needle not in ws:
+            failures.append(f"ws.rs: {message}")
+
+    # ── M011 check 3: `/core` operation-correlated full-queue timeout ──
+    if "fn real_core_full_queue_operation_correlated_timeout" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: M011 /core full-queue operation-correlated "
+            "timeout fixture is missing"
+        )
+    else:
+        m = re.search(
+            r"fn\s+real_core_full_queue_operation_correlated_timeout.*?\{",
+            real_tests,
+            re.DOTALL,
+        )
+        body = real_tests[m.start(): m.start() + 8000]
+        for needle, message in (
+            (
+                "TrySendError",
+                "/core full-queue fixture does not exercise production TrySendError::Full precondition",
+            ),
+            (
+                "is_timeout_during_enqueue",
+                "/core full-queue fixture must use is_timeout_during_enqueue correlation",
+            ),
+            (
+                "queue_full_before_send",
+                "/core full-queue fixture must assert queue_full_before_send",
+            ),
+            (
+                "CriticalDeliveryError",
+                "/core full-queue fixture must assert CriticalDeliveryError",
+            ),
+        ):
+            if needle not in body:
+                failures.append(
+                    f"projection_transport_real.rs: real_core_full_queue_operation_correlated_timeout {message}"
+                )
+        if re.search(r"\bany_timeout\b", body):
+            failures.append(
+                "projection_transport_real.rs: real_core_full_queue_operation_correlated_timeout "
+                "uses any_timeout() instead of operation-correlated evidence"
+            )
+
+    # ── M011 check 4: `/tui` operation-correlated full-queue timeout ───
+    if "fn real_tui_full_queue_operation_correlated_timeout" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: M011 /tui full-queue operation-correlated "
+            "timeout fixture is missing"
+        )
+    else:
+        m = re.search(
+            r"fn\s+real_tui_full_queue_operation_correlated_timeout.*?\{",
+            real_tests,
+            re.DOTALL,
+        )
+        body = real_tests[m.start(): m.start() + 8000]
+        for needle, message in (
+            (
+                "queue_message",
+                "/tui full-queue fixture must use production queue_message helper",
+            ),
+            (
+                "is_timeout_during_enqueue",
+                "/tui full-queue fixture must use is_timeout_during_enqueue correlation",
+            ),
+            (
+                "queue_full_before_send",
+                "/tui full-queue fixture must assert queue_full_before_send",
+            ),
+            (
+                "CriticalDeliveryError",
+                "/tui full-queue fixture must assert CriticalDeliveryError::Timeout",
+            ),
+        ):
+            if needle not in body:
+                failures.append(
+                    f"projection_transport_real.rs: real_tui_full_queue_operation_correlated_timeout {message}"
+                )
+        if re.search(r"\bany_timeout\b", body):
+            failures.append(
+                "projection_transport_real.rs: real_tui_full_queue_operation_correlated_timeout "
+                "uses any_timeout() instead of operation-correlated evidence"
+            )
+
+    # ── M011 check 5: six-case production-teardown first-exit matrix ───
+    if "fn real_connection_task_set_six_case_production_teardown_matrix" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: M011 six-case production-teardown matrix "
+            "fixture is missing"
+        )
+    else:
+        m = re.search(
+            r"fn\s+real_connection_task_set_six_case_production_teardown_matrix.*?\{",
+            real_tests,
+            re.DOTALL,
+        )
+        body = real_tests[m.start(): m.start() + 12000]
+        for kind in ("Send", "Receive", "RawEvent"):
+            if kind not in body:
+                failures.append(
+                    "projection_transport_real.rs: six-case production-teardown matrix "
+                    f"must exercise ConnectionTaskKind::{kind}"
+                )
+        if "production_teardown_for_test" not in body:
+            failures.append(
+                "projection_transport_real.rs: six-case matrix must invoke the "
+                "production teardown wrapper"
+            )
+        if "is_cancelled" not in body:
+            failures.append(
+                "projection_transport_real.rs: six-case matrix must assert connection "
+                "cancellation token is cancelled"
+            )
+        # Sentinels must be present for sibling-join proof
+        if "production_teardown_for_test" not in ws:
+            failures.append(
+                "ws.rs: production teardown wrapper must be retained on ConnectionTaskSet"
+            )
+
+    # ── M011 check 6: six-case matrix sibling-join guard ───────────────
+    if (
+        "fn join_after_first_exit_waits_for_sibling_joins_not_just_abort"
+        not in real_tests
+    ):
+        failures.append(
+            "projection_transport_real.rs: M011 sibling-join delay guard test is missing"
+        )
+
+    # ── M011 check 7: per-adapter raw-source cancellation fixture ───────
+    if "fn real_core_raw_source_first_exit_via_cancellation_token" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: M011 /core raw-source cancellation fixture is missing"
+        )
+    else:
+        m = re.search(
+            r"fn\s+real_core_raw_source_first_exit_via_cancellation_token.*?\{",
+            real_tests,
+            re.DOTALL,
+        )
+        body = real_tests[m.start(): m.start() + 6000]
+        if "RawEvent" not in body:
+            failures.append(
+                "projection_transport_real.rs: /core raw-source cancellation must classify "
+                "first_task_kind as RawEvent"
+            )
+
+    if "fn real_tui_raw_source_first_exit_via_cancellation_token" not in real_tests:
+        failures.append(
+            "projection_transport_real.rs: M011 /tui raw-source cancellation fixture is missing"
+        )
+    else:
+        m = re.search(
+            r"fn\s+real_tui_raw_source_first_exit_via_cancellation_token.*?\{",
+            real_tests,
+            re.DOTALL,
+        )
+        body = real_tests[m.start(): m.start() + 6000]
+        if "RawEvent" not in body:
+            failures.append(
+                "projection_transport_real.rs: /tui raw-source cancellation must classify "
+                "first_task_kind as RawEvent"
+            )
+        if "raw_source_cancel" not in body and "raw_cancel" not in body:
+            failures.append(
+                "projection_transport_real.rs: /tui raw-source cancellation must wire "
+                "raw_source_cancel"
+            )
+
+    # ── M011 check 8: Unix real-I/O fixtures (no fail_next) ────────────
+    unix_required_m011 = (
+        (
+            "fn socket_f1_peer_closes_before_canonical_response_returns_io_error",
+            "Unix F1 pre-response peer-close fixture is missing",
+        ),
+        (
+            "fn socket_f2_writer_failure_drops_peer_write_half_then_read_half",
+            "Unix F2 writer-failure fixture is missing",
+        ),
+        (
+            "fn socket_f3_completion_vs_cancellation_race_converges_per_cycle",
+            "Unix F3 completion/cancellation race fixture is missing",
+        ),
+        (
+            "fn socket_f4_replay_delivery_interrupted_by_real_peer_close",
+            "Unix F4 interrupted replay fixture is missing",
+        ),
+        (
+            "fn socket_f5_repeated_unix_race_convergence_baselines",
+            "Unix F5 repeated convergence fixture is missing",
+        ),
+    )
+    for needle, message in unix_required_m011:
+        if needle not in unix_tests:
+            failures.append(f"daemon_socket_integration_tests.rs: {message}")
+
+    for fixture in (
+        "socket_f1_peer_closes_before_canonical_response_returns_io_error",
+        "socket_f2_writer_failure_drops_peer_write_half_then_read_half",
+        "socket_f3_completion_vs_cancellation_race_converges_per_cycle",
+        "socket_f4_replay_delivery_interrupted_by_real_peer_close",
+    ):
+        m = re.search(rf"fn\s+{fixture}.*?\{{", unix_tests, re.DOTALL)
+        if m:
+            body = unix_tests[m.start(): m.start() + 6000]
+            if "fail_next(" in body:
+                failures.append(
+                    f"daemon_socket_integration_tests.rs: {fixture} uses fail_next "
+                    "injection (M011 must use real peer shutdown/drop)"
+                )
+
+    # ── M011 check 9: Unix F4 fixture must drop resumed peer before replay ──
+    f4_match = re.search(
+        r"fn\s+socket_f4_replay_delivery_interrupted_by_real_peer_close.*?\{",
+        unix_tests,
+        re.DOTALL,
+    )
+    if f4_match:
+        f4_body = unix_tests[f4_match.start(): f4_match.start() + 8000]
+        if not re.search(r"drop\(.*?(writer|peer|read_half)", f4_body):
+            failures.append(
+                "daemon_socket_integration_tests.rs: socket_f4 must drop the resumed peer "
+                "before replay response completion (M011)"
+            )
+
+    # ── M011 check 10: complete rollback harness ────────────────────────
+    if (
+        "assert_real_transport_rollback_complete_extended" not in real_tests
+        or "fn assert_tui_transport_rollback_complete" not in real_tests
+    ):
+        failures.append(
+            "projection_transport_real.rs: complete M011 rollback harness "
+            "(assert_real_transport_rollback_complete_extended + assert_tui_transport_rollback_complete) is missing"
+        )
+    if (
+        "real_core_rollback_harness_asserts_unrelated_client_continuity" not in real_tests
+    ):
+        failures.append(
+            "projection_transport_real.rs: M011 rollback unrelated-client continuity "
+            "fixture is missing"
+        )
+
+    # ── M011 check 11: closure records and roadmap state ────────────────
+    m011_status = _read(ROOT / "plans/closure/session-projections/011-status.md")
+    if not m011_status:
+        # Pre-closure: the M011 implementation record must remain referenced
+        # from 010-status.md so the chain is auditable.
+        if (
+            "Status: conditionally closed" not in closure_010
+            and "011-evidence-correctness-and-mechanism-verification-closure.md"
+            not in closure_010
+        ):
+            failures.append(
+                "010-status.md: must remain conditionally closed and link to "
+                "011-evidence-correctness-and-mechanism-verification-closure.md"
+            )
+    else:
+        if "next commit" in m011_status:
+            failures.append(
+                "011-status.md: must not reference `next commit` placeholders"
+            )
+
     # ── Report ──────────────────────────────────────────────────────────
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}")
         return 1
 
-    print("OK: projection transport lifecycle ownership, stale-route guards, and M010 mechanism-faithful instrumentation are present.")
+    print("OK: projection transport lifecycle ownership, stale-route guards, M010 mechanism-faithful instrumentation, and M011 evidence-correctness closure guards are present.")
     return 0
 
 
