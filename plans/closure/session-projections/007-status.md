@@ -18,7 +18,7 @@ Implementation commits:
 
 Closure record commit:
 
-- The exact commit introducing this record is recorded by the immutable planning synchronization commit that follows the implementation commit; this line is finalized before handoff.
+- `922333b5787944d033c004cbc184a9de06778a88` — introduced this closure record and the strict M007 planning transition.
 
 ## 1. Executive finding
 
