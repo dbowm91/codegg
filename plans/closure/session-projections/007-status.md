@@ -193,3 +193,13 @@ The subsystem returns to strict closed status only when M008 records:
 - passing focused transport/replay/disclosure/TUI/static-guard results;
 - exact implementation and closure commits;
 - no unresolved high or medium M008 finding.
+
+## 9. M008 final-polish disposition
+
+M007 remains recorded as conditionally closed so its historical closure does
+not overstate the evidence that existed at that milestone. The three residual
+findings listed above were resolved by M008 implementation commit
+`6975050af530eb5bd7a640c1f7ac9a31859dfda3` and the exact transport/replay
+evidence recorded in `plans/closure/session-projections/008-status.md`.
+M008 is the authoritative strict-closure record for the session-projections
+subsystem.

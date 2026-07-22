@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 008 final transport lifecycle and replay evidence polish
+Status: closed — Milestone 008 final transport lifecycle and replay evidence polish
 
 Long-term references:
 
@@ -75,6 +75,11 @@ Authoritative documents:
 
 M8 does not reopen storage, reducer, disclosure, replay authority, sequence semantics, or protocol DTO meaning.
 
+M8 resolved the residual task-join, staged-adapter-failure, and exact
+replay-to-live evidence findings. Its closure record is the strict status
+authority for this subsystem; M7 remains conditionally closed as historical
+evidence.
+
 ## 4. Target architecture
 
 ```text
@@ -139,7 +144,7 @@ M6 atomic control delivery and transport hardening          [conditionally close
 M7 lifecycle ownership, route epochs, race evidence         [conditionally closed; final polish required]
         |
         v
-M8 joined WebSocket teardown and exact replay evidence       [ready]
+M8 joined WebSocket teardown and exact replay evidence       [closed]
 ```
 
 M8 has no unmet design dependency. It consumes the M6 critical-send/activation state machine and the M7 lifecycle seam, route generation, foreign-operation, and reconnect foundations.
@@ -224,11 +229,17 @@ Residual M7 polish findings:
 
 ### Milestone 8 — Final transport lifecycle and replay evidence polish
 
-Status: ready for handoff.
+Status: closed.
 
 Implementation plan:
 
 - `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
+
+Closure record:
+
+- `plans/closure/session-projections/008-status.md`
+
+Implementation: `6975050af530eb5bd7a640c1f7ac9a31859dfda3`
 
 Class: correctness polish / task lifecycle / adapter verification / closure reconciliation
 
@@ -341,4 +352,4 @@ This roadmap returns to strict closed status when all three transports are bound
 | 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |
 | 6 | conditionally closed; findings addressed by M7 | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | strict subsystem closure deferred to M8 |
 | 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | M8 final task-lifecycle and replay-evidence polish |
-| 8 | ready | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | — | — |
+| 8 | closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | — |
