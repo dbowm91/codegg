@@ -243,3 +243,130 @@ and checked on every database open.
 - Terminal programs may be garbage-collected after a configurable
   retention window (not yet implemented).
 - Source/IR/content-store GC removes only unreferenced digests.
+
+## M004: Restricted-Python Frontend and Static Bounds
+
+### Parse Pipeline (M004)
+
+```
+source bytes → parse → normalized AST → validate → static bounds → compile IR → verify IR
+```
+
+Ownership: `crates/codegg-core/src/tool_program/` — submodules:
+
+| Module | Purpose |
+|--------|---------|
+| `ast.rs` | Normalized Codegg-owned AST types (15 node kinds + Range) |
+| `parser.rs` | rustpython-parser wrapper (~1100 lines) |
+| `validator.rs` | Semantic validator: built-in shadowing, allowed methods, scope |
+| `static_bounds.rs` | Bound analyzer: max steps, iterations, calls, parallel width, nesting |
+| `ir.rs` | Versioned IR types, 38 opcodes, SHA-256 deterministic digest |
+| `compiler.rs` | IR compiler: AST → flat instruction sequence (~620 lines) |
+| `ir_verifier.rs` | IR verifier: jump targets, local slots, pool refs, bounds, terminal |
+| `diagnostics.rs` | 20 diagnostic codes (TP001–TP018, TP998, TP999), bounded source spans |
+| `store.rs` | Content-addressed IR storage, cache key matching, serialize/deserialize |
+| `guards.rs` | Compile-time guards: parse-only pipeline, no CPython execution |
+
+### Dependency Inventory
+
+| Dependency | Version | License | MSRV | Purpose | Parse-only |
+|------------|---------|---------|------|---------|------------|
+| `rustpython-parser` | 0.4.0 | MIT | 1.72.1 | Parse Python source to AST | Yes — no exec |
+
+Features used: `default` (location + malachite-bigint). ~15 transitive crates.
+No network, filesystem, or async dependencies. No pyo3 or CPython bindings.
+
+### Agent-Facing Examples
+
+#### Accepted source (Tool Program v1)
+
+```python
+# Simple tool call with emit
+result = call({"tool": "grep_search", "pattern": "TODO"})
+emit({"found": result})
+
+# Bounded loop with parallel calls
+reads = parallel(
+    {"tool": "read_file", "path": "a.py"},
+    {"tool": "read_file", "path": "b.py"},
+)
+emit({"results": reads})
+
+# Conditional logic with loop
+total = 0
+for i in range(10):
+    total = total + 1
+emit({"total": total})
+```
+
+#### Rejected source
+
+```python
+import os              # TP001 — imports not supported
+while True:            # TP001 — while loops not supported
+    pass
+class Foo:             # TP001 — class definitions not supported
+    pass
+f = lambda x: x       # TP001 — lambda not supported
+x = [i for i in y]    # TP001 — comprehensions not supported
+```
+
+### Diagnostics Troubleshooting
+
+| Code | Name | Meaning | Fix |
+|------|------|---------|-----|
+| TP001 | UnsupportedSyntax | while, try, import, class, lambda, etc. | Rewrite using for/if/assign/emit/fail |
+| TP002 | UnboundedLoop | Unknown iteration count | Use literal list or range() |
+| TP003 | MaxNestingDepth | Nesting exceeds max (20) | Flatten control flow |
+| TP004 | MaxCollectionSize | Literal/collection too large | Reduce element count |
+| TP005 | BuiltInShadowing | Shadowed call/parallel/emit/fail | Rename variable |
+| TP006 | IllegalAttributeAccess | Disallowed method on object | Use allowed methods only |
+| TP007 | MaxParallelWidth | Parallel group too wide | Reduce parallel descriptors |
+| TP008 | MaxIrSteps | IR step budget exceeded | Simplify program |
+| TP009 | MaxCallSites | Too many tool call sites | Reduce calls |
+| TP010 | UnresolvedIdentifier | Unknown variable name | Assign before use |
+| TP011 | InvalidCallDescriptor | call() missing descriptor arg | Provide dict to call() |
+| TP012 | MaxTotalIterations | Total loop iterations exceeded | Reduce loop bounds |
+| TP013 | SourceTooLarge | Source exceeds 1 MB | Split into smaller programs |
+| TP014 | MaxAstNodes | AST node count exceeded (10K) | Simplify program |
+| TP015 | MaxIdentifierLength | Identifier too long | Shorten name |
+| TP016 | UnsupportedVersion | IR/language/compiler version mismatch | Recompile with current version |
+| TP017 | DiagnosticSpanTooLarge | Source span exceeds bounds | Reduce source size |
+| TP018 | DestructuringMismatch | Assignment target count mismatch | Fix destructuring |
+| TP998 | VerificationFailed | IR verification failed | Report bug |
+| TP999 | InternalError | Internal compiler error | Report bug |
+
+### Static Guards
+
+Compile-time and module-level guards prevent CPython execution:
+
+- No `pyo3` dependency in `codegg-core/Cargo.toml`
+- No `std::process::Command::new("python3")` in `tool_program/` module
+- No `eval()`/`exec()`/`compile()` on user source
+- `guards.rs` module documents invariants and provides `assert_parse_only!()` macro
+- `cargo deny` / `cargo audit` in CI verifies no CPython dependencies
+
+### Fuzz Targets
+
+Located in `crates/codegg-core/fuzz/fuzz_targets/`:
+
+| Target | What it tests |
+|--------|--------------|
+| `parser_fuzz` | Parser never panics on arbitrary bytes |
+| `compiler_fuzz` | Full pipeline never panics on arbitrary input |
+| `roundtrip_fuzz` | IR serialize/deserialize round-trip integrity |
+
+Run with: `cargo fuzz run <target> -- -max_total_time=300`
+
+### Content-Addressed IR Store
+
+`ProgramStore` (`store.rs`) provides:
+
+- `digest_source(source)` — SHA-256 of source bytes
+- `store_ir(source, ir)` — store IR after successful compilation
+- `check_cache(source, manifest, limits)` — check for cached IR with matching key
+- `get_ir(source)` / `contains_ir(source)` / `remove(source)` — retrieval and cleanup
+- `serialize_ir(ir)` / `deserialize_ir(bytes)` — JSON round-trip
+- `verify_ir_integrity(ir)` — digest consistency after deserialization
+
+Thread-safe via `Arc<Mutex<...>>`. Concurrent access tested.

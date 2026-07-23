@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md`
 Source subsystem roadmap: `plans/subsystems/tool-programs-roadmap.md#milestone-4--restricted-python-frontend-and-static-bounds`
 Repository baseline reviewed: `dcd2024e`
-Implementation commits: `dcd2024e` — restricted-Python frontend and static bounds
+Implementation commits: `dcd2024e` — restricted-Python frontend and static bounds; M004 remainder — fuzz targets, static guards, property tests, program store, concurrent tests, documentation
 
 ## 1. Executive finding
 
@@ -17,6 +17,11 @@ M004 is closed. The restricted-Python frontend delivers a complete parse → val
 5. Unit and integration test suites cover accepted/rejected corpus with no accepted safety bypass.
 6. Compile cancellation and concurrent identical submissions leave no partial executable IR (deterministic content hashing ensures idempotent recompilation).
 7. No unresolved high or medium finding remains.
+8. Fuzz targets exist for parser, compiler, and IR round-trip (Work Package E).
+9. Static guards prevent CPython execution in the Tool Program module (Work Package E).
+10. Property tests verify bounds are conservative against a reference evaluator (Work Package C).
+11. ProgramStore provides content-addressed IR storage, cache key matching, and serialize/deserialize (§6, Work Package D).
+12. Diagnostics troubleshooting table covers all 20 error codes (§12).
 
 ## 2. Requirement-to-evidence matrix
 
@@ -30,7 +35,13 @@ M004 is closed. The restricted-Python frontend delivers a complete parse → val
 | IR verifier | `ir_verifier.rs` — jump targets, local slots, pool references, bounds consistency, terminal instruction |
 | Source-span diagnostics | `diagnostics.rs` — 20 error codes (TP001–TP018, TP998, TP999), bounded source spans |
 | Deterministic output | Same source, manifest, limits → identical IR digest across compilations |
-| Fuzz-ready structure | Parser wraps upstream `rustpython-parser` which has its own fuzz corpus |
+| Fuzz targets | `fuzz_targets/parser_fuzz.rs`, `compiler_fuzz.rs`, `roundtrip_fuzz.rs` — never-panic guarantees |
+| CPython execution guards | `guards.rs` — compile-time documentation + module-level invariant enforcement |
+| Property tests | `tests/tool_program_property.rs` — reference evaluator, deterministic digest, conservative bounds |
+| Program store | `store.rs` — content-addressed IR storage, cache key matching, serialize/deserialize |
+| Concurrent tests | `tests/tool_program_concurrent.rs` — cancellation, coalescing, thread safety |
+| Diagnostics troubleshooting | `architecture/tool_programs.md` — full 20-code troubleshooting table |
+| Agent examples | `architecture/tool_programs.md` — accepted/rejected source examples |
 
 ## 3. Production implementation evidence
 
@@ -46,6 +57,12 @@ M004 is closed. The restricted-Python frontend delivers a complete parse → val
 - `crates/codegg-core/src/tool_program/ir_verifier.rs` — IR verifier (280 lines)
 - `crates/codegg-core/src/tool_program/diagnostics.rs` — source-span diagnostics (110 lines)
 - `crates/codegg-core/src/tool_program/mod.rs` — module root with pipeline entry point (160 lines)
+- `crates/codegg-core/src/tool_program/store.rs` — content-addressed IR storage and serialize/deserialize
+- `crates/codegg-core/src/tool_program/guards.rs` — compile-time CPython execution prevention guards
+- `crates/codegg-core/fuzz/Cargo.toml` — fuzz target workspace
+- `crates/codegg-core/fuzz/fuzz_targets/parser_fuzz.rs` — parser fuzz target
+- `crates/codegg-core/fuzz/fuzz_targets/compiler_fuzz.rs` — compiler fuzz target
+- `crates/codegg-core/fuzz/fuzz_targets/roundtrip_fuzz.rs` — IR round-trip fuzz target
 
 ### Files modified
 
@@ -57,6 +74,8 @@ M004 is closed. The restricted-Python frontend delivers a complete parse → val
 - `tests/tool_program_language.rs` — 73 integration tests (accepted/rejected corpus, determinism, metadata)
 - `tests/tool_program_static_bounds.rs` — 26 integration tests (bounds analysis)
 - `tests/tool_program_ir.rs` — 38 integration tests (IR structure, verification, digest)
+- `tests/tool_program_property.rs` — 8 property tests (parser safety, deterministic digest, conservative bounds, rejected syntax, IR consistency)
+- `tests/tool_program_concurrent.rs` — 7 concurrency tests (cancellation, coalescing, thread safety, round-trip integrity)
 
 ### Dependency review
 
@@ -79,11 +98,13 @@ M004 is closed. The restricted-Python frontend delivers a complete parse → val
 | `cargo test --test tool_program_language` | 73 passed |
 | `cargo test --test tool_program_static_bounds` | 26 passed |
 | `cargo test --test tool_program_ir` | 38 passed |
+| `cargo test --test tool_program_property` | 8 passed |
+| `cargo test --test tool_program_concurrent` | 7 passed |
 | `cargo clippy -p codegg-core --all-targets -- -D warnings` | 0 tool_program errors (pre-existing projection_replay warnings only) |
 | `cargo fmt --all -- --check` | pass |
 | `cargo check` | pass (0 errors, pre-existing warnings) |
 
-Total: 221 tests passed across unit and integration suites.
+Total: 236 tests passed across unit and integration suites.
 
 ## 5. Invariant review
 
@@ -127,9 +148,10 @@ Total: 221 tests passed across unit and integration suites.
 ## 9. Documentation and operations
 
 - `architecture/tool_program_language.md` — normative language specification with grammar, examples, error codes
-- Architecture doc covers parser dependency review, accepted/rejected source, and IR versioning policy
-- Agent-facing examples in language spec (accepted and rejected source)
-- Diagnostic codes documented for troubleshooting
+- `architecture/tool_programs.md` — updated with M004 additions: dependency inventory, agent examples, diagnostics troubleshooting table, static guards documentation, fuzz targets, program store, concurrent tests
+- Agent-facing examples in language spec and architecture doc (accepted and rejected source)
+- Diagnostic codes documented with troubleshooting table (20 codes, meaning, fix)
+- Static guards documented in `guards.rs` and architecture doc
 
 ## 10. Unresolved findings (severity: critical/high/medium/low)
 

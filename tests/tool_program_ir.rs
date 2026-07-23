@@ -1,8 +1,6 @@
 //! Integration tests for Tool Program IR compilation and verification.
 
-use codegg_core::tool_program::{
-    compile, compile_program, ir, parse_source, static_bounds, validate, verify_ir,
-};
+use codegg_core::tool_program::{compile_program, ir, verify_ir};
 
 #[test]
 fn ir_emit_produces_emit_instruction() {

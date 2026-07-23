@@ -1,0 +1,33 @@
+[package]
+name = "tool-program-fuzz"
+version = "0.0.0"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.codegg-core]
+path = ".."
+
+[[bin]]
+name = "parser_fuzz"
+path = "fuzz_targets/parser_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "compiler_fuzz"
+path = "fuzz_targets/compiler_fuzz.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "roundtrip_fuzz"
+path = "fuzz_targets/roundtrip_fuzz.rs"
+test = false
+doc = false

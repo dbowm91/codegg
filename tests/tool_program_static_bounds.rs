@@ -121,7 +121,7 @@ emit({"total": len(results)})
 
 #[test]
 fn bounds_recorded_in_ir() {
-    use codegg_core::tool_program::{compile, ir};
+    use codegg_core::tool_program::compile;
     let src = "for i in range(5):\n    x = i\n";
     let ast = parse_source(src).unwrap();
     validate(&ast).unwrap();

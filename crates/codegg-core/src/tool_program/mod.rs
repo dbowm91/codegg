@@ -20,19 +20,23 @@
 pub mod ast;
 pub mod compiler;
 pub mod diagnostics;
+pub mod guards;
 pub mod ir;
 pub mod ir_verifier;
 pub mod parser;
 pub mod static_bounds;
+pub mod store;
 pub mod validator;
 
-pub use ast::{Expr, Program, Stmt};
+pub use ast::{Expr, Program, Slice, Stmt};
 pub use compiler::compile;
 pub use diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
+pub use guards::{cpython_execution_is_forbidden, ToolProgramCompilerIsParseOnly};
 pub use ir::{IrProgram, IrVersion, COMPILER_VERSION, LANGUAGE_VERSION, PARSER_VERSION};
 pub use ir_verifier::verify_ir;
 pub use parser::parse_source;
 pub use static_bounds::StaticBounds;
+pub use store::{deserialize_ir, serialize_ir, verify_ir_integrity, ProgramStore};
 pub use validator::validate;
 
 use std::fmt;
