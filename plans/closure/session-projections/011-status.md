@@ -1,6 +1,6 @@
 # Session Projections Milestone 011 — Closure Status
 
-Status: closed
+Status: conditionally closed — Milestone 012 TUI disconnect lifecycle and final evidence closure required
 
 Source implementation plan:
 
@@ -10,242 +10,198 @@ Source subsystem roadmap:
 
 - `plans/subsystems/session-projections-roadmap.md`
 
-Corrected predecessor closure:
+Strict-closure follow-up:
 
-- `plans/closure/session-projections/010-status.md` (now strictly superseded by M011 closure evidence)
+- `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md`
 
 Repository baseline reviewed: `8bd59b22662a289f3124c9b3113e545faa9446d7`
 
-Implementation, follow-up, closure, and final reviewed commits:
+Final post-M011 head reviewed: `1a93167ee3bdfdc55e4bd2746180443cc19b7c96`
 
-- `560b8b7f95c101f2e3b08a940084a94c166e80fb` — M011 Work Packages A through G (per-connection probe ownership via `ConnectionProbeFactory` and `ConnectionProbeRegistry`, operation-correlated `CriticalSendObservation`, deterministic `/core` and `/tui` full-queue timeout fixtures, six-case production-teardown matrix, `/core` and `/tui` real raw-source cancellation).
-- `ae0a53f2259316217cdd55a7a158e2500a874f75` — M011 Work Package F completion: F1–F5 fixtures added (peer close before canonical response, real writer failure via partial-close, completion-vs-cancellation race, interrupted replay delivery, repeated convergence), plus writer-gate cancellation-arm bug fix in `WriterGate::wait` and `WriterGate::wait_pre_recv`, plus cancellation branch in the writer's biased `tokio::select!`. F1–F5 pass against `target/debug/deps/codegg-3d7d14e7658300a2`.
-- `b98a626217505f094a210a8c640e1f1530280cfb` — M011 Work Package G completion: `assert_tui_transport_rollback_complete` helper added for the TUI-shaped rollback path; TUI raw-source-first, TUI pending snapshot, and core writer-failure fixtures upgraded to use the complete harness. `tokio::task::sleep(...)` corrected to `tokio::time::sleep(...)` in the TUI raw-source fixture.
-- `0b61fbd97e41dca899a4626f81be420e018b1233` — M011 Work Package H: `scripts/check_projection_transport_lifecycle.py` extended with 11 semantic checks (per-connection probe wiring, operation-correlated observations, both full-queue fixtures, six-case matrix, sibling-join delay guard, both adapters raw-source cancellation, Unix F1–F5 with no `fail_next` injection, F4 peer drop, complete rollback harness, closure chain).
-- `226393c08fd0035e309752c3acd0af97373d78c4` — M011 closure: this record plus the registry/roadmap reconciliation.
-- `573d888` — M011 guard refinement: `check_projection_transport_lifecycle.py` M011 check 11 adjusted to detect only real placeholder commit references (`<M011-...-COMMIT>`) rather than text that merely references the placeholder policy.
-- `93c3549e2c5d2481cb6422c84b6c7bb3dc7c0e50` — M011 Work Package C completion: `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` now take `observer` and route lifecycle-reply critical sends through `staged_critical_send_observed` when an observer is configured. The TUI full-queue timeout fixture (`real_tui_full_queue_operation_correlated_timeout`) reordered so the writer stays parked at the pre-recv gate while the filler sits in the channel, and so probe-counter assertions run after the connection tasks drain.
+Implementation, follow-up, and evidence commits:
+
+- `560b8b7f95c101f2e3b08a940084a94c166e80fb` — per-connection probes, operation-correlated queue observations, `/core` and `/tui` saturation fixtures, production-path task-owner matrix, and raw-source controls.
+- `ae0a53f2259316217cdd55a7a158e2500a874f75` — Unix F1–F5 fixtures and writer-gate/cancellation corrections.
+- `b98a626217505f094a210a8c640e1f1530280cfb` — rollback-helper expansion and fixture adoption.
+- `0b61fbd97e41dca899a4626f81be420e018b1233` — M011 lifecycle guard expansion.
+- `226393c08fd0035e309752c3acd0af97373d78c4` — original M011 closure reconciliation.
+- `573d8885c8638a617fe1eac08c5c05853a153224` — guard placeholder refinement.
+- `8f3da16f095e25123714eea771a79bd20f62aa5b` — closure commit reconciliation.
+- `b868e082eb41ca4d3b69b6a5eb360cb9e18b3d3a` — final guard-refinement commit reconciliation.
+- `93c3549e2c5d2481cb6422c84b6c7bb3dc7c0e50` — TUI operation-correlated projection response wiring.
+- `9642bad8c0783c712bbd73d466a5f05f47ad642e` — Work Package C closure record correction.
+- `11c3b42ffc913bb66504cebd939c3685f8eb028b` — TUI writer cancellation arm added for `/core` parity.
+- `1a93167ee3bdfdc55e4bd2746180443cc19b7c96` — documented the remaining TUI deadlock and partial mitigation.
 
 ## 1. Closure decision
 
-M011 restores strict closure of the session-projections subsystem. Every M010 evidence defect catalogued in `plans/closure/session-projections/010-status.md` is now closed by production-path evidence recorded in this milestone.
+M011 materially improved Session Projections verification and retains substantial accepted value. It does not support strict closure.
 
-No projection protocol, storage, reducer, disclosure, artifact, or production transport architecture behaviour changed. Production queue sizes, timeout values, and semantics remain at the M008/M009 acceptance values. New controls are dormant under normal server state.
+The final reviewed head documents a reproducible production lifecycle defect in `/tui`: while the receive task is awaiting an inline projection handler, it cannot poll `ws_rx` for peer close. If the writer is also parked and no other task fires `connection_cancel`, the connection task owner never receives a first terminal task, joined teardown does not begin, and the daemon-side projection subscription can leak.
 
-M011 succeeded because every closure-bearing fixture now establishes a four-layer causal chain:
+Adding the writer-side cancellation branch reduced the observed pending-snapshot failure rate from approximately 40–50% to approximately 20%, but did not remove the deadlock. A reduced flake rate is not closure evidence.
 
-1. **Precondition** — exact production resource in the required state (queue full, gate entered, cancellation armed).
-2. **Operation** — exact production operation begins after the precondition (production `tx.send()`, `run_observed_staged_send`, `ConnectionTaskSet::with_probe` + `production_teardown_for_test`, real `OwnedWriteHalf::write_all`).
-3. **Result** — operation returns the exact typed result claimed (`CriticalSendFailure::Timeout`, `std::io::ErrorKind::*`, real `std::io::Error` from `tokio::net::unix::OwnedWriteHalf`).
-4. **Convergence** — every connection-local and daemon-owned resource returns to its defined baseline (per-connection `ConnectionTaskProbe` counters exactly 1 each, daemon subscription count at baseline, no retained receiver, idempotent unsubscribe no-op, unrelated client B continues to receive its marker event).
+Post-closure source review also found that several M011 evidence claims remain broader than the mechanisms asserted. M012 is the sole authority for the production lifecycle correction and final strict closure.
 
-## 2. Evidence matrix
+## 2. Accepted M011 outcomes
 
-### 2.1 Work Package A — per-connection probe ownership
+The following work remains accepted and should not be reverted without a directly demonstrated defect.
 
-Production change:
+### 2.1 Per-connection and lifecycle instrumentation
 
-- `src/server/ws.rs`: `ConnectionProbeFactory`, `ConnectionProbeRegistry`, `ConnectionProbeFactory` field on `ServerState` (in `src/server/state.rs`), consumed by `upgrade_core_ws` and `upgrade_tui`. Each upgrade creates its own `Arc<ConnectionTaskProbe>`; the registry records insertion order so multi-client fixtures can correlate specific probes to specific connections.
+- `ConnectionProbeFactory` and `ConnectionProbeRegistry` introduced per-connection probe allocation.
+- `ConnectionTaskProbe` records first task kind, panic classification, task completions, cleanup, and a projection-forwarder counter.
+- `ProjectionTransportTestConfig` retains bounded queue capacity, writer gates, raw-source cancellation, and observer controls.
+- Production defaults remain dormant when no test configuration is installed.
 
-Fixtures:
+### 2.2 Queue preconditions and adapter symmetry
 
-- `real_core_rollback_harness_asserts_unrelated_client_continuity` — proves probe A is not reused by probe B (registry insertion order matched against client-A/client-B handshake order).
+- `/core` and `/tui` capacity-one fixtures establish queue fullness before the target lifecycle request.
+- Both fixtures use operation-correlated observations rather than `any_timeout()` as their primary assertion.
+- TUI projection subscribe/resume/ack response paths can record observations when configured.
 
-Invariants asserted by `assert_real_transport_rollback_complete_extended`:
+These fixtures remain useful, but M012 must unify the observer and non-observer critical-send implementation so tests execute the exact one-budget production semantics.
 
-- send, receive, raw_event counters each exactly one for the failed connection;
-- `cleanup_count >= 1` (handler-completed);
-- `take_subscription_receiver` returns `None` for the failed subscription;
-- idempotent unsubscribe is a no-op (`pre_baseline` after second call);
-- unrelated client B receives the marker event on a fresh publication.
+### 2.3 Task-owner and raw-source coverage
 
-### 2.2 Work Package B — `/core` full-queue timeout
+- Six clean/panic first-exit cases invoke the production task-owner teardown wrapper.
+- `/core` and `/tui` raw-source cancellation fixtures observe `RawEvent` as first task while the peer remains healthy.
+- Writer-gate cancellation handling was corrected to return when cancellation fires.
 
-Fixture: `real_core_full_queue_operation_correlated_timeout`
+M012 must replace elapsed-time sibling-join proof with direct completion/drop evidence and extend ownership for the new TUI request-handler task.
 
-Mechanism-faithful chain:
+### 2.4 Unix regression coverage
 
-1. Server wired with capacity-one outbound channel + `gate_before_recv = true` + `WriterGate` released one-at-a-time.
-2. Connection completes handshake. Each release is correlated with `writer_gates_reached` to ensure writer re-enters the pre-`recv()` gate.
-3. After capability handshake the writer re-enters, the filler is enqueued via the production `WsSender`, and a second `tx.send()` would observe `TrySendError::Full`. The test uses `send_json` directly (no response wait) so the next step does not buffer.
-4. Production `run_observed_staged_send` then tries to enqueue. The correlated observation records `queue_full_before_send = true`, `enqueue_started = true`, `enqueue_completed = false`, `receipt_wait_started = false`, `final_result = Err(CriticalSendFailure::Timeout)`.
-5. No canonical response or live envelope escapes; the synthetic `ProjectionSubscriptionId` cannot be re-acquired; the per-connection probe reaches baseline (exactly one completion of each kind); unrelated-client continuity is asserted by the extended harness.
+M011 added useful Unix coverage for:
 
-Producer-instrumentation change:
+- peer close around canonical response delivery;
+- write-path recovery scenarios;
+- completion-versus-cancellation ordering;
+- interrupted replay and retry;
+- repeated convergence and fresh identities.
 
-- `src/server/ws.rs::run_observed_staged_send` now wraps `tx.send(outbound).await` inside `bounded_critical_delivery`'s async block so the timeout fires on the first observation of `out_rx.recv()` being unable to make room, rather than being bypassed by the outer await resolving first. `WriterGate::wait` and `wait_pre_recv` no longer fall through to the loop on cancellation (the select arm now propagates `cancellation_fired` to the return path). The writer's biased `tokio::select!` carries an explicit `_ = connection_cancel_for_writer.cancelled()` branch as the first arm.
+These remain regression coverage. M012 must add a typed production socket-write observer and assert the actual server-side I/O result rather than inferring it from EOF and cleanup.
 
-### 2.3 Work Package C — `/tui` full-queue timeout
+### 2.5 Local verification and guard work
 
-Fixture: `real_tui_full_queue_operation_correlated_timeout`
+- M011 recorded focused local test runs and repeated Unix cycles.
+- `scripts/check_projection_transport_lifecycle.py` was expanded with M011-specific checks.
+- No GitHub workflow runs or combined status checks were attached to the reviewed head; all recorded execution remains local evidence.
 
-Symmetric to 2.2 for `/tui`:
+## 3. Unresolved findings
 
-1. Two-message capability handshake is delivered with explicit `WriterGate` releases so the writer re-enters between items.
-2. After the gateway ack and `ProjectionCompatibilityDiagnostic`, the writer re-enters the pre-`recv()` gate (counter 3) and `queue_message(&outbound_sender, …)` is called via the production helper. The second `queue_message` is asserted to return `false` (the production `TrySendError::Full` translation).
-3. `TuiMessage::ProjectionSubscribe` is then sent.
-4. The observation is filtered with `is_timeout_during_enqueue()`; the matched record must show `queue_full_before_send = true`, `enqueue_started = true`, `enqueue_completed = false`, `receipt_wait_started = false`, `final_result = Err(CriticalSendFailure::Timeout)`.
-5. The elapsed window is asserted to be at least one timeout (400ms) and less than 1.5s, proving the timeout fired during enqueue rather than receipt wait.
-6. `assert_tui_transport_rollback_complete` then proves the per-connection probe is at baseline and the (non-shared) daemon subscription count remained unaffected by TUI teardown.
+### 3.1 High — TUI pending-handler disconnect deadlock
 
-### 2.4 Work Package D — six-case production-teardown matrix
+The `/tui` receive task owns `ws_rx` and awaits `handle_tui_message_with_observer` inline. While a projection response is pending, it cannot observe Close, EOF, or socket error. The writer cancellation arm only helps after some other task fires the cancellation token.
 
-Fixture: `real_connection_task_set_six_case_production_teardown_matrix`
+Observed consequence:
 
-For each `(ConnectionTaskKind::{Send, Receive, RawEvent}, {clean, panic})`:
+- connection teardown can hang;
+- cleanup can fail to execute;
+- the daemon-side subscription can remain active;
+- `real_tui_pending_snapshot_interruption_via_writer_barrier` remains flaky at approximately 2 failures per 10 runs after mitigation.
 
-- the production teardown wrapper `ConnectionTaskSet::production_teardown_for_test` is invoked unchanged;
-- the connection cancellation token is asserted cancelled after teardown;
-- all three task kinds record exactly one completion;
-- first_task_kind equals the expected kind;
-- first_task_panicked matches the `clean`/`panic` classification.
+Required M012 resolution:
 
-Sibling-join guard: `join_after_first_exit_waits_for_sibling_joins_not_just_abort` delays the receive and raw-event tasks past the cancellation flag and proves `production_teardown_for_test` waited at least 50ms before returning — proving it did not just `abort()` and return.
+- retain a close-responsive socket-reader task while ordered lifecycle handling is pending;
+- use a bounded request pipeline;
+- explicitly own and join reader, handler, writer, raw-event, and projection-forwarder tasks;
+- demonstrate 0 failures in the required repeated runs.
 
-### 2.5 Work Package E — `/core` and `/tui` real raw-source-first
+### 3.2 Medium — observed critical delivery is a parallel implementation
 
-Fixture: `real_core_raw_source_first_exit_via_cancellation_token` (existing M010, rebound to complete rollback harness in 2.6).
+Observer-enabled staged delivery uses a separate implementation and applies independent bounded waits to enqueue and receipt stages. Normal staged delivery uses one total bounded-delivery budget.
 
-Fixture: `real_tui_raw_source_first_exit_via_cancellation_token`
+Required M012 resolution:
 
-Mechanism-faithful chain:
+- one canonical implementation;
+- optional in-place observation;
+- one total timeout budget;
+- parity tests for observer enabled/disabled outcomes;
+- correct maximum-capacity versus remaining-capacity metadata;
+- correct enqueue-completed state even when receipt later fails.
 
-1. TUI handshake completes while the peer is healthy.
-2. `ProjectionSubscribe` succeeds (`subscription_id` is captured).
-3. The connection-local raw-source cancellation token is invoked (`ProjectionTransportTestConfig::raw_source_cancel`) while peer remains open and writer is healthy.
-4. `ConnectionTaskProbe::first_task_kind()` observes `ConnectionTaskKind::RawEvent` BEFORE the peer is closed.
-5. After `drop(client)` all three task kinds reach exactly one completion through the production teardown.
-6. `assert_tui_transport_rollback_complete(daemon, 0, &probe, None, None)` passes.
+### 3.3 Medium — Unix typed I/O result is not asserted
 
-### 2.6 Work Package G — complete rollback and non-interference harness
+Unix F1/F2 assert EOF and subscription rollback but do not capture the server-side `std::io::Error` result or error kind. Listener shutdown/cancellation can compete with the claimed peer-write failure.
 
-Helper change:
+Required M012 resolution:
 
-- `tests/projection_transport_real.rs::assert_tui_transport_rollback_complete` added. Accepts `daemon`, `pre_baseline`, `probe`, optional unrelated client + `(project_id, expected_seq)`. Skips the foreign-receiver and idempotent-unsubscribe checks (TUI has no daemon-side subscription) but still asserts:
-  - daemon subscription count returns to pre-baseline (when `daemon.projection_seam.is_some()`);
-  - send/receive/raw-event counters exactly one on the failed probe;
-  - `cleanup_count >= 1`;
-  - unrelated TUI client B receives its marker event on a fresh publication.
+- peer read-side/full-peer close before server write;
+- no listener shutdown as a competing cause before observation;
+- typed observation from the production write path;
+- narrow accepted `io::ErrorKind` assertions;
+- EOF and cleanup retained only as convergence evidence.
 
-Fixtures upgraded to the complete harness:
+### 3.4 Medium — rollback is not complete
 
-- `real_tui_raw_source_first_exit_via_cancellation_token_impl` — uses `assert_tui_transport_rollback_complete`.
-- `real_tui_pending_snapshot_interruption_via_writer_barrier_impl` — uses `assert_tui_transport_rollback_complete`.
-- `real_core_writer_failure_terminates_all_tasks` — uses `assert_real_transport_rollback_complete` (already accepted, now passes a real subscription id rather than a discarded `_sub`).
-- `real_core_raw_source_first_exit_via_cancellation_token` — already uses `assert_real_transport_rollback_complete`.
+Current helpers do not assert the existing projection-forwarder counter. They also do not fully prove connection ownership removal, outbound sender release, no canonical/live leakage, or exact probe-registry convergence.
 
-WebSocket-full-queue fixture (`real_core_full_queue_operation_correlated_timeout`) already uses `assert_real_transport_rollback_complete_extended`.
+The TUI helper incorrectly claims TUI has no daemon-side projection subscription even though the adapter creates and unsubscribes daemon-issued projection subscriptions.
 
-### 2.7 Work Package F — Unix actual I/O and completion races
+The full-queue core fixture uses a synthetic subscription ID rather than the real staged identity.
 
-Fixtures added to `src/core/transport/daemon_socket_integration_tests.rs`:
+Required M012 resolution:
 
-- `socket_f1_peer_closes_before_canonical_response_returns_io_error` — peer closes BEFORE canonical response write. The pause uses `ProjectionLifecycleBoundary::BeforeControlEnqueue`. After release the real `OwnedWriteHalf::write_all` returns an `std::io::Error` whose `kind()` is one of `BrokenPipe`, `ConnectionReset`, or the platform-equivalent. `subscriptions().active_count()` returns to 0.
-- `socket_f2_writer_failure_drops_peer_write_half_then_read_half` — handshake completes, then the write half is dropped, the read half is dropped during the pause, and the canonical response reader EOFs. Subscription rollback is asserted.
-- `socket_f3_completion_vs_cancellation_race_converges_per_cycle` — 25 alternating forced completion-first and cancellation-first cycles. Each cycle asserts subscription count back to 0 and unrelated client receives its own event.
-- `socket_f4_replay_delivery_interrupted_by_real_peer_close` — three-connection sequence: connect → subscribe → drop; publish missing range; second connection with fresh client_id + `ProjectionResume` paused at `BeforeControlEnqueue`, then dropped → assert no live envelope escaped; third connection with another fresh client_id resumes from the same cursor and replays the exact missing range; subsequent live publication is asserted at `replay_end_seq + 1`.
-- `socket_f5_repeated_unix_race_convergence_baselines` — 50 cycles, alternating between full-cleanup and fresh-unrelated-client-event paths, asserting subscription count back to 0 and fresh client event sequence.
+- actual staged subscription identity;
+- daemon and connection ownership baselines;
+- receiver non-reuse;
+- installed-versus-joined projection-forwarder equality;
+- exact task/handler/cleanup counts;
+- no response/live leakage;
+- unrelated-client marker delivery;
+- no synthetic IDs.
 
-Production observation:
+### 3.5 Medium — probe registration can be silently lost
 
-- `src/core/transport/daemon_socket.rs::staged_socket_critical_delivery` walks the same `ProjectionLifecycleBoundary` checkpoints as the WebSocket path. There is no separately observable buffered-flush step beyond `DuringWriterWrite` — the existing canonical comment in the file already documents this. F2 therefore proves the actual production I/O boundary (real peer-induced write failure) without claiming flush-specific coverage.
+`ConnectionProbeRegistry::factory()` uses `try_lock()` and ignores registration failure. Concurrent upgrades or registry reads can therefore lose correlation records.
 
-### 2.8 Work Package H — semantic guards
+Required M012 resolution:
 
-`scripts/check_projection_transport_lifecycle.py` adds 11 checks after the pre-existing M008/M009/M010 checks:
+- infallible registration;
+- correlation by actual connection identity or explicit sequence;
+- bounded finalized records;
+- exact removal/finalization behavior.
 
-1. `ConnectionProbeFactory`, `ConnectionProbeRegistry`, and `ServerState::probe_factory` are present in `src/server/ws.rs`.
-2. `CriticalSendObservation` struct plus `queue_full_before_send`, `is_timeout_during_enqueue`, and `receipt_wait_started` fields are present.
-3. `real_core_full_queue_operation_correlated_timeout` exists, exercises `TrySendError`, uses `is_timeout_during_enqueue`, asserts `queue_full_before_send` and `CriticalDeliveryError`, and does NOT use `any_timeout()`.
-4. `real_tui_full_queue_operation_correlated_timeout` exists, uses the production `queue_message` helper, uses `is_timeout_during_enqueue`, asserts `queue_full_before_send` and `CriticalDeliveryError::Timeout`, and does NOT use `any_timeout()`.
-5. `real_connection_task_set_six_case_production_teardown_matrix` exists, exercises all three `ConnectionTaskKind` values, invokes `production_teardown_for_test`, and asserts `is_cancelled` after teardown.
-6. `join_after_first_exit_waits_for_sibling_joins_not_just_abort` exists (sibling-join delay guard).
-7. `real_core_raw_source_first_exit_via_cancellation_token` and `real_tui_raw_source_first_exit_via_cancellation_token` both exist; both assert `ConnectionTaskKind::RawEvent` as first-task-kind; TUI wires `raw_source_cancel`.
-8. Unix F1–F5 fixtures exist; F1–F4 contain no `fail_next(` substring.
-9. F4 fixture contains a real peer drop (`drop(... writer|peer|read_half ...)`).
-10. Complete rollback harness helpers `assert_real_transport_rollback_complete_extended` and `fn assert_tui_transport_rollback_complete` are both present; the unrelated-client continuity fixture is present.
-11. If `plans/closure/session-projections/011-status.md` is present, it must not reference `next commit` placeholder.
+### 3.6 Low — sibling-join timing test is not reliable proof
 
-The script's pre-existing checks continue to run unchanged.
+The test expects teardown to wait for sleeping siblings, but production aborts siblings before awaiting them. Aborted Tokio sleeps should normally resolve promptly.
 
-## 3. Verification records
+Required M012 resolution:
 
-### 3.1 Focused (local execution; CI not attached)
+- direct drop/completion guards;
+- consumed handle assertions;
+- exact probe counts;
+- no elapsed-time assumption.
 
-```text
-test socket_f1_peer_closes_before_canonical_response_returns_io_error ... ok
-test socket_f2_writer_failure_drops_peer_write_half_then_read_half ... ok
-test socket_f3_completion_vs_cancellation_race_converges_per_cycle ... ok (3.49s, 25 cycles)
-test socket_f4_replay_delivery_interrupted_by_real_peer_close ... ok (0.40s)
-test socket_f5_repeated_unix_race_convergence_baselines ... ok (6.99s, 50 cycles)
-test real_core_full_queue_operation_correlated_timeout ... ok
-test real_tui_full_queue_operation_correlated_timeout ... ok
-test real_connection_task_set_six_case_production_teardown_matrix ... ok
-test join_after_first_exit_waits_for_sibling_joins_not_just_abort ... ok
-test real_core_raw_source_first_exit_via_cancellation_token ... ok
-test real_tui_raw_source_first_exit_via_cancellation_token ... ok
-test real_core_writer_failure_terminates_all_tasks ... ok (now uses complete harness)
-test real_tui_pending_snapshot_interruption_via_writer_barrier ... flaky (~8/10, see §4)
-test real_tui_pending_replay_interruption_then_retry ... ok
-test real_core_rollback_harness_asserts_unrelated_client_continuity ... ok
-```
+### 3.7 Low — guards and planning state remain inconsistent
 
-`tests/projection_transport_real` complete focused execution: 50 distinct tests (each selected test binary invocations run sequentially with `--test-threads=1` to keep the per-connection probes race-free).
+The M011 implementation plan remains historically marked ready, while the original closure, roadmap, and registry claimed strict closure despite documenting a production deadlock and residual failures.
 
-### 3.2 Static guards (local execution)
+This corrected record makes M011 conditional. M012 owns final reconciliation of plan status, roadmap, registry, exact commits, stability evidence, and CI truthfulness.
 
-- `python3 scripts/check_projection_transport_lifecycle.py` — pre-existing M008/M009/M010 checks remain enforced; new M011 checks pass.
-- `python3 scripts/check_projection_transport_isolation.py` — unchanged pass.
-- `python3 scripts/check_websocket_bounds.py` — unchanged pass.
-- `bash scripts/check-core-boundary.sh` — unchanged pass.
-- `python3 scripts/check_daemon_cwd_usage.py` — unchanged pass.
-- `python3 scripts/check_execution_ownership.py` — unchanged pass.
-- `python3 scripts/check_git_forbidden_patterns.py` — unchanged pass.
-- `python3 scripts/check_scheduler_bypass.py` — unchanged pass.
-- `bash scripts/check_projection_disclosure.sh` — unchanged pass.
+## 4. Unresolved findings table
 
-### 3.3 Stability runs
+| Severity | Finding | Impact | Required M012 action |
+|---|---|---|---|
+| high | TUI cannot observe peer close while inline handler is pending | Deadlock and subscription leak remain possible | Split close-responsive reader from bounded ordered handler and prove clean repeated convergence |
+| medium | Observer-enabled staged send changes timeout semantics | Queue tests do not execute exact production behavior | Use one canonical one-budget implementation with optional observation |
+| medium | Unix I/O failure is inferred, not typed | Claimed production write error remains unproven | Add typed production socket-write observation and real peer read-side/full close |
+| medium | Rollback omits forwarder/ownership/leakage assertions | Complete cleanup remains unsupported | Use real subscription identity and assert all tasks, forwarders, ownership, receiver, queues, and unrelated client |
+| medium | Probe registration can silently fail | Per-connection evidence may be missing or miscorrelated | Replace `try_lock()` registration with infallible identity-keyed mechanism |
+| low | Join proof relies on elapsed time | Abort-and-await evidence is fragile | Assert task guards, handle consumption, and exact completions |
+| low | Closure documents contradict residual findings | Auditability and handoff state are incorrect | M012 exact closure, roadmap, registry, and CI/local reconciliation |
 
-- 25-cycle `socket_f3_completion_vs_cancellation_race_converges_per_cycle`: passes in 3.49s.
-- 50-cycle `socket_f5_repeated_unix_race_convergence_baselines`: passes in 6.99s.
+## 5. Roadmap disposition
 
-Local execution only. GitHub workflow runs were not attached for this milestone and must remain labeled as such.
+M011 remains conditionally closed. Its accepted implementation is retained as the M012 foundation.
 
-## 4. Residual findings
+M012 is the sole dependency-ready Session Projections plan:
 
-**Pre-existing TUI writer deadlock, partially mitigated by M011.** The `real_tui_pending_snapshot_interruption_via_writer_barrier` fixture exercises a connection-drop-while-pending-snapshot scenario that can deadlock in the production TUI writer task (`src/server/ws.rs` `upgrade_tui`) when both:
+- `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md`
 
-1. The TUI recv task is parked inside a handler awaiting `receipt_rx.await` (which is itself wrapped in `bounded_critical_delivery` and IS cancellable on `connection_cancel`); AND
-2. The TUI writer task is parked at `out_rx.recv()` / `projection_rx.recv()` / `raw_rx.recv()` (which are NOT directly cancellable); AND
-3. Nothing else has fired `connection_cancel` and no peer TCP RST has propagated to `ws_tx.send` in time.
+The subsystem may return to strict closed status only through an accepted:
 
-In this state neither task can fire `connection_cancel`, the recv task cannot see `ws_rx` because it is inside a handler, the writer cannot exit its recv, and `join_after_first_exit` blocks indefinitely on the two outstanding tasks. The TUI-specific teardown path (`cleanup_projection_connection_state` + `daemon.handle_request_for_client(ProjectionUnsubscribe)`) never runs, leaking the daemon-side subscription.
+- `plans/closure/session-projections/012-status.md`
 
-The /core writer task already has a biased `_ = connection_cancel_for_writer.cancelled() => break` arm as the first arm of its `tokio::select!` (line 3497). The /tui writer task was missing this arm. M011 WP-G (TUI rollback harness) and its follow-up commit `11c3b42` add the same biased cancellation arm to the /tui writer, mirroring the proven /core pattern. Observed flake-rate improvement on `real_tui_pending_snapshot_interruption_via_writer_barrier` under `--test-threads=1`:
-
-  - Before: 4–5 of 10 runs fail (~40–50% flake rate).
-  - After:  2 of 10 runs fail (~20% flake rate).
-
-The residual flake reflects the underlying recv-stuck-inside-handler deadlock: even with the writer cancellation arm, the chain only unblocks if some other party fires `connection_cancel`. Closing the residual gap requires either a watcher task that polls `ws_rx` for `Message::Close` and fires `connection_cancel`, or refactoring the recv task to `tokio::select!` between `ws_rx.next()` and the inner handler so that Close frames break the handler mid-flight. Both options are structural changes outside M011's evidence-correctness scope and will be addressed in a follow-up plan.
-
-The other seven M011 closure-bearing fixtures (`real_core_full_queue_operation_correlated_timeout`, `real_tui_full_queue_operation_correlated_timeout`, `real_connection_task_set_six_case_production_teardown_matrix`, `real_core_raw_source_first_exit_via_cancellation_token`, `real_tui_raw_source_first_exit_via_cancellation_token`, `real_core_writer_failure_terminates_all_tasks`, `real_tui_pending_replay_interruption_then_retry`) all pass 10/10 in repeated runs. The TUI correlation shape from WP-C commits the WebSocket observation recording to `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` so the same `is_timeout_during_enqueue()` predicate applies symmetrically to both adapters.
-
-## 5. Auditability trail
-
-### 5.1 Test names committed by M011
-
-- Work Package A: `real_core_rollback_harness_asserts_unrelated_client_continuity`.
-- Work Package B: `real_core_full_queue_operation_correlated_timeout`.
-- Work Package C: `real_tui_full_queue_operation_correlated_timeout`.
-- Work Package D: `real_connection_task_set_six_case_production_teardown_matrix`, `join_after_first_exit_waits_for_sibling_joins_not_just_abort`.
-- Work Package E: `real_tui_raw_source_first_exit_via_cancellation_token` (new M011 fixture); `real_core_raw_source_first_exit_via_cancellation_token` (rebound to complete harness).
-- Work Package F: `socket_f1_peer_closes_before_canonical_response_returns_io_error`, `socket_f2_writer_failure_drops_peer_write_half_then_read_half`, `socket_f3_completion_vs_cancellation_race_converges_per_cycle`, `socket_f4_replay_delivery_interrupted_by_real_peer_close`, `socket_f5_repeated_unix_race_convergence_baselines`.
-- Work Package G: complete rollback harness helpers (`assert_real_transport_rollback_complete_extended`, `assert_tui_transport_rollback_complete`).
-
-### 5.2 Static guard file
-
-- `scripts/check_projection_transport_lifecycle.py` (M011 extension: 11 new checks above the existing M008/M009/M010 checks; M008–M010 expectations preserved).
-
-## 6. Roadmap and registry disposition
-
-The session-projections subsystem returns to strict closed status. The roadmap and registry disposition is updated accordingly by M011-followup commits. No further session-projection plan may be marked dependency-ready unless M011 is reopened.
+That record must satisfy every explicit M012 closure criterion and contain no unresolved high or medium finding.
