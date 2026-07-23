@@ -284,7 +284,7 @@ Content-addressed source persistence is available via `PythonSourceStore` (`src/
 Both `PythonScriptTool` and `BashTool`'s active Python routing submit through `JobSubmissionService` when the scheduler is enabled:
 - Deterministic submission keys derived from source hash ensure idempotency
 - Tools wait via `scheduler.wait_for_completion()` for the execution to finish
-- When the scheduler is disabled, tools fall back to direct execution (fail-closed behavior — returns typed error, not direct fallback)
+- When the scheduler is disabled, tools return `ToolError::Disabled` (fail-closed — no direct execution fallback)
 - Transform mode uses `IdempotencyClass::NonIdempotent`; Analyze/Verify use `SafeRepeat`
 
 ### Cancellation
@@ -382,3 +382,39 @@ The Python sandbox has adversarial tests in `tests/python_sandbox_adversarial.rs
 ```bash
 cargo test --test python_sandbox_adversarial
 ```
+
+## Operator Troubleshooting
+
+### Cancelled Python Jobs
+
+Cancelled Python jobs show `Failed(-4)` status. Common causes:
+- User cancelled via TUI or API
+- Scheduler timeout exceeded
+- Daemon shutdown during execution
+
+To inspect: check the RunStore record for the run_id appended to the executor summary.
+
+### Source Integrity Failures
+
+When `source_hash` in the job payload does not match the SHA-256 of the inline source, the executor returns a `Failed` status with "source integrity check failed: digest mismatch". This indicates the payload was corrupted or tampered with between submission and execution.
+
+### Legacy Payload Rejection
+
+Legacy `JobPayload::Python` entries with only `script_path` (no inline `source`) are rejected with "inline source is required for scheduler-owned execution". To migrate: ensure `PythonScriptTool` and `BashTool` always submit inline source with a `source_hash`.
+
+### Scheduler Disabled
+
+When the scheduler is disabled, `PythonScriptTool` and `BashTool` return `ToolError::Disabled("Python execution requires scheduler admission; scheduler is disabled")`. This is fail-closed behavior — no direct execution fallback exists.
+
+### Source Orphan Cleanup
+
+The scheduler periodically cleans up orphaned source files from `.codegg/python_sources/`. Files are retained only while referenced by active/queued/running Python jobs. Cleanup runs during the reconcile loop.
+
+### Progress Phases
+
+The executor emits progress at these phases:
+1. `python: materializing source` — before RunStore begin
+2. `python: resolving policy` — after begin, before execution
+3. `python: launching process` — just before subprocess spawn
+4. `python: persisting artifacts` — after execution, before artifact writes
+5. `python: <status>` — terminal status (success, failed, timed_out, cancelled)

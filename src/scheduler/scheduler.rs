@@ -494,6 +494,12 @@ impl JobScheduler {
             }
         }
 
+        // Periodic source store orphan cleanup: collect active Python job
+        // digests and clean up stale source files across workspaces.
+        if let Err(e) = self.cleanup_python_source_orphans().await {
+            tracing::debug!("python source orphan cleanup failed: {e}");
+        }
+
         Ok(ReconcileReport {
             added,
             removed,
@@ -507,6 +513,67 @@ impl JobScheduler {
     pub fn spawn_run(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let me = Arc::clone(self);
         tokio::spawn(async move { me.run().await })
+    }
+
+    /// Clean up orphaned Python source files across all workspaces that
+    /// have active or queued Python jobs. Queries the job store for
+    /// non-terminal Python jobs, collects their source hashes, and removes
+    /// any source files not referenced by those jobs.
+    async fn cleanup_python_source_orphans(&self) -> Result<(), JobSchedulerError> {
+        use codegg_core::jobs::JobKind;
+
+        // Query for active Python jobs (all states except terminal)
+        let query = codegg_core::jobs::store::JobStoreQuery {
+            states: vec![
+                JobState::Scheduled,
+                JobState::Queued,
+                JobState::Running,
+                JobState::Blocked,
+            ],
+            workspace_id: None,
+            kinds: vec![JobKind::Python],
+            limit: Some(1000),
+            session_id: None,
+        };
+        let jobs = self.store.list_jobs(query).await?;
+
+        // Collect active source hashes grouped by workspace root
+        let mut workspace_digests: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for summary in &jobs {
+            if let Some(job) = self.store.get_job(&summary.job_id).await? {
+                if let codegg_core::jobs::JobPayload::Python {
+                    source_hash: Some(hash),
+                    ..
+                } = &job.payload
+                {
+                    if let Some(ws_root) = job.labels.get("workspace_root") {
+                        workspace_digests
+                            .entry(ws_root.clone())
+                            .or_default()
+                            .insert(hash.clone());
+                    }
+                }
+            }
+        }
+
+        // Clean up each workspace's source store
+        for (ws_root, digests) in &workspace_digests {
+            let active: Vec<&str> = digests.iter().map(|s| s.as_str()).collect();
+            let removed = crate::python_script::source_store::PythonSourceStore::cleanup_stale(
+                std::path::Path::new(ws_root),
+                &active,
+            );
+            if removed > 0 {
+                tracing::info!(
+                    "python source orphan cleanup: removed {removed} files from {ws_root}"
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Main loop. Runs until `shutdown` is cancelled. On each

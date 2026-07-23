@@ -160,6 +160,14 @@ impl PythonSourceStore {
         removed
     }
 
+    /// Clean up stale source files for a workspace root by scanning the
+    /// job store for active Python job digests. Called periodically from
+    /// the scheduler reconcile loop.
+    pub fn cleanup_stale(workspace_root: &Path, active_digests: &[&str]) -> usize {
+        let store = Self::new(workspace_root);
+        store.cleanup_orphans(active_digests)
+    }
+
     /// Resolve a relative path within the store, rejecting traversal.
     fn resolve_path(&self, relative: &str) -> Result<PathBuf, PythonSourceError> {
         if relative.contains("..") || relative.starts_with('/') {

@@ -7,7 +7,6 @@ use crate::error::ToolError;
 use crate::scheduler::submission::{JobSubmissionService, SubmissionKey};
 use crate::tool::{Tool, ToolCategory};
 
-use super::executor::execute_python_script;
 use super::projection::project_python_run;
 use super::types::{PythonExecutionMode, PythonRunResult, PythonScriptRequest};
 
@@ -38,11 +37,12 @@ impl DelegatedPythonRun {
 /// Returns the run result plus an optional `RunId` proving that the
 /// delegated record was begun. `run_id` is `None` only when `run_store`
 /// is `None` or when `begin_run` failed (logged but non-fatal).
+#[cfg(test)]
 pub async fn execute_and_persist_python_script(
     request: &PythonScriptRequest,
     run_store: Option<&Arc<dyn codegg_core::run_store::RunStore>>,
 ) -> DelegatedPythonRun {
-    let result = execute_python_script(request).await;
+    let result = super::executor::execute_python_script(request).await;
     let run_id = if let Some(store) = run_store {
         persist_python_run(store, request, &result).await
     } else {
@@ -51,15 +51,13 @@ pub async fn execute_and_persist_python_script(
     DelegatedPythonRun { result, run_id }
 }
 
-/// Persist a completed Python run to the RunStore. Best-effort; errors
-/// are logged but do not propagate. Returns the `RunId` if the run was
-/// successfully begun — callers use this as proof of delegated ownership.
-pub async fn persist_python_run(
-    store: &Arc<dyn codegg_core::run_store::RunStore>,
+/// Build a `RunDraft` from a Python request and result. Used by both the
+/// executor (which calls `begin_run` before execution and `complete_run`
+/// after) and the legacy `persist_python_run` helper.
+fn build_python_run_draft(
     request: &PythonScriptRequest,
     result: &PythonRunResult,
-) -> Option<codegg_core::run_store::RunId> {
-    use chrono::Utc;
+) -> codegg_core::run_store::RunDraft {
     use codegg_core::run_store::*;
 
     let cwd = request.cwd.clone();
@@ -69,7 +67,7 @@ pub async fn persist_python_run(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| cwd.clone());
 
-    let draft = RunDraft {
+    RunDraft {
         kind: RunKind::Python,
         invocation: RunInvocation {
             command: "python3".to_string(),
@@ -90,32 +88,25 @@ pub async fn persist_python_run(
             has_git_mutation: false,
             has_destructive_mutation: result.capabilities.destructive_fs,
         },
-        planned_backend: Some(codegg_core::run_store::PlannedBackend::PythonScript),
-        actual_backend: Some(codegg_core::run_store::ActualBackend::PythonScript),
-        ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
+        planned_backend: Some(PlannedBackend::PythonScript),
+        actual_backend: Some(ActualBackend::PythonScript),
+        ownership: RunOwnership::DelegatedBackend,
         asset_provenance: None,
-    };
+    }
+}
 
-    let status = match &result.status {
-        super::types::PythonRunStatus::Success => RunStatus::Complete,
-        super::types::PythonRunStatus::Failed(_) => RunStatus::Failed,
-        super::types::PythonRunStatus::TimedOut => RunStatus::TimedOut,
-        super::types::PythonRunStatus::SpawnError => RunStatus::Failed,
-    };
+/// Write artifacts (stdout, stderr, diff) to an active RunStore record.
+pub(crate) async fn write_python_run_artifacts(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    handle: &codegg_core::run_store::RunHandle,
+    result: &PythonRunResult,
+) {
+    use codegg_core::run_store::*;
 
-    let handle = match store.begin_run(draft).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!("python script: failed to begin RunStore run: {e}");
-            return None;
-        }
-    };
-
-    // Write stdout artifact
     if !result.stdout.is_empty() {
         let _ = store
             .write_artifact(
-                &handle,
+                handle,
                 ArtifactInput {
                     kind: ArtifactKind::Stdout,
                     data: result.stdout.as_bytes().to_vec(),
@@ -126,11 +117,10 @@ pub async fn persist_python_run(
             .await;
     }
 
-    // Write stderr artifact
     if !result.stderr.is_empty() {
         let _ = store
             .write_artifact(
-                &handle,
+                handle,
                 ArtifactInput {
                     kind: ArtifactKind::Stderr,
                     data: result.stderr.as_bytes().to_vec(),
@@ -141,11 +131,10 @@ pub async fn persist_python_run(
             .await;
     }
 
-    // Write diff artifact if present
     if let Some(ref diff) = result.diff {
         let _ = store
             .write_artifact(
-                &handle,
+                handle,
                 ArtifactInput {
                     kind: ArtifactKind::UnifiedDiff,
                     data: diff.as_bytes().to_vec(),
@@ -155,6 +144,23 @@ pub async fn persist_python_run(
             )
             .await;
     }
+}
+
+/// Complete a Python run in the RunStore with the final status and metadata.
+pub(crate) async fn complete_python_run(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    handle: codegg_core::run_store::RunHandle,
+    result: &PythonRunResult,
+) -> Option<codegg_core::run_store::RunId> {
+    use chrono::Utc;
+    use codegg_core::run_store::*;
+
+    let status = match &result.status {
+        super::types::PythonRunStatus::Success => RunStatus::Complete,
+        super::types::PythonRunStatus::Failed(_) => RunStatus::Failed,
+        super::types::PythonRunStatus::TimedOut => RunStatus::TimedOut,
+        super::types::PythonRunStatus::SpawnError => RunStatus::Failed,
+    };
 
     let _ = store
         .complete_run(
@@ -179,13 +185,46 @@ pub async fn persist_python_run(
                     })
                     .collect(),
                 rerun: None,
-                actual_backend: Some(codegg_core::run_store::ActualBackend::PythonScript),
+                actual_backend: Some(ActualBackend::PythonScript),
                 fallback: None,
             },
         )
         .await;
 
     Some(handle.run_id)
+}
+
+/// Begin a Python run in the RunStore. Returns a handle for subsequent
+/// artifact writes and completion. The run is visible as "active" immediately.
+pub async fn begin_python_run(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    request: &PythonScriptRequest,
+    result: &PythonRunResult,
+) -> Option<codegg_core::run_store::RunHandle> {
+    let draft = build_python_run_draft(request, result);
+    match store.begin_run(draft).await {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            tracing::warn!("python script: failed to begin RunStore run: {e}");
+            None
+        }
+    }
+}
+
+/// Persist a completed Python run to the RunStore. Best-effort; errors
+/// are logged but do not propagate. Returns the `RunId` if the run was
+/// successfully begun — callers use this as proof of delegated ownership.
+///
+/// This is the legacy combined helper. For executor-owned runs, prefer
+/// `begin_python_run` + `write_python_run_artifacts` + `complete_python_run`.
+pub async fn persist_python_run(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    request: &PythonScriptRequest,
+    result: &PythonRunResult,
+) -> Option<codegg_core::run_store::RunId> {
+    let handle = begin_python_run(store, request, result).await?;
+    write_python_run_artifacts(store, &handle, result).await;
+    complete_python_run(store, handle, result).await
 }
 
 /// Model-facing tool for executing Python scripts with safety analysis.
@@ -431,9 +470,10 @@ impl Tool for PythonScriptTool {
             return self.execute_via_scheduler(&request, submission).await;
         }
 
-        // Fallback: direct execution (when scheduler is disabled)
-        let delegated = execute_and_persist_python_script(&request, self.run_store.as_ref()).await;
-        Ok(project_python_run(&delegated.result))
+        // No fallback: scheduler admission is required for production Python execution
+        Err(ToolError::Disabled(
+            "Python execution requires scheduler admission; scheduler is disabled".into(),
+        ))
     }
 }
 

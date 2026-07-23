@@ -357,43 +357,34 @@ async fn python_script_tool_owns_record_as_delegated_backend() {
     let store = Arc::new(MemRunStore::new());
     let tool = PythonScriptTool::with_run_store(store.clone());
 
-    let _ = tool
+    // Without a scheduler, PythonScriptTool returns Disabled (fail-closed)
+    let result = tool
         .execute(json!({
             "code": "print('hello-python')",
             "mode": "analyze"
         }))
-        .await
-        .unwrap();
+        .await;
+    assert!(
+        result.is_err(),
+        "PythonScriptTool without scheduler should return error"
+    );
+    match result.unwrap_err() {
+        codegg::error::ToolError::Disabled(msg) => {
+            assert!(
+                msg.contains("scheduler admission"),
+                "should mention scheduler admission: {msg}"
+            );
+        }
+        other => panic!("expected Disabled error, got: {other:?}"),
+    }
 
+    // No RunStore record should be created (no execution occurred)
     let runs = all_runs(&store).await;
     assert_eq!(
         runs.len(),
-        1,
-        "PythonScriptTool must persist its own record"
+        0,
+        "no record should be created when scheduler is disabled"
     );
-    let m = &runs[0];
-    assert_eq!(m.kind, RunKind::Python);
-    assert_eq!(m.ownership, RunOwnership::DelegatedBackend);
-    assert_eq!(m.planned_backend, Some(PlannedBackend::PythonScript));
-    assert_eq!(m.actual_backend, Some(ActualBackend::PythonScript));
-    // Script hash must be populated for PythonScript execution
-    assert!(
-        m.invocation.script_hash.is_some(),
-        "script_hash must be set"
-    );
-    // Raw stdout MUST NOT be safe_for_model
-    for art in &m.artifacts {
-        if matches!(
-            art.kind,
-            ArtifactKind::Stdout | ArtifactKind::Stderr | ArtifactKind::UnifiedDiff
-        ) {
-            assert!(
-                !art.safe_for_model,
-                "raw python artifact {:?} MUST NOT be safe_for_model",
-                art.kind
-            );
-        }
-    }
 }
 
 // ── 8. TestRunner canonical API: ownership = DelegatedBackend ─────────

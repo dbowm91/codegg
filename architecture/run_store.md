@@ -162,6 +162,29 @@ In `src/protocol_conversions.rs`:
 | Rollback/revert | No rollback infrastructure |
 | Artifact viewer | Run detail shows artifact metadata, not full content |
 
+## Python Scheduler Ownership (M001)
+
+All production model-facing Python execution is now scheduler-owned. The `PythonJobExecutor` begins a `RunKind::Python` record **before** process launch, writes artifacts (stdout, stderr, unified diff) after execution, and completes the run with terminal status and sandbox evidence.
+
+### Lifecycle
+
+1. **`begin_python_run`** — Creates a `RunDraft` and calls `store.begin_run()`. The run is visible as "active" immediately. Called by `PythonJobExecutor` before subprocess launch.
+2. **`write_python_run_artifacts`** — Writes `ArtifactKind::Stdout`, `ArtifactKind::Stderr`, and `ArtifactKind::UnifiedDiff` to the active run handle.
+3. **`complete_python_run`** — Calls `store.complete_run()` with terminal `RunStatus`, `SandboxRecord`, and `ChangedPathRecord`s.
+
+### Integration points
+
+| Location | How Used |
+|----------|----------|
+| `src/python_script/tool.rs` | `begin_python_run`, `write_python_run_artifacts`, `complete_python_run` — split lifecycle for executor |
+| `src/python_script/tool.rs` | `persist_python_run` — legacy combined helper (delegates to split functions) |
+| `src/scheduler/executors.rs` | `PythonJobExecutor::execute` — calls begin before execution, write+complete after |
+| `src/python_script/source_store.rs` | Content-addressed source persistence; orphan cleanup via scheduler reconcile |
+
+### RunStore artifact expansion
+
+Python run artifacts use real `ArtifactRef` handles (`run://{run_id}/stdout`, `run://{run_id}/stderr`), not pseudo-labels. The `project_python_run` function references these handles for model-facing projection.
+
 ## Tests
 
 13 unit tests in `run_store.rs` covering: ID generation, serde roundtrip, begin/write/complete flow, get/list, ranged reads, integrity violation, artifact too large, rerun descriptor safety, concurrent writes, path traversal, list with limit, cleanup plan, FsRunStore (atomic begin, artifact write, index update).

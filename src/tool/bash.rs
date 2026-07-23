@@ -23,9 +23,7 @@ use crate::config::schema::CommandIntentFamily;
 use crate::config::schema::CommandIntentMode;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
-use crate::python_script::{
-    execute_and_persist_python_script, PythonExecutionMode, PythonScriptRequest,
-};
+use crate::python_script::{PythonExecutionMode, PythonScriptRequest};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
 use crate::tool::{Tool, ToolCategory};
 
@@ -743,9 +741,10 @@ impl BashTool {
         })
     }
 
-    /// Dispatch to canonical Python subsystem (`execute_and_persist_python_script`).
-    /// Replaces direct `python3 -c` invocation so that policy resolution, sandbox,
-    /// snapshots, and RunStore persistence all run through the canonical path.
+    /// Dispatch to canonical Python subsystem via the scheduler.
+    /// Submits a durable `JobKind::Python` through `JobSubmissionService`
+    /// so that policy resolution, sandbox, snapshots, and RunStore persistence
+    /// all run through the scheduler-owned path.
     async fn dispatch_to_python_script(
         &self,
         script: &str,
@@ -787,41 +786,10 @@ impl BashTool {
                 .await;
         }
 
-        // Fallback: direct execution (when scheduler is disabled)
-        let delegated = execute_and_persist_python_script(&request, self.run_store.as_ref()).await;
-        let result = delegated.result.clone();
-        let run_id = delegated.run_id.clone();
-
-        let stdout = result.stdout.clone();
-        let stderr = result.stderr.clone();
-        let mut display = stdout;
-        if !stderr.is_empty() {
-            if !display.is_empty() {
-                display.push_str("\n--- stderr ---\n");
-            }
-            display.push_str(&stderr);
-        }
-        let exit_code = result.exit_code();
-        display.push_str(&format!("\n\n[exit code: {}]", exit_code.unwrap_or(-1)));
-
-        let exit_code_value = exit_code.unwrap_or(-1);
-        let output = synth_output(
-            exit_code_value,
-            result.stdout.as_bytes().to_vec(),
-            result.stderr.as_bytes().to_vec(),
-        );
-
-        let actual = ActualExecutor::PythonScript {
-            script_hash: result.script_body_hash.clone(),
-            mode: mode.to_string(),
-        };
-
-        Ok(DispatchOutcome {
-            result: display,
-            output,
-            executor: actual,
-            delegated_run_id: run_id,
-        })
+        // No fallback: scheduler admission is required for production Python execution
+        Err(ToolError::Disabled(
+            "Python execution requires scheduler admission; scheduler is disabled".into(),
+        ))
     }
 
     /// Submit Python execution through the scheduler and wait for completion.

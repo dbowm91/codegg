@@ -14,7 +14,6 @@ use codegg_core::workspace::WorkspaceId;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
-use crate::python_script::source_store::PythonSourceStore;
 use crate::scheduler::events::SchedulerEvent;
 use crate::scheduler::executor::{
     ExecutorAvailability, ExecutorCompletion, ExecutorHealth, ExecutorKind, ExecutorMetrics,
@@ -572,32 +571,19 @@ impl JobExecutor for PythonJobExecutor {
             }
         };
 
-        // Resolve source: prefer inline, fall back to script_path from payload
+        // Resolve source: inline source required; legacy script_path payloads
+        // without inline source are rejected (plan §6: arbitrary or missing
+        // paths fail with a typed migration/validation error).
         let resolved_source = match source {
             Some(s) => s,
             None => {
-                // Legacy path: try to read from script_path if present
-                match &ctx.job.payload {
-                    JobPayload::Python { script_path, .. } => {
-                        match std::fs::read_to_string(script_path) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                return failure_completion(
-                                    started,
-                                    ExecutorStatus::Failed,
-                                    format!("failed to read script_path '{script_path}': {e}"),
-                                );
-                            }
-                        }
-                    }
-                    _ => {
-                        return failure_completion(
-                            started,
-                            ExecutorStatus::Failed,
-                            "no source provided".into(),
-                        );
-                    }
-                }
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "legacy payload: source not provided; \
+                     inline source is required for scheduler-owned execution"
+                        .into(),
+                );
             }
         };
 
@@ -640,10 +626,10 @@ impl JobExecutor for PythonJobExecutor {
             intent: ctx.job.labels.get("intent").cloned(),
         };
 
-        // Emit progress: starting
+        // Emit progress: materializing
         let _ = ctx
             .progress
-            .progress(ctx.job_id(), "python: beginning execution")
+            .progress(ctx.job_id(), "python: materializing source")
             .await;
 
         // Check cancellation before launching
@@ -654,6 +640,57 @@ impl JobExecutor for PythonJobExecutor {
                 "cancelled before launch".to_string(),
             );
         }
+
+        // Build a pre-execution result for the RunStore draft. The actual
+        // result will be written after execution completes.
+        let pre_result = crate::python_script::types::PythonRunResult {
+            status: crate::python_script::types::PythonRunStatus::Success,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: std::time::Duration::ZERO,
+            mode,
+            script_length: request.code.len(),
+            risk: crate::python_script::types::PythonRiskAssessment::safe(),
+            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
+            changed_files: vec![],
+            interpreter: "python3".to_string(),
+            diff: None,
+            script_body_hash: Some(crate::python_script::source_store::compute_digest(
+                &request.code,
+            )),
+            stdout_label: None,
+            stderr_label: None,
+            diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
+        };
+
+        // Begin RunStore record BEFORE execution (plan §6: RunStore owns raw
+        // stdout, stderr, diff, source hash, sandbox evidence, and terminal
+        // status — ownership begins before process launch).
+        let run_handle = if let Some(ref store) = self.run_store {
+            crate::python_script::tool::begin_python_run(store, &request, &pre_result).await
+        } else {
+            None
+        };
+
+        // Emit progress: policy resolution
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), "python: resolving policy")
+            .await;
+
+        // Emit progress: starting process
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), "python: launching process")
+            .await;
 
         // Execute with the cancellation token wired through timeout
         let cancellation = ctx.cancellation.clone();
@@ -691,6 +728,25 @@ impl JobExecutor for PythonJobExecutor {
             result = crate::python_script::executor::execute_python_script(&request) => result,
         };
 
+        // Emit progress: persisting artifacts
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), "python: persisting artifacts")
+            .await;
+
+        // Persist to RunStore: write artifacts and complete the run
+        let run_id = if let Some(handle) = run_handle {
+            if let Some(ref store) = self.run_store {
+                crate::python_script::tool::write_python_run_artifacts(store, &handle, &result)
+                    .await;
+                crate::python_script::tool::complete_python_run(store, handle, &result).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Emit progress: completed
         let _ = ctx
             .progress
@@ -709,15 +765,6 @@ impl JobExecutor for PythonJobExecutor {
             }
             crate::python_script::types::PythonRunStatus::TimedOut => ExecutorStatus::TimedOut,
             crate::python_script::types::PythonRunStatus::SpawnError => ExecutorStatus::Failed,
-        };
-
-        // Persist to RunStore if available
-        let run_id = if let Some(ref store) = self.run_store {
-            let delegated =
-                crate::python_script::tool::persist_python_run(store, &request, &result).await;
-            delegated
-        } else {
-            None
         };
 
         // Build summary

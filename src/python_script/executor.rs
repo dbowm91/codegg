@@ -160,6 +160,16 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         .as_nanos();
     let script_file = tmp_dir.join(format!("script_{script_id}.py"));
 
+    // Drop guard: ensure temp file is cleaned up even if we are cancelled
+    // or the future is dropped before reaching the normal cleanup path.
+    struct TempScriptCleanup(PathBuf);
+    impl Drop for TempScriptCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _cleanup_guard = TempScriptCleanup(script_file.clone());
+
     if let Err(e) = std::fs::write(&script_file, &request.code) {
         return make_result(
             PythonRunStatus::SpawnError,
@@ -305,7 +315,7 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         None
     };
 
-    // Cleanup temp script
+    // Cleanup temp script (drop guard also handles this on cancellation)
     let _ = std::fs::remove_file(&script_file);
 
     PythonRunResult {
