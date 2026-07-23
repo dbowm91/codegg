@@ -15,9 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codegg::error::ToolError;
 use codegg::tool::broker::{BrokerError, BrokerInvocationContext, ToolBroker, ToolBrokerConfig};
-use codegg::tool::contract::{
-    ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass,
-};
+use codegg::tool::contract::{ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass};
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
 use serde_json::json;
 
@@ -265,12 +263,7 @@ async fn broker_input_too_large() {
     let broker = ToolBroker::with_config(&registry, config);
     let large_input = json!({"data": "x".repeat(200)});
     let err = broker
-        .execute(
-            &registry,
-            "read",
-            large_input,
-            make_ctx(ToolCaller::Agent),
-        )
+        .execute(&registry, "read", large_input, make_ctx(ToolCaller::Agent))
         .await
         .unwrap_err();
 
@@ -326,12 +319,7 @@ async fn broker_permission_error_maps_to_denied() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
     let result = broker
-        .execute(
-            &registry,
-            "denied",
-            json!({}),
-            make_ctx(ToolCaller::Agent),
-        )
+        .execute(&registry, "denied", json!({}), make_ctx(ToolCaller::Agent))
         .await
         .unwrap();
 
@@ -348,12 +336,7 @@ async fn broker_timeout_context_propagated() {
     let mut ctx = make_ctx(ToolCaller::Agent);
     ctx.timeout_ms = Some(100);
     let result = broker
-        .execute(
-            &registry,
-            "read",
-            json!({}),
-            ctx,
-        )
+        .execute(&registry, "read", json!({}), ctx)
         .await
         .unwrap();
 
@@ -384,7 +367,10 @@ async fn broker_custom_contract_preserved() {
     let broker = ToolBroker::new(&registry);
     let contract = broker.catalog().get("programmatic").unwrap();
 
-    assert_eq!(contract.caller_policy, ToolCallerPolicy::DirectOrProgrammatic);
+    assert_eq!(
+        contract.caller_policy,
+        ToolCallerPolicy::DirectOrProgrammatic
+    );
     assert_eq!(contract.effect_class, ToolEffectClass::ReadOnly);
 }
 
@@ -720,8 +706,16 @@ async fn broker_contract_compatibility_with_legacy_defaults() {
                 "tool {} should be DirectOnly",
                 name
             );
-            assert!(!contract.cache_policy.enabled, "tool {} should not be cacheable", name);
-            assert_eq!(contract.retry_policy.max_retries, 0, "tool {} should have no retry", name);
+            assert!(
+                !contract.cache_policy.enabled,
+                "tool {} should not be cacheable",
+                name
+            );
+            assert_eq!(
+                contract.retry_policy.max_retries, 0,
+                "tool {} should have no retry",
+                name
+            );
         }
     }
 }

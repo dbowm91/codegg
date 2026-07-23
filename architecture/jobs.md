@@ -43,7 +43,7 @@ pub struct DaemonGeneration(String);
 pub enum JobKind {
     AgentTurn, Subagent, Build, Test, Lint, Format, Shell,
     ManagedProcess, Python, GitRead, GitMutation, Research,
-    Maintenance,
+    Maintenance, ToolProgram,
     #[serde(other)] Unsupported,
 }
 ```

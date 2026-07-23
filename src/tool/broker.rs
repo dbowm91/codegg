@@ -246,7 +246,8 @@ impl ToolBroker {
         // Step 4: authority — if the caller has not already performed
         // permission checks, the broker rejects the call. This ensures
         // programmatic callers go through the permission system.
-        if !ctx.caller_authorized && !matches!(ctx.caller, ToolCaller::Agent | ToolCaller::Internal) {
+        if !ctx.caller_authorized && !matches!(ctx.caller, ToolCaller::Agent | ToolCaller::Internal)
+        {
             return Err(BrokerError::CallerDenied {
                 tool: contract.name.clone(),
                 caller: format!("{:?}", ctx.caller),
@@ -410,11 +411,7 @@ impl ToolBroker {
     /// When the output display exceeds `max_output_display_bytes`,
     /// the broker creates an artifact handle so downstream consumers
     /// can reference the content without embedding it in transcripts.
-    fn register_artifacts(
-        &self,
-        tool_name: &str,
-        mut value: ToolValue,
-    ) -> ToolValue {
+    fn register_artifacts(&self, tool_name: &str, mut value: ToolValue) -> ToolValue {
         let display_len = value.display.len();
         if display_len > self.config.max_output_display_bytes {
             let artifact = super::contract::ToolArtifactHandle {

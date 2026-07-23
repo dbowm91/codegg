@@ -118,6 +118,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 32 {
         migrate_and_record(pool, 32).await?;
     }
+    if current_version < 33 {
+        migrate_and_record(pool, 33).await?;
+    }
 
     Ok(())
 }
@@ -162,6 +165,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             30 => migrate_v30(pool).await?,
             31 => migrate_v31(pool).await?,
             32 => migrate_v32(pool).await?,
+            33 => migrate_v33(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -194,6 +198,72 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             Err(e)
         }
     }
+}
+
+/// Tool Programs M003: durable program domain, source/IR references,
+/// capability manifests, checkpoints, call ledger, and results.
+async fn migrate_v33(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS tool_program (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT,
+            turn_id TEXT,
+            language TEXT NOT NULL,
+            state TEXT NOT NULL,
+            source_json TEXT NOT NULL,
+            ir_json TEXT,
+            manifest_json TEXT NOT NULL,
+            checkpoint_json TEXT,
+            result_json TEXT,
+            job_id TEXT,
+            submission_key TEXT NOT NULL UNIQUE,
+            labels_json TEXT NOT NULL DEFAULT '{}',
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_terminal INTEGER
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS tool_program_call (
+            id TEXT PRIMARY KEY,
+            program_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            tool_name TEXT NOT NULL,
+            tool_contract_hash TEXT NOT NULL,
+            normalized_input_hash TEXT NOT NULL,
+            state TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            child_job_id TEXT,
+            child_run_id TEXT,
+            result_artifacts_json TEXT NOT NULL DEFAULT '[]',
+            result_projection TEXT,
+            failure_class TEXT,
+            error_message TEXT,
+            replay_disposition TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            time_terminal INTEGER,
+            UNIQUE(program_id, sequence),
+            FOREIGN KEY(program_id) REFERENCES tool_program(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_workspace ON tool_program(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_session ON tool_program(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_state ON tool_program(state)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_job ON tool_program(job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_updated ON tool_program(time_updated)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_call_program ON tool_program_call(program_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_call_state ON tool_program_call(state)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_call_tool ON tool_program_call(tool_name)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
 }
 
 async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {

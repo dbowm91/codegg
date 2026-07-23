@@ -203,6 +203,10 @@ pub enum JobKind {
     GitMutation,
     Research,
     Maintenance,
+    /// A Tool Program submission (M003+). The executor registry
+    /// reports unsupported until M005; scheduler transitions to
+    /// `Blocked` rather than dispatching elsewhere.
+    ToolProgram,
     /// Catch-all for forward compatibility. The daemon refuses to
     /// execute these but persists them so newer daemons can pick them
     /// up.
@@ -226,6 +230,7 @@ impl JobKind {
             JobKind::GitMutation => "git_mutation",
             JobKind::Research => "research",
             JobKind::Maintenance => "maintenance",
+            JobKind::ToolProgram => "tool_program",
             JobKind::Unsupported => "unsupported",
         }
     }
@@ -245,6 +250,7 @@ impl JobKind {
             "git_mutation" => JobKind::GitMutation,
             "research" => JobKind::Research,
             "maintenance" => JobKind::Maintenance,
+            "tool_program" => JobKind::ToolProgram,
             _ => JobKind::Unsupported,
         }
     }
@@ -436,6 +442,14 @@ impl ResourceRequest {
             JobKind::Maintenance => Self {
                 cpu_weight: 1,
                 memory_mb_hint: 128,
+                process_slots: 1,
+                io_weight: 1,
+                network_slots: 0,
+                exclusivity_keys: Vec::new(),
+            },
+            JobKind::ToolProgram => Self {
+                cpu_weight: 1,
+                memory_mb_hint: 512,
                 process_slots: 1,
                 io_weight: 1,
                 network_slots: 0,
@@ -707,6 +721,21 @@ pub enum JobPayload {
     Research {
         query: String,
         max_depth: Option<u32>,
+    },
+    /// Tool Program submission payload. Contains immutable references
+    /// and hashes rather than unbounded source or tool schemas.
+    ToolProgram {
+        /// The Tool Program domain ID.
+        program_id: String,
+        /// SHA-256 digest of the frozen source content.
+        source_digest: String,
+        /// SHA-256 digest of the compiled IR (set after compilation).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ir_digest: Option<String>,
+        /// Authority digest at submission time.
+        authority_digest: String,
+        /// Submission key for idempotency.
+        submission_key: String,
     },
     Maintenance {
         task: String,

@@ -23,6 +23,7 @@ pub mod session;
 pub mod snapshot;
 pub mod storage;
 pub mod task_state;
+pub mod tool_program;
 pub mod workspace;
 pub mod workspace_services;
 pub mod worktree;
