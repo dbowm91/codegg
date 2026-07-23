@@ -95,7 +95,18 @@ def main() -> int:
         body = function_body(adapter)
         if ".abort()" in body:
             failures.append(f"ws.rs: {adapter} contains abort-only sibling cleanup")
-        if "ConnectionTaskSet::new" not in body or "join_after_first_exit" not in body:
+        if (
+            not any(
+                constructor in body
+                for constructor in (
+                    "ConnectionTaskSet::new",
+                    "ConnectionTaskSet::with_probe",
+                    "ConnectionTaskSet::with_tui",
+                    "ConnectionTaskSet::with_tui_probe",
+                )
+            )
+            or "join_after_first_exit" not in body
+        ):
             failures.append(f"ws.rs: {adapter} does not use joined connection-task teardown")
 
     # ── M008: unbounded channel guard + projection privacy ──────────────
@@ -128,7 +139,15 @@ def main() -> int:
         failures.append("ws.rs: ConnectionTaskSet struct is missing (M009 shared task owner)")
     for adapter in ("upgrade_core_ws", "upgrade_tui"):
         body = function_body(adapter)
-        if "ConnectionTaskSet::new" not in body and "ConnectionTaskSet::with_probe" not in body:
+        if not any(
+            constructor in body
+            for constructor in (
+                "ConnectionTaskSet::new",
+                "ConnectionTaskSet::with_probe",
+                "ConnectionTaskSet::with_tui",
+                "ConnectionTaskSet::with_tui_probe",
+            )
+        ):
             failures.append(f"ws.rs: {adapter} does not instantiate ConnectionTaskSet (M009)")
 
     # ── M009 check 2: three first-exit task-owner cases + TUI mirrors ───
@@ -759,13 +778,84 @@ def main() -> int:
                 "011-status.md: must not reference `next commit` placeholders"
             )
 
+    # ── M012: TUI close-responsive ownership and final evidence ────────
+    m012_ws_required = (
+        ("TUI_REQUEST_QUEUE_CAPACITY", "TUI request queue capacity is not explicit"),
+        ("let socket_reader_task = tokio::spawn", "TUI socket reader task is not retained"),
+        ("let request_handler_task = tokio::spawn", "TUI request handler task is not retained"),
+        ("tui_request_tx.try_send", "TUI reader does not use bounded fail-closed enqueue"),
+        ("with_tui_probe", "TUI task owner does not retain the request handler"),
+        ("fire_connection_cancel", "TUI peer closure has no shared cancellation path"),
+        ("projection_forwarders_installed", "TUI installed-forwarder evidence is missing"),
+        ("set_forwarder_install_counter", "projection install count is not wired"),
+        ("max_capacity()", "critical-send observation does not record maximum capacity"),
+        ("queue_remaining_capacity_before_send", "critical-send remaining capacity evidence is missing"),
+    )
+    for needle, message in m012_ws_required:
+        if needle not in ws:
+            failures.append(f"ws.rs: {message}")
+    if "mpsc::channel(TUI_REQUEST_QUEUE_CAPACITY)" not in ws:
+        failures.append("ws.rs: TUI request queue is not bounded with its explicit capacity")
+    if "ws_rx.next()" not in ws or "WsMessage::Close" not in ws:
+        failures.append("ws.rs: TUI socket reader does not own close/EOF observation")
+    if "run_observed_staged_send" in ws:
+        failures.append("ws.rs: duplicate observed staged-send implementation remains")
+    if "try_lock()" in _read(ROOT / "src/server/state.rs"):
+        failures.append("state.rs: probe registration may silently drop through try_lock()")
+    if "mpsc::unbounded_channel" in ws:
+        failures.append("ws.rs: unbounded TUI request channel is forbidden")
+    tui_reader_match = re.search(r"let socket_reader_task = tokio::spawn", ws)
+    if tui_reader_match:
+        reader_body = ws[tui_reader_match.start() : tui_reader_match.start() + 7000]
+        if "tui_request_tx.try_send" not in reader_body:
+            failures.append("ws.rs: socket reader does not feed the bounded request queue")
+        if "fire_connection_cancel" not in reader_body:
+            failures.append("ws.rs: socket reader does not cancel on peer termination")
+
+    m012_tui_tests = (
+        "real_tui_pending_snapshot_close_frame_cancels_before_barrier_release",
+        "real_tui_pending_snapshot_abrupt_drop_cancels_before_barrier_release",
+        "real_tui_pending_replay_close_rolls_back_and_retries_exact_range",
+        "real_tui_pending_snapshot_disconnect_convergence_50_cycles",
+    )
+    for name in m012_tui_tests:
+        if f"fn {name}" not in real_tests:
+            failures.append(f"projection_transport_real.rs: M012 fixture '{name}' is missing")
+    if "request_handler_count()" not in real_tests or "installed_forwarder_count()" not in real_tests:
+        failures.append("projection_transport_real.rs: TUI rollback does not assert handler/forwarder equality")
+    if "staged_subscription_id()" not in real_tests:
+        failures.append("projection_transport_real.rs: TUI rollback lacks actual staged subscription identity capture")
+    if "take_subscription_receiver(subscription_id)" not in real_tests:
+        failures.append("projection_transport_real.rs: TUI rollback lacks receiver non-reuse assertion")
+
+    m012_unix_required = (
+        ("SocketWriteObservation", "typed Unix socket write observation is missing"),
+        ("io_error_kind", "Unix observer does not retain the actual ErrorKind"),
+        ("send_frame_observed", "Unix observer is not attached to the production write path"),
+        ("socket_f0_successful_production_write_is_observed", "Unix successful-write control fixture is missing"),
+        ("socket_f1_peer_closes_before_canonical_response_returns_io_error", "Unix typed F1 fixture is missing"),
+        ("socket_f2_writer_failure_drops_peer_write_half_then_read_half", "Unix typed F2 fixture is missing"),
+        ("socket_f4_replay_delivery_interrupted_by_real_peer_close", "Unix typed replay fixture is missing"),
+        ("socket_f6_typed_peer_error_recovery_converges_25_cycles", "Unix typed convergence fixture is missing"),
+    )
+    for needle, message in m012_unix_required:
+        if needle not in unix_tests and needle not in unix_production:
+            failures.append(f"daemon_socket: {message}")
+    if "SocketWriteTerminalResult::IoError" not in unix_tests:
+        failures.append("daemon_socket_integration_tests.rs: typed peer-error assertion is missing")
+
+    # M012 requires M011 to remain historical/conditional while the final
+    # closure record carries the strict closure decision.
+    if "Status: conditionally closed" not in m011_status:
+        failures.append("011-status.md: M011 must remain conditionally closed and superseded by M012")
+
     # ── Report ──────────────────────────────────────────────────────────
     if failures:
         for failure in failures:
             print(f"ERROR: {failure}")
         return 1
 
-    print("OK: projection transport lifecycle ownership, stale-route guards, M010 mechanism-faithful instrumentation, and M011 evidence-correctness closure guards are present.")
+    print("OK: projection transport lifecycle ownership, stale-route guards, M010/M011 evidence guards, and M012 close/rollback/typed-I/O guards are present.")
     return 0
 
 

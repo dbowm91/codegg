@@ -1,5 +1,6 @@
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::{io::ErrorKind, sync::atomic::AtomicU64};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -17,6 +18,53 @@ use super::projection::{
     bounded_critical_delivery, CriticalDeliveryError, OwnedProjectionSubscription,
     ProjectionConnectionState, ProjectionLifecycleBoundary, ProjectionLifecycleSeam,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketWriteTerminalResult {
+    Completed,
+    IoError(ErrorKind),
+    Serialization,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SocketWriteObservation {
+    pub connection_id: String,
+    pub operation_id: u64,
+    pub boundary: &'static str,
+    pub write_started: bool,
+    pub write_completed: bool,
+    pub flush_started: bool,
+    pub flush_completed: bool,
+    pub io_error_kind: Option<ErrorKind>,
+    pub terminal_result: SocketWriteTerminalResult,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SocketWriteObserver {
+    records: Arc<StdMutex<Vec<SocketWriteObservation>>>,
+}
+
+impl SocketWriteObserver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn records(&self) -> Vec<SocketWriteObservation> {
+        match self.records.lock() {
+            Ok(records) => records.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    fn record(&self, observation: SocketWriteObservation) {
+        match self.records.lock() {
+            Ok(mut records) => records.push(observation),
+            Err(poisoned) => poisoned.into_inner().push(observation),
+        }
+    }
+}
+
+static NEXT_SOCKET_WRITE_OPERATION: AtomicU64 = AtomicU64::new(1);
 
 /// Bind a Unix-domain socket listener to `endpoint`. Returns the bound
 /// `UnixListener` plus the absolute path. Used by the singleton lifecycle
@@ -65,6 +113,25 @@ pub async fn run_core_socket_with_listener_and_seam(
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
 ) -> Result<(), AppError> {
+    run_core_socket_with_listener_and_seam_and_observer(
+        daemon,
+        listener,
+        endpoint,
+        shutdown,
+        lifecycle_seam,
+        None,
+    )
+    .await
+}
+
+pub async fn run_core_socket_with_listener_and_seam_and_observer(
+    daemon: Arc<CoreDaemon>,
+    listener: UnixListener,
+    endpoint: &Path,
+    shutdown: CancellationToken,
+    lifecycle_seam: ProjectionLifecycleSeam,
+    socket_write_observer: Option<SocketWriteObserver>,
+) -> Result<(), AppError> {
     tracing::info!("Core daemon listening on {}", endpoint.display());
     let mut clients = JoinSet::new();
 
@@ -86,12 +153,14 @@ pub async fn run_core_socket_with_listener_and_seam(
                 let daemon = Arc::clone(&daemon);
                 let client_shutdown = shutdown.child_token();
                 let client_lifecycle_seam = lifecycle_seam.clone();
+                let client_socket_write_observer = socket_write_observer.clone();
                 clients.spawn(async move {
                     if let Err(e) = handle_client(
                         daemon,
                         stream,
                         client_shutdown,
                         client_lifecycle_seam,
+                        client_socket_write_observer,
                     )
                     .await
                     {
@@ -133,6 +202,7 @@ async fn handle_client(
     stream: tokio::net::UnixStream,
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
+    socket_write_observer: Option<SocketWriteObserver>,
 ) -> Result<(), AppError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -153,12 +223,16 @@ async fn handle_client(
     let writer_for_forwarder = Arc::clone(&writer);
     let filters_for_forwarder = Arc::clone(&filters);
     let raw_cancellation = connection_cancel.clone();
+    let raw_socket_write_observer = socket_write_observer.clone();
+    let raw_client_id = client_id.clone();
     let raw_forwarder = tokio::spawn(async move {
-        forward_events(
+        forward_events_with_observer(
             event_rx,
             writer_for_forwarder,
             filters_for_forwarder,
             raw_cancellation.clone(),
+            raw_socket_write_observer,
+            &raw_client_id,
         )
         .await;
         // A writer failure (or a closed event log) must wake the reader loop
@@ -377,12 +451,20 @@ async fn handle_client(
                                     &frame,
                                     &cancellation,
                                     &lifecycle_seam,
+                                    socket_write_observer.as_ref(),
+                                    &client_id,
                                 )
                                 .await
                             } else {
                                 bounded_critical_delivery(
                                     &cancellation,
-                                    send_frame(&writer, &frame),
+                                    send_frame_observed(
+                                        &writer,
+                                        &frame,
+                                        socket_write_observer.as_ref(),
+                                        &client_id,
+                                        "response",
+                                    ),
                                 )
                                 .await
                             };
@@ -563,7 +645,15 @@ async fn handle_client(
                                 },
                                 client_id: client_id.clone(),
                             });
-                            if let Err(error) = send_frame(&writer, &server_hello).await {
+                            if let Err(error) = send_frame_observed(
+                                &writer,
+                                &server_hello,
+                                socket_write_observer.as_ref(),
+                                &client_id,
+                                "server_hello",
+                            )
+                            .await
+                            {
                                 tracing::warn!(
                                     "critical Unix-socket ServerHello delivery failed: {}",
                                     error
@@ -575,7 +665,13 @@ async fn handle_client(
                             let cancellation = projection_state.lock().await.cancellation();
                             if let Err(error) = bounded_critical_delivery(
                                 &cancellation,
-                                send_frame(&writer, &CoreFrame::Pong),
+                                send_frame_observed(
+                                    &writer,
+                                    &CoreFrame::Pong,
+                                    socket_write_observer.as_ref(),
+                                    &client_id,
+                                    "pong",
+                                ),
                             )
                             .await
                             {
@@ -827,11 +923,23 @@ async fn projection_forwarder(
     }
 }
 
+#[allow(dead_code)]
 async fn forward_events(
+    event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
+    writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    filters: Arc<RwLock<Vec<EventFilter>>>,
+    cancellation: CancellationToken,
+) {
+    forward_events_with_observer(event_rx, writer, filters, cancellation, None, "unobserved").await;
+}
+
+async fn forward_events_with_observer(
     mut event_rx: broadcast::Receiver<EventEnvelope<CoreEvent>>,
     writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
     filters: Arc<RwLock<Vec<EventFilter>>>,
     cancellation: CancellationToken,
+    observer: Option<SocketWriteObserver>,
+    connection_id: &str,
 ) {
     loop {
         let receive = tokio::select! {
@@ -863,7 +971,13 @@ async fn forward_events(
                 let frame = CoreFrame::Event(event);
                 let send_result = tokio::select! {
                     _ = cancellation.cancelled() => break,
-                    result = send_frame(&writer, &frame) => result,
+                    result = send_frame_observed(
+                        &writer,
+                        &frame,
+                        observer.as_ref(),
+                        connection_id,
+                        "raw_event",
+                    ) => result,
                 };
                 if send_result.is_err() {
                     break;
@@ -881,17 +995,72 @@ async fn send_frame(
     writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
     frame: &CoreFrame,
 ) -> Result<(), CriticalDeliveryError> {
-    let json = serde_json::to_string(frame).map_err(|_| CriticalDeliveryError::Serialization)?;
+    send_frame_observed(writer, frame, None, "unobserved", "default").await
+}
+
+async fn send_frame_observed(
+    writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+    frame: &CoreFrame,
+    observer: Option<&SocketWriteObserver>,
+    connection_id: &str,
+    boundary: &'static str,
+) -> Result<(), CriticalDeliveryError> {
+    let operation_id =
+        NEXT_SOCKET_WRITE_OPERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut observation = SocketWriteObservation {
+        connection_id: connection_id.to_string(),
+        operation_id,
+        boundary,
+        write_started: false,
+        write_completed: false,
+        flush_started: false,
+        flush_completed: false,
+        io_error_kind: None,
+        terminal_result: SocketWriteTerminalResult::Serialization,
+    };
+    let json = match serde_json::to_string(frame) {
+        Ok(json) => json,
+        Err(_) => {
+            if let Some(observer) = observer {
+                observer.record(observation);
+            }
+            return Err(CriticalDeliveryError::Serialization);
+        }
+    };
     let mut w = writer.lock().await;
-    w.write_all(json.as_bytes())
-        .await
-        .map_err(|_| CriticalDeliveryError::WriterClosed)?;
-    w.write_all(b"\n")
-        .await
-        .map_err(|_| CriticalDeliveryError::WriterClosed)?;
-    w.flush()
-        .await
-        .map_err(|_| CriticalDeliveryError::WriterClosed)
+    observation.write_started = true;
+    if let Err(error) = w.write_all(json.as_bytes()).await {
+        observation.io_error_kind = Some(error.kind());
+        observation.terminal_result = SocketWriteTerminalResult::IoError(error.kind());
+        if let Some(observer) = observer {
+            observer.record(observation);
+        }
+        return Err(CriticalDeliveryError::WriterClosed);
+    }
+    if let Err(error) = w.write_all(b"\n").await {
+        observation.io_error_kind = Some(error.kind());
+        observation.terminal_result = SocketWriteTerminalResult::IoError(error.kind());
+        if let Some(observer) = observer {
+            observer.record(observation);
+        }
+        return Err(CriticalDeliveryError::WriterClosed);
+    }
+    observation.write_completed = true;
+    observation.flush_started = true;
+    if let Err(error) = w.flush().await {
+        observation.io_error_kind = Some(error.kind());
+        observation.terminal_result = SocketWriteTerminalResult::IoError(error.kind());
+        if let Some(observer) = observer {
+            observer.record(observation);
+        }
+        return Err(CriticalDeliveryError::WriterClosed);
+    }
+    observation.flush_completed = true;
+    observation.terminal_result = SocketWriteTerminalResult::Completed;
+    if let Some(observer) = observer {
+        observer.record(observation);
+    }
+    Ok(())
 }
 
 async fn staged_socket_critical_delivery(
@@ -899,6 +1068,8 @@ async fn staged_socket_critical_delivery(
     frame: &CoreFrame,
     cancellation: &CancellationToken,
     lifecycle_seam: &ProjectionLifecycleSeam,
+    observer: Option<&SocketWriteObserver>,
+    connection_id: &str,
 ) -> Result<(), CriticalDeliveryError> {
     lifecycle_seam
         .checkpoint(
@@ -917,7 +1088,11 @@ async fn staged_socket_critical_delivery(
     lifecycle_seam
         .checkpoint(ProjectionLifecycleBoundary::DuringWriterWrite, cancellation)
         .await?;
-    bounded_critical_delivery(cancellation, send_frame(writer, frame)).await
+    bounded_critical_delivery(
+        cancellation,
+        send_frame_observed(writer, frame, observer, connection_id, "canonical_response"),
+    )
+    .await
 }
 
 #[cfg(test)]

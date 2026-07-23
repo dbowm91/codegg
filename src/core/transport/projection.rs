@@ -386,6 +386,8 @@ pub struct ProjectionConnectionState {
     diagnostics: VecDeque<String>,
     cancellation: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
+    forwarder_join_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
+    forwarder_install_counter: Option<Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl ProjectionConnectionState {
@@ -409,6 +411,8 @@ impl ProjectionConnectionState {
             diagnostics: VecDeque::with_capacity(MAX_CONNECTION_DIAGNOSTICS),
             cancellation: CancellationToken::new(),
             lifecycle_seam,
+            forwarder_join_counter: None,
+            forwarder_install_counter: None,
         }
     }
 
@@ -454,6 +458,27 @@ impl ProjectionConnectionState {
     /// tests. The default seam is a no-op.
     pub fn lifecycle_seam(&self) -> ProjectionLifecycleSeam {
         self.lifecycle_seam.clone()
+    }
+
+    /// Install a payload-free lifecycle counter used by an owning transport to
+    /// record projection-forwarder joins only after the handle has been
+    /// awaited. The core state remains independent of any server probe type.
+    pub fn set_forwarder_join_counter(&mut self, counter: Arc<std::sync::atomic::AtomicUsize>) {
+        self.forwarder_join_counter = Some(counter);
+    }
+
+    pub fn forwarder_join_counter(&self) -> Option<Arc<std::sync::atomic::AtomicUsize>> {
+        self.forwarder_join_counter.clone()
+    }
+
+    /// Install a payload-free lifecycle counter used by an owning transport
+    /// to record each projection forwarder that was successfully installed.
+    pub fn set_forwarder_install_counter(&mut self, counter: Arc<std::sync::atomic::AtomicUsize>) {
+        self.forwarder_install_counter = Some(counter);
+    }
+
+    pub fn forwarder_install_counter(&self) -> Option<Arc<std::sync::atomic::AtomicUsize>> {
+        self.forwarder_install_counter.clone()
     }
 
     pub fn insert_subscription(
@@ -600,6 +625,19 @@ impl ProjectionConnectionState {
     pub async fn join_cleanup_tasks(mut subscriptions: Vec<OwnedProjectionSubscription>) {
         for subscription in &mut subscriptions {
             subscription.shutdown().await;
+        }
+    }
+
+    pub async fn join_cleanup_tasks_with_counter(
+        mut subscriptions: Vec<OwnedProjectionSubscription>,
+        counter: Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        for subscription in &mut subscriptions {
+            let had_forwarder = subscription.forwarder.is_some();
+            subscription.shutdown().await;
+            if had_forwarder {
+                counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+            }
         }
     }
 }

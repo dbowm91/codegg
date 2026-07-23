@@ -27,6 +27,7 @@ use crate::server::scope::{resolve_context, ScopeQuery};
 pub use crate::server::state::{ConnectionProbeFactory, ConnectionProbeRegistry};
 
 const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
+const TUI_REQUEST_QUEUE_CAPACITY: usize = 32;
 
 /// Connection-local task completion probe. Each counter tracks how many
 /// tasks of the given kind have completed within this connection. Tests
@@ -36,23 +37,29 @@ const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 pub struct ConnectionTaskProbe {
     pub send_completed: std::sync::atomic::AtomicUsize,
     pub receive_completed: std::sync::atomic::AtomicUsize,
+    pub request_handler_completed: std::sync::atomic::AtomicUsize,
     pub raw_event_completed: std::sync::atomic::AtomicUsize,
-    pub projection_forwarders_joined: std::sync::atomic::AtomicUsize,
+    pub projection_forwarders_joined: Arc<std::sync::atomic::AtomicUsize>,
+    pub projection_forwarders_installed: Arc<std::sync::atomic::AtomicUsize>,
     pub cleanup_calls: std::sync::atomic::AtomicUsize,
+    pub connection_cancel_fired: std::sync::atomic::AtomicUsize,
     first_task_kind: std::sync::atomic::AtomicI64,
     first_task_panicked: std::sync::atomic::AtomicBool,
+    tui_task_set: std::sync::atomic::AtomicBool,
 }
 
 const FIRST_TASK_KIND_NONE: i64 = -1;
 const FIRST_TASK_KIND_SEND: i64 = 0;
 const FIRST_TASK_KIND_RECEIVE: i64 = 1;
 const FIRST_TASK_KIND_RAW_EVENT: i64 = 2;
+const FIRST_TASK_KIND_REQUEST_HANDLER: i64 = 3;
 
 fn first_task_kind_to_i64(kind: ConnectionTaskKind) -> i64 {
     match kind {
         ConnectionTaskKind::Send => FIRST_TASK_KIND_SEND,
         ConnectionTaskKind::Receive => FIRST_TASK_KIND_RECEIVE,
         ConnectionTaskKind::RawEvent => FIRST_TASK_KIND_RAW_EVENT,
+        ConnectionTaskKind::RequestHandler => FIRST_TASK_KIND_REQUEST_HANDLER,
     }
 }
 
@@ -61,6 +68,7 @@ fn first_task_kind_from_i64(value: i64) -> Option<ConnectionTaskKind> {
         FIRST_TASK_KIND_SEND => Some(ConnectionTaskKind::Send),
         FIRST_TASK_KIND_RECEIVE => Some(ConnectionTaskKind::Receive),
         FIRST_TASK_KIND_RAW_EVENT => Some(ConnectionTaskKind::RawEvent),
+        FIRST_TASK_KIND_REQUEST_HANDLER => Some(ConnectionTaskKind::RequestHandler),
         _ => None,
     }
 }
@@ -89,14 +97,39 @@ impl ConnectionTaskProbe {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    pub fn request_handler_count(&self) -> usize {
+        self.request_handler_completed
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn forwarder_count(&self) -> usize {
         self.projection_forwarders_joined
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn installed_forwarder_count(&self) -> usize {
+        self.projection_forwarders_installed
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn cleanup_count(&self) -> usize {
         self.cleanup_calls
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn connection_cancel_count(&self) -> usize {
+        self.connection_cancel_fired
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn mark_tui_task_set(&self) {
+        self.tui_task_set
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn record_connection_cancel(&self) {
+        self.connection_cancel_fired
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     pub fn first_task_kind(&self) -> Option<ConnectionTaskKind> {
@@ -122,6 +155,13 @@ impl ConnectionTaskProbe {
             1,
             "expected exactly one receive task completion"
         );
+        if self.tui_task_set.load(std::sync::atomic::Ordering::Acquire) {
+            assert_eq!(
+                self.request_handler_count(),
+                1,
+                "expected exactly one TUI request-handler completion"
+            );
+        }
         assert_eq!(
             self.raw_event_count(),
             1,
@@ -132,6 +172,11 @@ impl ConnectionTaskProbe {
     pub fn assert_all_at_baseline(&self) {
         self.assert_all_tasks_completed();
         assert_eq!(self.cleanup_count(), 1, "expected exactly one cleanup pass");
+        assert_eq!(
+            self.connection_cancel_count(),
+            1,
+            "expected exactly one connection cancellation firing"
+        );
     }
 
     pub fn assert_first_task_kind(&self, kind: ConnectionTaskKind) {
@@ -326,6 +371,7 @@ impl WriterGate {
 /// populates these fields.
 #[derive(Debug, Default)]
 pub struct TransportLifecycleObserver {
+    connection_id: std::sync::Mutex<Option<String>>,
     pub queue_capacity: std::sync::atomic::AtomicUsize,
     pub filler_enqueued: std::sync::atomic::AtomicUsize,
     pub fill_full_observed: std::sync::atomic::AtomicBool,
@@ -346,8 +392,12 @@ pub struct TransportLifecycleObserver {
     /// describing the precise precondition, stage timing, and final typed
     /// result for the operation that triggered it. Entries are
     /// connection-local and remain payload-free.
-    pub critical_send_observations:
-        std::sync::Mutex<Vec<CriticalSendObservation>>,
+    pub critical_send_observations: std::sync::Mutex<Vec<CriticalSendObservation>>,
+    /// The daemon-issued subscription id observed at the staged boundary.
+    /// This is test evidence only; production cleanup still derives
+    /// ownership from the connection id and connection-local state.
+    staged_subscription_id:
+        std::sync::Mutex<Option<crate::protocol::projection::replay::ProjectionSubscriptionId>>,
 }
 
 /// One observation per `critical_send` / `staged_critical_send` call. Used
@@ -367,6 +417,13 @@ pub struct CriticalSendObservation {
     pub final_result: Result<(), CriticalSendFailure>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CriticalSendContext {
+    operation_id: u64,
+    request_kind: &'static str,
+    boundary: Option<&'static str>,
+}
+
 impl CriticalSendObservation {
     pub fn is_timeout_during_enqueue(&self) -> bool {
         matches!(self.final_result, Err(CriticalSendFailure::Timeout))
@@ -384,6 +441,19 @@ impl TransportLifecycleObserver {
     pub fn record_queue_capacity(&self, capacity: usize) {
         self.queue_capacity
             .store(capacity, std::sync::atomic::Ordering::Release);
+    }
+
+    pub fn record_connection_id(&self, connection_id: impl Into<String>) {
+        if let Ok(mut guard) = self.connection_id.lock() {
+            *guard = Some(connection_id.into());
+        }
+    }
+
+    pub fn connection_id(&self) -> Option<String> {
+        self.connection_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     pub fn record_filler_enqueued(&self, count: usize) {
@@ -422,6 +492,24 @@ impl TransportLifecycleObserver {
         }
     }
 
+    pub fn record_staged_subscription_id(
+        &self,
+        subscription_id: crate::protocol::projection::replay::ProjectionSubscriptionId,
+    ) {
+        if let Ok(mut guard) = self.staged_subscription_id.lock() {
+            *guard = Some(subscription_id);
+        }
+    }
+
+    pub fn staged_subscription_id(
+        &self,
+    ) -> Option<crate::protocol::projection::replay::ProjectionSubscriptionId> {
+        self.staged_subscription_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
     pub fn final_send_result(&self) -> Option<Result<(), CriticalSendFailure>> {
         self.final_send_result
             .lock()
@@ -437,20 +525,6 @@ impl TransportLifecycleObserver {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default()
-    }
-
-    /// True iff at least one recorded critical send returned
-    /// `Err(Timeout)`. Saturation tests use this to assert that the
-    /// production 500 ms timeout actually fired.
-    pub fn any_timeout(&self) -> bool {
-        self.send_result_history
-            .lock()
-            .map(|guard| {
-                guard
-                    .iter()
-                    .any(|r| matches!(r, Err(CriticalSendFailure::Timeout)))
-            })
-            .unwrap_or(false)
     }
 
     pub fn writer_gates_reached(&self) -> usize {
@@ -488,6 +562,7 @@ pub enum ConnectionTaskKind {
     Send,
     Receive,
     RawEvent,
+    RequestHandler,
 }
 
 impl ConnectionTaskKind {
@@ -496,17 +571,21 @@ impl ConnectionTaskKind {
             Self::Send => "send",
             Self::Receive => "receive",
             Self::RawEvent => "raw-event",
+            Self::RequestHandler => "request-handler",
         }
     }
 }
 
-/// Own the three tasks that make up a projection-capable WebSocket
-/// connection. The first task to finish selects the connection teardown; the
-/// completed handle is consumed by that select and the remaining handles are
-/// explicitly aborted and awaited before transport state is cleaned up.
+/// Own the connection-scoped WebSocket tasks. Core connections retain a
+/// writer, receive, and raw-event task; TUI connections additionally retain a
+/// socket reader and ordered request handler. The first task to finish selects
+/// connection teardown; the completed handle is consumed by that select and
+/// remaining handles are explicitly aborted and awaited before transport
+/// state is cleaned up.
 pub struct ConnectionTaskSet {
     send: Option<JoinHandle<()>>,
     receive: Option<JoinHandle<()>>,
+    request_handler: Option<JoinHandle<()>>,
     raw_event: Option<JoinHandle<()>>,
     probe: Option<Arc<ConnectionTaskProbe>>,
 }
@@ -520,11 +599,13 @@ pub struct ConnectionTaskSet {
 fn resolve_connection_probe(
     factory: Option<&crate::server::state::ConnectionProbeFactory>,
     aggregate: Option<&Arc<ConnectionTaskProbe>>,
-) -> (Option<Arc<ConnectionTaskProbe>>, Option<Arc<ConnectionTaskProbe>>) {
-    let per_connection = factory.map(|factory| factory());
-    let for_tasks = per_connection
-        .clone()
-        .or_else(|| aggregate.cloned());
+    connection_id: &str,
+) -> (
+    Option<Arc<ConnectionTaskProbe>>,
+    Option<Arc<ConnectionTaskProbe>>,
+) {
+    let per_connection = factory.map(|factory| factory(connection_id));
+    let for_tasks = per_connection.clone().or_else(|| aggregate.cloned());
     (for_tasks, per_connection)
 }
 
@@ -533,6 +614,7 @@ impl ConnectionTaskSet {
         Self {
             send: Some(send),
             receive: Some(receive),
+            request_handler: None,
             raw_event: Some(raw_event),
             probe: None,
         }
@@ -547,8 +629,41 @@ impl ConnectionTaskSet {
         Self {
             send: Some(send),
             receive: Some(receive),
+            request_handler: None,
             raw_event: Some(raw_event),
             probe: Some(probe),
+        }
+    }
+
+    pub fn with_tui_probe(
+        send: JoinHandle<()>,
+        socket_reader: JoinHandle<()>,
+        request_handler: JoinHandle<()>,
+        raw_event: JoinHandle<()>,
+        probe: Arc<ConnectionTaskProbe>,
+    ) -> Self {
+        probe.mark_tui_task_set();
+        Self {
+            send: Some(send),
+            receive: Some(socket_reader),
+            request_handler: Some(request_handler),
+            raw_event: Some(raw_event),
+            probe: Some(probe),
+        }
+    }
+
+    fn with_tui(
+        send: JoinHandle<()>,
+        socket_reader: JoinHandle<()>,
+        request_handler: JoinHandle<()>,
+        raw_event: JoinHandle<()>,
+    ) -> Self {
+        Self {
+            send: Some(send),
+            receive: Some(socket_reader),
+            request_handler: Some(request_handler),
+            raw_event: Some(raw_event),
+            probe: None,
         }
     }
 
@@ -564,6 +679,11 @@ impl ConnectionTaskSet {
             ConnectionTaskKind::Send => (panic_task, pending(), pending()),
             ConnectionTaskKind::Receive => (pending(), panic_task, pending()),
             ConnectionTaskKind::RawEvent => (pending(), pending(), panic_task),
+            ConnectionTaskKind::RequestHandler => {
+                let mut set = Self::new(pending(), pending(), pending());
+                set.request_handler = Some(panic_task);
+                return set;
+            }
         };
         Self::new(send, receive, raw_event)
     }
@@ -575,22 +695,44 @@ impl ConnectionTaskSet {
     /// cancel/abort side effects. The `_for_test` suffix marks this as a
     /// test-only public API surface.
     pub async fn first_exit_classification_for_test(&mut self) -> (ConnectionTaskKind, bool) {
-        let (first_kind, first_result) = tokio::select! {
-            result = self.send.as_mut().expect("connection send task is retained") => {
-                (ConnectionTaskKind::Send, result)
+        let (first_kind, first_result) = if self.request_handler.is_some() {
+            tokio::select! {
+                result = self.send.as_mut().expect("connection send task is retained") => {
+                    (ConnectionTaskKind::Send, result)
+                }
+                result = self.receive.as_mut().expect("connection receive task is retained") => {
+                    (ConnectionTaskKind::Receive, result)
+                }
+                result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                    (ConnectionTaskKind::RawEvent, result)
+                }
+                result = self.request_handler.as_mut().expect("TUI request handler is retained") => {
+                    (ConnectionTaskKind::RequestHandler, result)
+                }
             }
-            result = self.receive.as_mut().expect("connection receive task is retained") => {
-                (ConnectionTaskKind::Receive, result)
-            }
-            result = self.raw_event.as_mut().expect("connection raw task is retained") => {
-                (ConnectionTaskKind::RawEvent, result)
+        } else {
+            tokio::select! {
+                result = self.send.as_mut().expect("connection send task is retained") => {
+                    (ConnectionTaskKind::Send, result)
+                }
+                result = self.receive.as_mut().expect("connection receive task is retained") => {
+                    (ConnectionTaskKind::Receive, result)
+                }
+                result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                    (ConnectionTaskKind::RawEvent, result)
+                }
             }
         };
         let panicked = matches!(
             first_result,
             Err(ref error) if !error.is_cancelled()
         );
-        for handle in [self.send.take(), self.receive.take(), self.raw_event.take()] {
+        for handle in [
+            self.send.take(),
+            self.receive.take(),
+            self.request_handler.take(),
+            self.raw_event.take(),
+        ] {
             if let Some(h) = handle {
                 h.abort();
             }
@@ -603,15 +745,32 @@ impl ConnectionTaskSet {
         cancellation: &CancellationToken,
         connection_id: &str,
     ) {
-        let (first_kind, first_result) = tokio::select! {
-            result = self.send.as_mut().expect("connection send task is retained") => {
-                (ConnectionTaskKind::Send, result)
+        let (first_kind, first_result) = if self.request_handler.is_some() {
+            tokio::select! {
+                result = self.send.as_mut().expect("connection send task is retained") => {
+                    (ConnectionTaskKind::Send, result)
+                }
+                result = self.receive.as_mut().expect("connection receive task is retained") => {
+                    (ConnectionTaskKind::Receive, result)
+                }
+                result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                    (ConnectionTaskKind::RawEvent, result)
+                }
+                result = self.request_handler.as_mut().expect("TUI request handler is retained") => {
+                    (ConnectionTaskKind::RequestHandler, result)
+                }
             }
-            result = self.receive.as_mut().expect("connection receive task is retained") => {
-                (ConnectionTaskKind::Receive, result)
-            }
-            result = self.raw_event.as_mut().expect("connection raw task is retained") => {
-                (ConnectionTaskKind::RawEvent, result)
+        } else {
+            tokio::select! {
+                result = self.send.as_mut().expect("connection send task is retained") => {
+                    (ConnectionTaskKind::Send, result)
+                }
+                result = self.receive.as_mut().expect("connection receive task is retained") => {
+                    (ConnectionTaskKind::Receive, result)
+                }
+                result = self.raw_event.as_mut().expect("connection raw task is retained") => {
+                    (ConnectionTaskKind::RawEvent, result)
+                }
             }
         };
 
@@ -644,6 +803,13 @@ impl ConnectionTaskSet {
                         .fetch_add(1, std::sync::atomic::Ordering::Release);
                 }
             }
+            ConnectionTaskKind::RequestHandler => {
+                drop(self.request_handler.take());
+                if let Some(p) = &self.probe {
+                    p.request_handler_completed
+                        .fetch_add(1, std::sync::atomic::Ordering::Release);
+                }
+            }
         }
         if let Some(p) = &self.probe {
             // CAS-style first-write wins; later tasks do not overwrite the
@@ -661,8 +827,13 @@ impl ConnectionTaskSet {
         }
         log_connection_task_result(first_kind, first_result, connection_id);
 
-        cancellation.cancel();
-        for handle in [&self.send, &self.receive, &self.raw_event] {
+        fire_connection_cancel(cancellation, self.probe.as_ref());
+        for handle in [
+            &self.send,
+            &self.receive,
+            &self.request_handler,
+            &self.raw_event,
+        ] {
             if let Some(handle) = handle.as_ref() {
                 handle.abort();
             }
@@ -673,6 +844,8 @@ impl ConnectionTaskSet {
         self.join_remaining(ConnectionTaskKind::Receive, connection_id)
             .await;
         self.join_remaining(ConnectionTaskKind::RawEvent, connection_id)
+            .await;
+        self.join_remaining(ConnectionTaskKind::RequestHandler, connection_id)
             .await;
     }
 
@@ -687,7 +860,15 @@ impl ConnectionTaskSet {
         cancellation: &CancellationToken,
         connection_id: &str,
     ) {
-        self.join_after_first_exit(cancellation, connection_id).await;
+        self.join_after_first_exit(cancellation, connection_id)
+            .await;
+    }
+
+    pub fn all_handles_consumed_for_test(&self) -> bool {
+        self.send.is_none()
+            && self.receive.is_none()
+            && self.request_handler.is_none()
+            && self.raw_event.is_none()
     }
 
     async fn join_remaining(&mut self, kind: ConnectionTaskKind, connection_id: &str) {
@@ -695,6 +876,7 @@ impl ConnectionTaskSet {
             ConnectionTaskKind::Send => self.send.take(),
             ConnectionTaskKind::Receive => self.receive.take(),
             ConnectionTaskKind::RawEvent => self.raw_event.take(),
+            ConnectionTaskKind::RequestHandler => self.request_handler.take(),
         };
         let Some(handle) = handle else {
             return;
@@ -710,6 +892,9 @@ impl ConnectionTaskSet {
                     .fetch_add(1, std::sync::atomic::Ordering::Release),
                 ConnectionTaskKind::RawEvent => p
                     .raw_event_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Release),
+                ConnectionTaskKind::RequestHandler => p
+                    .request_handler_completed
                     .fetch_add(1, std::sync::atomic::Ordering::Release),
             };
         }
@@ -733,27 +918,41 @@ fn log_connection_task_result(
     }
 }
 
+fn fire_connection_cancel(
+    cancellation: &CancellationToken,
+    probe: Option<&Arc<ConnectionTaskProbe>>,
+) {
+    if let Some(probe) = probe {
+        let first = probe.connection_cancel_fired.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |count| (count == 0).then_some(1),
+        );
+        cancellation.cancel();
+        if first.is_err() {
+            return;
+        }
+        return;
+    }
+    cancellation.cancel();
+}
+
 async fn critical_send<T: serde::Serialize>(
     tx: &WsSender,
     value: &T,
     cancellation: &CancellationToken,
 ) -> Result<(), CriticalSendFailure> {
-    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
-    let (receipt_tx, receipt_rx) = oneshot::channel();
-    let outbound = OutboundMessage {
-        message: WsMessage::Text(json.into()),
-        receipt: Some(receipt_tx),
-        route: OutboundRoute::Control,
-    };
-
-    bounded_critical_delivery(cancellation, async move {
-        tx.send(outbound)
-            .await
-            .map_err(|_| CriticalSendFailure::QueueClosed)?;
-        receipt_rx
-            .await
-            .map_err(|_| CriticalSendFailure::WriterClosed)?
-    })
+    critical_send_canonical(
+        tx,
+        value,
+        cancellation,
+        None,
+        CriticalSendContext {
+            operation_id: next_operation_id(),
+            request_kind: "critical_send",
+            boundary: None,
+        },
+    )
     .await
 }
 
@@ -766,22 +965,82 @@ async fn critical_send_observed<T: serde::Serialize>(
     cancellation: &CancellationToken,
     observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
-    let operation_id = next_operation_id(observer);
-    let result = critical_send(tx, value, cancellation).await;
-    if let Some(observer) = observer {
-        observer.record_final_send_result(result.clone());
-        observer.record_critical_send_observation(CriticalSendObservation {
-            operation_id,
+    critical_send_canonical(
+        tx,
+        value,
+        cancellation,
+        observer,
+        CriticalSendContext {
+            operation_id: next_operation_id(),
             request_kind: "critical_send",
             boundary: None,
-            queue_capacity: tx.capacity(),
-            queue_remaining_capacity_before_send: tx.capacity(),
-            queue_full_before_send: false,
-            enqueue_started: !matches!(result, Err(CriticalSendFailure::QueueClosed)),
-            enqueue_completed: matches!(result, Ok(())),
-            receipt_wait_started: false,
-            final_result: result,
-        });
+        },
+    )
+    .await
+}
+
+async fn critical_send_canonical<T: serde::Serialize>(
+    tx: &WsSender,
+    value: &T,
+    cancellation: &CancellationToken,
+    observer: Option<&Arc<TransportLifecycleObserver>>,
+    context: CriticalSendContext,
+) -> Result<(), CriticalSendFailure> {
+    let remaining = tx.capacity();
+    let capacity = tx.max_capacity();
+    let mut observation = CriticalSendObservation {
+        operation_id: context.operation_id,
+        request_kind: context.request_kind,
+        boundary: context.boundary,
+        queue_capacity: capacity,
+        queue_remaining_capacity_before_send: remaining,
+        queue_full_before_send: remaining == 0,
+        enqueue_started: false,
+        enqueue_completed: false,
+        receipt_wait_started: false,
+        final_result: Err(CriticalSendFailure::Cancelled),
+    };
+    let json = match serde_json::to_string(value) {
+        Ok(json) => json,
+        Err(_) => {
+            let result = Err(CriticalSendFailure::Serialization);
+            observation.final_result = result.clone();
+            if let Some(observer) = observer {
+                observer.record_final_send_result(result.clone());
+                observer.record_critical_send_observation(observation);
+            }
+            return result;
+        }
+    };
+    let (receipt_tx, receipt_rx) = oneshot::channel();
+    let outbound = OutboundMessage {
+        message: WsMessage::Text(json.into()),
+        receipt: Some(receipt_tx),
+        route: OutboundRoute::Control,
+    };
+    observation.enqueue_started = true;
+    let enqueue_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let receipt_wait_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enqueue_completed_for_send = Arc::clone(&enqueue_completed);
+    let receipt_wait_started_for_send = Arc::clone(&receipt_wait_started);
+    let result = bounded_critical_delivery(cancellation, async move {
+        tx.send(outbound)
+            .await
+            .map_err(|_| CriticalSendFailure::QueueClosed)?;
+        enqueue_completed_for_send.store(true, std::sync::atomic::Ordering::Release);
+        receipt_wait_started_for_send.store(true, std::sync::atomic::Ordering::Release);
+        receipt_rx
+            .await
+            .map_err(|_| CriticalSendFailure::WriterClosed)?
+    })
+    .await;
+    observation.enqueue_completed = enqueue_completed.load(std::sync::atomic::Ordering::Acquire);
+    observation.receipt_wait_started =
+        receipt_wait_started.load(std::sync::atomic::Ordering::Acquire);
+    observation.final_result = result.clone();
+    if let Some(observer) = observer {
+        observer.record_final_send_result(result.clone());
+        observer.record_critical_send_observation(observation);
     }
     result
 }
@@ -792,32 +1051,18 @@ async fn staged_critical_send<T: serde::Serialize>(
     cancellation: &CancellationToken,
     seam: &ProjectionLifecycleSeam,
 ) -> Result<(), CriticalSendFailure> {
-    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
-    let (receipt_tx, receipt_rx) = oneshot::channel();
-    let outbound = OutboundMessage {
-        message: WsMessage::Text(json.into()),
-        receipt: Some(receipt_tx),
-        route: OutboundRoute::Control,
-    };
-
-    bounded_critical_delivery(cancellation, async {
-        seam.checkpoint(
-            ProjectionLifecycleBoundary::BeforeControlEnqueue,
-            cancellation,
-        )
-        .await?;
-        tx.send(outbound)
-            .await
-            .map_err(|_| CriticalSendFailure::QueueClosed)?;
-        seam.checkpoint(
-            ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
-            cancellation,
-        )
-        .await?;
-        receipt_rx
-            .await
-            .map_err(|_| CriticalSendFailure::WriterClosed)?
-    })
+    staged_critical_send_canonical(
+        tx,
+        value,
+        cancellation,
+        seam,
+        None,
+        CriticalSendContext {
+            operation_id: next_operation_id(),
+            request_kind: "staged_critical_send",
+            boundary: Some("projection_lifecycle"),
+        },
+    )
     .await
 }
 
@@ -826,7 +1071,7 @@ async fn staged_critical_send<T: serde::Serialize>(
 /// precondition, whether `tx.send` returned before the bounded timeout,
 /// whether the receipt wait began, and the final
 /// [`CriticalSendFailure`]. Tests assert against these fields rather than
-/// against `any_timeout()`.
+/// against the operation-correlated observation fields.
 async fn staged_critical_send_observed<T: serde::Serialize>(
     tx: &WsSender,
     value: &T,
@@ -834,60 +1079,55 @@ async fn staged_critical_send_observed<T: serde::Serialize>(
     seam: &ProjectionLifecycleSeam,
     observer: Option<&Arc<TransportLifecycleObserver>>,
 ) -> Result<(), CriticalSendFailure> {
-    let operation_id = next_operation_id(observer);
-    let mut observation = CriticalSendObservation {
-        operation_id,
-        request_kind: "staged_critical_send",
-        boundary: None,
-        queue_capacity: tx.capacity(),
-        queue_remaining_capacity_before_send: tx.capacity(),
-        queue_full_before_send: false,
-        enqueue_started: false,
-        enqueue_completed: false,
-        receipt_wait_started: false,
-        final_result: Err(CriticalSendFailure::Cancelled),
-    };
-    let result = run_observed_staged_send(
+    staged_critical_send_canonical(
         tx,
         value,
         cancellation,
         seam,
         observer,
-        &mut observation,
+        CriticalSendContext {
+            operation_id: next_operation_id(),
+            request_kind: "staged_critical_send",
+            boundary: Some("projection_lifecycle"),
+        },
     )
-    .await;
-    observation.final_result = result.clone();
-    if let Some(observer) = observer {
-        observer.record_final_send_result(result);
-        observer.record_critical_send_observation(observation);
-    }
-    result
+    .await
 }
 
-/// Stage-instrumented variant of `staged_critical_send`. Splits enqueue and
-/// receipt-wait so the observer can record which stage a `Timeout` came
-/// from. This is required by M011 evidence-correctness: a `Timeout` whose
-/// `enqueue_completed` is `false` proves the queue was full before the
-/// operation began; a `Timeout` whose `enqueue_completed` is `true` and
-/// `receipt_wait_started` is `true` proves the writer receipt never fired.
-async fn run_observed_staged_send<T: serde::Serialize>(
+async fn staged_critical_send_canonical<T: serde::Serialize>(
     tx: &WsSender,
     value: &T,
     cancellation: &CancellationToken,
     seam: &ProjectionLifecycleSeam,
     observer: Option<&Arc<TransportLifecycleObserver>>,
-    observation: &mut CriticalSendObservation,
+    context: CriticalSendContext,
 ) -> Result<(), CriticalSendFailure> {
-    // Snapshot the queue state before we touch anything. If the queue is
-    // already saturated (no capacity remaining), the precondition for a
-    // full-queue timeout is satisfied.
-    let capacity = tx.capacity();
+    let capacity = tx.max_capacity();
     let remaining = tx.capacity();
-    observation.queue_capacity = capacity;
-    observation.queue_remaining_capacity_before_send = remaining;
-    observation.queue_full_before_send = remaining == 0;
-
-    let json = serde_json::to_string(value).map_err(|_| CriticalSendFailure::Serialization)?;
+    let mut observation = CriticalSendObservation {
+        operation_id: context.operation_id,
+        request_kind: context.request_kind,
+        boundary: context.boundary,
+        queue_capacity: capacity,
+        queue_remaining_capacity_before_send: remaining,
+        queue_full_before_send: remaining == 0,
+        enqueue_started: false,
+        enqueue_completed: false,
+        receipt_wait_started: false,
+        final_result: Err(CriticalSendFailure::Cancelled),
+    };
+    let json = match serde_json::to_string(value) {
+        Ok(json) => json,
+        Err(_) => {
+            let result = Err(CriticalSendFailure::Serialization);
+            observation.final_result = result.clone();
+            if let Some(observer) = observer {
+                observer.record_final_send_result(result.clone());
+                observer.record_critical_send_observation(observation);
+            }
+            return result;
+        }
+    };
     let (receipt_tx, receipt_rx) = oneshot::channel();
     let outbound = OutboundMessage {
         message: WsMessage::Text(json.into()),
@@ -896,85 +1136,47 @@ async fn run_observed_staged_send<T: serde::Serialize>(
     };
 
     observation.enqueue_started = true;
-
-    // Run the checkpoint + tx.send under a single bounded timeout. We
-    // capture the result of the await inside the async block so that
-    // `bounded_critical_delivery` actually races the in-progress send
-    // against the timeout. Awaiting `tx.send` outside the block would
-    // park the recv task forever on a saturated queue and bypass the
-    // timeout.
-    let before_enqueue: Result<(), CriticalDeliveryError> = seam
-        .checkpoint(
+    let enqueue_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let receipt_wait_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let enqueue_completed_for_send = Arc::clone(&enqueue_completed);
+    let receipt_wait_started_for_send = Arc::clone(&receipt_wait_started);
+    let result = bounded_critical_delivery(cancellation, async move {
+        seam.checkpoint(
             ProjectionLifecycleBoundary::BeforeControlEnqueue,
             cancellation,
         )
-        .await;
-    let enqueue_outcome: Result<(), CriticalSendFailure> =
-        bounded_critical_delivery(cancellation, async move {
-            match before_enqueue {
-                Ok(()) => match tx.send(outbound).await {
-                    Ok(()) => Ok(()),
-                    Err(_) => Err(CriticalSendFailure::QueueClosed),
-                },
-                Err(_) => Err(CriticalSendFailure::WriterClosed),
-            }
-        })
-        .await;
-
-    match enqueue_outcome {
-        Err(error @ CriticalSendFailure::Timeout) => {
-            observation.enqueue_completed = false;
-            observation.receipt_wait_started = false;
-            return Err(error);
-        }
-        Err(error) => {
-            observation.enqueue_completed = false;
-            return Err(error);
-        }
-        Ok(()) => {
-            observation.enqueue_completed = true;
-        }
-    }
-
-    observation.receipt_wait_started = true;
-    let after_enqueue_check: Result<(), CriticalDeliveryError> = seam
-        .checkpoint(
+        .await?;
+        tx.send(outbound)
+            .await
+            .map_err(|_| CriticalSendFailure::QueueClosed)?;
+        enqueue_completed_for_send.store(true, std::sync::atomic::Ordering::Release);
+        seam.checkpoint(
             ProjectionLifecycleBoundary::AfterControlEnqueueBeforeWriterReceipt,
             cancellation,
         )
-        .await;
-    let receipt_outcome: Result<(), CriticalSendFailure> =
-        bounded_critical_delivery(cancellation, async move {
-            match after_enqueue_check {
-                Ok(()) => match receipt_rx.await {
-                    Ok(Ok(())) => Ok(()),
-                    Ok(Err(_)) | Err(_) => Err(CriticalSendFailure::WriterClosed),
-                },
-                Err(_) => Err(CriticalSendFailure::WriterClosed),
-            }
-        })
-        .await;
-
-    receipt_outcome
+        .await?;
+        receipt_wait_started_for_send.store(true, std::sync::atomic::Ordering::Release);
+        receipt_rx
+            .await
+            .map_err(|_| CriticalSendFailure::WriterClosed)?
+    })
+    .await;
+    observation.enqueue_completed = enqueue_completed.load(std::sync::atomic::Ordering::Acquire);
+    observation.receipt_wait_started =
+        receipt_wait_started.load(std::sync::atomic::Ordering::Acquire);
+    observation.final_result = result.clone();
+    if let Some(observer) = observer {
+        observer.record_final_send_result(result.clone());
+        observer.record_critical_send_observation(observation);
+    }
+    result
 }
 
 /// Allocate a connection-local operation id. Tests use this to attribute
 /// observations back to the operation that produced them.
-fn next_operation_id(observer: Option<&Arc<TransportLifecycleObserver>>) -> u64 {
+fn next_operation_id() -> u64 {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let raw = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    // Pin operation id to observer count for cross-checking.
-    if let Some(observer) = observer {
-        let count = observer
-            .critical_send_observations
-            .lock()
-            .map(|guard| guard.len() as u64)
-            .unwrap_or(0);
-        if raw < count {
-            return count;
-        }
-    }
-    raw
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn queue_message(tx: &WsSender, message: WsMessage) -> bool {
@@ -1029,23 +1231,67 @@ async fn activate_after_critical_delivery(
 async fn cleanup_projection_connection_state(
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
 ) {
-    let subscriptions = projection.lock().await.drain_for_cleanup();
-    ProjectionConnectionState::join_cleanup_tasks(subscriptions).await;
+    let (subscriptions, counter) = {
+        let mut state = projection.lock().await;
+        let counter = state.forwarder_join_counter();
+        (state.drain_for_cleanup(), counter)
+    };
+    if let Some(counter) = counter {
+        ProjectionConnectionState::join_cleanup_tasks_with_counter(subscriptions, counter).await;
+    } else {
+        ProjectionConnectionState::join_cleanup_tasks(subscriptions).await;
+    }
 }
 
 async fn stop_owned_projection_subscription(
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
     subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
 ) -> bool {
-    let subscription = projection
-        .lock()
-        .await
-        .remove_subscription_for_cleanup(subscription_id);
+    let (subscription, counter) = {
+        let mut state = projection.lock().await;
+        let counter = state.forwarder_join_counter();
+        (
+            state.remove_subscription_for_cleanup(subscription_id),
+            counter,
+        )
+    };
     let removed = subscription.is_some();
     if let Some(subscription) = subscription {
-        ProjectionConnectionState::join_cleanup_tasks(vec![subscription]).await;
+        if let Some(counter) = counter {
+            ProjectionConnectionState::join_cleanup_tasks_with_counter(vec![subscription], counter)
+                .await;
+        } else {
+            ProjectionConnectionState::join_cleanup_tasks(vec![subscription]).await;
+        }
     }
     removed
+}
+
+/// Release a daemon-side TUI subscription owned by this connection. Normal
+/// requests still go through `handle_request_for_client`; teardown is a
+/// trusted connection-owner path and uses the replay service directly so a
+/// cancelled handler cannot strand the daemon record behind a failed response
+/// or a missing client-registry entry.
+async fn unsubscribe_tui_daemon_subscription(
+    daemon: &Arc<crate::core::daemon::CoreDaemon>,
+    subscription_id: &crate::protocol::projection::replay::ProjectionSubscriptionId,
+    client_id: &str,
+) {
+    if let Some(seam) = daemon.projection_seam.as_ref() {
+        let _ = seam.service().unsubscribe(subscription_id).await;
+        return;
+    }
+    let _ = daemon
+        .handle_request_for_client(
+            crate::core::new_request(
+                format!("tui-projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
 }
 
 fn event_matches_raw_filter(
@@ -1588,6 +1834,9 @@ async fn upgrade_tui(
         observer.record_queue_capacity(queue_capacity);
     }
     let connection_id = format!("tui-{}", uuid::Uuid::new_v4());
+    if let Some(observer) = &transport_observer {
+        observer.record_connection_id(connection_id.clone());
+    }
     let projection = Arc::new(tokio::sync::Mutex::new(
         ProjectionConnectionState::new_with_lifecycle_seam(
             connection_id.clone(),
@@ -1600,9 +1849,32 @@ async fn upgrade_tui(
     )));
     let session_state_for_writer = Arc::clone(&session_state);
     let connection_cancel = CancellationToken::new();
+    let (probe_for_tasks, per_connection_probe) = resolve_connection_probe(
+        state.probe_factory.as_ref(),
+        state.connection_task_probe.as_ref(),
+        &connection_id,
+    );
+    let task_probe = probe_for_tasks.clone();
+    if let Some(probe) = task_probe.as_ref() {
+        session_state
+            .lock()
+            .await
+            .projection
+            .lock()
+            .await
+            .set_forwarder_join_counter(Arc::clone(&probe.projection_forwarders_joined));
+        session_state
+            .lock()
+            .await
+            .projection
+            .lock()
+            .await
+            .set_forwarder_install_counter(Arc::clone(&probe.projection_forwarders_installed));
+    }
     let connection_cancel_for_writer = connection_cancel.clone();
     let daemon_clone = state.daemon.clone();
     let transport_observer_for_writer = transport_observer.clone();
+    let task_probe_for_writer = task_probe.clone();
 
     let send_task = tokio::spawn(async move {
         let mut ws_tx = ws_tx;
@@ -1663,7 +1935,10 @@ async fn upgrade_tui(
                 }
             }
         }
-        connection_cancel_for_writer.cancel();
+        fire_connection_cancel(
+            &connection_cancel_for_writer,
+            task_probe_for_writer.as_ref(),
+        );
     });
 
     let rate_limiter = state.ws_rate_limiter.clone();
@@ -1673,42 +1948,116 @@ async fn upgrade_tui(
     let state_for_recv = state.clone();
     let connection_cancel_for_recv = connection_cancel.clone();
     let transport_observer_for_recv = test_config.observer.clone();
+    let task_probe_for_reader = task_probe.clone();
+    let task_probe_for_handler = task_probe.clone();
+    let connection_cancel_for_reader = connection_cancel_for_recv.clone();
+    let out_tx_for_reader = out_tx_for_recv.clone();
+    let (tui_request_tx, mut tui_request_rx) = mpsc::channel(TUI_REQUEST_QUEUE_CAPACITY);
 
     let session_state_for_recv_key = Arc::clone(&session_state);
-    let recv_task = tokio::spawn(async move {
+    let socket_reader_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
-        while let Some(Ok(msg)) = ws_rx.next().await {
-            if let axum::extract::ws::Message::Text(text) = msg {
-                let key = {
-                    let session = session_state_for_recv_key.lock().await;
-                    session.rate_limit_key.clone()
-                };
-                if !rate_limiter.check_rate_limit(&key).await {
-                    let err = TuiMessage::Error {
-                        message: "Too Many Requests".to_string(),
-                    };
-                    if let Ok(msg) = serde_json::to_string(&err) {
-                        let _ = queue_message(&out_tx_for_recv, WsMessage::Text(msg.into()));
-                    }
+        loop {
+            let message = tokio::select! {
+                biased;
+                _ = connection_cancel_for_reader.cancelled() => break,
+                message = ws_rx.next() => message,
+            };
+            let Some(message) = message else {
+                fire_connection_cancel(
+                    &connection_cancel_for_reader,
+                    task_probe_for_reader.as_ref(),
+                );
+                break;
+            };
+            let message = match message {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::debug!("TUI WebSocket read failed: {error}");
+                    fire_connection_cancel(
+                        &connection_cancel_for_reader,
+                        task_probe_for_reader.as_ref(),
+                    );
                     break;
                 }
-
-                if let Ok(tui_msg) = serde_json::from_str::<TuiMessage>(&text) {
-                    let outcome = handle_tui_message_with_observer(
-                        tui_msg,
-                        &session_state_for_recv,
-                        &out_tx_for_recv,
-                        &projection_tx_for_recv,
-                        &state_for_recv,
-                        &connection_cancel_for_recv,
-                        transport_observer_for_recv.as_ref(),
-                    )
-                    .await;
-                    if outcome.is_err() {
-                        connection_cancel_for_recv.cancel();
-                        break;
-                    }
+            };
+            let WsMessage::Text(text) = message else {
+                if matches!(message, WsMessage::Close(_)) {
+                    fire_connection_cancel(
+                        &connection_cancel_for_reader,
+                        task_probe_for_reader.as_ref(),
+                    );
+                    break;
                 }
+                continue;
+            };
+            let key = {
+                let session = session_state_for_recv_key.lock().await;
+                session.rate_limit_key.clone()
+            };
+            if !rate_limiter.check_rate_limit(&key).await {
+                let err = TuiMessage::Error {
+                    message: "Too Many Requests".to_string(),
+                };
+                if let Ok(msg) = serde_json::to_string(&err) {
+                    let _ = queue_message(&out_tx_for_reader, WsMessage::Text(msg.into()));
+                }
+                fire_connection_cancel(
+                    &connection_cancel_for_reader,
+                    task_probe_for_reader.as_ref(),
+                );
+                break;
+            }
+            let Ok(tui_msg) = serde_json::from_str::<TuiMessage>(&text) else {
+                continue;
+            };
+            match tui_request_tx.try_send(tui_msg) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!("TUI request queue saturated; closing connection");
+                    fire_connection_cancel(
+                        &connection_cancel_for_reader,
+                        task_probe_for_reader.as_ref(),
+                    );
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    fire_connection_cancel(
+                        &connection_cancel_for_reader,
+                        task_probe_for_reader.as_ref(),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    let request_handler_task = tokio::spawn(async move {
+        while let Some(tui_msg) = tokio::select! {
+            biased;
+            _ = connection_cancel_for_recv.cancelled() => None,
+            message = tui_request_rx.recv() => message,
+        } {
+            let outcome = tokio::select! {
+                biased;
+                _ = connection_cancel_for_recv.cancelled() => None,
+                result = handle_tui_message_with_observer(
+                    tui_msg,
+                    &session_state_for_recv,
+                    &out_tx_for_recv,
+                    &projection_tx_for_recv,
+                    &state_for_recv,
+                    &connection_cancel_for_recv,
+                    transport_observer_for_recv.as_ref(),
+                ) => Some(result),
+            };
+            let Some(outcome) = outcome else { break };
+            if outcome.is_err() {
+                fire_connection_cancel(
+                    &connection_cancel_for_recv,
+                    task_probe_for_handler.as_ref(),
+                );
+                break;
             }
         }
     });
@@ -1764,14 +2113,21 @@ async fn upgrade_tui(
         }
     });
 
-    let (probe_for_tasks, per_connection_probe) = resolve_connection_probe(
-        state.probe_factory.as_ref(),
-        state.connection_task_probe.as_ref(),
-    );
     let mut connection_tasks = if let Some(probe) = probe_for_tasks {
-        ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, probe)
+        ConnectionTaskSet::with_tui_probe(
+            send_task,
+            socket_reader_task,
+            request_handler_task,
+            raw_event_task,
+            probe,
+        )
     } else {
-        ConnectionTaskSet::new(send_task, recv_task, raw_event_task)
+        ConnectionTaskSet::with_tui(
+            send_task,
+            socket_reader_task,
+            request_handler_task,
+            raw_event_task,
+        )
     };
     connection_tasks
         .join_after_first_exit(&connection_cancel, &connection_id)
@@ -1797,19 +2153,23 @@ async fn upgrade_tui(
         .subscriptions()
         .map(|subscription| subscription.subscription_id.clone())
         .collect();
+    let mut subscription_ids = subscription_ids;
+    if let Some(daemon) = state.daemon.as_ref() {
+        if let Some(seam) = daemon.projection_seam.as_ref() {
+            for entry in seam.service().subscriptions().by_id().iter() {
+                if entry.value().client_id == connection_id
+                    && !subscription_ids.contains(entry.key())
+                {
+                    subscription_ids.push(entry.key().clone());
+                }
+            }
+        }
+    }
     let projection_state = session_state.lock().await.projection.clone();
     cleanup_projection_connection_state(&projection_state).await;
     if let Some(daemon) = state.daemon {
         for subscription_id in subscription_ids {
-            let _ = daemon
-                .handle_request_for_client(
-                    crate::core::new_request(
-                        format!("tui-projection-disconnect-{}", uuid::Uuid::new_v4()),
-                        CoreRequest::ProjectionUnsubscribe { subscription_id },
-                    ),
-                    &connection_id,
-                )
-                .await;
+            unsubscribe_tui_daemon_subscription(&daemon, &subscription_id, &connection_id).await;
         }
     }
 
@@ -2220,26 +2580,26 @@ async fn handle_tui_message_with_observer(
             cursor,
             include_snapshot_if_resync,
         } => {
-                handle_projection_resume(
-                    cursor,
-                    include_snapshot_if_resync,
-                    state,
-                    bus_tx,
-                    projection_tx,
-                    _server_state,
-                    cancellation,
-                    observer,
-                )
-                .await?;
-            }
-            TuiMessage::ProjectionUnsubscribe { subscription_id } => {
-                handle_projection_unsubscribe(
-                    subscription_id,
-                    state,
-                    bus_tx,
-                    _server_state,
-                    cancellation,
-                )
+            handle_projection_resume(
+                cursor,
+                include_snapshot_if_resync,
+                state,
+                bus_tx,
+                projection_tx,
+                _server_state,
+                cancellation,
+                observer,
+            )
+            .await?;
+        }
+        TuiMessage::ProjectionUnsubscribe { subscription_id } => {
+            handle_projection_unsubscribe(
+                subscription_id,
+                state,
+                bus_tx,
+                _server_state,
+                cancellation,
+            )
             .await?;
         }
         TuiMessage::ProjectionSubscriptionStatus { subscription_id } => {
@@ -2414,6 +2774,9 @@ async fn handle_projection_subscribe(
             cursor,
             retention_floor_seq,
         }) => {
+            if let Some(observer) = observer {
+                observer.record_staged_subscription_id(subscription_id.clone());
+            }
             if let Err(error) = lifecycle_seam
                 .checkpoint(
                     ProjectionLifecycleBoundary::AfterDaemonSubscriptionCreation,
@@ -2493,11 +2856,17 @@ async fn handle_projection_subscribe(
                 retention_floor_seq: Some(retention_floor_seq),
             };
             if let Err(error) = if let Some(observer) = observer {
-                staged_critical_send_observed(bus_tx, &msg, cancellation, &lifecycle_seam, Some(observer)).await
+                staged_critical_send_observed(
+                    bus_tx,
+                    &msg,
+                    cancellation,
+                    &lifecycle_seam,
+                    Some(observer),
+                )
+                .await
             } else {
                 staged_critical_send(bus_tx, &msg, cancellation, &lifecycle_seam).await
-            }
-            {
+            } {
                 rollback_tui_projection_subscription(
                     daemon,
                     &projection,
@@ -2807,6 +3176,9 @@ async fn install_tui_projection_receiver(
     if let Some(subscription) = state.subscription_mut(subscription_id) {
         subscription.forwarder = Some(handle);
     }
+    if let Some(counter) = state.forwarder_install_counter() {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
     true
 }
 
@@ -2817,17 +3189,7 @@ async fn rollback_tui_projection_subscription(
     client_id: &str,
 ) {
     stop_owned_projection_subscription(projection, subscription_id).await;
-    let _ = daemon
-        .handle_request_for_client(
-            crate::core::new_request(
-                format!("tui-projection-rollback-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ProjectionUnsubscribe {
-                    subscription_id: subscription_id.clone(),
-                },
-            ),
-            client_id,
-        )
-        .await;
+    unsubscribe_tui_daemon_subscription(daemon, subscription_id, client_id).await;
 }
 
 async fn emit_tui_projection_response(
@@ -2846,6 +3208,9 @@ async fn emit_tui_projection_response(
             subscription_id: Some(subscription_id),
             batch,
         }) => {
+            if let Some(observer) = observer {
+                observer.record_staged_subscription_id(subscription_id.clone());
+            }
             let cursor = batch.next_cursor.clone().unwrap_or(
                 crate::protocol::projection::replay::ProjectionCursor {
                     stream_id: batch.descriptor.stream_id.clone(),
@@ -3717,7 +4082,14 @@ async fn upgrade_core_ws(
     let (probe_for_tasks, per_connection_probe) = resolve_connection_probe(
         state.probe_factory.as_ref(),
         state.connection_task_probe.as_ref(),
+        &connection_id,
     );
+    if let Some(probe) = probe_for_tasks.as_ref() {
+        projection
+            .lock()
+            .await
+            .set_forwarder_join_counter(Arc::clone(&probe.projection_forwarders_joined));
+    }
     let mut connection_tasks = if let Some(probe) = probe_for_tasks {
         ConnectionTaskSet::with_probe(send_task, recv_task, raw_event_task, probe)
     } else {
@@ -4404,6 +4776,109 @@ mod tests {
             .await,
             Err(CriticalSendFailure::Timeout)
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn observed_and_unobserved_critical_send_have_identical_terminal_results() {
+        let cancellation = CancellationToken::new();
+        let (plain_tx, _plain_rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_message(&plain_tx, WsMessage::Text("full".into())));
+        let plain_timeout = critical_send(
+            &plain_tx,
+            &serde_json::json!({"kind": "timeout"}),
+            &cancellation,
+        )
+        .await;
+
+        let (observed_tx, _observed_rx) = mpsc::channel::<OutboundMessage>(1);
+        assert!(queue_message(&observed_tx, WsMessage::Text("full".into())));
+        let observer = Arc::new(TransportLifecycleObserver::new());
+        let observed_timeout = critical_send_observed(
+            &observed_tx,
+            &serde_json::json!({"kind": "timeout"}),
+            &cancellation,
+            Some(&observer),
+        )
+        .await;
+        assert_eq!(plain_timeout, observed_timeout);
+        let timeout_observation = observer
+            .critical_send_observations()
+            .into_iter()
+            .find(|observation| observation.is_timeout_during_enqueue())
+            .expect("full queue timeout must be correlated to its operation");
+        assert_eq!(timeout_observation.queue_capacity, 1);
+        assert_eq!(timeout_observation.queue_remaining_capacity_before_send, 0);
+        assert!(!timeout_observation.enqueue_completed);
+        assert!(!timeout_observation.receipt_wait_started);
+
+        let (plain_tx, plain_rx) = mpsc::channel::<OutboundMessage>(1);
+        let plain_writer = tokio::spawn(async move {
+            let mut rx = plain_rx;
+            let item = rx.recv().await.expect("plain critical item");
+            item.receipt
+                .expect("plain critical receipt")
+                .send(Err(CriticalSendFailure::WriterClosed))
+                .expect("plain receiver still waiting");
+        });
+        let plain_writer_error = critical_send(
+            &plain_tx,
+            &serde_json::json!({"kind": "writer"}),
+            &CancellationToken::new(),
+        )
+        .await;
+        let (observed_tx, observed_rx) = mpsc::channel::<OutboundMessage>(1);
+        let observed_writer = tokio::spawn(async move {
+            let mut rx = observed_rx;
+            let item = rx.recv().await.expect("observed critical item");
+            item.receipt
+                .expect("observed critical receipt")
+                .send(Err(CriticalSendFailure::WriterClosed))
+                .expect("observed receiver still waiting");
+        });
+        let observed_writer_error = critical_send_observed(
+            &observed_tx,
+            &serde_json::json!({"kind": "writer"}),
+            &CancellationToken::new(),
+            Some(&observer),
+        )
+        .await;
+        assert_eq!(plain_writer_error, observed_writer_error);
+        let _ = plain_writer.await;
+        let _ = observed_writer.await;
+        let writer_observation = observer
+            .critical_send_observations()
+            .into_iter()
+            .find(|observation| {
+                observation.request_kind == "critical_send"
+                    && matches!(
+                        observation.final_result,
+                        Err(CriticalSendFailure::WriterClosed)
+                    )
+            })
+            .expect("writer failure must be correlated to its operation");
+        assert!(writer_observation.enqueue_completed);
+        assert!(writer_observation.receipt_wait_started);
+
+        let plain_cancel = CancellationToken::new();
+        plain_cancel.cancel();
+        let (plain_tx, _plain_rx) = mpsc::channel::<OutboundMessage>(1);
+        let plain_cancelled = critical_send(
+            &plain_tx,
+            &serde_json::json!({"kind": "cancel"}),
+            &plain_cancel,
+        )
+        .await;
+        let observed_cancel = CancellationToken::new();
+        observed_cancel.cancel();
+        let (observed_tx, _observed_rx) = mpsc::channel::<OutboundMessage>(1);
+        let observed_cancelled = critical_send_observed(
+            &observed_tx,
+            &serde_json::json!({"kind": "cancel"}),
+            &observed_cancel,
+            Some(&observer),
+        )
+        .await;
+        assert_eq!(plain_cancelled, observed_cancelled);
     }
 
     #[tokio::test(flavor = "current_thread")]

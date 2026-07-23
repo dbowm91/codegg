@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::FromRef;
@@ -16,16 +16,24 @@ use crate::server::ws::{ConnectionTaskProbe, ProjectionTransportTestConfig};
 /// `upgrade_tui` so that probe counters are connection-local. The factory
 /// returns the probe for the connection being upgraded and (optionally)
 /// registers it with the calling test for later retrieval.
-pub type ConnectionProbeFactory =
-    Arc<dyn Fn() -> Arc<ConnectionTaskProbe> + Send + Sync>;
+pub type ConnectionProbeFactory = Arc<dyn Fn(&str) -> Arc<ConnectionTaskProbe> + Send + Sync>;
 
 /// Test-side registry that allocates a fresh [`Arc<ConnectionTaskProbe>`] per
-/// upgrade and records the produced probes in a `Vec`. Tests pass the
-/// returned factory to `ServerState::probe_factory` and call
-/// [`ConnectionProbeRegistry::take`] to retrieve probes in connection order.
+/// upgrade and records the produced probes by the actual connection identity.
+/// Tests pass the returned factory to `ServerState::probe_factory` and call
+/// [`ConnectionProbeRegistry::take`] to drain finalized records, or
+/// [`ConnectionProbeRegistry::for_connection`] to retrieve one by its actual
+/// connection identity.
 #[derive(Clone, Default)]
 pub struct ConnectionProbeRegistry {
-    inner: Arc<tokio::sync::Mutex<Vec<Arc<ConnectionTaskProbe>>>>,
+    inner: Arc<StdMutex<ProbeRegistryInner>>,
+}
+
+const MAX_RETAINED_CONNECTION_PROBES: usize = 256;
+
+#[derive(Default)]
+struct ProbeRegistryInner {
+    entries: VecDeque<(String, Arc<ConnectionTaskProbe>)>,
 }
 
 impl ConnectionProbeRegistry {
@@ -33,33 +41,64 @@ impl ConnectionProbeRegistry {
         Self::default()
     }
 
-    /// Build a factory closure that allocates a fresh probe and pushes it
+    /// Build a factory closure that allocates a fresh probe and records it
+    /// under the actual connection identity. Registration is synchronous and
+    /// infallible; a poisoned mutex is recovered rather than dropping the
+    /// correlation record.
     /// into this registry. The factory may be installed in
     /// [`ServerState::probe_factory`].
     pub fn factory(&self) -> ConnectionProbeFactory {
         let inner = Arc::clone(&self.inner);
-        Arc::new(move || {
+        Arc::new(move |connection_id| {
             let probe = Arc::new(ConnectionTaskProbe::new());
-            // Synchronous registry push; safe because `inner` is a Tokio
-            // `Mutex` and we only ever call this inside the upgrade
-            // functions on a single thread.
-            if let Ok(mut guard) = inner.try_lock() {
-                guard.push(Arc::clone(&probe));
+            let mut guard = match inner.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if guard.entries.len() == MAX_RETAINED_CONNECTION_PROBES {
+                guard.entries.pop_front();
             }
+            guard
+                .entries
+                .push_back((connection_id.to_string(), Arc::clone(&probe)));
             probe
         })
     }
 
-    /// Drain and return every probe currently registered. The Vec may be
-    /// empty if the test called this before the upgrade function installed
-    /// the probe.
+    /// Drain and return every retained probe currently registered.
     pub async fn take(&self) -> Vec<Arc<ConnectionTaskProbe>> {
-        std::mem::take(&mut *self.inner.lock().await)
+        let mut guard = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.entries.drain(..).map(|(_, probe)| probe).collect()
+    }
+
+    /// Return the finalized probe for an exact connection identity, when it
+    /// is still retained by the bounded registry.
+    pub fn for_connection(&self, connection_id: &str) -> Option<Arc<ConnectionTaskProbe>> {
+        let guard = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .entries
+            .iter()
+            .find(|(id, _)| id == connection_id)
+            .map(|(_, probe)| Arc::clone(probe))
     }
 
     /// Read the current probes without draining.
     pub async fn snapshot(&self) -> Vec<Arc<ConnectionTaskProbe>> {
-        self.inner.lock().await.clone()
+        let guard = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .entries
+            .iter()
+            .map(|(_, probe)| Arc::clone(probe))
+            .collect()
     }
 }
 

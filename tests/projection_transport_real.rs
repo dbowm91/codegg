@@ -22,7 +22,8 @@ use codegg::protocol::projection::replay::{
 };
 use codegg::protocol::tui::TuiMessage;
 use codegg::server::ws::{
-    handle_core_ws, handle_tui, ConnectionTaskProbe, TransportLifecycleObserver, WriterGate,
+    handle_core_ws, handle_tui, ConnectionProbeRegistry, ConnectionTaskProbe,
+    TransportLifecycleObserver, WriterGate,
 };
 use codegg::server::{ServerState, WsRateLimiter};
 use codegg_core::projection_replay::seam::ProjectionBindingContext;
@@ -33,6 +34,15 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+fn projection_test_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("projection test runtime")
+}
 
 async fn spawn_server() -> (SocketAddr, Arc<CoreDaemon>, tokio::task::JoinHandle<()>) {
     spawn_server_with_seam(ProjectionLifecycleSeam::default()).await
@@ -611,6 +621,138 @@ async fn spawn_server_with_seam_and_probe(
     (address, daemon, probe, task)
 }
 
+async fn spawn_server_with_seam_probe_and_observer(
+    projection_lifecycle_seam: ProjectionLifecycleSeam,
+) -> (
+    SocketAddr,
+    Arc<CoreDaemon>,
+    Arc<ConnectionTaskProbe>,
+    Arc<TransportLifecycleObserver>,
+    tokio::task::JoinHandle<()>,
+) {
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+
+    let pool = common::projection_replay::test_pool().await;
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let probe = Arc::new(ConnectionTaskProbe::new());
+    let observer = Arc::new(TransportLifecycleObserver::new());
+    let state = ServerState {
+        pool,
+        mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+        config: Config::default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+        daemon: Some(Arc::clone(&daemon)),
+        projection_lifecycle_seam,
+        connection_task_probe: Some(Arc::clone(&probe)),
+        probe_factory: None,
+        transport_test_config: Some(codegg::server::ws::ProjectionTransportTestConfig {
+            observer: Some(Arc::clone(&observer)),
+            ..Default::default()
+        }),
+    };
+    let router = Router::new()
+        .route("/core", get(handle_core_ws))
+        .route("/tui", get(handle_tui))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("test server");
+    });
+    (address, daemon, probe, observer, task)
+}
+
+async fn spawn_server_with_probe_registry_and_observer(
+    projection_lifecycle_seam: ProjectionLifecycleSeam,
+) -> (
+    SocketAddr,
+    Arc<CoreDaemon>,
+    ConnectionProbeRegistry,
+    Arc<TransportLifecycleObserver>,
+    tokio::task::JoinHandle<()>,
+) {
+    std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
+
+    let pool = common::projection_replay::test_pool().await;
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let registry = ConnectionProbeRegistry::new();
+    let observer = Arc::new(TransportLifecycleObserver::new());
+    let state = ServerState {
+        pool,
+        mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
+        config: Config::default(),
+        ws_rate_limiter: Arc::new(WsRateLimiter::new(256, 60)),
+        daemon: Some(Arc::clone(&daemon)),
+        projection_lifecycle_seam,
+        connection_task_probe: None,
+        probe_factory: Some(registry.factory()),
+        transport_test_config: Some(codegg::server::ws::ProjectionTransportTestConfig {
+            observer: Some(Arc::clone(&observer)),
+            ..Default::default()
+        }),
+    };
+    let router = Router::new()
+        .route("/core", get(handle_core_ws))
+        .route("/tui", get(handle_tui))
+        .with_state(state);
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind test server");
+    let address = listener.local_addr().expect("test server address");
+    let task = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("test server");
+    });
+    (address, daemon, registry, observer, task)
+}
+
+async fn wait_for_registered_probe(
+    registry: &ConnectionProbeRegistry,
+    expected: usize,
+) -> Arc<ConnectionTaskProbe> {
+    timeout(Duration::from_millis(1000), async {
+        loop {
+            let probes = registry.snapshot().await;
+            if probes.len() >= expected {
+                return probes[expected - 1].clone();
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection probe must be registered")
+}
+
+async fn wait_for_probe_baseline(probe: &ConnectionTaskProbe) {
+    timeout(Duration::from_millis(1500), async {
+        loop {
+            if probe.connection_cancel_count() == 1
+                && probe.send_count() == 1
+                && probe.receive_count() == 1
+                && probe.request_handler_count() == 1
+                && probe.raw_event_count() == 1
+                && probe.cleanup_count() == 1
+            {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("connection tasks must converge without the barrier being released");
+}
+
 // ===== Helpers for Work Packages A, B, C, E (M010 transport instrumentation) =====
 
 /// Spawn server with the production `ConnectionTaskProbe` AND the
@@ -857,9 +999,8 @@ async fn assert_real_transport_rollback_complete_extended(
             expected_seq,
         )
         .await;
-        let observed_sub: Option<ProjectionSubscriptionId> = timeout(
-            Duration::from_millis(800),
-            async {
+        let observed_sub: Option<ProjectionSubscriptionId> =
+            timeout(Duration::from_millis(800), async {
                 loop {
                     if let Some((sub_id, _stream, envelope)) =
                         next_core_projection_envelope(other_client).await
@@ -871,11 +1012,10 @@ async fn assert_real_transport_rollback_complete_extended(
                         return None;
                     }
                 }
-            },
-        )
-        .await
-        .ok()
-        .flatten();
+            })
+            .await
+            .ok()
+            .flatten();
         assert!(
             observed_sub.is_some(),
             "unrelated client must receive its unique event"
@@ -883,31 +1023,23 @@ async fn assert_real_transport_rollback_complete_extended(
     }
 }
 
-/// TUI-shaped complete rollback helper. `/tui` connections use a
-/// connection-local projection subscription state and do not own a
-/// daemon-side subscription, so the foreign-receiver re-acquire and
-/// idempotent unsubscribe checks from
-/// `assert_real_transport_rollback_complete_extended` do not apply.
-/// This helper still proves:
-///   * daemon subscriptions remain at pre-baseline (TUI teardown must
-///     not grow daemon subscription state);
-///   * per-connection probe tasks each joined exactly once;
-///   * cleanup ran at least once;
-///   * (optional) unrelated TUI client B remains connected and
-///     receives its unique projection event.
+/// TUI-shaped complete rollback helper. `/tui` owns both a connection-local
+/// projection subscription and the daemon-issued subscription/receiver that
+/// backs it. Failure fixtures pass the actual staged identity captured by the
+/// payload-free lifecycle observer whenever setup reached that boundary.
 #[allow(clippy::too_many_arguments)]
 async fn assert_tui_transport_rollback_complete(
     daemon: &CoreDaemon,
     pre_baseline: u64,
     probe: &ConnectionTaskProbe,
+    observer: Option<&TransportLifecycleObserver>,
+    subscription_id: Option<&ProjectionSubscriptionId>,
     unrelated_client: Option<&mut Client>,
     unrelated_marker: Option<(&str, u64)>,
 ) {
-    // 1. Daemon subscription count returned to baseline — TUI teardown
-    //    must not leave a daemon-side subscription behind.
-    if daemon.projection_seam.is_some() {
-        wait_projection_subscription_count(daemon, pre_baseline).await;
-    }
+    // 1. Daemon subscription count returned to the exact pre-failure
+    // baseline. TUI teardown must unsubscribe daemon-owned state too.
+    wait_projection_subscription_count(daemon, pre_baseline).await;
 
     // 2. Connection-local task probes at baseline (each is exactly one)
     probe.assert_all_at_baseline();
@@ -926,12 +1058,56 @@ async fn assert_tui_transport_rollback_complete(
         1,
         "exactly one raw-event task should join for the failed TUI connection"
     );
+    assert_eq!(
+        probe.request_handler_count(),
+        1,
+        "exactly one TUI request-handler task should join for the failed connection"
+    );
+    assert_eq!(
+        probe.forwarder_count(),
+        probe.installed_forwarder_count(),
+        "every installed TUI projection forwarder must be joined"
+    );
     assert!(
-        probe.cleanup_count() >= 1,
-        "handler-completed (cleanup_calls) must be at least one"
+        probe.cleanup_count() == 1,
+        "TUI cleanup must run exactly once"
     );
 
-    // 3. Unrelated TUI client B remains connected and receives its
+    // 3. If an actual staged subscription identity is available, prove its
+    // receiver is gone and duplicate unsubscribe is harmless.
+    if let Some(subscription_id) = subscription_id {
+        let seam = daemon
+            .projection_seam
+            .as_ref()
+            .expect("SQLite-backed daemon has projection seam");
+        let taken = seam
+            .service()
+            .take_subscription_receiver(subscription_id)
+            .await;
+        assert!(
+            taken.is_none(),
+            "failed TUI subscription receiver must not be reacquireable"
+        );
+        if let Some(client_id) = observer.and_then(TransportLifecycleObserver::connection_id) {
+            let _ = daemon
+                .handle_request_for_client(
+                    codegg::core::new_request(
+                        format!("tui-idempotent-unsub-{}", uuid::Uuid::new_v4()),
+                        codegg::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                            subscription_id: subscription_id.clone(),
+                        },
+                    ),
+                    &client_id,
+                )
+                .await;
+        }
+        wait_projection_subscription_count(daemon, pre_baseline).await;
+    }
+    if let Some(observer) = observer {
+        observer.outbound_sender.lock().await.take();
+    }
+
+    // 4. Unrelated TUI client B remains connected and receives its
     //    unique projection event after a fresh publication.
     if let (Some(other_client), Some((project_id, expected_seq))) =
         (unrelated_client, unrelated_marker)
@@ -944,9 +1120,8 @@ async fn assert_tui_transport_rollback_complete(
             expected_seq,
         )
         .await;
-        let observed_sub: Option<ProjectionSubscriptionId> = timeout(
-            Duration::from_millis(800),
-            async {
+        let observed_sub: Option<ProjectionSubscriptionId> =
+            timeout(Duration::from_millis(800), async {
                 loop {
                     if let Some((sub_id, _stream, envelope)) =
                         next_tui_projection_envelope(other_client).await
@@ -958,11 +1133,10 @@ async fn assert_tui_transport_rollback_complete(
                         return None;
                     }
                 }
-            },
-        )
-        .await
-        .ok()
-        .flatten();
+            })
+            .await
+            .ok()
+            .flatten();
         assert!(
             observed_sub.is_some(),
             "unrelated TUI client must receive its unique event"
@@ -1831,6 +2005,283 @@ async fn real_tui_paused_snapshot_setup_cancellation_impl() {
 
     wait_projection_subscription_count(&daemon, 0).await;
     probe.assert_all_at_baseline();
+    server.abort();
+}
+
+#[test]
+fn real_tui_pending_snapshot_close_frame_cancels_before_barrier_release() {
+    projection_test_runtime()
+        .block_on(real_tui_pending_snapshot_close_frame_cancels_before_barrier_release_impl());
+}
+
+async fn real_tui_pending_snapshot_close_frame_cancels_before_barrier_release_impl() {
+    let seam = ProjectionLifecycleSeam::default();
+    let gate = seam.pause_next(ProjectionLifecycleBoundary::AfterReceiverInstallation);
+    let (address, daemon, probe, observer, server) =
+        spawn_server_with_seam_probe_and_observer(seam).await;
+    let mut client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut client).await;
+    send_json(
+        &mut client,
+        &TuiMessage::ProjectionSubscribe {
+            request: project_subscription_request("project-tui-close-pending"),
+        },
+    )
+    .await;
+    gate.wait_until_entered().await;
+    let staged_subscription_id = observer
+        .staged_subscription_id()
+        .expect("close fixture must capture the daemon-issued staged id");
+
+    client
+        .send(Message::Close(None))
+        .await
+        .expect("send TUI close frame");
+    wait_for_probe_baseline(&probe).await;
+    assert_eq!(
+        probe.connection_cancel_count(),
+        1,
+        "socket reader must fire cancellation exactly once before release"
+    );
+    gate.release();
+    assert_tui_transport_rollback_complete(
+        &daemon,
+        0,
+        &probe,
+        Some(&observer),
+        Some(&staged_subscription_id),
+        None,
+        None,
+    )
+    .await;
+    server.abort();
+}
+
+#[test]
+fn real_tui_pending_snapshot_abrupt_drop_cancels_before_barrier_release() {
+    projection_test_runtime()
+        .block_on(real_tui_pending_snapshot_abrupt_drop_cancels_before_barrier_release_impl());
+}
+
+async fn real_tui_pending_snapshot_abrupt_drop_cancels_before_barrier_release_impl() {
+    let seam = ProjectionLifecycleSeam::default();
+    let gate = seam.pause_next(ProjectionLifecycleBoundary::AfterReceiverInstallation);
+    let (address, daemon, probe, observer, server) =
+        spawn_server_with_seam_probe_and_observer(seam).await;
+    let mut client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut client).await;
+    send_json(
+        &mut client,
+        &TuiMessage::ProjectionSubscribe {
+            request: project_subscription_request("project-tui-drop-pending"),
+        },
+    )
+    .await;
+    gate.wait_until_entered().await;
+    let staged_subscription_id = observer
+        .staged_subscription_id()
+        .expect("drop fixture must capture the daemon-issued staged id");
+
+    drop(client);
+    wait_for_probe_baseline(&probe).await;
+    assert_eq!(probe.connection_cancel_count(), 1);
+    gate.release();
+    assert_tui_transport_rollback_complete(
+        &daemon,
+        0,
+        &probe,
+        Some(&observer),
+        Some(&staged_subscription_id),
+        None,
+        None,
+    )
+    .await;
+    server.abort();
+}
+
+#[test]
+fn real_tui_pending_replay_close_rolls_back_and_retries_exact_range() {
+    projection_test_runtime()
+        .block_on(real_tui_pending_replay_close_rolls_back_and_retries_exact_range_impl());
+}
+
+async fn real_tui_pending_replay_close_rolls_back_and_retries_exact_range_impl() {
+    let seam = ProjectionLifecycleSeam::default();
+    let (address, daemon, registry, observer, server) =
+        spawn_server_with_probe_registry_and_observer(seam.clone()).await;
+
+    let mut first_client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut first_client).await;
+    let (first_subscription, cursor) =
+        tui_subscribe_with_cursor(&mut first_client, "project-tui-pending-replay").await;
+    first_client
+        .close(None)
+        .await
+        .expect("close initial TUI replay client");
+    let first_probe = wait_for_registered_probe(&registry, 1).await;
+    wait_for_probe_baseline(&first_probe).await;
+    wait_projection_subscription_count(&daemon, 0).await;
+
+    projection_event_at_seq(
+        &daemon,
+        "project-tui-pending-replay",
+        "session-tui-pending-replay",
+        "turn-tui-missing-1",
+        1,
+    )
+    .await;
+    projection_event_at_seq(
+        &daemon,
+        "project-tui-pending-replay",
+        "session-tui-pending-replay",
+        "turn-tui-missing-2",
+        2,
+    )
+    .await;
+
+    let gate = seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+    let mut second_client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut second_client).await;
+    send_json(
+        &mut second_client,
+        &TuiMessage::ProjectionResume {
+            cursor: cursor.clone(),
+            include_snapshot_if_resync: true,
+        },
+    )
+    .await;
+    gate.wait_until_entered().await;
+    let second_subscription = observer
+        .staged_subscription_id()
+        .expect("replay fixture must capture the actual staged subscription id");
+    second_client
+        .send(Message::Close(None))
+        .await
+        .expect("send replay close frame");
+    let second_probe = wait_for_registered_probe(&registry, 2).await;
+    wait_for_probe_baseline(&second_probe).await;
+    gate.release();
+    assert_tui_transport_rollback_complete(
+        &daemon,
+        0,
+        &second_probe,
+        Some(&observer),
+        Some(&second_subscription),
+        None,
+        None,
+    )
+    .await;
+
+    let mut third_client = connect(address, "/tui").await;
+    tui_projection_handshake(&mut third_client).await;
+    send_json(
+        &mut third_client,
+        &TuiMessage::ProjectionResume {
+            cursor,
+            include_snapshot_if_resync: true,
+        },
+    )
+    .await;
+    let (third_subscription, replay) = loop {
+        match recv_json::<TuiMessage>(&mut third_client)
+            .await
+            .expect("TUI replay retry response")
+        {
+            TuiMessage::ProjectionReplay {
+                subscription_id,
+                batch,
+            } => break (subscription_id, batch),
+            TuiMessage::ProjectionResync { .. } => panic!("unexpected TUI resync"),
+            _ => {}
+        }
+    };
+    assert_ne!(first_subscription, third_subscription);
+    assert_eq!((replay.replay_start_seq, replay.replay_end_seq), (1, 2));
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .map(|event| event.event_seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    projection_event_at_seq(
+        &daemon,
+        "project-tui-pending-replay",
+        "session-tui-pending-replay",
+        "turn-tui-live-3",
+        3,
+    )
+    .await;
+    let (live_subscription, _, live_event) = next_tui_projection_envelope(&mut third_client)
+        .await
+        .expect("TUI live event after exact replay retry");
+    assert_eq!(live_subscription, third_subscription);
+    assert_eq!(live_event.event_seq, 3);
+    assert!(
+        timeout(Duration::from_millis(150), third_client.next())
+            .await
+            .is_err(),
+        "TUI retry must not duplicate replay or live events"
+    );
+    drop(third_client);
+    let third_probe = wait_for_registered_probe(&registry, 3).await;
+    wait_for_probe_baseline(&third_probe).await;
+    wait_projection_subscription_count(&daemon, 0).await;
+    server.abort();
+}
+
+#[test]
+fn real_tui_pending_snapshot_disconnect_convergence_50_cycles() {
+    projection_test_runtime()
+        .block_on(real_tui_pending_snapshot_disconnect_convergence_50_cycles_impl());
+}
+
+async fn real_tui_pending_snapshot_disconnect_convergence_50_cycles_impl() {
+    let seam = ProjectionLifecycleSeam::default();
+    let (address, daemon, registry, observer, server) =
+        spawn_server_with_probe_registry_and_observer(seam.clone()).await;
+    for cycle in 0..50usize {
+        let gate = seam.pause_next(ProjectionLifecycleBoundary::AfterReceiverInstallation);
+        let mut client = connect(address, "/tui").await;
+        tui_projection_handshake(&mut client).await;
+        send_json(
+            &mut client,
+            &TuiMessage::ProjectionSubscribe {
+                request: project_subscription_request(&format!("project-tui-convergence-{cycle}")),
+            },
+        )
+        .await;
+        gate.wait_until_entered().await;
+        let staged_subscription_id = observer
+            .staged_subscription_id()
+            .expect("each convergence cycle must have a real staged id");
+        if cycle % 2 == 0 {
+            client
+                .send(Message::Close(None))
+                .await
+                .expect("send graceful close in convergence cycle");
+        } else {
+            drop(client);
+        }
+        let probe = wait_for_registered_probe(&registry, 1).await;
+        wait_for_probe_baseline(&probe).await;
+        assert_eq!(probe.connection_cancel_count(), 1);
+        gate.release();
+        assert_tui_transport_rollback_complete(
+            &daemon,
+            0,
+            &probe,
+            Some(&observer),
+            Some(&staged_subscription_id),
+            None,
+            None,
+        )
+        .await;
+        let retained = registry.take().await;
+        assert_eq!(retained.len(), 1, "one finalized probe per cycle");
+    }
+    assert!(registry.snapshot().await.is_empty());
     server.abort();
 }
 
@@ -3532,21 +3983,37 @@ async fn real_core_queue_saturation_observer_records_timeout() {
     // Wait for the observer to record at least one Err(Timeout).
     timeout(Duration::from_millis(1500), async {
         loop {
-            if observer.any_timeout() {
+            if observer
+                .critical_send_observations()
+                .iter()
+                .any(|observation| {
+                    matches!(
+                        observation.final_result,
+                        Err(CriticalDeliveryError::Timeout)
+                    )
+                })
+            {
                 return;
             }
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("observer should record Err(Timeout) within timeout");
+    .unwrap_or_else(|_| {
+        panic!(
+            "observer should record Err(Timeout) within timeout: {:?}",
+            observer.critical_send_observations()
+        )
+    });
 
     let elapsed = start.elapsed();
     writer_gate.release();
 
     let recorded = observer.send_result_history();
     assert!(
-        observer.any_timeout(),
+        observer.critical_send_observations().iter().any(|observation| {
+            matches!(observation.final_result, Err(CriticalDeliveryError::Timeout))
+        }),
         "expected at least one Err(Timeout) from saturated staged_critical_send, got history {recorded:?}"
     );
     assert!(
@@ -3784,9 +4251,20 @@ async fn real_tui_pending_snapshot_interruption_via_writer_barrier_impl() {
     })
     .await
     .expect("connection tasks should complete after writer barrier");
-    assert_tui_transport_rollback_complete(&daemon, 0, &probe, None, None).await;
+    let staged_subscription_id = observer.staged_subscription_id();
+    assert_tui_transport_rollback_complete(
+        &daemon,
+        0,
+        &probe,
+        Some(&observer),
+        staged_subscription_id.as_ref(),
+        None,
+        None,
+    )
+    .await;
     server.abort();
-}/// Work Package E (M010): TUI pending-replay interruption via writer
+}
+/// Work Package E (M010): TUI pending-replay interruption via writer
 /// barrier. Subscribe, drop, then resume on a fresh connection — the
 /// resume must replay history even though the first attempt was
 /// interrupted mid-delivery.
@@ -3979,13 +4457,13 @@ fn spawn_server_with_per_connection_probe(
 ) -> std::pin::Pin<
     Box<
         dyn std::future::Future<
-                Output = (
-                    SocketAddr,
-                    Arc<CoreDaemon>,
-                    Arc<codegg::server::ws::ConnectionProbeRegistry>,
-                    tokio::task::JoinHandle<()>,
-                ),
-            >,
+            Output = (
+                SocketAddr,
+                Arc<CoreDaemon>,
+                Arc<codegg::server::ws::ConnectionProbeRegistry>,
+                tokio::task::JoinHandle<()>,
+            ),
+        >,
     >,
 > {
     Box::pin(async move {
@@ -4126,10 +4604,7 @@ async fn real_core_full_queue_operation_correlated_timeout() {
     let observations = timeout(Duration::from_millis(1500), async {
         loop {
             let obs = observer.critical_send_observations();
-            if obs
-                .iter()
-                .any(|o| o.is_timeout_during_enqueue())
-            {
+            if obs.iter().any(|o| o.is_timeout_during_enqueue()) {
                 return obs;
             }
             tokio::task::yield_now().await;
@@ -4152,10 +4627,7 @@ async fn real_core_full_queue_operation_correlated_timeout() {
         target.queue_full_before_send,
         "queue must have been full before this critical send began"
     );
-    assert_eq!(
-        target.enqueue_started, true,
-        "enqueue must have started"
-    );
+    assert_eq!(target.enqueue_started, true, "enqueue must have started");
     assert_eq!(
         target.enqueue_completed, false,
         "enqueue must not have completed (Timeout fired during reservation)"
@@ -4282,9 +4754,14 @@ async fn real_tui_full_queue_operation_correlated_timeout_impl() {
     writer_gate.release();
     wait_until_writer_gates_reached(&observer, 2).await;
     writer_gate.release();
-    let ack: TuiMessage = recv_json(&mut client).await.expect("projection capability ack");
+    let ack: TuiMessage = recv_json(&mut client)
+        .await
+        .expect("projection capability ack");
     assert!(
-        matches!(ack, TuiMessage::ProjectionCapabilitiesAck { accepted: true, .. }),
+        matches!(
+            ack,
+            TuiMessage::ProjectionCapabilitiesAck { accepted: true, .. }
+        ),
         "projection capability negotiation must succeed"
     );
 
@@ -4347,7 +4824,10 @@ async fn real_tui_full_queue_operation_correlated_timeout_impl() {
     assert_eq!(target.enqueue_started, true);
     assert_eq!(target.enqueue_completed, false);
     assert_eq!(target.receipt_wait_started, false);
-    assert!(matches!(target.final_result, Err(CriticalDeliveryError::Timeout)));
+    assert!(matches!(
+        target.final_result,
+        Err(CriticalDeliveryError::Timeout)
+    ));
 
     let elapsed = start.elapsed();
     assert!(
@@ -4448,13 +4928,11 @@ async fn real_connection_task_set_six_case_production_teardown_matrix() {
                     tokio::spawn(async { std::future::pending::<()>().await }),
                     tokio::spawn(async { panic!("intentional panic for first-exit test") }),
                 ),
+                ConnectionTaskKind::RequestHandler => {
+                    unreachable!("the legacy three-task matrix does not construct a TUI handler")
+                }
             };
-            codegg::server::ws::ConnectionTaskSet::with_probe(
-                send,
-                recv,
-                raw,
-                Arc::clone(&probe),
-            )
+            codegg::server::ws::ConnectionTaskSet::with_probe(send, recv, raw, Arc::clone(&probe))
         } else {
             let (send, recv, raw) = match kind {
                 ConnectionTaskKind::Send => {
@@ -4528,13 +5006,11 @@ async fn real_connection_task_set_six_case_production_teardown_matrix() {
                     });
                     (send, recv, raw)
                 }
+                ConnectionTaskKind::RequestHandler => {
+                    unreachable!("the legacy three-task matrix does not construct a TUI handler")
+                }
             };
-            codegg::server::ws::ConnectionTaskSet::with_probe(
-                send,
-                recv,
-                raw,
-                Arc::clone(&probe),
-            )
+            codegg::server::ws::ConnectionTaskSet::with_probe(send, recv, raw, Arc::clone(&probe))
         };
 
         let cancellation = tokio_util::sync::CancellationToken::new();
@@ -4587,46 +5063,48 @@ async fn real_connection_task_set_six_case_production_teardown_matrix() {
     }
 }
 
-/// Unit-level guard for Work Package D: prove that
-/// `join_after_first_exit` awaits siblings (not just `abort()`), by
-/// intentionally delaying sibling cancellation behind the first exit. If
-/// the production path returned immediately after `abort()`, the
-/// delayed sibling would still be in pending state when we observe.
+/// Unit-level guard for Work Package G: prove that `join_after_first_exit`
+/// awaits every sibling and consumes every handle. Completion is established
+/// by drop guards and exact probe counts, not by elapsed sleep duration.
 #[tokio::test(flavor = "current_thread")]
 async fn join_after_first_exit_waits_for_sibling_joins_not_just_abort() {
     use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe};
 
+    struct DropGuard(Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for DropGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let probe = Arc::new(ConnectionTaskProbe::new());
-    let send = tokio::spawn(async {}); // completes immediately
-    let recv = tokio::spawn(async move {
-        // Hold the receive task well past the cancellation flag, so the
-        // teardown would race a real sibling join if it only `abort()`s.
-        tokio::time::sleep(Duration::from_millis(60)).await;
-    });
-    let raw = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(60)).await;
-    });
-    let mut set = codegg::server::ws::ConnectionTaskSet::with_probe(
-        send,
-        recv,
-        raw,
-        Arc::clone(&probe),
-    );
+    let make_task = |finishes: bool| {
+        let active = Arc::clone(&active);
+        active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::spawn(async move {
+            let _guard = DropGuard(active);
+            if finishes {
+                tokio::task::yield_now().await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        })
+    };
+    let send = make_task(true);
+    let recv = make_task(false);
+    let raw = make_task(false);
+    let mut set =
+        codegg::server::ws::ConnectionTaskSet::with_probe(send, recv, raw, Arc::clone(&probe));
     let cancellation = tokio_util::sync::CancellationToken::new();
     let cid = "m011-sibling-join".to_string();
-    let started = std::time::Instant::now();
     set.production_teardown_for_test(&cancellation, &cid).await;
-    let elapsed = started.elapsed();
-    // The teardown must wait at least until the slowest sibling completes.
-    assert!(
-        elapsed >= Duration::from_millis(50),
-        "production teardown should wait for siblings, not just abort (elapsed={elapsed:?})"
-    );
-    // Probe must record exactly one completion per kind
+    assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(probe.send_count(), 1);
     assert_eq!(probe.receive_count(), 1);
     assert_eq!(probe.raw_event_count(), 1);
     assert_eq!(probe.first_task_kind(), Some(ConnectionTaskKind::Send));
+    assert!(set.all_handles_consumed_for_test());
 }
 
 /// Work Package E (M011): `/tui` real raw-source-first exit via the
@@ -4646,7 +5124,9 @@ fn real_tui_raw_source_first_exit_via_cancellation_token() {
 }
 
 async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
-    use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe, ProjectionTransportTestConfig};
+    use codegg::server::ws::{
+        ConnectionTaskKind, ConnectionTaskProbe, ProjectionTransportTestConfig,
+    };
 
     let raw_cancel = tokio_util::sync::CancellationToken::new();
     let config = ProjectionTransportTestConfig {
@@ -4659,7 +5139,7 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
     let probe = Arc::new(ConnectionTaskProbe::new());
     let factory: codegg::server::ws::ConnectionProbeFactory = {
         let probe = Arc::clone(&probe);
-        Arc::new(move || Arc::clone(&probe))
+        Arc::new(move |_| Arc::clone(&probe))
     };
     let pool = common::projection_replay::test_pool().await;
     let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
@@ -4718,7 +5198,8 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
     drop(client);
     timeout(Duration::from_millis(800), async {
         loop {
-            if probe.send_count() == 1 && probe.receive_count() == 1 && probe.raw_event_count() == 1 {
+            if probe.send_count() == 1 && probe.receive_count() == 1 && probe.raw_event_count() == 1
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -4727,7 +5208,16 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
     .await
     .expect("TUI connection tasks should complete after peer close");
 
-    assert_tui_transport_rollback_complete(&daemon, 0, &probe, None, None).await;
+    assert_tui_transport_rollback_complete(
+        &daemon,
+        0,
+        &probe,
+        None,
+        Some(&subscription_id),
+        None,
+        None,
+    )
+    .await;
 
     let _ = subscription_id;
     let _ = daemon;
@@ -4743,8 +5233,8 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
 async fn real_core_rollback_harness_asserts_unrelated_client_continuity() {
     let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
     config.outbound_queue_capacity = Some(1);
-    config.gate_before_recv = true;
-    config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
+    config.gate_before_recv = false;
+    config.writer_gate = None;
     let observer_a = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
     config.observer = Some(Arc::clone(&observer_a));
     // Per-connection probe through the factory.

@@ -1,3 +1,4 @@
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,6 +7,7 @@ use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::core::daemon::CoreDaemon;
+use crate::core::transport::daemon_socket::{SocketWriteObserver, SocketWriteTerminalResult};
 use crate::core::transport::projection::{ProjectionLifecycleBoundary, ProjectionLifecycleSeam};
 use crate::protocol::core::CoreEvent;
 use crate::protocol::frames::{ClientCapabilities, ClientHello, ClientKind, CoreFrame};
@@ -75,6 +77,19 @@ async fn spawn_daemon_with_shutdown_and_seam(
     tokio::task::JoinHandle<()>,
     CancellationToken,
 ) {
+    spawn_daemon_with_shutdown_and_seam_observer(daemon, lifecycle_seam, None).await
+}
+
+async fn spawn_daemon_with_shutdown_and_seam_observer(
+    daemon: Arc<CoreDaemon>,
+    lifecycle_seam: ProjectionLifecycleSeam,
+    socket_write_observer: Option<SocketWriteObserver>,
+) -> (
+    String,
+    tempfile::TempDir,
+    tokio::task::JoinHandle<()>,
+    CancellationToken,
+) {
     let dir = tempfile::tempdir().expect("tempdir");
     let socket_path = dir.path().join("daemon.sock");
     let socket_path_str = socket_path.to_string_lossy().to_string();
@@ -84,16 +99,51 @@ async fn spawn_daemon_with_shutdown_and_seam(
     let shutdown_for_server = shutdown.clone();
     let endpoint = socket_path.clone();
     let handle = tokio::spawn(async move {
-        let _ = crate::core::transport::daemon_socket::run_core_socket_with_listener_and_seam(
+        let _ = crate::core::transport::daemon_socket::run_core_socket_with_listener_and_seam_and_observer(
             daemon,
             listener,
             &endpoint,
             shutdown_for_server,
             lifecycle_seam,
+            socket_write_observer,
         )
         .await;
     });
     (socket_path_str, dir, handle, shutdown)
+}
+
+async fn wait_for_typed_socket_write_error(observer: &SocketWriteObserver) -> ErrorKind {
+    tokio::time::timeout(Duration::from_millis(1000), async {
+        loop {
+            if let Some(error_kind) = observer
+                .records()
+                .into_iter()
+                .find_map(|record| match record.terminal_result {
+                    SocketWriteTerminalResult::IoError(kind) => Some(kind),
+                    SocketWriteTerminalResult::Completed
+                    | SocketWriteTerminalResult::Serialization => None,
+                })
+            {
+                return error_kind;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("production Unix writer must record a typed I/O error")
+}
+
+fn assert_peer_close_error_kind(kind: ErrorKind) {
+    assert!(
+        matches!(
+            kind,
+            ErrorKind::BrokenPipe
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::NotConnected
+        ),
+        "unexpected peer-close error kind: {kind:?}"
+    );
 }
 
 /// Drive a complete `ClientHello` + `Subscribe` handshake against the
@@ -1826,6 +1876,50 @@ async fn socket_consecutive_subscriptions_yield_distinct_identities_and_isolatio
 // the Unix adapter's documented write/flush behavior.
 // ========================================================================
 
+/// F0: completion-first control case. A normal projection response must be
+/// recorded as a successful write by the same production observer used by
+/// the peer-close fixtures.
+#[tokio::test]
+async fn socket_f0_successful_production_write_is_observed() {
+    let daemon = projection_daemon().await;
+    let observer = SocketWriteObserver::new();
+    let (socket_path, socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown_and_seam_observer(
+            Arc::clone(&daemon),
+            ProjectionLifecycleSeam::default(),
+            Some(observer.clone()),
+        )
+        .await;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .expect("connect F0 completion client");
+    let (_reader, writer, _client_id, _subscription_id, _cursor) =
+        projection_handshake_and_subscribe_with_cursor(stream, "project-f0-success").await;
+    assert!(
+        observer.records().into_iter().any(|record| {
+            matches!(record.terminal_result, SocketWriteTerminalResult::Completed)
+                && record.write_completed
+                && record.flush_completed
+        }),
+        "successful canonical response must be observed at the production write boundary"
+    );
+    drop(writer);
+    let seam = daemon.projection_seam.as_ref().expect("projection seam");
+    tokio::time::timeout(Duration::from_millis(500), async {
+        loop {
+            if seam.service().subscriptions().active_count() == 0 {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("F0 cleanup must converge");
+    shutdown.cancel();
+    abort_server(server_handle).await;
+    drop(socket_dir);
+}
+
 /// F1: the canonical response's production `send_frame` write happens
 /// through the real Unix writer. Pausing `BeforeControlEnqueue` after the
 /// subscription/receiver are installed lets the fixture drop both halves
@@ -1837,16 +1931,21 @@ async fn socket_consecutive_subscriptions_yield_distinct_identities_and_isolatio
 #[tokio::test]
 async fn socket_f1_peer_closes_before_canonical_response_returns_io_error() {
     let daemon = projection_daemon().await;
+    let socket_write_observer = SocketWriteObserver::new();
     let lifecycle_seam = ProjectionLifecycleSeam::default();
-    let gate = lifecycle_seam
-        .pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
-    let (socket_path, _socket_dir, server_handle, shutdown) =
-        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+    let (socket_path, socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown_and_seam_observer(
+            Arc::clone(&daemon),
+            lifecycle_seam,
+            Some(socket_write_observer.clone()),
+        )
+        .await;
 
     let stream = UnixStream::connect(&socket_path)
         .await
         .expect("connect F1 peer-close client");
-    let (mut reader, _writer, _client_id) =
+    let (reader, writer, _client_id) =
         projection_handshake_with_blocked_response(stream, "project-f1-peer-close").await;
 
     // Wait for the daemon to reach the paused boundary, then close the
@@ -1856,26 +1955,14 @@ async fn socket_f1_peer_closes_before_canonical_response_returns_io_error() {
     tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
         .await
         .expect("daemon must reach BeforeControlEnqueue pause before fixture proceeds");
-    drop(_writer);
-    drop(_socket_dir);
-    shutdown.cancel();
+    drop(reader);
+    drop(writer);
 
     // Release the barrier; the daemon write will now actually run and
     // observe the real peer-close failure.
     gate.release();
-
-    // After the real failure path completes the daemon must EOF the
-    // reader.
-    tokio::time::timeout(Duration::from_millis(500), async {
-        loop {
-            if read_frame(&mut reader).await.is_none() {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("F1 peer-close must EOF the canonical-response reader");
+    let error_kind = wait_for_typed_socket_write_error(&socket_write_observer).await;
+    assert_peer_close_error_kind(error_kind);
 
     let seam = daemon.projection_seam.as_ref().expect("projection seam");
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -1889,7 +1976,9 @@ async fn socket_f1_peer_closes_before_canonical_response_returns_io_error() {
     .await
     .expect("F1 peer-close must leave daemon subscription count at zero");
 
+    shutdown.cancel();
     abort_server(server_handle).await;
+    drop(socket_dir);
 }
 
 /// F2: complementary writer-failure fixture. F1 fully closes the peer
@@ -1910,11 +1999,16 @@ async fn socket_f1_peer_closes_before_canonical_response_returns_io_error() {
 #[tokio::test]
 async fn socket_f2_writer_failure_drops_peer_write_half_then_read_half() {
     let daemon = projection_daemon().await;
+    let socket_write_observer = SocketWriteObserver::new();
     let lifecycle_seam = ProjectionLifecycleSeam::default();
-    let gate = lifecycle_seam
-        .pause_next(ProjectionLifecycleBoundary::DuringWriterWrite);
-    let (socket_path, _socket_dir, server_handle, shutdown) =
-        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::DuringWriterWrite);
+    let (socket_path, socket_dir, server_handle, shutdown) =
+        spawn_daemon_with_shutdown_and_seam_observer(
+            Arc::clone(&daemon),
+            lifecycle_seam,
+            Some(socket_write_observer.clone()),
+        )
+        .await;
 
     let stream = UnixStream::connect(&socket_path)
         .await
@@ -1922,27 +2016,17 @@ async fn socket_f2_writer_failure_drops_peer_write_half_then_read_half() {
     // The helper writes ClientHello + Subscribe from `write_half`; only
     // after that do we drop the write half to leave the connection in a
     // half-closed state where the daemon's send will hit EPIPE.
-    let (mut reader, write_half, _client_id) =
+    let (reader, write_half, _client_id) =
         projection_handshake_with_blocked_response(stream, "project-f2-partial-close").await;
     drop(write_half);
 
     tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
         .await
         .expect("daemon must reach DuringWriterWrite pause before peer drop");
-    drop(_socket_dir);
-    shutdown.cancel();
+    drop(reader);
     gate.release();
-
-    tokio::time::timeout(Duration::from_millis(500), async {
-        loop {
-            if read_frame(&mut reader).await.is_none() {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("F2 must EOF the canonical-response reader after partial peer-close");
+    let error_kind = wait_for_typed_socket_write_error(&socket_write_observer).await;
+    assert_peer_close_error_kind(error_kind);
 
     let seam = daemon.projection_seam.as_ref().expect("projection seam");
     tokio::time::timeout(Duration::from_millis(500), async {
@@ -1956,7 +2040,9 @@ async fn socket_f2_writer_failure_drops_peer_write_half_then_read_half() {
     .await
     .expect("F2 must roll back subscription after partial peer-close");
 
+    shutdown.cancel();
     abort_server(server_handle).await;
+    drop(socket_dir);
 }
 
 /// F3: forced completion vs. forced cancellation. The pre-write
@@ -2013,8 +2099,7 @@ async fn socket_f3_completion_vs_cancellation_race_converges_per_cycle() {
             // `BeforeControlEnqueue`, drop peer BEFORE barrier release,
             // observe write-failure rollback.
             let lifecycle_seam = ProjectionLifecycleSeam::default();
-            let gate = lifecycle_seam
-                .pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+            let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
             let (path2, _dir2, server_handle2, shutdown2) =
                 spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
             let stream = UnixStream::connect(&path2)
@@ -2113,31 +2198,48 @@ async fn socket_f4_replay_delivery_interrupted_by_real_peer_close() {
     // Second connection: lifecycle seam pause at BeforeControlEnqueue so
     // the replay response's write happens AFTER the fixture drops the
     // peer. This surfaces a real BrokenPipe without fail_next.
+    let socket_write_observer = SocketWriteObserver::new();
     let lifecycle_seam = ProjectionLifecycleSeam::default();
     let gate = lifecycle_seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
-    let (path2, _dir2, server_handle2, shutdown2) =
-        spawn_daemon_with_shutdown_and_seam(Arc::clone(&daemon), lifecycle_seam).await;
+    let (path2, dir2, server_handle2, shutdown2) = spawn_daemon_with_shutdown_and_seam_observer(
+        Arc::clone(&daemon),
+        lifecycle_seam,
+        Some(socket_write_observer.clone()),
+    )
+    .await;
 
     let second_stream = UnixStream::connect(&path2)
         .await
         .expect("F4 second connection");
-    let (mut second_reader, second_writer, _second_client_id) =
+    let (second_reader, mut second_writer, _second_client_id) =
         projection_handshake_prefix(second_stream, "project-f4-replay").await;
+    let resume = CoreFrame::Request(crate::core::new_request(
+        "f4-replay-interrupted".to_string(),
+        crate::protocol::core::CoreRequest::ProjectionResume {
+            cursor: first_cursor.clone(),
+            include_snapshot_if_resync: true,
+        },
+    ));
+    second_writer
+        .write_all(serde_json::to_string(&resume).unwrap().as_bytes())
+        .await
+        .expect("F4 write replay request");
+    second_writer
+        .write_all(b"\n")
+        .await
+        .expect("F4 terminate replay request");
+    second_writer
+        .flush()
+        .await
+        .expect("F4 flush replay request");
+    tokio::time::timeout(Duration::from_millis(500), gate.wait_until_entered())
+        .await
+        .expect("F4 replay response must reach the paused writer boundary");
     drop(second_writer);
-    drop(_dir2);
-    shutdown2.cancel();
+    drop(second_reader);
     gate.release();
-
-    tokio::time::timeout(Duration::from_millis(500), async {
-        loop {
-            if read_frame(&mut second_reader).await.is_none() {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("F4 second connection must EOF after real peer close during replay write");
+    let error_kind = wait_for_typed_socket_write_error(&socket_write_observer).await;
+    assert_peer_close_error_kind(error_kind);
 
     tokio::time::timeout(Duration::from_millis(500), async {
         loop {
@@ -2150,7 +2252,9 @@ async fn socket_f4_replay_delivery_interrupted_by_real_peer_close() {
     .await
     .expect("F4 second connection rollback must leave daemon subscriptions at zero");
 
+    shutdown2.cancel();
     abort_server(server_handle2).await;
+    drop(dir2);
 
     // Third connection with fresh client id must succeed and replay the
     // missing range exactly once with matching identities.
@@ -2297,3 +2401,50 @@ async fn socket_f5_repeated_unix_race_convergence_baselines() {
     }
 }
 
+/// F6: typed peer-error convergence. Each cycle pauses the canonical
+/// response before the production write, drops the complete peer, releases
+/// the response boundary, and waits for the actual server-side `ErrorKind`.
+/// Listener shutdown is deliberately deferred until after the typed error and
+/// subscription cleanup are observed.
+#[tokio::test]
+async fn socket_f6_typed_peer_error_recovery_converges_25_cycles() {
+    for cycle in 0..25u32 {
+        let daemon = projection_daemon().await;
+        let observer = SocketWriteObserver::new();
+        let seam = ProjectionLifecycleSeam::default();
+        let gate = seam.pause_next(ProjectionLifecycleBoundary::BeforeControlEnqueue);
+        let (socket_path, socket_dir, server_handle, shutdown) =
+            spawn_daemon_with_shutdown_and_seam_observer(
+                Arc::clone(&daemon),
+                seam,
+                Some(observer.clone()),
+            )
+            .await;
+        let stream = UnixStream::connect(&socket_path)
+            .await
+            .unwrap_or_else(|_| panic!("F6 cycle {cycle} connect"));
+        let (reader, writer, _) =
+            projection_handshake_with_blocked_response(stream, &format!("project-f6-{cycle}"))
+                .await;
+        gate.wait_until_entered().await;
+        drop(reader);
+        drop(writer);
+        gate.release();
+        let error_kind = wait_for_typed_socket_write_error(&observer).await;
+        assert_peer_close_error_kind(error_kind);
+        let projection_seam = daemon.projection_seam.as_ref().expect("projection seam");
+        tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                if projection_seam.service().subscriptions().active_count() == 0 {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("F6 cycle {cycle} must converge subscriptions"));
+        shutdown.cancel();
+        abort_server(server_handle).await;
+        drop(socket_dir);
+    }
+}
