@@ -23,6 +23,10 @@ Implementation commits:
 
 Final reviewed code head: `f046de5bee6c145d494467b36cc1a03650b220ec`
 
+Closure reconciliation commit:
+
+- `7feb4c1` — accepted M012 closure record and plan, roadmap, and registry status reconciliation.
+
 ## 1. Executive finding
 
 M012 is closed. The `/tui` receive path now has one close-responsive socket-reader owner, a bounded sequential request-handler queue, and explicit joined ownership for the reader, handler, writer, raw-event task, and projection forwarders. Peer Close, EOF, and read errors fire connection cancellation before handler teardown can be blocked by pending projection work.
@@ -241,4 +245,3 @@ The following reconciliation is included with this closure:
 | C16 | pass | `check_projection_transport_lifecycle.py` passes with bounded-reader, canonical-send, rollback, identity, registration, and typed-I/O checks. |
 | C17 | pass | Plan, M011 conditional record, M012 closure, roadmap, registry, code commits, counts, exceptions, and local-only CI status agree. |
 | C18 | pass | Source audit and all closure evidence show no unresolved high or medium M012 finding. |
-
