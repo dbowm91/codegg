@@ -377,7 +377,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests) and the `check_execution_ownership.py` static guard. The `plugin-focused` job runs plugin install/management/registry/TUI tests, the core boundary check, and the `check_scheduler_bypass.py` static guard. `examples` tests SDKs and WASM builds. Local equivalent: `scripts/validate_plugin_ui.sh`.
+CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`, `clippy`, `test`, `audit`. Then `plugin-focused` (depends on fmt/check/clippy/test) runs plugin install/management/registry/TUI tests, the core boundary check, and the `check_scheduler_bypass.py` static guard. `examples` (depends on plugin-focused) tests SDKs and WASM builds. `build-cross` (depends on plugin-focused) builds release binaries for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests) and the `check_execution_ownership.py` static guard. Local equivalent: `scripts/validate_plugin_ui.sh`.
 
 ## Critical Gotchas
 
@@ -408,7 +408,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 - **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
 - **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 30**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- **STORAGE_LAYOUT_VERSION = 32**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
 - **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
 - See `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
@@ -446,7 +446,7 @@ CI runs on push/PR to dev/main: `agent-assets` → `fmt` → `check` → `clippy
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (13 submodules). Runtime is in `src/tui/runtime/`.
+- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (20 submodules). Runtime is in `src/tui/runtime/`.
 - **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
 - **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
