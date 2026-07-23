@@ -147,3 +147,39 @@ pub(crate) fn apply_doctor_result(app: &mut App, summary: String, is_error: bool
         }
     }
 }
+
+pub(crate) fn handle_tool_contracts(app: &mut App) {
+    use crate::tool::broker::ToolBroker;
+    use crate::tool::contract::ToolCallerPolicy;
+
+    let registry = crate::tool::ToolRegistry::with_defaults();
+    let broker = ToolBroker::new(&registry);
+    let catalog = broker.catalog();
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("Tool contracts ({} tools):", catalog.len()));
+    lines.push(String::new());
+
+    let mut names: Vec<&str> = catalog.tool_names().collect();
+    names.sort();
+
+    for name in names {
+        let contract = catalog.get(name).unwrap();
+        let caller = match contract.caller_policy {
+            ToolCallerPolicy::DirectOnly => "direct",
+            ToolCallerPolicy::DirectOrProgrammatic => "direct+program",
+            ToolCallerPolicy::ProgrammaticOnly => "program-only",
+        };
+        let effect = format!("{:?}", contract.effect_class);
+        let idempotent = format!("{:?}", contract.idempotency);
+        lines.push(format!(
+            "  {:<24} caller={:<16} effect={:<20} idempotent={}",
+            name, caller, effect, idempotent
+        ));
+    }
+
+    app.open_info_dialog(
+        crate::tui::components::dialogs::info::InfoType::DoctorReport,
+        lines,
+    );
+}

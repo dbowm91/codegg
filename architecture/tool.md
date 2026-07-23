@@ -721,8 +721,33 @@ src/tool/
 └── ...
 ```
 
+## Tool Contracts and the Canonical Broker
+
+All production tool calls are routed through the **ToolBroker**
+(`src/tool/broker.rs`), which enforces a 10-step policy pipeline:
+
+1. **Lookup** — resolve `ToolContract` from pre-built catalog
+2. **Caller policy** — check `ToolCallerPolicy` against `ToolCaller`
+3. **Input validation** — schema and size bounds
+4. **Authority/permission** — delegation to permission system
+5. **Deadline/cancellation** — effective timeout resolution
+6. **Route selection** — inline native or scheduler-owned (future)
+7. **Execution** — `Tool::execute_structured` via registry
+8. **Output validation** — size bounds and truncation
+9. **Artifact registration** — large body handles
+10. **Terminal result** — `ToolValue` with status and provenance
+
+Each tool has a `ToolContract` describing its caller policy, effect
+class, idempotency, retry/cache policies, and projection policy.
+Legacy tools receive conservative defaults via
+`ToolContract::legacy()`.
+
+See [tool_broker.md](tool_broker.md) for the full contract and
+pipeline documentation.
+
 ## See Also
 
+- [tool_broker.md](tool_broker.md) - Canonical execution boundary for all production tool calls
 - [agent.md](agent.md) - Uses ToolRegistry for tool execution
 - [permission.md](permission.md) - Permission checking before execution
 - [snapshot.md](snapshot.md) - File state capture before modifications

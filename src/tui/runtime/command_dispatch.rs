@@ -6,7 +6,9 @@ use super::super::app::{App, TuiCommand};
 #[allow(unused_imports)]
 use super::super::commands::agents::{apply_asset_refresh_finished, start_refresh_assets};
 #[allow(unused_imports)]
-use super::super::commands::diagnostics::{apply_doctor_result, start_run_doctor};
+use super::super::commands::diagnostics::{
+    apply_doctor_result, handle_tool_contracts, start_run_doctor,
+};
 #[allow(unused_imports)]
 use super::super::commands::goals::{
     apply_goal_operation_finished, apply_session_state_refreshed, handle_goal_budget,
@@ -266,6 +268,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::RunDoctor => {
             start_run_doctor(app);
+        }
+        TuiCommand::ToolContracts => {
+            handle_tool_contracts(app);
         }
         TuiCommand::SecurityReviewRun {
             id,

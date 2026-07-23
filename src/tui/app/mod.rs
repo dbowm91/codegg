@@ -421,6 +421,9 @@ pub enum TuiCommand {
     /// logged at `codegg::doctor` and surfaced as a toast. The
     /// handler in `tui_cmd.rs` performs the actual async work.
     RunDoctor,
+    /// Show tool contracts and broker status. Synchronous, no
+    /// background work needed.
+    ToolContracts,
     /// Run `/security-review` asynchronously. Dispatched from the slash
     /// command handler in `execute_command` so the TUI renderer stays
     /// responsive while diff discovery, preflight, and optional LSP
@@ -6252,6 +6255,15 @@ impl App {
                     self.messages_state
                         .toasts
                         .info("doctor: not connected to a core client");
+                }
+            }
+            "/tool-contracts" => {
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = tx.try_send(TuiCommand::ToolContracts);
+                } else {
+                    self.messages_state
+                        .toasts
+                        .info("tool-contracts: not connected to a core client");
                 }
             }
             "/lsp-status" => {

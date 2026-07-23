@@ -43,6 +43,9 @@ pub struct ToolBrokerConfig {
     /// Maximum allowed output display size in bytes before
     /// artifact spillover.
     pub max_output_display_bytes: usize,
+    /// Maximum allowed output bytes total (display + structured).
+    /// Outputs exceeding this are truncated and flagged.
+    pub max_output_bytes: usize,
 }
 
 impl Default for ToolBrokerConfig {
@@ -51,6 +54,7 @@ impl Default for ToolBrokerConfig {
             default_timeout_ms: 120_000,
             max_input_bytes: 10 * 1024 * 1024,
             max_output_display_bytes: 256 * 1024,
+            max_output_bytes: 10 * 1024 * 1024,
         }
     }
 }
@@ -86,6 +90,11 @@ pub struct BrokerInvocationContext {
     pub timeout_ms: Option<u64>,
     /// Submission key for idempotent deduplication.
     pub submission_key: Option<String>,
+    /// Whether the caller has already performed authority/permission
+    /// checks for this invocation. When `true`, the broker skips
+    /// its own step-4 authority check (used by AgentLoop which
+    /// checks permissions before entering the broker).
+    pub caller_authorized: bool,
 }
 
 impl From<ToolExecutionContext> for BrokerInvocationContext {
@@ -102,6 +111,7 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             permission_mode: ctx.permission_mode,
             timeout_ms: ctx.timeout_ms,
             submission_key: None,
+            caller_authorized: false,
         }
     }
 }
@@ -218,9 +228,10 @@ impl ToolBroker {
     // ── Steps 3-6: Validation pipeline ──────────────────────────
 
     /// Run the pre-execution validation pipeline:
-    /// - caller policy
-    /// - input size bounds
-    /// - deadline precheck
+    /// - caller policy (step 2)
+    /// - caller authorization (step 4, if not pre-authorized)
+    /// - input size bounds (step 3)
+    /// - deadline precheck (step 5)
     ///
     /// Returns the effective timeout in milliseconds.
     pub fn validate_pre_execution(
@@ -231,6 +242,17 @@ impl ToolBroker {
     ) -> Result<u64, BrokerError> {
         // Step 2: caller policy
         self.check_caller_policy(contract, &ctx.caller)?;
+
+        // Step 4: authority — if the caller has not already performed
+        // permission checks, the broker rejects the call. This ensures
+        // programmatic callers go through the permission system.
+        if !ctx.caller_authorized && !matches!(ctx.caller, ToolCaller::Agent | ToolCaller::Internal) {
+            return Err(BrokerError::CallerDenied {
+                tool: contract.name.clone(),
+                caller: format!("{:?}", ctx.caller),
+                policy: contract.caller_policy,
+            });
+        }
 
         // Step 3: input size check
         let input_size = serde_json::to_vec(input).map(|b| b.len()).unwrap_or(0);
@@ -266,7 +288,7 @@ impl ToolBroker {
         // Step 1: lookup contract (catalog, no lock needed)
         let contract = self.lookup_contract(tool_name)?;
 
-        // Steps 2-6: validation pipeline
+        // Steps 2-5: validation pipeline
         let _effective_timeout = self.validate_pre_execution(contract, &ctx, &input)?;
 
         // Step 7: execute
@@ -286,8 +308,10 @@ impl ToolBroker {
 
         match result {
             Ok(structured) => {
-                // Steps 8-10: convert to typed value
+                // Steps 8-10: convert to typed value, validate, register artifacts
                 let value = self.normalize_result(tool_name, structured, elapsed_ms);
+                let value = self.validate_output(&contract, value)?;
+                let value = self.register_artifacts(tool_name, value);
                 Ok(BrokerResult {
                     value,
                     contract: contract.clone(),
@@ -357,6 +381,53 @@ impl ToolBroker {
             terminal_status,
             truncated,
         }
+    }
+
+    // ── Step 8: Output validation ──────────────────────────────
+
+    /// Validate the output against broker-level bounds.
+    ///
+    /// Checks that the output display does not exceed
+    /// `max_output_bytes`. If it does, the output is truncated and
+    /// `truncated` is set to `true`.
+    fn validate_output(
+        &self,
+        _contract: &ToolContract,
+        mut value: ToolValue,
+    ) -> Result<ToolValue, BrokerError> {
+        let display_len = value.display.len();
+        if display_len > self.config.max_output_bytes {
+            value.display.truncate(self.config.max_output_bytes);
+            value.truncated = true;
+        }
+        Ok(value)
+    }
+
+    // ── Step 9: Artifact registration ─────────────────────────
+
+    /// Register artifact handles for large outputs.
+    ///
+    /// When the output display exceeds `max_output_display_bytes`,
+    /// the broker creates an artifact handle so downstream consumers
+    /// can reference the content without embedding it in transcripts.
+    fn register_artifacts(
+        &self,
+        tool_name: &str,
+        mut value: ToolValue,
+    ) -> ToolValue {
+        let display_len = value.display.len();
+        if display_len > self.config.max_output_display_bytes {
+            let artifact = super::contract::ToolArtifactHandle {
+                artifact_id: uuid::Uuid::new_v4().to_string(),
+                tool_name: tool_name.to_string(),
+                content_type: "text/plain".to_string(),
+                byte_length: display_len as u64,
+                digest: None,
+            };
+            value.artifacts.push(artifact);
+            value.truncated = true;
+        }
+        value
     }
 }
 
@@ -465,6 +536,7 @@ mod tests {
             permission_mode: None,
             timeout_ms: None,
             submission_key: None,
+            caller_authorized: true,
         }
     }
 

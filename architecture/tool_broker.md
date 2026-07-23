@@ -78,10 +78,10 @@ This ensures existing tools work without modification.
 
 ## Migration status
 
-The broker is integrated into `AgentLoop` but the existing
-`execute_capture` path remains the primary execution method for
-direct calls. The broker is available for new programmatic caller
-paths (Tool Programs in M006+).
+The broker is the single execution boundary for all production tool
+calls. `AgentLoop` routes through `tool_broker.execute()` for every
+tool invocation. Direct `Tool::execute` calls outside the broker are
+blocked by `scripts/check_tool_broker_boundary.py`.
 
 ## Related
 

@@ -4429,6 +4429,7 @@ impl AgentLoop {
         let hook_registry = self.hook_registry.as_ref().map(Arc::clone);
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         let event_store = self.event_store.clone();
+        let tool_broker = Arc::clone(&self.tool_broker);
         for (orig_idx, tc) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -4446,6 +4447,7 @@ impl AgentLoop {
             let session_id = self.session_id.clone();
             let idx_for_results = orig_idx;
             let event_store = event_store.clone();
+            let tool_broker = Arc::clone(&tool_broker);
             futures.push(async move {
                 let permit = match sem.acquire().await {
                     Ok(p) => p,
@@ -4607,21 +4609,63 @@ impl AgentLoop {
                             }
                             let exec_ctx = exec_ctx.clone();
                             let exec_args = effective_args.clone();
-                            let exec_fut = async {
-                                let structured = registry
-                                    .execute_capture(&tc_inner.name, exec_args, Some(exec_ctx))
-                                    .await?;
-                                if let Some(ref p) = structured.provenance {
+                            let tool_name_clone = tc_inner.name.clone();
+                            let broker_for_exec = Arc::clone(&tool_broker);
+                            let exec_fut = async move {
+                                let broker_ctx = crate::tool::broker::BrokerInvocationContext {
+                                    caller: crate::tool::contract::ToolCaller::Agent,
+                                    cwd: exec_ctx.cwd.clone(),
+                                    session_id: exec_ctx.session_id.clone(),
+                                    workspace_id: None,
+                                    agent_id: None,
+                                    turn_id: None,
+                                    job_id: None,
+                                    attempt_id: None,
+                                    permission_mode: exec_ctx.permission_mode.clone(),
+                                    timeout_ms: exec_ctx.timeout_ms,
+                                    submission_key: None,
+                                    caller_authorized: true,
+                                };
+                                let broker_result = broker_for_exec
+                                    .execute(registry, &tool_name_clone, exec_args, broker_ctx)
+                                    .await
+                                    .map_err(|e| match e {
+                                        crate::tool::broker::BrokerError::NotFound(name) => {
+                                            ToolError::NotFound(name)
+                                        }
+                                        crate::tool::broker::BrokerError::NoContract(name) => {
+                                            ToolError::NotFound(name)
+                                        }
+                                        crate::tool::broker::BrokerError::CallerDenied {
+                                            tool,
+                                            ..
+                                        } => ToolError::Permission(format!(
+                                            "caller denied for tool: {}",
+                                            tool
+                                        )),
+                                        crate::tool::broker::BrokerError::InputTooLarge {
+                                            tool,
+                                            size,
+                                            max,
+                                        } => ToolError::Execution(format!(
+                                            "input for {} is {} bytes, max is {}",
+                                            tool, size, max
+                                        )),
+                                        crate::tool::broker::BrokerError::Execution(msg) => {
+                                            ToolError::Execution(msg)
+                                        }
+                                    })?;
+                                if let Some(ref p) = broker_result.value.provenance {
                                     tracing::debug!(
-                                        tool = %tc_inner.name,
+                                        tool = %tool_name_clone,
                                         backend = %p.backend,
                                         implementation = %p.implementation,
                                         elapsed_ms = ?p.elapsed_ms,
                                         trust = ?p.trust,
-                                        "native tool completed with provenance"
+                                        "broker: native tool completed with provenance"
                                     );
                                 }
-                                Ok::<String, ToolError>(structured.output)
+                                Ok::<String, ToolError>(broker_result.value.display)
                             };
                             match tokio::time::timeout(timeout, exec_fut).await {
                                 Ok(r) => match &r {
