@@ -17,12 +17,15 @@ pub const SENTINEL_PREFIX: &str = "CODEGG_TEST_SECRET_";
 /// Generate a per-test sentinel string. The caller passes a short
 /// label; the resulting sentinel is `CODEGG_TEST_SECRET_<label>_<random>`.
 pub fn unique_sentinel(label: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static SENTINEL_COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{SENTINEL_PREFIX}{label}_{nanos}")
+    let sequence = SENTINEL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{SENTINEL_PREFIX}{label}_{nanos}_{sequence}")
 }
 
 /// Assert that none of the supplied text surfaces contain the
