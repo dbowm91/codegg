@@ -185,7 +185,7 @@ test join_after_first_exit_waits_for_sibling_joins_not_just_abort ... ok
 test real_core_raw_source_first_exit_via_cancellation_token ... ok
 test real_tui_raw_source_first_exit_via_cancellation_token ... ok
 test real_core_writer_failure_terminates_all_tasks ... ok (now uses complete harness)
-test real_tui_pending_snapshot_interruption_via_writer_barrier ... ok (now uses TUI harness)
+test real_tui_pending_snapshot_interruption_via_writer_barrier ... flaky (~8/10, see §4)
 test real_tui_pending_replay_interruption_then_retry ... ok
 test real_core_rollback_harness_asserts_unrelated_client_continuity ... ok
 ```
@@ -213,7 +213,22 @@ Local execution only. GitHub workflow runs were not attached for this milestone 
 
 ## 4. Residual findings
 
-None. Every M011 closure-bearing fixture passes under `--test-threads=1` local execution. The TUI correlation shape from `<M011-WP-C>` commits the WebSocket observation recording to `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` so the same `is_timeout_during_enqueue()` predicate applies symmetrically to both adapters.
+**Pre-existing TUI writer deadlock, partially mitigated by M011.** The `real_tui_pending_snapshot_interruption_via_writer_barrier` fixture exercises a connection-drop-while-pending-snapshot scenario that can deadlock in the production TUI writer task (`src/server/ws.rs` `upgrade_tui`) when both:
+
+1. The TUI recv task is parked inside a handler awaiting `receipt_rx.await` (which is itself wrapped in `bounded_critical_delivery` and IS cancellable on `connection_cancel`); AND
+2. The TUI writer task is parked at `out_rx.recv()` / `projection_rx.recv()` / `raw_rx.recv()` (which are NOT directly cancellable); AND
+3. Nothing else has fired `connection_cancel` and no peer TCP RST has propagated to `ws_tx.send` in time.
+
+In this state neither task can fire `connection_cancel`, the recv task cannot see `ws_rx` because it is inside a handler, the writer cannot exit its recv, and `join_after_first_exit` blocks indefinitely on the two outstanding tasks. The TUI-specific teardown path (`cleanup_projection_connection_state` + `daemon.handle_request_for_client(ProjectionUnsubscribe)`) never runs, leaking the daemon-side subscription.
+
+The /core writer task already has a biased `_ = connection_cancel_for_writer.cancelled() => break` arm as the first arm of its `tokio::select!` (line 3497). The /tui writer task was missing this arm. M011 WP-G (TUI rollback harness) and its follow-up commit `11c3b42` add the same biased cancellation arm to the /tui writer, mirroring the proven /core pattern. Observed flake-rate improvement on `real_tui_pending_snapshot_interruption_via_writer_barrier` under `--test-threads=1`:
+
+  - Before: 4–5 of 10 runs fail (~40–50% flake rate).
+  - After:  2 of 10 runs fail (~20% flake rate).
+
+The residual flake reflects the underlying recv-stuck-inside-handler deadlock: even with the writer cancellation arm, the chain only unblocks if some other party fires `connection_cancel`. Closing the residual gap requires either a watcher task that polls `ws_rx` for `Message::Close` and fires `connection_cancel`, or refactoring the recv task to `tokio::select!` between `ws_rx.next()` and the inner handler so that Close frames break the handler mid-flight. Both options are structural changes outside M011's evidence-correctness scope and will be addressed in a follow-up plan.
+
+The other seven M011 closure-bearing fixtures (`real_core_full_queue_operation_correlated_timeout`, `real_tui_full_queue_operation_correlated_timeout`, `real_connection_task_set_six_case_production_teardown_matrix`, `real_core_raw_source_first_exit_via_cancellation_token`, `real_tui_raw_source_first_exit_via_cancellation_token`, `real_core_writer_failure_terminates_all_tasks`, `real_tui_pending_replay_interruption_then_retry`) all pass 10/10 in repeated runs. The TUI correlation shape from WP-C commits the WebSocket observation recording to `handle_projection_subscribe` / `handle_projection_resume` / `handle_projection_ack` / `emit_tui_projection_response` so the same `is_timeout_during_enqueue()` predicate applies symmetrically to both adapters.
 
 ## 5. Auditability trail
 
