@@ -68,7 +68,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 003 — program domain, storage, and call ledger | `plans/closure/tool-programs/003-status.md` | `aa1b6d5` implementation | M004 unblocked |
+| Programmatic tool execution and Tool Programs | 003 — program domain, storage, and call ledger | `plans/closure/tool-programs/003-status.md` | `733993b` implementation + docs follow-up | M004 unblocked |
 | Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | `plans/closure/tool-programs/002-status.md` | HEAD implementation | M003 unblocked |
 | Programmatic tool execution and Tool Programs | 001 — scheduler-owned Python execution | `plans/closure/tool-programs/001-status.md` | HEAD implementation | M002 unblocked |
 | Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | `plans/closure/session-projections/012-status.md` | `0672044` implementation; `f046de5` corrective test evidence; final reviewed head `f046de5` | Closed; no registered future plan was newly unblocked, and deferred product work remains unregistered |

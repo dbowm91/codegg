@@ -59,11 +59,17 @@ cargo test -p codegg-core -- --test-threads=4
 cargo test -p codegg-core tool_program -- --test-threads=4
 # Result: 34 passed
 
+cargo test -p codegg --lib scheduler
+# Result: 41 passed
+
+cargo test --workspace --all-targets -- --test-threads=14
+# Result: 4031 passed, 3 pre-existing failures (daemon_socket, bash)
+
 cargo fmt --all -- --check
 # Result: clean
 
 cargo clippy -p codegg-core --all-targets --all-features -- -D warnings
-# Result: 0 new warnings (6 pre-existing in projection_replay)
+# Result: 6 pre-existing in projection_replay; 0 new warnings
 ```
 
 ## 5. Invariant review
@@ -103,8 +109,9 @@ cargo clippy -p codegg-core --all-targets --all-features -- -D warnings
 
 ## 9. Documentation and operations
 
-- `architecture/tool_programs.md` created with ownership, invariants, state machine, schema, and scheduler integration
+- `architecture/tool_programs.md` created with ownership, invariants, state machine, schema, scheduler integration, query DTOs, protocol events, storage migration, and retention
 - `architecture/jobs.md` updated with `ToolProgram` variant
+- `architecture/run_store.md` updated with Tool Programs linkage section
 
 ## 10. Unresolved findings
 
