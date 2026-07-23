@@ -175,18 +175,20 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 |------|-------|--------|
 | Tools (default registry) | ~40 | `src/tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
-| Native tool crates | 9 | `crates/` workspace |
+| Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
 | AppEvent variants | 44 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 118 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 19+ | `crates/codegg-core/src/storage/` |
 | DB migrations | 23 | `crates/codegg-core/src/storage/` |
-| Integration tests | 75 | `tests/` |
+| Integration tests | 101 | `tests/` |
+| Architecture docs | 67 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/lib.rs` |
 | Providers (auto-registered) | 16 | `crates/codegg-providers/` |
+| CI guard scripts | 28 | `scripts/` |
 
 ## Feature Gates
 
@@ -415,7 +417,7 @@ codegg/
 │   ├── agents/                 # 9 built-in agent TOML definitions
 │   └── prompts/               # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (63 docs)
+├── architecture/               # Architecture documentation (67 docs)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
 └── examples/                   # Plugin SDKs and examples
