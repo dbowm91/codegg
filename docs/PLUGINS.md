@@ -1,6 +1,6 @@
 # Plugin System
 
-codegg supports WASM-based plugins that can hook into the agent lifecycle and extend functionality.
+codegg supports plugins that can hook into the agent lifecycle and extend functionality. Three runtime types are supported: process, WASM, and builtin.
 
 ## Architecture
 
@@ -15,6 +15,14 @@ The plugin module (`src/plugin/`) consists of:
 - **`install.rs`** - Plugin installation from path or URL
 - **`event_bus.rs`** - Event bus integration for plugins
 - **`tui.rs`** - TUI component extensions
+- **`api.rs`** - Plugin API types and traits
+- **`management.rs`** - Plugin management operations (list, info, enable, disable, doctor, remove, install)
+- **`marketplace.rs`** - Plugin marketplace/registry integration
+- **`lifecycle.rs`** - Plugin lifecycle management
+- **`permission.rs`** - Plugin permission handling
+- **`management_ui.rs`** - TUI-facing plugin management views
+- **`policy.rs`** - `PluginPolicy` composite security policy
+- **`runtime/`** - Runtime implementations (`mod.rs`, `wasm.rs`, `process.rs`, `builtin.rs`, `wasm_cache.rs`)
 - **`builtin/`** - Built-in plugins (poe, gitlab, copilot, codex)
 
 ## Plugin Manifest

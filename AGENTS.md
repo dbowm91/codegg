@@ -463,7 +463,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~37 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools.
+- **~38 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
@@ -551,13 +551,13 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 
 ## Architecture Docs
 
-`architecture/` has 44 docs covering every module. See `architecture/overview.md` for the full module map and navigation index. Key ones:
+`architecture/` has 67 docs covering every module. See `architecture/overview.md` for the full module map and navigation index. Key ones:
 
 | Document | Key Gotchas |
 |----------|-------------|
-| `architecture/overview.md` | Module map, verified counts (107 commands, 44 events, 39 LSP servers, ~37 tools, 9 agents) |
+| `architecture/overview.md` | Module map, verified counts (108 commands, 45 events, 39 LSP servers, ~38 tools, 9 agents) |
 | `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
-| `architecture/bus.md` | 44 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
+| `architecture/bus.md` | 45 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
 | `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
 | `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
 | `architecture/tool.md` | ~38 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
@@ -568,10 +568,9 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 | `architecture/command_planner.md` | Backend routing, permission generation, projector/RTK policy selection |
 | `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
-| `architecture/python_script.md` | Module-based Python scripting: types, sandbox, executor, projection, tool registration |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
-| `architecture/command.md` | 107 built-in slash commands |
+| `architecture/command.md` | 108 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
 | `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |

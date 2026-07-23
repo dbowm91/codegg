@@ -78,13 +78,10 @@ Servers are automatically downloaded for:
 
 ## Configuration
 
-LSP is configured via `config.json`:
+LSP is configured via `codegg.jsonc`:
 
-```json
+```jsonc
 {
-  "experimental": {
-    "lsp_tool": true
-  },
   "lsp": {
     "servers": {
       "rust": {

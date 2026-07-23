@@ -61,11 +61,11 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 
 ### Tool Layer — Capabilities and Execution
 
-The tool layer defines the ~40 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
+The tool layer defines the ~38 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Tool | Built-in tools (~40 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Tool | Built-in tools (~38 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
 | Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
@@ -79,7 +79,7 @@ The tool layer defines the ~40 built-in tools the agent can invoke, the backend 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
 | TUI | Ratatui terminal UI, async command pattern (spawn-and-complete), state management across 6 domains | `app/mod.rs`, `components/`, `commands/`, `runtime/` | [tui.md](tui.md) |
-| Command | Slash command registry (118 built-in commands) from markdown files | `tui/command.rs` | [command.md](command.md) |
+| Command | Slash command registry (108 built-in commands) from markdown files | `tui/command.rs` | [command.md](command.md) |
 | Theme | Frontend-neutral theme system (SemanticTheme → ratatui, Halloy) | `theme/` | [theme.md](theme.md) |
 | Shell | Human shell `!`/`!!` commands, projection pipeline (10 phases), safety policy, RTK integration, redaction | `shell/` | [human_shell.md](human_shell.md) |
 | Shell Session | Shell session metadata (no PTY) | `shell_session/` | [shell_session.md](shell_session.md) |
@@ -97,9 +97,9 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Scheduler | Global admission control scheduler, fair queue, executor dispatch, permit lifecycle (Phase 5) | `scheduler/mod.rs`, `scheduler/scheduler.rs`, `scheduler/admission.rs`, `scheduler/fair_queue.rs` | [scheduler.md](scheduler.md) |
 | Job Dispatcher | Bridges durable jobs to existing executors (SubAgent, ManagedArgv, Test) | `job_dispatcher.rs`, `job_recovery.rs` | [jobs.md](jobs.md) |
 | Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
-| Session | SQLite session storage, message history, 22 migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
+| Session | SQLite session storage, message history, 32 migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
-| Bus | Event bus publish/subscribe (44 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
+| Bus | Event bus publish/subscribe (45 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` | [exec.md](exec.md) |
 
@@ -173,22 +173,22 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 
 | Item | Count | Source |
 |------|-------|--------|
-| Tools (default registry) | ~40 | `src/tool/mod.rs:with_options()` |
+| Tools (default registry) | ~38 | `src/tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
-| AppEvent variants | 44 | `crates/codegg-core/src/bus/events.rs` |
-| Built-in commands | 118 | `src/tui/command.rs` |
+| AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
+| Built-in commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
-| Database tables | 19+ | `crates/codegg-core/src/storage/` |
-| DB migrations | 23 | `crates/codegg-core/src/storage/` |
-| Integration tests | 101 | `tests/` |
+| Database tables | 49 | `crates/codegg-core/src/session/schema.rs` |
+| DB migrations | 32 | `crates/codegg-core/src/migration.rs` |
+| Integration tests | 99 | `tests/` |
 | Architecture docs | 67 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/lib.rs` |
 | Providers (auto-registered) | 16 | `crates/codegg-providers/` |
-| CI guard scripts | 28 | `scripts/` |
+| CI guard scripts | 19 | `scripts/` |
 
 ## Feature Gates
 
@@ -293,7 +293,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Exec](exec.md) — Non-interactive execution mode
 
 ### Tools and Capabilities
-- [Tool](tool.md) — Tool trait, registry, ~40 built-in tools, backend abstraction
+- [Tool](tool.md) — Tool trait, registry, ~38 built-in tools, backend abstraction
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
 - [Preflight](preflight.md) — Harness-side validation before mutations
 - [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
@@ -304,7 +304,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 
 ### User Interface
 - [TUI](tui.md) — Ratatui terminal UI, async commands, state management
-- [Command](command.md) — 118 built-in slash commands
+- [Command](command.md) — 108 built-in slash commands
 - [Theme](theme.md) — Frontend-neutral theme system
 - [Human Shell](human_shell.md) — `!`/`!!` commands, 10-phase projection pipeline
 - [Shell Session](shell_session.md) — Shell session metadata
@@ -390,7 +390,7 @@ codegg/
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # ~40 built-in tools
+│   ├── tool/                   # ~38 built-in tools
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade

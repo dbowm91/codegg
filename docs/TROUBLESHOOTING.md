@@ -70,7 +70,7 @@ Common issues and solutions for codegg.
 **Symptoms:** Previous messages disappear after restart.
 
 **Solutions:**
-- Sessions are stored in SQLite at `~/Library/Application Support/codegg/codegg.db` (macOS) or `~/.local/share/codegg/codegg.db` (Linux)
+- Sessions are stored in SQLite at `~/Library/Application Support/codegg/codegg.db` (macOS) or `$XDG_DATA_HOME/codegg/codegg.db` (Linux)
 - Check file permissions
 - Verify disk space available
 
@@ -201,7 +201,7 @@ Common issues and solutions for codegg.
 **Symptoms:** Default values always used.
 
 **Solutions:**
-1. Check config file location: `~/.config/codegg/config.json`
+1. Check config file location: `~/.config/codegg/codegg.jsonc`
 2. Verify JSON is valid (use `jq` to validate)
 3. Ensure file is readable
 4. Check for duplicate/conflicting settings
@@ -226,7 +226,7 @@ Common issues and solutions for codegg.
 1. Run with `RUST_BACKTRACE=1` for full trace
 2. Check database is not corrupted
 3. Verify all required directories exist
-4. Try deleting `~/.cache/codegg`
+4. Try deleting `~/Library/Application Support/codegg/` (macOS) or `$XDG_DATA_HOME/codegg/` (Linux) after stopping the daemon
 
 ### Crash during tool execution
 
