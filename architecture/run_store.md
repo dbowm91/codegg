@@ -153,6 +153,19 @@ In `src/protocol_conversions.rs`:
 - `run_started_event()`, `run_progress_event()`, `run_completed_event()`
 - `run_artifact_created_event()`, `run_denied_event()`
 
+## Tool Programs Linkage (M003)
+
+RunStore and ToolProgramStore are **separate authorities**:
+
+- **RunStore** owns execution artifacts for concrete command runs (stdout, stderr, diffs, etc.).
+- **ToolProgramStore** owns lifecycle records for agent-submitted Tool Programs (state, manifest, source/IR refs, call ledger, checkpoints).
+
+A `ToolProgramRecord` may link to a RunStore run via `ProgramCallRecord.child_run_id`, but the two stores are not atomically coupled. Tool Programs do not create RunStore records until an executor actually dispatches a nested call (M005+). Until then, Tool Program records are dormant and RunStore is unaffected.
+
+The `JobPayload::ToolProgram` carries references/hashes (`program_id`, `source_digest`, `ir_digest`, `authority_digest`, `submission_key`) — no unbounded source bodies enter the scheduler or RunStore.
+
+See `architecture/tool_programs.md` for the full Tool Program domain model.
+
 ## Not Yet Integrated
 
 | Gap | Details |

@@ -136,11 +136,108 @@ Each nested call gets a `ProgramCallRecord` with:
 ## Query DTOs
 
 - `ProgramSummary`: compact list view (id, state, language, submission
-  key, job_id, timestamps)
-- `ProgramListQuery`: workspace/session/state filtering with pagination
-- `ProgramStoreQuery`: internal store-level query
+  key, job_id, timestamps) — canonical in `store.rs`, re-exported from
+  `mod.rs`
+- `ProgramListQuery`: workspace/session/state filtering with
+  pagination (limit, offset)
+- `ProgramStoreQuery`: internal store-level query with
+  workspace_id, session_id, states, limit, offset
+
+All DTOs derive `Serialize`/`Deserialize` for protocol transport.
+Visibility/redaction classification is explicit: `labels` must not
+contain source, manifest bodies, credentials, or unbounded output.
+
+### Future protocol events (M005+)
+
+When a program executor exists, the following `CoreEvent` variants
+will be added:
+
+- `ToolProgramStarted` — program transitions to Running
+- `ToolProgramProgress` — heartbeat with budget usage
+- `ToolProgramCallStarted` — call dispatched to tool
+- `ToolProgramCallCompleted` — call result recorded
+- `ToolProgramCompleted` — terminal state reached
+
+These are not implemented in M003 because no executor exists.
+
+## Storage Migration
+
+### Additive migration v33
+
+`migrate_v33` in `session/schema.rs` adds two tables with no
+modifications to existing tables:
+
+```sql
+tool_program (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT,
+    turn_id TEXT,
+    language TEXT NOT NULL,
+    state TEXT NOT NULL,
+    source_json TEXT NOT NULL,
+    ir_json TEXT,
+    manifest_json TEXT NOT NULL,
+    checkpoint_json TEXT,
+    result_json TEXT,
+    job_id TEXT,
+    submission_key TEXT NOT NULL UNIQUE,
+    labels_json TEXT NOT NULL DEFAULT '{}',
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    time_terminal INTEGER
+)
+
+tool_program_call (
+    id TEXT PRIMARY KEY,
+    program_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    tool_name TEXT NOT NULL,
+    tool_contract_hash TEXT NOT NULL,
+    normalized_input_hash TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    child_job_id TEXT,
+    child_run_id TEXT,
+    result_artifacts_json TEXT NOT NULL DEFAULT '[]',
+    result_projection TEXT,
+    failure_class TEXT,
+    error_message TEXT,
+    replay_disposition TEXT NOT NULL,
+    time_created INTEGER NOT NULL,
+    time_updated INTEGER NOT NULL,
+    time_terminal INTEGER,
+    UNIQUE(program_id, sequence),
+    FOREIGN KEY(program_id) REFERENCES tool_program(id) ON DELETE CASCADE
+)
+```
+
+Indexes: workspace, session, state, job, updated_at on `tool_program`;
+(program_id, sequence), state, tool_name on `tool_program_call`.
+
+### Compatibility
+
+- **Old daemon opening new DB**: `JobKind::ToolProgram` deserializes to
+  `Unsupported` via `#[serde(other)]`; program tables are ignored.
+- **New daemon opening old DB**: migration v33 runs automatically; no
+  program tables exist until first program is created.
+- **Rollback**: migration is additive only (new tables); rolling back
+  the daemon simply leaves orphaned tables that are ignored.
+
+### `STORAGE_LAYOUT_VERSION`
+
+Bumped from 32 to 33. The version is stored in `migration_version`
+and checked on every database open.
 
 ## Retention
+
+- Active programs retain source, IR, calls, and artifacts.
+- Terminal programs may be garbage-collected after a configurable
+  retention window (not yet implemented in M003).
+- Source/IR content-store GC removes only unreferenced digests via
+  `ContentAddressedStore::gc()`.
+- The `tool_program` table cascades deletes to `tool_program_call`
+  via foreign key.
 
 - Active programs retain source, IR, calls, and artifacts.
 - Terminal programs may be garbage-collected after a configurable
