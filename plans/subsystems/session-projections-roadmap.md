@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: closed
+Status: active — Milestone 012 TUI disconnect lifecycle and final evidence closure
 
 Long-term references:
 
@@ -11,121 +11,158 @@ Long-term references:
 
 Related ADRs:
 
-- None required for M011. Create an ADR only if work changes replay authority, persistence ownership, deployment-global ordering, retention semantics, or the public projection protocol.
+- None required for M012 unless implementation changes replay authority, persistence ownership, public projection protocol meaning, deployment-global ordering, or retention semantics.
 
 ## 1. Purpose and ownership boundary
 
-This subsystem owns the canonical frontend-neutral session representation and the snapshot/event/replay semantics used by local TUI, remote TUI, observer mode, ACP adapters, web clients, and future frontends. It defines bounded projection DTOs, reducer semantics, subscriptions, sequence/acknowledgement/resume behavior, durable replay indexing, visibility/redaction classification, artifact handles, and transport delivery invariants.
+This subsystem owns the canonical frontend-neutral session representation and snapshot/event/replay semantics used by local TUI, remote TUI, observer mode, ACP adapters, web clients, and future frontends.
 
-It consumes stable project/session identities, daemon events, turn/tool/run/job state, project-aware TUI state, session/message persistence, and protocol capability negotiation. It does not own team authorization policy, presence, chat, full audit retention, raw provider hidden reasoning, or deployment-global ordering.
+It owns:
 
-## 2. Invariants
+- bounded versioned projection DTOs;
+- reducer and snapshot semantics;
+- scoped subscription ownership;
+- sequence, acknowledgement, resume, and resynchronization behavior;
+- durable replay indexing and cursor authority;
+- visibility/redaction classification and artifact handles;
+- transport delivery, task ownership, cancellation, rollback, and replay-to-live invariants.
 
-- All frontends reconstruct equivalent logical session state from the same snapshot and event stream.
-- Sequence ordering is monotonic within one stream and replay is deterministic.
-- Expired or missing history triggers bounded typed resynchronization.
+It consumes stable project/session identities, daemon events, turn/tool/run/job state, project-aware TUI state, session persistence, and protocol capability negotiation.
+
+It does not own team authorization policy, presence/chat, full audit retention, raw provider hidden reasoning, cross-daemon replay replication, or deployment-global ordering.
+
+## 2. Subsystem invariants
+
+### Projection and replay
+
+- All frontends reconstruct equivalent logical state from the same canonical snapshot and event stream.
+- Sequence ordering is monotonic within one stream.
+- Replay is deterministic and delivers the exact missing committed range once.
+- The first live envelope after replay is `replay_end_seq + 1` without a gap, duplicate, or reorder.
+- Expired or missing history produces bounded typed resynchronization.
+- Disconnect removes transient ownership without deleting durable replay history.
+- Stream ID, subscription ID, project ID, session ID, client ID, and transport connection ID remain distinct.
+
+### Disclosure and bounds
+
 - Secret-bearing data is redacted before shared durable storage.
 - Large logs, artifacts, and file bodies remain behind bounded handles.
 - Raw terminal frames are not the canonical collaboration protocol.
-- Unknown variants and versions degrade safely.
-- Project/session subscriptions avoid unrelated traffic.
-- A live projection envelope reaches only the connection that owns its daemon-issued subscription.
-- Subscription ID, stream ID, project ID, session ID, client ID, and transport connection ID remain distinct.
-- Transports preserve the persisted stream ID and never synthesize it from a subscription ID.
-- Generic raw event broadcasts never carry subscription-private projection events.
+- Unknown versions and variants degrade safely.
+- Raw compatibility is explicitly scoped by connection/session/filter selection.
+- No WebSocket adapter uses an unbounded outbound queue.
+- No TUI request pipeline may be unbounded or create one detached task per message.
+
+### Delivery and activation
+
 - A subscription cannot become live before its canonical snapshot/replay response is successfully delivered.
 - Critical control failure rolls back connection ownership and daemon subscription state.
-- Every connection-scoped send, receive, raw, and projection task has explicit ownership, cancellation, and joined teardown.
-- Disconnect removes transient receivers and tasks without deleting replay history.
-- Transport queues and per-connection tasks remain bounded.
-- Raw compatibility traffic is explicitly scoped by connection/session/filter selection.
-- Changing a TUI raw session route invalidates queued events from prior route generations.
-- Reconnect replay delivers exactly the missing committed envelopes once and transitions to the next live sequence without a gap or duplicate.
-- A queue-timeout claim must correlate observed fullness to the exact production send and identify whether timeout occurred before enqueue or during writer receipt.
-- A peer-failure claim must fail the real peer or production I/O operation before the named response completes.
-- A raw-source-first claim must terminate the actual raw source while the peer remains healthy and record `RawEvent` as first exit.
-- Task-owner evidence must execute the production cancel/abort-and-await path and prove sibling joins.
-- Every real staged failure returns per-connection tasks, forwarders, receivers, ownership, queues, and daemon subscriptions to baseline.
-- Unrelated clients remain live through another client's failure.
-- No WebSocket server adapter uses an unbounded outbound queue.
-- Closure evidence names exact tests, commands, counts, commits, mechanisms, repetitions, exceptions, and CI availability truthfully.
+- Queue-timeout evidence must establish fullness before the target operation and directly attribute the typed result to that operation.
+- Observer-enabled and observer-disabled delivery use the same production implementation and timeout budget.
+- Peer-failure evidence must observe the real peer or production I/O operation before the named response completes.
+
+### Connection lifecycle
+
+- Exactly one task owns and polls each socket read half.
+- Socket Close, EOF, and read error remain observable while lifecycle handling is pending.
+- Connection cancellation occurs before sibling teardown.
+- Every connection-scoped writer, socket reader, request handler, raw-event task, and projection forwarder has explicit bounded ownership and joined teardown.
+- Panic in any owned task does not prevent cancellation and joining of siblings.
+- Every real failure returns connection ownership, daemon ownership, receivers, tasks, forwarders, queues, probes, and diagnostic counters to baseline.
+- An unrelated client remains live and receives its own unique marker event through another client’s failure.
+
+### Evidence integrity
+
+- Closure evidence names exact commits, tests, counts, commands, repetitions, mechanisms, exceptions, and CI availability truthfully.
+- Local execution is not described as CI.
+- A reduced flake rate cannot satisfy closure.
+- A milestone cannot be strictly closed while a reproducible production deadlock, resource leak, or unresolved high/medium finding remains.
 
 ## 3. Current state
 
-### Closed foundations
+### Closed implementation foundations
 
-- **M1** delivered projection contracts, capability negotiation, canonical reducer semantics, snapshot builders, adapters, and independent-consumer fixtures.
-- **M2** delivered durable replay storage, cursor validation, retention/checkpoints, daemon publication, binding resolution, subscription receivers, and replay protocol tests.
+- **M1** delivered projection contracts, capability negotiation, reducer semantics, snapshots, and independent-consumer fixtures.
+- **M2** delivered durable replay storage, cursor validation, retention/checkpoints, daemon publication, subscription receivers, and replay protocol tests.
 - **M3** delivered disclosure/redaction policy, artifact handles, bounded reads, and negative persistence tests.
 - **M4** delivered the shared projection controller and local/remote frontend adoption.
-- **M5** delivered connection-local subscription ownership, exact stream identity, typed resume/ack/unsubscribe/status/artifact operations, raw projection filtering, bounded queues, and disconnect cleanup.
-- **M6 implementation** delivered critical writer receipts, activation-after-delivery, rollback, normal-flow transport isolation, raw scoping, and bounded legacy `/ws` output.
-- **M7 implementation** delivered joined Unix raw lifecycle, TUI route generations, deterministic lifecycle seams, blocked-response tests, foreign-operation coverage, reconnect fixtures, and evidence reconciliation.
-- **M8 implementation** delivered shared joined `/core` and `/tui` task ownership plus exact envelope-level replay continuity.
-- **M9 implementation** delivered connection probes, real WebSocket peer-close and churn coverage, two-client continuity, cancellation fixtures, exact `/core` interrupted replay retry, and fresh `/core` connection identity.
-- **M10 implementation** delivered connection-local transport controls, capacity-one `Full` observation, writer barriers, first-task-kind recording, `/core` raw-source control, TUI pending-response interruption, broader Unix regression fixtures, a full focused local matrix, and a probe scheduling-flake correction.
+- **M5** delivered connection-local ownership, exact stream identity, lifecycle operations, bounded queues, compatibility routing, and disconnect cleanup.
 
-### Conditional closure history
+### Conditional implementation history
 
-M6–M8 remain valid implementation foundations with historical conditional records. Their principal production findings were addressed by later milestones.
+- **M6** added atomic critical control delivery and transport hardening.
+- **M7** added lifecycle seams, joined Unix raw lifecycle, route generations, race fixtures, and evidence reconciliation.
+- **M8** added shared joined WebSocket task ownership and exact replay-to-live continuity.
+- **M9** added connection probes, real WebSocket close/churn coverage, two-client continuity, and interrupted replay retry.
+- **M10** added connection-local queue/writer controls, first-task recording, raw-source controls, TUI writer barriers, broader Unix fixtures, and repeated transport runs.
+- **M11** added per-connection probes, operation-correlated queue observations, symmetric `/core` and `/tui` saturation fixtures, six production-path task-owner cases, TUI raw-source-first, Unix F1–F5 regression coverage, and stronger guards.
 
-M9 remains conditionally closed; M10 addressed many of its verification gaps but did not establish every mechanism causally.
+M6–M11 remain valid implementation foundations with historical conditional closure records. Later milestones addressed many principal findings, but strict closure is not currently supported.
 
-M10 remains conditionally closed because post-closure review found evidence-attribution and completeness defects rather than a new architecture defect:
+### M011 post-closure findings
 
-- `/core` queue timeout may occur during writer receipt rather than blocked enqueue on a full queue;
-- `/tui` actual full-queue timeout is absent;
-- the six-case task-owner matrix does not execute all clean/panic cases through production joins;
-- `/tui` raw-source-first remains peer-close coverage;
-- Unix fixtures do not prove pre-response actual I/O failure, forced completion/cancellation orders, interrupted second replay, or repeated convergence;
-- rollback assertions are incomplete and may use aggregate probes shared by multiple connections;
-- guards do not reject these false-positive patterns;
-- closure, registry, final commits, and CI evidence required correction.
+The final reviewed M011 head `1a93167ee3bdfdc55e4bd2746180443cc19b7c96` records a confirmed `/tui` production lifecycle defect:
 
-Authoritative documents:
+- the receive task awaits projection handling inline and cannot poll `ws_rx` while a response is pending;
+- the writer may remain parked;
+- no task may fire `connection_cancel` after peer close;
+- the connection owner may never enter joined teardown;
+- daemon subscription ownership may leak;
+- the pending-snapshot fixture still fails approximately 2 of 10 runs after the writer-side mitigation.
 
-- M6 conditional record: `plans/closure/session-projections/006-status.md`
-- M7 conditional record: `plans/closure/session-projections/007-status.md`
-- M8 conditional record: `plans/closure/session-projections/008-status.md`
-- M9 conditional record: `plans/closure/session-projections/009-status.md`
-- M10 conditional record: `plans/closure/session-projections/010-status.md`
-- M11 handoff: `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
+Further review found:
 
-M11 does not reopen projection storage, reducer semantics, disclosure policy, replay authority, cursor/sequence meaning, or protocol DTOs.
+- observer-enabled staged delivery is a separate two-budget implementation rather than instrumentation of the canonical one-budget path;
+- Unix I/O tests infer failure from EOF/cleanup without asserting the server-side typed error;
+- rollback helpers omit forwarder joins and complete ownership/leakage assertions;
+- TUI rollback documentation incorrectly denies daemon-side subscription ownership;
+- synthetic subscription identity is used in one rollback fixture;
+- probe registration can silently fail through `try_lock()`;
+- elapsed time is used as sibling-join proof;
+- M011 plan, closure, roadmap, registry, stability evidence, and CI status were contradictory.
 
-## 4. Target verification boundary
+Authoritative records:
+
+- M6: `plans/closure/session-projections/006-status.md`
+- M7: `plans/closure/session-projections/007-status.md`
+- M8: `plans/closure/session-projections/008-status.md`
+- M9: `plans/closure/session-projections/009-status.md`
+- M10: `plans/closure/session-projections/010-status.md`
+- M11 corrected conditional record: `plans/closure/session-projections/011-status.md`
+- M12 handoff: `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md`
+
+M12 does not reopen projection storage, reducer semantics, disclosure policy, replay authority, cursor/sequence meaning, or public protocol DTOs.
+
+## 4. Target lifecycle architecture
 
 ```text
-Projection store / replay service
-|-- persisted stream identity
-|-- sequence and cursor authority
-|-- retained events/checkpoints
-|-- disclosure/artifact policy
-`-- daemon-issued subscription receiver
+TUI WebSocket read half
+    |
+    v
+owned socket-reader task
+    |-- observes Text / Close / EOF / error
+    |-- fires connection_cancel on terminal peer state
+    |
+    `-- bounded ordered request queue
+                    |
+                    v
+             owned request-handler task
+                    |
+                    |-- daemon lifecycle operation
+                    |-- canonical one-budget critical send
+                    `-- cancellation-aware pending work
 
-Transport connection
-|-- trusted client/connection identity
-|-- bounded owned-subscription map
-|-- staged Initializing subscription
-|-- bounded critical sender
-|-- live only after canonical delivery success
-|-- owned send/receive/raw task set
-|-- owned projection forwarders
-|-- cancellation before sibling teardown
-`-- idempotent rollback and joined cleanup
-
-M011 evidence chain
-|-- per-connection probe
-|-- exact mechanism precondition
-|-- operation-correlated observation
-|-- exact typed result
-|-- production task teardown
-|-- ownership/receiver/forwarder convergence
-|-- unrelated-client continuity
-|-- replay durability and identity
-|-- repeated stability runs
-`-- exact closure and CI/local evidence
+connection owner
+    |-- writer task
+    |-- socket-reader task
+    |-- request-handler task
+    |-- raw-event task
+    |-- owned projection forwarders
+    |-- per-connection probe/final record
+    `-- cancel -> abort as required -> await all -> rollback once
 ```
+
+The reader remains able to detect peer termination regardless of handler progress. Request processing remains sequential and bounded.
 
 ## 5. Dependency graph
 
@@ -133,37 +170,40 @@ M011 evidence chain
 M1 projection contracts and reducer                         [closed]
         |
         v
-M2 durable replay + daemon integration                      [closed]
+M2 durable replay and daemon integration                    [closed]
         |
         v
-M3 visibility, redaction, artifact handles                  [closed]
+M3 disclosure, redaction, artifact handles                  [closed]
         |
         v
-M4 frontend adoption/controller                             [closed]
+M4 frontend adoption and controller                         [closed]
         |
         v
-M5 remote transport isolation, resume, compatibility        [closed]
+M5 transport isolation, resume, compatibility               [closed]
         |
         v
-M6 atomic control delivery and transport hardening          [conditionally closed; principal findings addressed]
+M6 atomic control delivery                                  [conditionally closed]
         |
         v
-M7 lifecycle ownership, route epochs, race evidence         [conditionally closed; principal findings addressed]
+M7 lifecycle ownership and route epochs                     [conditionally closed]
         |
         v
-M8 joined WebSocket teardown and exact replay evidence       [conditionally closed; principal findings addressed]
+M8 joined teardown and replay continuity                    [conditionally closed]
         |
         v
-M9 production-shaped transport verification                 [conditionally closed; principal findings addressed]
+M9 production-shaped verification                           [conditionally closed]
         |
         v
-M10 transport instrumentation and broader mechanism tests   [conditionally closed; evidence defects remain]
+M10 mechanism-oriented transport verification               [conditionally closed]
         |
         v
-M11 evidence correctness and final verification closure     [ready]
+M11 evidence correctness and broader mechanism tests        [conditionally closed]
+        |
+        v
+M12 TUI disconnect lifecycle and final evidence closure     [ready]
 ```
 
-M11 has no unmet design dependency. It consumes M8 task ownership, M9 lifecycle/replay fixtures, and M10 writer gates, observers, raw-source controls, and first-task recording.
+M12 has no unmet design dependency. It consumes the accepted M8 task owner, M9 lifecycle/replay fixtures, M10 writer/queue controls, and M11 probes/observations/Unix regression coverage.
 
 ## 6. Milestones
 
@@ -171,174 +211,122 @@ M11 has no unmet design dependency. It consumes M8 task ownership, M9 lifecycle/
 
 Status: closed.
 
-- M1: `plans/implementation/session-projections/001-projection-contracts.md`
-- M2: durable replay library and corrective daemon integration plans; closure `plans/closure/session-projections/002-status.md`
-- M3: `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md`
-- M4: `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md`
-- M5: `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md`
+- M1 plan/closure: `plans/implementation/session-projections/001-projection-contracts.md`, `plans/closure/session-projections/001-status.md`
+- M2 closure: `plans/closure/session-projections/002-status.md`
+- M3 plan/closure: `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md`, `plans/closure/session-projections/003-status.md`
+- M4 plan/closure: `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md`, `plans/closure/session-projections/004-status.md`
+- M5 plan/closure: `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md`, `plans/closure/session-projections/005-status.md`
 
-### Milestone 6 — Atomic control delivery and transport hardening
+### Milestones 6–10
 
-Status: conditionally closed; principal findings addressed by later milestones.
+Status: conditionally closed historical foundations.
 
-- Plan: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
-- Closure: `plans/closure/session-projections/006-status.md`
-- Implementation: `8ca570fddc08eb9663b894f3190ae0ed0af2b98b`
+- M6: `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md`
+- M7: `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
+- M8: `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
+- M9: `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
+- M10: `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
 
-### Milestone 7 — Corrective transport lifecycle and evidence closure
+Their accepted production work remains in force. Their closure records remain historical and conditional.
 
-Status: conditionally closed; principal findings addressed by M8.
+### Milestone 11 — Evidence correctness and mechanism verification
 
-- Plan: `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md`
-- Closure: `plans/closure/session-projections/007-status.md`
-- Implementation: `9887c2d581a3d01280485523161695d08469c34f`
+Status: conditionally closed.
 
-### Milestone 8 — Final transport lifecycle and replay evidence polish
+- Plan: `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
+- Corrected closure: `plans/closure/session-projections/011-status.md`
+- Baseline: `8bd59b22662a289f3124c9b3113e545faa9446d7`
+- Final reviewed head: `1a93167ee3bdfdc55e4bd2746180443cc19b7c96`
 
-Status: conditionally closed; principal task-join and replay findings addressed.
+Accepted outcomes:
 
-- Plan: `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md`
-- Closure: `plans/closure/session-projections/008-status.md`
-- Implementation: `6975050af530eb5bd7a640c1f7ac9a31859dfda3`
+- per-connection probe foundation;
+- queue-full-before-request fixtures for both WebSocket adapters;
+- operation-correlated observation model;
+- production task-owner test wrapper and six clean/panic cases;
+- raw-source-first coverage for both adapters;
+- Unix F1–F5 regression fixtures;
+- writer-gate and writer cancellation improvements;
+- expanded lifecycle guards.
 
-### Milestone 9 — Production-shaped transport verification
+Strict closure is blocked by M12 findings.
 
-Status: conditionally closed; principal findings addressed by M10/M11.
+### Milestone 12 — TUI disconnect lifecycle and final evidence closure
 
-- Plan: `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md`
-- Closure: `plans/closure/session-projections/009-status.md`
-- Implementation/evidence: `3406c742a23b6470def32fb7a04cdc7b72a40dea`, `426dfffec05c9d694f54a816213a6cca514e91b4`
+Status: ready for handoff.
 
-### Milestone 10 — Mechanism-faithful transport verification
+Plan:
 
-Status: conditionally closed; strict evidence superseded by M11.
+- `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md`
 
-- Plan: `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md`
-- Closure: `plans/closure/session-projections/010-status.md`
-- Final reviewed M10 head: `8bd59b22662a289f3124c9b3113e545faa9446d7`
+Baseline:
 
-Accepted M10 outcomes:
+- `1a93167ee3bdfdc55e4bd2746180443cc19b7c96`
 
-- connection-local capacity and writer controls;
-- pre-`recv()` full-channel observation;
-- lifecycle observers and first-task-kind recording;
-- `/core` raw-source cancellation;
-- TUI pending snapshot/replay interruption;
-- additional Unix lifecycle/replay regression tests;
-- full focused local matrix;
-- repeated-run scheduling-flake correction.
+Primary deliverables:
 
-Residual evidence findings are owned exclusively by M11.
+- close-responsive TUI socket reader independent of pending handler work;
+- bounded sequential request-handler pipeline;
+- explicit joined ownership for reader, handler, writer, raw task, and projection forwarders;
+- one canonical one-budget staged critical-send implementation with optional observation;
+- typed Unix production I/O observations;
+- real staged subscription identities in rollback fixtures;
+- complete ownership, receiver, task, forwarder, queue, probe, leakage, and unrelated-client assertions;
+- infallible identity-correlated probe registration;
+- direct completion/drop-based task-join proof;
+- semantic guards and exact final evidence reconciliation.
 
-### Milestone 11 — Evidence correctness and mechanism verification closure
+M12 contains explicit closure criteria C1–C18. Any failed criterion keeps the subsystem conditionally closed.
 
-Status: ready.
+## 7. Verification and closure policy
 
-Implementation plan:
+M12 closure requires:
 
-- `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md`
+- graceful Close and abrupt-drop pending-snapshot fixtures at 50/50 clean runs each;
+- pending-replay close/retry at 50/50 clean runs;
+- full `projection_transport_real` binary at 25 consecutive clean runs;
+- Unix typed-I/O fixtures at 25 consecutive clean runs;
+- repeated Unix convergence with no resource growth;
+- complete focused and regression matrix;
+- exact source audit at the final reviewed head;
+- truthful distinction between local execution and attached CI.
 
-Class: verification correction / mechanism attribution / per-connection evidence / Unix I/O races / closure integrity
+Create final closure record only after implementation and verification:
 
-Repository baseline: `8bd59b22662a289f3124c9b3113e545faa9446d7`
+- `plans/closure/session-projections/012-status.md`
 
-Objective: prove each failure claim through a causal chain of exact precondition, exact production operation, exact typed result, and complete per-connection convergence.
+The roadmap returns to strict closed status only when:
 
-Required deliverables:
+1. every M12 C1–C18 criterion passes;
+2. no unresolved high or medium finding remains;
+3. the closure record contains exact implementation, corrective, closure, and reviewed-head commits;
+4. plan, closure, roadmap, and registry statuses agree;
+5. no known flaky closure-bearing fixture remains.
 
-- one probe per upgraded connection;
-- operation-correlated critical-send observations;
-- deterministic `/core` and `/tui` full-queue enqueue timeout fixtures;
-- six production-path task-owner clean/panic first-exit tests;
-- real raw-source-first for both adapters;
-- actual Unix pre-response I/O failure, forced completion/cancellation orders, interrupted replay, and repeated convergence;
-- complete rollback/non-interference harness used by every real failure fixture;
-- guards rejecting M10 false-positive patterns;
-- full verification matrix and 25-run stability loops;
-- exact M10/M11 planning and closure evidence.
+## 8. Deferred product work
 
-Exit conditions:
-
-- both WebSocket adapters prove fullness before target send and an enqueue-stage `Timeout` for that operation;
-- all six task-owner cases execute production cancellation and joins;
-- both adapters prove raw-source-first while peer remains healthy;
-- Unix tests use actual peer-induced I/O errors and interrupt the resumed replay response;
-- forced Unix race orders converge identically over repeated cycles;
-- all closure-relevant failures use per-connection complete rollback assertions;
-- unrelated clients remain live;
-- guards reject prior ambiguous/injected patterns;
-- complete matrix and stability loops pass;
-- exact commits and CI/local evidence are reconciled;
-- no unresolved high or medium M11 finding remains;
-- M11 closure returns the roadmap and registry to strict closed status.
-
-## 7. Deferred product work
-
-These items remain outside M11:
+The following remains outside M12:
 
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
 - plugin-specific `ProjectionEvent::PluginUi` semantics;
-- final team principals/roles/presence/chat;
+- team roles, presence, and chat;
 - cross-daemon replay replication;
-- removal of version-4 compatibility before its compatibility window expires.
+- version-4 compatibility removal before the compatibility window expires.
 
-## 8. Cross-cutting requirements
+## 9. Milestone status table
 
-### Protocol and compatibility
-
-Do not increment the projection protocol or remove version-4 compatibility. M11 changes test instrumentation, verification, and closure evidence—not wire meaning.
-
-### Security and authorization
-
-Connection authentication is not subscription ownership. Foreign lifecycle and artifact operations remain fail-closed. Probes retain no payload bodies, artifact bytes, hidden reasoning, or secrets.
-
-### Concurrency, cancellation, and recovery
-
-Persistence and receiver installation precede response staging; successful response delivery precedes live release. Connection cancellation precedes sibling teardown. Every retained task is awaited. No state lock is held across socket I/O or task join. Test controls remain connection-local and bounded.
-
-### Performance
-
-Production queue capacities and timeout behavior remain unchanged. Test controls must add no production queue growth, per-event task creation, or runtime-global mutable state.
-
-### Documentation
-
-Closure evidence must include exact implementation, follow-up, closure, and reviewed-head commits; exact tests/counts/commands; repeated-run results; and truthful CI availability.
-
-## 9. Verification strategy
-
-Use:
-
-- operation-correlated queue observations;
-- full-before-request ordering;
-- per-connection probe ownership;
-- production-path first-exit teardown tests;
-- real raw-source termination for both adapters;
-- actual Unix peer-induced I/O errors;
-- forced completion-first/cancellation-first barriers;
-- interrupted second replay and third-connection retry;
-- complete rollback and unrelated-client assertions;
-- 100-cycle WebSocket churn, 50-cycle Unix convergence, and 25 repeated suite runs;
-- existing replay, disclosure, artifact, TUI, raw compatibility, and boundary guards.
-
-Injected lifecycle seams remain valid for boundary reachability and serialization-equivalent tests. They cannot satisfy real I/O or queue-mechanism closure requirements.
-
-## 10. Completion definition
-
-This roadmap returns to strict closed status when the same fixture proves the exact mechanism precondition, invokes the exact production operation, observes the exact typed result, and verifies complete per-connection convergence for all closure-critical paths; all three transports satisfy replay and failure invariants; guards reject prior false-positive patterns; and closure evidence matches executable and independently available evidence.
-
-## 11. Milestone status
-
-| Milestone | Status | Implementation plan | Closure record | Blockers |
+| Milestone | Status | Implementation plan | Closure record | Blocker |
 |---|---|---|---|---|
 | 1 | closed | `plans/implementation/session-projections/001-projection-contracts.md` | `plans/closure/session-projections/001-status.md` | — |
-| 2 | closed (strict) | library + corrective plans | `plans/closure/session-projections/002-status.md` | — |
+| 2 | closed | library and corrective plans | `plans/closure/session-projections/002-status.md` | — |
 | 3 | closed | `plans/implementation/session-projections/003-visibility-redaction-artifact-handles.md` | `plans/closure/session-projections/003-status.md` | — |
 | 4 | closed | `plans/implementation/session-projections/004-frontend-adoption-compatibility-closure.md` | `plans/closure/session-projections/004-status.md` | — |
 | 5 | closed | `plans/implementation/session-projections/005-remote-transport-isolation-resume-closure.md` | `plans/closure/session-projections/005-status.md` | — |
-| 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | principal findings addressed by later milestones |
-| 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | principal findings addressed by M8 |
-| 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | principal findings addressed by M9–M11 |
-| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | principal findings addressed by M10/M11 |
-| 10 | conditionally closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | M11 evidence correctness and final closure |
-| 11 | closed | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `plans/closure/session-projections/011-status.md` | M8–M10 evidence defects resolved |
+| 6 | conditionally closed | `plans/implementation/session-projections/006-atomic-control-delivery-transport-verification-hardening.md` | `plans/closure/session-projections/006-status.md` | historical; later milestones own final depth |
+| 7 | conditionally closed | `plans/implementation/session-projections/007-corrective-transport-lifecycle-and-evidence-closure.md` | `plans/closure/session-projections/007-status.md` | historical; later milestones own final depth |
+| 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | historical; later milestones own final depth |
+| 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | historical; later milestones own final depth |
+| 10 | conditionally closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | M11/M12 final evidence depth |
+| 11 | conditionally closed | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `plans/closure/session-projections/011-status.md` | TUI deadlock and M12 evidence defects |
+| 12 | ready | `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md` | pending | no unmet design dependency |
