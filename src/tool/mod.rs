@@ -11,9 +11,11 @@ pub mod backend_config;
 pub mod bash;
 pub mod batch;
 pub mod batch_fetch;
+pub mod broker;
 pub mod catalog;
 pub mod codesearch;
 pub mod commit;
+pub mod contract;
 pub mod destructive;
 pub mod deterministic;
 pub mod diff;
@@ -72,6 +74,18 @@ use crate::error::ToolError;
 pub use backend::{
     BackendDomain, ExternalToolBackendConfig, StructuredToolResult, ToolBackendConfig,
     ToolBackendKind, ToolExecutionContext, ToolImplementationBackend, ToolProvenance, ToolTrust,
+};
+
+// Re-export broker types for convenience.
+pub use broker::{
+    BrokerError, BrokerInvocationContext, BrokerResult, ToolBroker, ToolBrokerConfig,
+};
+
+// Re-export contract types for convenience.
+pub use contract::{
+    ContractValidationError, IdempotencyClass, ToolArtifactHandle, ToolCaller, ToolCallerPolicy,
+    ToolContract, ToolContractCatalog, ToolEffectClass, ToolProjectionPolicy, ToolRetryPolicy,
+    ToolTerminalStatus, ToolValue,
 };
 
 static DEFAULT_REGISTRY: Lazy<ToolRegistry> = Lazy::new(ToolRegistry::with_defaults);
@@ -159,6 +173,16 @@ pub trait Tool: Send + Sync {
     /// the catalog the model sees.
     fn expose_in_definitions(&self) -> bool {
         true
+    }
+
+    /// Return the tool's contract metadata.
+    ///
+    /// The default implementation builds a conservative legacy
+    /// contract: direct-only, non-idempotent, no cache, no retry.
+    /// Tools that want to be program-callable, cacheable, or
+    /// retryable should override this.
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> contract::ToolContract {
+        contract::ToolContract::legacy(tool_name, input_schema)
     }
 }
 
@@ -615,6 +639,11 @@ impl ToolRegistry {
 
     pub fn list(&self) -> Vec<&dyn Tool> {
         self.tools.values().map(|t| t.as_ref()).collect()
+    }
+
+    /// Iterator over all registered tool names.
+    pub fn tool_names(&self) -> impl Iterator<Item = &str> {
+        self.tools.keys().map(|s| s.as_str())
     }
 
     pub fn filter_out(&mut self, denied_tools: &[String]) {

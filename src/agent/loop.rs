@@ -1442,6 +1442,9 @@ pub struct AgentLoop {
     context_policy_runtime: ContextPolicyRuntimeState,
     /// Immutable runtime-asset identity captured for this agent run.
     runtime_asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    /// Canonical tool broker for executing production tool calls.
+    /// Built from `tool_registry` at construction time.
+    tool_broker: Arc<crate::tool::ToolBroker>,
 }
 
 impl AgentLoop {
@@ -1610,6 +1613,10 @@ impl AgentLoop {
         let context_packer_config = config.context_packer.clone().unwrap_or_default();
         let context_policy_config = config.context_policy.clone().unwrap_or_default();
 
+        // Build the canonical tool broker from the configured registry.
+        // The broker does not own the registry; it holds a pre-built catalog.
+        let tool_broker = Arc::new(crate::tool::ToolBroker::new(&tool_registry));
+
         Self {
             agents: map,
             state: AgentLoopState {
@@ -1686,6 +1693,7 @@ impl AgentLoop {
             base_request_tools: Vec::new(),
             context_policy_runtime: ContextPolicyRuntimeState::default(),
             runtime_asset_pin: None,
+            tool_broker,
         }
     }
 

@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: active — Milestone 002 ready
+Status: active — Milestone 003 ready
 
 Long-term references:
 
@@ -501,8 +501,8 @@ This subsystem is closed only when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 001 | closed | `plans/implementation/tool-programs/001-scheduler-owned-python-execution.md` | `plans/closure/tool-programs/001-status.md` | — |
-| 002 | ready | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | — | — |
-| 003 | blocked | `plans/implementation/tool-programs/003-program-domain-storage-and-call-ledger.md` | — | M002 closure |
+| 002 | closed | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | `plans/closure/tool-programs/002-status.md` | — |
+| 003 | ready | `plans/implementation/tool-programs/003-program-domain-storage-and-call-ledger.md` | — | — |
 | 004 | blocked | `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md` | — | M003 closure |
 | 005 | blocked | `plans/implementation/tool-programs/005-durable-interpreter-watchdog-and-recovery.md` | — | M004 closure |
 | 006 | blocked | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | — | M005 closure |

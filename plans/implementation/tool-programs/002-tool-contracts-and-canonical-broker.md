@@ -1,6 +1,6 @@
 # Tool Programs Milestone 002 — Tool Contracts and Canonical Broker
 
-Status: blocked pending Milestone 001 closure
+Status: closed
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 

@@ -1,6 +1,6 @@
 # Tool Programs Milestone 003 — Program Domain, Storage, and Call Ledger
 
-Status: blocked pending Milestone 002 closure
+Status: ready for handoff
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 
