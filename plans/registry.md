@@ -31,13 +31,13 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 001 ready | — |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 002 ready | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 001 — scheduler-owned Python execution | ready | `plans/implementation/tool-programs/001-scheduler-owned-python-execution.md` | Current scheduler, Python subsystem, workspace services, and RunStore are present; ADR-0001 accepted |
+| Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | ready | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | M001 closed |
 
 ## Active closure work
 
@@ -47,7 +47,6 @@ None — no registered closure review is active.
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | blocked | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | M001 accepted closure |
 | Programmatic tool execution and Tool Programs | 003 — program domain, storage, and call ledger | blocked | `plans/implementation/tool-programs/003-program-domain-storage-and-call-ledger.md` | M002 accepted closure |
 | Programmatic tool execution and Tool Programs | 004 — restricted-Python frontend and static bounds | blocked | `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md` | M003 accepted closure |
 | Programmatic tool execution and Tool Programs | 005 — durable interpreter, watchdog, and recovery | blocked | `plans/implementation/tool-programs/005-durable-interpreter-watchdog-and-recovery.md` | M004 accepted closure |
@@ -71,6 +70,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 001 — scheduler-owned Python execution | `plans/closure/tool-programs/001-status.md` | HEAD implementation | M002 unblocked |
 | Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | `plans/closure/session-projections/012-status.md` | `0672044` implementation; `f046de5` corrective test evidence; final reviewed head `f046de5` | Closed; no registered future plan was newly unblocked, and deferred product work remains unregistered |
 | Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | `560b8b7` main implementation; final reviewed head `1a93167` | Historical conditional closure; M012 accepted the remaining lifecycle, evidence, stability, and reconciliation work |
 | Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final depth |

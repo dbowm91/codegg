@@ -62,6 +62,9 @@ async fn make_bash_tool(config: Option<CommandIntentConfig>, store: Arc<MemRunSt
         Arc::new(codegg::scheduler::executors::ManagedArgvExecutor::new(
             "managed_argv",
         )),
+        Arc::new(codegg::scheduler::executors::PythonJobExecutor::new(Some(
+            store.clone(),
+        ))),
     ];
     scheduler
         .register_executors_blocking(executors)

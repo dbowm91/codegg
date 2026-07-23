@@ -40,7 +40,7 @@
 [[site]]
 path = "src/tool/bash.rs"
 owner = "scheduler"
-reason = "test/build/lint/format/managed/shell routes submit jobs through JobSubmissionService"
+reason = "test/build/lint/format/managed/shell/python routes submit jobs through JobSubmissionService"
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]
@@ -53,6 +53,12 @@ entrypoint = "JobSubmissionService::submit"
 path = "src/tool/task.rs"
 owner = "scheduler"
 reason = "TaskTool submits JobKind::Subagent via JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/python_script/tool.rs"
+owner = "scheduler"
+reason = "PythonScriptTool submits JobKind::Python via JobSubmissionService when scheduler is enabled"
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]
@@ -182,13 +188,13 @@ reason = "GitExecutionService and read fallback for git; reads are documented as
 
 [[site]]
 path = "src/python_script/executor.rs"
-owner = "deferred_domain_executor"
-reason = "PythonScript executor runs Python scripts; first-class but pending scheduler integration"
+owner = "definition_or_adapter"
+reason = "PythonScript executor is invoked only by PythonJobExecutor; definition only"
 
 [[site]]
 path = "src/python_script/"
-owner = "deferred_domain_executor"
-reason = "Python scripting subsystem; pending scheduler integration"
+owner = "definition_or_adapter"
+reason = "Python scripting subsystem definition; scheduler-owned execution via PythonJobExecutor"
 
 [[site]]
 path = "src/formatter.rs"

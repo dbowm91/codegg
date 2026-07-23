@@ -14,6 +14,7 @@ use codegg_core::workspace::WorkspaceId;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use crate::python_script::source_store::PythonSourceStore;
 use crate::scheduler::events::SchedulerEvent;
 use crate::scheduler::executor::{
     ExecutorAvailability, ExecutorCompletion, ExecutorHealth, ExecutorKind, ExecutorMetrics,
@@ -475,6 +476,269 @@ impl JobExecutor for SubagentJobExecutor {
     }
 }
 
+/// Canonical executor for `JobKind::Python`. Validates source integrity,
+/// begins a RunStore record, executes via the Python subsystem with
+/// cancellation support, and persists artifacts.
+pub struct PythonJobExecutor {
+    run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+}
+
+impl PythonJobExecutor {
+    pub fn new(run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>) -> Self {
+        Self { run_store }
+    }
+}
+
+#[async_trait]
+impl JobExecutor for PythonJobExecutor {
+    fn kind(&self) -> ExecutorKind {
+        ExecutorKind::Python
+    }
+
+    fn supports(&self, kind: JobKind) -> bool {
+        matches!(kind, JobKind::Python)
+    }
+
+    fn validate(&self, job: &JobRecord) -> Result<(), ExecutorValidationError> {
+        match &job.payload {
+            JobPayload::Python {
+                mode,
+                source,
+                source_hash,
+                ..
+            } => {
+                // Validate mode
+                let valid_mode = matches!(mode.as_str(), "analyze" | "transform" | "verify");
+                if !valid_mode {
+                    return Err(ExecutorValidationError::InvalidPayload(format!(
+                        "invalid python mode '{mode}': expected analyze, transform, or verify"
+                    )));
+                }
+                // When source is provided, hash must match
+                if let Some(src) = source {
+                    if let Some(hash) = source_hash {
+                        let actual = crate::python_script::source_store::compute_digest(src);
+                        if actual != *hash {
+                            return Err(ExecutorValidationError::InvalidPayload(
+                                "source hash mismatch".into(),
+                            ));
+                        }
+                    } else {
+                        return Err(ExecutorValidationError::MissingField(
+                            "source_hash required when source is provided".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(ExecutorValidationError::UnsupportedKind {
+                executor: self.kind().as_str().into(),
+                kind: job.kind.as_str().to_string(),
+            }),
+        }
+    }
+
+    fn health(&self) -> ExecutorHealth {
+        ExecutorHealth::Healthy
+    }
+
+    async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
+        let started = std::time::Instant::now();
+
+        let (source, mode_str, cwd, timeout_secs, workspace_root) = match &ctx.job.payload {
+            JobPayload::Python {
+                source,
+                mode,
+                cwd,
+                timeout_secs,
+                ..
+            } => (
+                source.clone(),
+                mode.clone(),
+                cwd.clone(),
+                *timeout_secs,
+                ctx.job
+                    .labels
+                    .get("workspace_root")
+                    .cloned()
+                    .map(PathBuf::from),
+            ),
+            _ => {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "unsupported payload kind".into(),
+                );
+            }
+        };
+
+        // Resolve source: prefer inline, fall back to script_path from payload
+        let resolved_source = match source {
+            Some(s) => s,
+            None => {
+                // Legacy path: try to read from script_path if present
+                match &ctx.job.payload {
+                    JobPayload::Python { script_path, .. } => {
+                        match std::fs::read_to_string(script_path) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                return failure_completion(
+                                    started,
+                                    ExecutorStatus::Failed,
+                                    format!("failed to read script_path '{script_path}': {e}"),
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            "no source provided".into(),
+                        );
+                    }
+                }
+            }
+        };
+
+        // Verify source hash if present
+        if let Some(ref expected_hash) = ctx.job.payload.source_hash() {
+            let actual = crate::python_script::source_store::compute_digest(&resolved_source);
+            if actual != *expected_hash {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "source integrity check failed: digest mismatch".into(),
+                );
+            }
+        }
+
+        let mode = match mode_str.as_str() {
+            "analyze" => crate::python_script::types::PythonExecutionMode::Analyze,
+            "transform" => crate::python_script::types::PythonExecutionMode::Transform,
+            "verify" => crate::python_script::types::PythonExecutionMode::Verify,
+            _ => {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("invalid mode '{mode_str}'"),
+                );
+            }
+        };
+
+        let exec_cwd = cwd
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+        let request = crate::python_script::types::PythonScriptRequest {
+            code: resolved_source,
+            mode,
+            cwd: exec_cwd,
+            workspace_root,
+            timeout_secs,
+            session_id: ctx.job.session_id.clone(),
+            intent: ctx.job.labels.get("intent").cloned(),
+        };
+
+        // Emit progress: starting
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), "python: beginning execution")
+            .await;
+
+        // Check cancellation before launching
+        if ctx.cancellation.is_cancelled() {
+            return failure_completion(
+                started,
+                ExecutorStatus::Cancelled,
+                "cancelled before launch".to_string(),
+            );
+        }
+
+        // Execute with the cancellation token wired through timeout
+        let cancellation = ctx.cancellation.clone();
+        let result = tokio::select! {
+            _ = cancellation.cancelled() => {
+                crate::python_script::types::PythonRunResult {
+                    status: crate::python_script::types::PythonRunStatus::Failed(-4),
+                    stdout: String::new(),
+                    stderr: "execution cancelled".to_string(),
+                    duration: started.elapsed(),
+                    mode,
+                    script_length: request.code.len(),
+                    risk: crate::python_script::types::PythonRiskAssessment::safe(),
+                    capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
+                    changed_files: vec![],
+                    interpreter: String::new(),
+                    diff: None,
+                    script_body_hash: {
+                        use sha2::Digest;
+                        Some(format!("{:x}", sha2::Sha256::digest(request.code.as_bytes())))
+                    },
+                    stdout_label: None,
+                    stderr_label: None,
+                    diff_label: None,
+                    policy_decision: None,
+                    denied_capabilities: vec![],
+                    os_filesystem_isolation: false,
+                    os_network_isolation: false,
+                    effective_read_roots: vec![],
+                    effective_write_roots: vec![],
+                    allowed_subprocesses: vec![],
+                    enforcement_warnings: vec![],
+                }
+            }
+            result = crate::python_script::executor::execute_python_script(&request) => result,
+        };
+
+        // Emit progress: completed
+        let _ = ctx
+            .progress
+            .progress(ctx.job_id(), &format!("python: {}", result.status.label()))
+            .await;
+
+        // Map result to executor completion
+        let status = match &result.status {
+            crate::python_script::types::PythonRunStatus::Success => ExecutorStatus::Completed,
+            crate::python_script::types::PythonRunStatus::Failed(code) => {
+                if *code == -4 {
+                    ExecutorStatus::Cancelled
+                } else {
+                    ExecutorStatus::Failed
+                }
+            }
+            crate::python_script::types::PythonRunStatus::TimedOut => ExecutorStatus::TimedOut,
+            crate::python_script::types::PythonRunStatus::SpawnError => ExecutorStatus::Failed,
+        };
+
+        // Persist to RunStore if available
+        let run_id = if let Some(ref store) = self.run_store {
+            let delegated =
+                crate::python_script::tool::persist_python_run(store, &request, &result).await;
+            delegated
+        } else {
+            None
+        };
+
+        // Build summary
+        let mut summary = result.summary();
+        if let Some(rid) = &run_id {
+            summary.push_str(&format!("\nrun_id: {rid}"));
+        }
+
+        ExecutorCompletion {
+            status,
+            summary,
+            run_id,
+            metrics: ExecutorMetrics {
+                cpu_time_ms: None,
+                peak_memory_mb: None,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            },
+        }
+    }
+}
+
 /// Convenience constructor: register the standard executor set
 /// against a registry.
 pub fn register_default_executors(
@@ -483,11 +747,12 @@ pub fn register_default_executors(
     sink: Option<Arc<dyn crate::test_runner::types::TestEventSink>>,
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
 ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
-    registry.register(Arc::new(TestJobExecutor::new(run_store, sink)))?;
+    registry.register(Arc::new(TestJobExecutor::new(run_store.clone(), sink)))?;
     registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
     if let Some(pool) = subagent_pool {
         registry.register(Arc::new(SubagentJobExecutor::new(pool)))?;
     }
+    registry.register(Arc::new(PythonJobExecutor::new(run_store)))?;
     Ok(())
 }
 

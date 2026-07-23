@@ -255,6 +255,49 @@ Python scripts are routed from the command intent pipeline:
 
 Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `with_options()`.
 
+## Scheduler-Owned Execution (Milestone 001)
+
+All production model-facing Python execution is now scheduler-owned. The scheduler is the sole admission authority; no production path executes Python directly outside scheduler authority.
+
+### Source Input Contract
+
+Before job creation, the script source is validated and its SHA-256 digest is computed. The job payload carries:
+- `source: Option<String>` — inline source body (for scripts under 200KB)
+- `source_hash: Option<String>` — SHA-256 hex digest, required when source is present
+- `mode`, `cwd`, `timeout_secs` — execution parameters
+
+Content-addressed source persistence is available via `PythonSourceStore` (`src/python_script/source_store.rs`) for restart recovery. Source is stored at `<workspace>/.codegg/python_sources/<sha256>.py` with atomic writes.
+
+### PythonJobExecutor
+
+`PythonJobExecutor` implements `JobExecutor` for `JobKind::Python`:
+- Validates source reference and digest before launch
+- Begins a `RunKind::Python` RunStore record before execution
+- Invokes `execute_python_script` with cancellation support via `tokio::select!`
+- Maps process cancellation, timeout, sandbox denial, and spawn failure to distinct executor status classes
+- Records heartbeat/progress at execution start and completion
+- Persists stdout, stderr, diff, and enforcement evidence as RunStore artifacts
+- Registered in `register_default_executors()` alongside Test, ManagedArgv, and Subagent executors
+
+### Tool Migration
+
+Both `PythonScriptTool` and `BashTool`'s active Python routing submit through `JobSubmissionService` when the scheduler is enabled:
+- Deterministic submission keys derived from source hash ensure idempotency
+- Tools wait via `scheduler.wait_for_completion()` for the execution to finish
+- When the scheduler is disabled, tools fall back to direct execution (fail-closed behavior — returns typed error, not direct fallback)
+- Transform mode uses `IdempotencyClass::NonIdempotent`; Analyze/Verify use `SafeRepeat`
+
+### Cancellation
+
+Cancellation propagates through `CancellationToken` wired into the executor context:
+- Pre-launch cancellation: job is cancelled before any process is spawned
+- During execution: `tokio::select!` races the cancellation token against `execute_python_script`
+- Post-cancellation: RunStore record is finalized with cancelled status, permits are released
+
+### Recovery
+
+Daemon-generation recovery marks interrupted Python attempts as `Interrupted`. Read-only modes (Analyze/Verify) may be requeued per `RecoveryPolicy`; Transform defaults to non-retryable.
+
 ## Canonical Delegation Entry Point
 
 ### DelegatedPythonRun

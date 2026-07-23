@@ -74,6 +74,7 @@ pub enum ExecutorKind {
     ManagedArgv,
     Subagent,
     BashDispatch,
+    Python,
     Synthetic,
 }
 
@@ -84,6 +85,7 @@ impl ExecutorKind {
             ExecutorKind::ManagedArgv => "managed_argv",
             ExecutorKind::Subagent => "subagent",
             ExecutorKind::BashDispatch => "bash_dispatch",
+            ExecutorKind::Python => "python",
             ExecutorKind::Synthetic => "synthetic",
         }
     }
@@ -267,6 +269,7 @@ pub fn executor_kind_for_job(job: &JobRecord) -> Option<ExecutorKind> {
         }
         (JobKind::ManagedProcess, _) | (JobKind::Shell, _) => Some(ExecutorKind::ManagedArgv),
         (JobKind::Subagent, _) => Some(ExecutorKind::Subagent),
+        (JobKind::Python, _) => Some(ExecutorKind::Python),
         // The bash-dispatch path uses TestRunner but with a
         // BashDispatch payload, so the executor is distinct.
         (_, PayloadVariant::BashDispatch) => Some(ExecutorKind::BashDispatch),
@@ -283,6 +286,7 @@ pub(crate) enum PayloadVariant {
     BashDispatch,
     ManagedArgv,
     Subagent,
+    Python,
     Other,
 }
 
@@ -292,6 +296,7 @@ pub(crate) fn executor_variant(payload: &codegg_core::jobs::JobPayload) -> Paylo
         JobPayload::Test { .. } => PayloadVariant::Test,
         JobPayload::ManagedArgv { .. } => PayloadVariant::ManagedArgv,
         JobPayload::Subagent { .. } => PayloadVariant::Subagent,
+        JobPayload::Python { .. } => PayloadVariant::Python,
         _ => PayloadVariant::Other,
     }
 }

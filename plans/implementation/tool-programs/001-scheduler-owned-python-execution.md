@@ -1,6 +1,6 @@
 # Tool Programs Milestone 001 — Scheduler-Owned Python Execution
 
-Status: ready for handoff
+Status: closed
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 

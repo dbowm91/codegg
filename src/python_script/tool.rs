@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::error::ToolError;
+use crate::scheduler::submission::{JobSubmissionService, SubmissionKey};
 use crate::tool::{Tool, ToolCategory};
 
 use super::executor::execute_python_script;
@@ -195,16 +196,36 @@ pub async fn persist_python_run(
 /// analysis, bulk transforms, and custom verification.
 pub struct PythonScriptTool {
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    submission_service: Option<Arc<JobSubmissionService>>,
 }
 
 impl PythonScriptTool {
     pub fn new() -> Self {
-        Self { run_store: None }
+        Self {
+            run_store: None,
+            submission_service: None,
+        }
     }
 
     pub fn with_run_store(store: Arc<dyn codegg_core::run_store::RunStore>) -> Self {
         Self {
             run_store: Some(store),
+            submission_service: None,
+        }
+    }
+
+    pub fn with_submission_service(mut self, service: Arc<JobSubmissionService>) -> Self {
+        self.submission_service = Some(service);
+        self
+    }
+
+    pub fn with_scheduler(
+        run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+        submission_service: Option<Arc<JobSubmissionService>>,
+    ) -> Self {
+        Self {
+            run_store,
+            submission_service,
         }
     }
 }
@@ -212,6 +233,149 @@ impl PythonScriptTool {
 impl Default for PythonScriptTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl PythonScriptTool {
+    /// Execute Python through the scheduler. Creates a durable job, waits
+    /// for completion, and returns the projected result.
+    async fn execute_via_scheduler(
+        &self,
+        request: &PythonScriptRequest,
+        submission: &Arc<JobSubmissionService>,
+    ) -> Result<String, ToolError> {
+        use codegg_core::jobs::{
+            DaemonGeneration, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource,
+            NewJob, RetryPolicy,
+        };
+
+        let workspace_root = request
+            .workspace_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| request.cwd.clone());
+
+        let workspace_id = submission
+            .workspace_id_for_root(&workspace_root)
+            .await
+            .map_err(|e| ToolError::Execution(format!("workspace registration failed: {e}")))?;
+
+        let source_hash = crate::python_script::source_store::compute_digest(&request.code);
+
+        let timeout = std::time::Duration::from_secs(request.timeout_secs.unwrap_or(60));
+
+        // Idempotency: read-only modes are safe to repeat; transform is not
+        let idempotency = match request.mode {
+            PythonExecutionMode::Analyze | PythonExecutionMode::Verify => {
+                IdempotencyClass::SafeRepeat
+            }
+            PythonExecutionMode::Transform => IdempotencyClass::NonIdempotent,
+        };
+
+        let payload = JobPayload::Python {
+            script_path: String::new(),
+            args: vec![],
+            mode: request.mode.to_string(),
+            source: Some(request.code.clone()),
+            source_hash: Some(source_hash.clone()),
+            cwd: Some(request.cwd.to_string_lossy().to_string()),
+            timeout_secs: request.timeout_secs,
+        };
+
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(
+            "workspace_root".to_string(),
+            workspace_root.to_string_lossy().to_string(),
+        );
+        if let Some(ref intent) = request.intent {
+            labels.insert("intent".to_string(), intent.clone());
+        }
+
+        let spec = NewJob {
+            workspace_id: workspace_id.clone(),
+            session_id: request.session_id.clone(),
+            turn_id: None,
+            kind: JobKind::Python,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload,
+            resource_request: codegg_core::jobs::ResourceRequest::for_kind(JobKind::Python),
+            timeout: Some(timeout),
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: vec![],
+        };
+
+        // Derive a submission key from source hash for idempotency
+        let key = SubmissionKey::new(format!("python:{source_hash}"))
+            .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
+
+        let submitted = submission
+            .submit(Some(key), spec)
+            .await
+            .map_err(|e| ToolError::Execution(format!("scheduler submission failed: {e}")))?;
+
+        // Wait for completion
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(
+                &submitted.job_id,
+                timeout + std::time::Duration::from_secs(30),
+            )
+            .await
+            .map_err(|e| ToolError::Execution(format!("scheduler wait failed: {e}")))?;
+
+        // Build a PythonRunResult from the completion summary for projection
+        let result = PythonRunResult {
+            status: match completion.status {
+                crate::scheduler::executor::ExecutorStatus::Completed => {
+                    crate::python_script::types::PythonRunStatus::Success
+                }
+                crate::scheduler::executor::ExecutorStatus::Cancelled => {
+                    crate::python_script::types::PythonRunStatus::Failed(-4)
+                }
+                crate::scheduler::executor::ExecutorStatus::TimedOut => {
+                    crate::python_script::types::PythonRunStatus::TimedOut
+                }
+                crate::scheduler::executor::ExecutorStatus::Failed
+                | crate::scheduler::executor::ExecutorStatus::Interrupted => {
+                    crate::python_script::types::PythonRunStatus::Failed(-1)
+                }
+            },
+            stdout: completion.summary.clone(),
+            stderr: String::new(),
+            duration: std::time::Duration::from_millis(completion.metrics.elapsed_ms),
+            mode: request.mode,
+            script_length: request.code.len(),
+            risk: crate::python_script::types::PythonRiskAssessment::safe(),
+            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
+            changed_files: vec![],
+            interpreter: "python3".to_string(),
+            diff: None,
+            script_body_hash: Some(source_hash),
+            stdout_label: completion
+                .run_id
+                .as_ref()
+                .map(|rid| format!("run://{rid}/stdout")),
+            stderr_label: completion
+                .run_id
+                .as_ref()
+                .map(|rid| format!("run://{rid}/stderr")),
+            diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
+        };
+
+        Ok(project_python_run(&result))
     }
 }
 
@@ -261,6 +425,13 @@ impl Tool for PythonScriptTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = build_python_request(&input)?;
+
+        // Scheduler-owned path: submit through JobSubmissionService
+        if let Some(ref submission) = self.submission_service {
+            return self.execute_via_scheduler(&request, submission).await;
+        }
+
+        // Fallback: direct execution (when scheduler is disabled)
         let delegated = execute_and_persist_python_script(&request, self.run_store.as_ref()).await;
         Ok(project_python_run(&delegated.result))
     }

@@ -780,6 +780,14 @@ impl BashTool {
             fallback: false,
         });
 
+        // Scheduler-owned path: submit through JobSubmissionService
+        if let Some(ref submission) = self.submission {
+            return self
+                .dispatch_python_via_scheduler(&request, submission, mode, timeout)
+                .await;
+        }
+
+        // Fallback: direct execution (when scheduler is disabled)
         let delegated = execute_and_persist_python_script(&request, self.run_store.as_ref()).await;
         let result = delegated.result.clone();
         let run_id = delegated.run_id.clone();
@@ -813,6 +821,167 @@ impl BashTool {
             output,
             executor: actual,
             delegated_run_id: run_id,
+        })
+    }
+
+    /// Submit Python execution through the scheduler and wait for completion.
+    async fn dispatch_python_via_scheduler(
+        &self,
+        request: &PythonScriptRequest,
+        submission: &Arc<crate::scheduler::JobSubmissionService>,
+        mode: &str,
+        timeout: Duration,
+    ) -> Result<DispatchOutcome, ToolError> {
+        use codegg_core::jobs::{
+            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, RetryPolicy,
+        };
+
+        let workspace_root = request
+            .workspace_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| request.cwd.clone());
+
+        let workspace_id = submission
+            .workspace_id_for_root(&workspace_root)
+            .await
+            .map_err(|e| ToolError::Execution(format!("workspace registration failed: {e}")))?;
+
+        let source_hash = crate::python_script::source_store::compute_digest(&request.code);
+
+        let idempotency = match request.mode {
+            PythonExecutionMode::Analyze | PythonExecutionMode::Verify => {
+                IdempotencyClass::SafeRepeat
+            }
+            PythonExecutionMode::Transform => IdempotencyClass::NonIdempotent,
+        };
+
+        let payload = JobPayload::Python {
+            script_path: String::new(),
+            args: vec![],
+            mode: request.mode.to_string(),
+            source: Some(request.code.clone()),
+            source_hash: Some(source_hash.clone()),
+            cwd: Some(request.cwd.to_string_lossy().to_string()),
+            timeout_secs: request.timeout_secs,
+        };
+
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(
+            "workspace_root".to_string(),
+            workspace_root.to_string_lossy().to_string(),
+        );
+        if let Some(ref intent) = request.intent {
+            labels.insert("intent".to_string(), intent.clone());
+        }
+
+        let spec = NewJob {
+            workspace_id,
+            session_id: request.session_id.clone(),
+            turn_id: None,
+            kind: JobKind::Python,
+            source: JobSource::Interactive,
+            priority: JobPriority::Interactive,
+            payload,
+            resource_request: codegg_core::jobs::ResourceRequest::for_kind(JobKind::Python),
+            timeout: Some(timeout),
+            retry_policy: RetryPolicy::no_retry(),
+            idempotency,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: vec![],
+        };
+
+        let key = crate::scheduler::submission::SubmissionKey::new(format!("python:{source_hash}"))
+            .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
+
+        let submitted = submission
+            .submit(Some(key), spec)
+            .await
+            .map_err(|e| ToolError::Execution(format!("scheduler submission failed: {e}")))?;
+
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(30))
+            .await
+            .map_err(|e| ToolError::Execution(format!("scheduler wait failed: {e}")))?;
+
+        let result = crate::python_script::types::PythonRunResult {
+            status: match completion.status {
+                crate::scheduler::executor::ExecutorStatus::Completed => {
+                    crate::python_script::types::PythonRunStatus::Success
+                }
+                crate::scheduler::executor::ExecutorStatus::Cancelled => {
+                    crate::python_script::types::PythonRunStatus::Failed(-4)
+                }
+                crate::scheduler::executor::ExecutorStatus::TimedOut => {
+                    crate::python_script::types::PythonRunStatus::TimedOut
+                }
+                crate::scheduler::executor::ExecutorStatus::Failed
+                | crate::scheduler::executor::ExecutorStatus::Interrupted => {
+                    crate::python_script::types::PythonRunStatus::Failed(-1)
+                }
+            },
+            stdout: completion.summary.clone(),
+            stderr: String::new(),
+            duration: Duration::from_millis(completion.metrics.elapsed_ms),
+            mode: request.mode,
+            script_length: request.code.len(),
+            risk: crate::python_script::types::PythonRiskAssessment::safe(),
+            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
+            changed_files: vec![],
+            interpreter: "python3".to_string(),
+            diff: None,
+            script_body_hash: Some(source_hash),
+            stdout_label: completion
+                .run_id
+                .as_ref()
+                .map(|rid| format!("run://{rid}/stdout")),
+            stderr_label: completion
+                .run_id
+                .as_ref()
+                .map(|rid| format!("run://{rid}/stderr")),
+            diff_label: None,
+            policy_decision: None,
+            denied_capabilities: vec![],
+            os_filesystem_isolation: false,
+            os_network_isolation: false,
+            effective_read_roots: vec![],
+            effective_write_roots: vec![],
+            allowed_subprocesses: vec![],
+            enforcement_warnings: vec![],
+        };
+
+        let stdout = result.stdout.clone();
+        let stderr = result.stderr.clone();
+        let mut display = stdout;
+        if !stderr.is_empty() {
+            if !display.is_empty() {
+                display.push_str("\n--- stderr ---\n");
+            }
+            display.push_str(&stderr);
+        }
+        let exit_code = result.exit_code();
+        display.push_str(&format!("\n\n[exit code: {}]", exit_code.unwrap_or(-1)));
+
+        let exit_code_value = exit_code.unwrap_or(-1);
+        let output = synth_output(
+            exit_code_value,
+            result.stdout.as_bytes().to_vec(),
+            result.stderr.as_bytes().to_vec(),
+        );
+
+        let actual = ActualExecutor::PythonScript {
+            script_hash: result.script_body_hash.clone(),
+            mode: mode.to_string(),
+        };
+
+        Ok(DispatchOutcome {
+            result: display,
+            output,
+            executor: actual,
+            delegated_run_id: completion.run_id,
         })
     }
 

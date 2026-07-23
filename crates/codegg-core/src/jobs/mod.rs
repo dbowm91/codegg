@@ -250,6 +250,17 @@ impl JobKind {
     }
 }
 
+/// Helper to extract source hash from a Python payload.
+impl JobPayload {
+    /// Return the source hash if this is a Python payload with one.
+    pub fn source_hash(&self) -> Option<&str> {
+        match self {
+            JobPayload::Python { source_hash, .. } => source_hash.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 /// Source attribution for a job. Persisted so audit and replay tools
 /// can distinguish scheduled firings from interactive submissions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -672,6 +683,22 @@ pub enum JobPayload {
         script_path: String,
         args: Vec<String>,
         mode: String,
+        /// Inline source body. When present, the executor materializes
+        /// from this rather than `script_path`. Small scripts are
+        /// inlined directly; larger ones are stored via the content-
+        /// addressed source store and referenced by `source_ref`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        /// SHA-256 hex digest of the source body. Required when `source`
+        /// is `Some`; verified before execution and on restart recovery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_hash: Option<String>,
+        /// Workspace-relative CWD for execution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        /// Effective timeout in seconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_secs: Option<u64>,
     },
     Git {
         argv: Vec<String>,

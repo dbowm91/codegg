@@ -3,6 +3,7 @@ pub mod executor;
 pub mod projection;
 pub mod sandbox;
 pub mod snapshot;
+pub mod source_store;
 pub mod tool;
 pub mod types;
 
