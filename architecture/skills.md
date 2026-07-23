@@ -83,7 +83,7 @@ allowed-tools:
 
 ### Native Compatibility
 
-CodeGG-native skills in `.codegg/skills/` continue to accept the legacy frontmatter shape:
+CodeGG-native skills in `.codegg/skills/` (legacy compatibility location) continue to accept the legacy frontmatter shape:
 
 ```markdown
 ---
@@ -200,10 +200,10 @@ src/skills/
 ## Loading Locations
 
 ### Project-local
-- `.codegg/skills/<name>/SKILL.md` (portable package)
-- `.codegg/skills/*.md` (native compat direct markdown)
-- `.agents/skills/<name>/SKILL.md`
-- `.opencode/skills/<name>/SKILL.md`
+- `.opencode/skills/<name>/SKILL.md` (canonical portable package)
+- `.codegg/skills/<name>/SKILL.md` (portable package, legacy)
+- `.codegg/skills/*.md` (native compat direct markdown, legacy)
+- `.agents/skills/<name>/SKILL.md` (symlink to `.opencode/skills/`)
 - `.claude/skills/<name>/SKILL.md`
 
 ### Global

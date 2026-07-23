@@ -73,7 +73,10 @@ dmypy.json
 
 # codegg
 .codegg/
-.opencode/
+.opencode/*
+!.opencode/skills
+!.opencode/skills/**
+!.opencode/themes/.gitignore
 /codegg.json
 
 # Misc

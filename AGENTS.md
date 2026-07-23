@@ -575,7 +575,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
 | `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |
 
-`.agents/skills/*/SKILL.md` contain 45 module-specific skill guides loaded on-demand via `/skill:`.
+`.opencode/skills/*/SKILL.md` contain 45 module-specific skill guides loaded on-demand via `/skill:` (the legacy `.agents/skills` path now symlinks into `.opencode/skills`).
 
 ## Key Lessons
 

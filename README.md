@@ -235,7 +235,7 @@ Configure local or remote MCP servers under the `mcp` config key. Use
 
 ### Skills and agents
 
-Skills are loaded from `~/.config/codegg/skills/` and `.codegg/skills/`.
+Skills are loaded from `~/.config/codegg/skills/` and `.opencode/skills/` (legacy `.codegg/skills/` remains a compatibility path).
 Agents can be defined in `~/.config/codegg/agents/` or `.codegg/agents/` as
 TOML or Markdown. Use `/skills`, `/agent`, `/agents`, and `@agent-name`.
 Examples are in [`examples/agents`](examples/agents/) and the built-in agent
