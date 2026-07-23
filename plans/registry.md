@@ -31,18 +31,31 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 001 ready | — |
 
 ## Dependency-ready implementation plans
 
-None — no registered Session Projections implementation plan is dependency-ready after M012 closure.
+| Subsystem | Milestone | Status | Implementation plan | Dependencies |
+|---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 001 — scheduler-owned Python execution | ready | `plans/implementation/tool-programs/001-scheduler-owned-python-execution.md` | Current scheduler, Python subsystem, workspace services, and RunStore are present; ADR-0001 accepted |
 
 ## Active closure work
 
-None — no registered closure review is active after M012 acceptance.
+None — no registered closure review is active.
 
 ## Blocked work
 
-None — no registered milestone is blocked by the Session Projections M012 closure.
+| Subsystem | Milestone | Status | Implementation plan | Blocker |
+|---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | blocked | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | M001 accepted closure |
+| Programmatic tool execution and Tool Programs | 003 — program domain, storage, and call ledger | blocked | `plans/implementation/tool-programs/003-program-domain-storage-and-call-ledger.md` | M002 accepted closure |
+| Programmatic tool execution and Tool Programs | 004 — restricted-Python frontend and static bounds | blocked | `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md` | M003 accepted closure |
+| Programmatic tool execution and Tool Programs | 005 — durable interpreter, watchdog, and recovery | blocked | `plans/implementation/tool-programs/005-durable-interpreter-watchdog-and-recovery.md` | M004 accepted closure |
+| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | blocked | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | M005 accepted closure |
+| Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | blocked | `plans/implementation/tool-programs/007-build-test-child-job-composition.md` | M006 accepted closure |
+| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | blocked | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | M007 accepted closure |
+| Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | blocked | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | M008 accepted closure and stable provider capability interface |
+| Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | blocked | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | M008 accepted closure; M009 soft dependency; local Eggpool access is operational input |
 
 ## Deferred unregistered product work
 
@@ -60,12 +73,12 @@ These are not dependency-ready correctness plans and remain outside the active h
 |---|---|---|---|---|
 | Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | `plans/closure/session-projections/012-status.md` | `0672044` implementation; `f046de5` corrective test evidence; final reviewed head `f046de5` | Closed; no registered future plan was newly unblocked, and deferred product work remains unregistered |
 | Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | `560b8b7` main implementation; final reviewed head `1a93167` | Historical conditional closure; M012 accepted the remaining lifecycle, evidence, stability, and reconciliation work |
-| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final verification and lifecycle depth |
+| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final depth |
 | Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Historical conditional record; M10–M12 own final depth |
 | Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; later milestones own final depth |
 | Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Historical conditional record |
 | Frontend-neutral session projections | 006 — atomic control delivery, transport verification, and raw compatibility hardening | `plans/closure/session-projections/006-status.md` | `270cc5f` closure; `8ca570f` implementation | Historical conditional record |
-| Frontend-neutral session projections | 005 — remote transport isolation, resume, and compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardened atomic control delivery and normal-flow transport evidence |
+| Frontend-neutral session projections | 005 — remote transport isolation, resume, compatibility closure | `plans/closure/session-projections/005-status.md` | `4c751ff` | M006 hardened atomic control delivery and normal-flow transport evidence |
 | Frontend-neutral session projections | 004 — frontend adoption and compatibility | `plans/closure/session-projections/004-status.md` | `4c751ff` | — |
 | Frontend-neutral session projections | 003 — visibility, redaction, and artifact handles | `plans/closure/session-projections/003-status.md` | `bac73ce` | — |
 | Frontend-neutral session projections | 002 — scoped subscriptions and durable replay | `plans/closure/session-projections/002-status.md` | `c1d910a` corrective integration; library at `8dc4b85` | — |
