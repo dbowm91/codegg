@@ -1618,6 +1618,7 @@ async fn upgrade_tui(
             }
             tokio::select! {
                 biased;
+                _ = connection_cancel_for_writer.cancelled() => break,
                 outbound = out_rx.recv() => {
                     let Some(outbound) = outbound else { break };
                     if let Some(gate) = writer_gate.as_ref() {
