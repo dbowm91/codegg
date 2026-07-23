@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: active — Milestone 004 ready
+Status: active — Milestone 005 ready
 
 Long-term references:
 
@@ -503,8 +503,8 @@ This subsystem is closed only when:
 | 001 | closed | `plans/implementation/tool-programs/001-scheduler-owned-python-execution.md` | `plans/closure/tool-programs/001-status.md` | — |
 | 002 | closed | `plans/implementation/tool-programs/002-tool-contracts-and-canonical-broker.md` | `plans/closure/tool-programs/002-status.md` | — |
 | 003 | closed | `plans/implementation/tool-programs/003-program-domain-storage-and-call-ledger.md` | `plans/closure/tool-programs/003-status.md` | — |
-| 004 | ready | `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md` | — | — |
-| 005 | blocked | `plans/implementation/tool-programs/005-durable-interpreter-watchdog-and-recovery.md` | — | M004 closure |
+| 004 | closed | `plans/implementation/tool-programs/004-restricted-python-frontend-and-static-bounds.md` | `plans/closure/tool-programs/004-status.md` | — |
+| 005 | ready | `plans/implementation/tool-programs/005-durable-interpreter-watchdog-and-recovery.md` | — | — |
 | 006 | blocked | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | — | M005 closure |
 | 007 | blocked | `plans/implementation/tool-programs/007-build-test-child-job-composition.md` | — | M006 closure |
 | 008 | blocked | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | — | M007 closure |

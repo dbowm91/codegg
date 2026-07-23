@@ -1,6 +1,6 @@
 # Tool Programs Milestone 004 — Restricted-Python Frontend and Static Bounds
 
-Status: blocked pending Milestone 003 closure
+Status: closed
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 
