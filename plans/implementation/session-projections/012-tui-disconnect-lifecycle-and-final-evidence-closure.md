@@ -1,6 +1,6 @@
 # Session Projections Milestone 012 — TUI Disconnect Lifecycle and Final Evidence Closure
 
-Status: ready for handoff
+Status: closed; see `plans/closure/session-projections/012-status.md`
 
 Repository baseline: `1a93167ee3bdfdc55e4bd2746180443cc19b7c96` (`main`)
 

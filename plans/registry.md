@@ -30,25 +30,19 @@ Canonical direction remains in:
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-roadmap.md` | Milestone 5 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
-| Frontend-neutral session projections | active | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 — TUI disconnect lifecycle and final evidence closure | Ready; M011 remains conditionally closed on the reproducible pending-handler TUI disconnect deadlock/subscription leak, duplicated observer critical-send semantics, missing typed Unix I/O evidence, incomplete forwarder/ownership rollback, fallible probe registration, and final closure reconciliation |
+| Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Class | Plan | Baseline | Status |
-|---|---|---|---|---|---|
-| Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | production lifecycle correction / bounded task ownership / canonical critical-send instrumentation / Unix typed I/O evidence / complete rollback / final closure integrity | `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md` | `1a93167` | ready |
+None — no registered Session Projections implementation plan is dependency-ready after M012 closure.
 
 ## Active closure work
 
-| Subsystem | Milestone | Closure record | Status | Open findings |
-|---|---|---|---|---|
-| Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | conditionally closed | `/tui` can deadlock and leak a daemon subscription when peer close occurs while the inline handler awaits critical delivery; observer path uses separate two-budget staged-send semantics; Unix error claims lack typed server-side observation; rollback omits exact forwarder/ownership/leakage proof and uses a synthetic ID in one fixture; probe registration can silently fail; join proof and planning evidence require correction |
+None — no registered closure review is active after M012 acceptance.
 
 ## Blocked work
 
-| Work item | Blocker | Required resolution | Owner document |
-|---|---|---|---|
-| Return Session Projections roadmap to strict closed status | M012 closure criteria C1–C18 | Add close-responsive bounded TUI reader/handler ownership; prove all tasks/forwarders join; unify critical-send semantics; assert typed Unix I/O results; use real subscription identities; make probes infallible; pass required stability loops; reconcile exact closure evidence | `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md` |
+None — no registered milestone is blocked by the Session Projections M012 closure.
 
 ## Deferred unregistered product work
 
@@ -64,7 +58,8 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
-| Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | `560b8b7` main implementation; final reviewed head `1a93167` | Corrected to conditional closure; M012 owns the TUI lifecycle fix, canonical critical-send observation, typed Unix I/O proof, complete rollback, probe reliability, stability, and exact final closure |
+| Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | `plans/closure/session-projections/012-status.md` | `0672044` implementation; `f046de5` corrective test evidence; final reviewed head `f046de5` | Closed; no registered future plan was newly unblocked, and deferred product work remains unregistered |
+| Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | `560b8b7` main implementation; final reviewed head `1a93167` | Historical conditional closure; M012 accepted the remaining lifecycle, evidence, stability, and reconciliation work |
 | Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final verification and lifecycle depth |
 | Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Historical conditional record; M10–M12 own final depth |
 | Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; later milestones own final depth |

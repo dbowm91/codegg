@@ -1,6 +1,6 @@
 # Frontend-Neutral Session Projections and Replay Roadmap
 
-Status: active — Milestone 012 TUI disconnect lifecycle and final evidence closure
+Status: closed — Milestone 012 accepted
 
 Long-term references:
 
@@ -97,7 +97,7 @@ It does not own team authorization policy, presence/chat, full audit retention, 
 - **M10** added connection-local queue/writer controls, first-task recording, raw-source controls, TUI writer barriers, broader Unix fixtures, and repeated transport runs.
 - **M11** added per-connection probes, operation-correlated queue observations, symmetric `/core` and `/tui` saturation fixtures, six production-path task-owner cases, TUI raw-source-first, Unix F1–F5 regression coverage, and stronger guards.
 
-M6–M11 remain valid implementation foundations with historical conditional closure records. Later milestones addressed many principal findings, but strict closure is not currently supported.
+M6–M11 remain valid implementation foundations with historical conditional closure records. M12 addressed the remaining lifecycle and evidence findings; strict closure is now recorded by `plans/closure/session-projections/012-status.md`.
 
 ### M011 post-closure findings
 
@@ -130,6 +130,7 @@ Authoritative records:
 - M10: `plans/closure/session-projections/010-status.md`
 - M11 corrected conditional record: `plans/closure/session-projections/011-status.md`
 - M12 handoff: `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md`
+- M12 accepted closure: `plans/closure/session-projections/012-status.md`
 
 M12 does not reopen projection storage, reducer semantics, disclosure policy, replay authority, cursor/sequence meaning, or public protocol DTOs.
 
@@ -200,7 +201,7 @@ M10 mechanism-oriented transport verification               [conditionally close
 M11 evidence correctness and broader mechanism tests        [conditionally closed]
         |
         v
-M12 TUI disconnect lifecycle and final evidence closure     [ready]
+M12 TUI disconnect lifecycle and final evidence closure     [closed]
 ```
 
 M12 has no unmet design dependency. It consumes the accepted M8 task owner, M9 lifecycle/replay fixtures, M10 writer/queue controls, and M11 probes/observations/Unix regression coverage.
@@ -253,7 +254,7 @@ Strict closure is blocked by M12 findings.
 
 ### Milestone 12 — TUI disconnect lifecycle and final evidence closure
 
-Status: ready for handoff.
+Status: closed.
 
 Plan:
 
@@ -276,7 +277,7 @@ Primary deliverables:
 - direct completion/drop-based task-join proof;
 - semantic guards and exact final evidence reconciliation.
 
-M12 contains explicit closure criteria C1–C18. Any failed criterion keeps the subsystem conditionally closed.
+M12 closure criteria C1–C18 are satisfied by the accepted closure record. The subsystem has returned to strict closed status; deferred product work remains outside this milestone.
 
 ## 7. Verification and closure policy
 
@@ -328,5 +329,5 @@ The following remains outside M12:
 | 8 | conditionally closed | `plans/implementation/session-projections/008-final-transport-lifecycle-and-replay-evidence-polish.md` | `plans/closure/session-projections/008-status.md` | historical; later milestones own final depth |
 | 9 | conditionally closed | `plans/implementation/session-projections/009-production-shaped-transport-verification-and-strict-closure.md` | `plans/closure/session-projections/009-status.md` | historical; later milestones own final depth |
 | 10 | conditionally closed | `plans/implementation/session-projections/010-mechanism-faithful-transport-verification-and-final-closure.md` | `plans/closure/session-projections/010-status.md` | M11/M12 final evidence depth |
-| 11 | conditionally closed | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `plans/closure/session-projections/011-status.md` | TUI deadlock and M12 evidence defects |
-| 12 | ready | `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md` | pending | no unmet design dependency |
+| 11 | conditionally closed | `plans/implementation/session-projections/011-evidence-correctness-and-mechanism-verification-closure.md` | `plans/closure/session-projections/011-status.md` | historical conditional; resolved by M12 |
+| 12 | closed | `plans/implementation/session-projections/012-tui-disconnect-lifecycle-and-final-evidence-closure.md` | `plans/closure/session-projections/012-status.md` | — |

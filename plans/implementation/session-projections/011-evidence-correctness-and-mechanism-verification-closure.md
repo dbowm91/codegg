@@ -1,6 +1,6 @@
 # Session Projections Milestone 011 — Evidence Correctness and Mechanism Verification Closure
 
-Status: ready for handoff
+Status: conditionally closed — superseded by accepted M012 final closure
 
 Repository baseline: `8bd59b22662a289f3124c9b3113e545faa9446d7` (`main`)
 
