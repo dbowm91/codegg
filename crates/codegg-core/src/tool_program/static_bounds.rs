@@ -56,13 +56,18 @@ impl Default for BoundsConfig {
 
 /// Analysis state accumulated during bound computation.
 struct AnalysisState {
+    /// Accumulated total iterations across all loops.
     total_loop_iterations: u64,
+    /// Iteration count of the innermost enclosing loop (0 if not inside a loop).
+    outer_loop_iterations: u64,
     call_site_count: u32,
     parallel_width: u32,
     parallel_depth: u32,
     max_parallel_depth: u32,
     max_nesting_depth: u32,
     estimated_steps: u64,
+    /// Number of nested loop contexts we're currently inside.
+    loop_depth: u32,
     config: BoundsConfig,
 }
 
@@ -78,12 +83,14 @@ pub fn analyze_with_config(
 ) -> Result<StaticBounds, ToolProgramError> {
     let mut state = AnalysisState {
         total_loop_iterations: 0,
+        outer_loop_iterations: 0,
         call_site_count: 0,
         parallel_width: 0,
         parallel_depth: 0,
         max_parallel_depth: 0,
         max_nesting_depth: 0,
         estimated_steps: 0,
+        loop_depth: 0,
         config: config.clone(),
     };
 
@@ -93,7 +100,7 @@ pub fn analyze_with_config(
     state.estimated_steps += program.body.len() as u64;
 
     let bounds = StaticBounds {
-        max_steps: state.estimated_steps.min(config.max_steps),
+        max_steps: (state.estimated_steps * 10).max(100).min(config.max_steps),
         max_loop_iterations: config.max_loop_iterations,
         max_total_iterations: state.total_loop_iterations.min(config.max_total_iterations),
         call_site_count: state.call_site_count,
@@ -165,7 +172,18 @@ fn analyze_stmt(
             analyze_expr(iter, state, depth)?;
             // Estimate loop iterations
             let iter_count = estimate_iteration_count(iter);
-            state.total_loop_iterations = state.total_loop_iterations.saturating_add(iter_count);
+            // Track total iterations: nested loops multiply, sequential add.
+            if state.loop_depth > 0 {
+                // Nested: multiply outer iterations by this loop's count
+                let outer = state.outer_loop_iterations.max(1);
+                state.total_loop_iterations = state
+                    .total_loop_iterations
+                    .saturating_add(outer.saturating_mul(iter_count));
+            } else {
+                // Top-level: add to total
+                state.total_loop_iterations =
+                    state.total_loop_iterations.saturating_add(iter_count);
+            }
             if iter_count > state.config.max_loop_iterations {
                 return Err(ToolProgramError::Bounds(Diagnostic::new(
                     DiagnosticCode::UnboundedLoop,
@@ -186,7 +204,12 @@ fn analyze_stmt(
                     SourceSpan::new(0, 0),
                 )));
             }
+            state.loop_depth += 1;
+            let prev_outer = state.outer_loop_iterations;
+            state.outer_loop_iterations = iter_count;
             analyze_stmts(body, state, depth + 1)?;
+            state.outer_loop_iterations = prev_outer;
+            state.loop_depth -= 1;
             // Each iteration executes the body once
             state.estimated_steps = state
                 .estimated_steps

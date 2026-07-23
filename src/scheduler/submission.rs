@@ -231,6 +231,9 @@ fn validate_payload(kind: JobKind, payload: &JobPayload) -> Result<(), JobSubmis
         | (JobKind::Maintenance, JobPayload::Maintenance { .. }) => true,
         (JobKind::ManagedProcess, JobPayload::ManagedArgv { argv, .. }) => !argv.is_empty(),
         (JobKind::GitRead | JobKind::GitMutation, JobPayload::Git { argv, .. }) => !argv.is_empty(),
+        (JobKind::ToolProgram, JobPayload::ToolProgram { program_id, .. }) => {
+            !program_id.is_empty()
+        }
         _ => false,
     };
     if valid {

@@ -293,7 +293,7 @@ pub fn verify_ir_integrity(ir: &IrProgram) -> Result<(), ToolProgramError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_program::{compile_program, parse_source, static_bounds, validate};
+    use crate::tool_program::compile_program;
 
     #[test]
     fn store_and_retrieve_ir() {

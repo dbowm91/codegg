@@ -39,6 +39,7 @@ pub mod permit;
 pub mod scheduler;
 pub mod snapshot;
 pub mod submission;
+pub mod tool_program_executor;
 pub mod types;
 
 pub use admission::{

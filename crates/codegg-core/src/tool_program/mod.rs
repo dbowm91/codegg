@@ -21,6 +21,7 @@ pub mod ast;
 pub mod compiler;
 pub mod diagnostics;
 pub mod guards;
+pub mod interpreter;
 pub mod ir;
 pub mod ir_verifier;
 pub mod parser;
@@ -32,6 +33,11 @@ pub use ast::{Expr, Program, Slice, Stmt};
 pub use compiler::compile;
 pub use diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
 pub use guards::{cpython_execution_is_forbidden, ToolProgramCompilerIsParseOnly};
+pub use interpreter::{
+    BrokerCallback, BudgetSnapshot, CallRequest, CallResult, CompletedCall, FailureClass,
+    InterpreterCheckpoint, InterpreterError, MeteredInterpreter, ProgramResult, ProgramStatus,
+    ProgramValue, RuntimeLimits,
+};
 pub use ir::{IrProgram, IrVersion, COMPILER_VERSION, LANGUAGE_VERSION, PARSER_VERSION};
 pub use ir_verifier::verify_ir;
 pub use parser::parse_source;

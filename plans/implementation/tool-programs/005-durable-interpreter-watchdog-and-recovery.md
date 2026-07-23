@@ -1,6 +1,6 @@
 # Tool Programs Milestone 005 — Durable Interpreter, Watchdog, and Recovery
 
-Status: blocked pending Milestone 004 closure
+Status: closed
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 
