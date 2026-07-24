@@ -206,6 +206,9 @@ fn preallocate_stmt(stmt: &Stmt, compiler: &mut Compiler) {
         Stmt::Parallel { target, .. } => {
             compiler.allocate_local(&target.name);
         }
+        Stmt::SubmitJob { target, .. } => {
+            compiler.allocate_local(&target.name);
+        }
         _ => {}
     }
 }

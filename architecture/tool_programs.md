@@ -824,3 +824,119 @@ cannot weaken resource requests or exclusivity keys.
 | `src/tool/program_manifest.rs` | Manifest resolution — tool eligibility gating |
 | `src/tool/program_cache.rs` | Read-only call cache with content/policy-aware keys |
 | `src/scheduler/tool_program_executor.rs` | Scheduler executor with `BrokerAdapter` for real pipeline and child-job submission |
+
+### Test Runner and Managed Process Integration
+
+When a child job is submitted with `ChildJobOp::Test`, the scheduler
+routes it through `TestJobExecutor`, which delegates to
+`TestRunner::resolve_and_run_test()`. The test runner handles:
+
+- Scope resolution (workspace, package, file, previous_failures)
+- Timeout and stall timeout enforcement
+- Report generation with bounded output
+- RunStore artifact persistence
+
+For `Build`, `Lint`, and `Format` operations, the scheduler routes
+through `ManagedArgvExecutor`, which delegates to
+`ManagedProcessService`. This handles:
+
+- Environment sanitization and process-group cleanup
+- Bounded stdout/stderr capture
+- Process-tree termination on cancellation
+- Job/attempt provenance tracking
+
+Child jobs created via `submit_job()` use the same executor pipeline
+as directly submitted jobs. The only difference is that child jobs
+inherit the parent program's workspace and authority context.
+
+### RTK/Output Projection for Child Jobs
+
+Child job results are returned as typed `ChildJobResult` values
+containing structured data (status, counts, diagnostics). The
+projection pipeline for child jobs follows this path:
+
+```text
+raw RunStore artifacts (from TestRunner/ManagedProcessService)
+    -> native typed projector (ChildJobResult details)
+    -> RTK generic command-output projector (future, opt-in)
+    -> bounded fallback truncation/error retention
+    -> model display plus artifact handles
+```
+
+**Current status**: The `ChildJobResult` contains the structured
+status and operation-specific details directly. Raw stdout/stderr
+are preserved in RunStore artifacts. The native typed projector
+integration is deferred to M008+ (background programs, projections,
+and parent notification).
+
+**RTK rules** (when implemented):
+- RTK receives only approved bounded input
+- RTK failure falls back to native/bounded output
+- RTK output is untrusted projection, never authoritative status
+- Record projector implementation/version, input/output bytes
+
+### Operator Guide: Typed Matrices, Failures, and Artifacts
+
+#### Typed Matrices
+
+Programs can express bounded matrices using `for` loops with
+`submit_job()`:
+
+```python
+# Test matrix across packages
+results = []
+for i in range(5):
+    r = submit_job("test", {"scope": "package"})
+    results.append(r)
+
+# Build-then-test pattern
+build = submit_job("build", {"argv": ["cargo", "build", "--release"]})
+test = submit_job("test", {"scope": "workspace"})
+```
+
+Each child job consumes one scheduler permit and follows global
+fairness policy. The matrix is bounded by the program's loop
+iteration limit (`max_loop_iterations`, default 10,000).
+
+#### Failure Handling
+
+Child job failures are returned as typed results, not
+infrastructure errors:
+
+| Scenario | Program Status | Result |
+|----------|---------------|--------|
+| Test fails | `Completed` | `success: false`, `status: "failed"` |
+| Build fails | `Completed` | `success: false`, `status: "failure"` |
+| Scheduler unavailable | `Failed` | `error: "scheduler unavailable"` |
+| Invalid operation | `Failed` | `error: "unknown child job operation"` |
+| Cancelled | `Completed` | `success: false`, `cancelled: true` |
+| Timed out | `Completed` | `success: false`, `timed_out: true` |
+
+#### Artifact Expansion
+
+Child job results include artifact handles for detailed output:
+
+```json
+{
+  "success": false,
+  "exit_code": 1,
+  "duration_ms": 5000,
+  "details": {
+    "test": {
+      "status": "failed",
+      "framework": "cargo",
+      "total": 42,
+      "passed": 40,
+      "failed": 2,
+      "failed_tests": ["test_parse", "test_serialize"],
+      "failure_evidence": ["assertion failed: left == right"]
+    }
+  },
+  "artifacts": ["ctx://logs/test-run-1"],
+  "error": "2 tests failed"
+}
+```
+
+The `artifacts` field contains handles that can be resolved to
+full output in the RunStore. Failed test names and concise failure
+evidence are included in the structured details for quick diagnosis.

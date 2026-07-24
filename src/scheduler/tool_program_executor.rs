@@ -383,24 +383,113 @@ impl BrokerCallback for BrokerAdapter {
         let exit_code = match completion.status {
             crate::scheduler::executor::ExecutorStatus::Completed => Some(0),
             crate::scheduler::executor::ExecutorStatus::Failed => Some(1),
-            _ => None,
+            crate::scheduler::executor::ExecutorStatus::TimedOut => Some(124),
+            crate::scheduler::executor::ExecutorStatus::Cancelled => Some(130),
+            crate::scheduler::executor::ExecutorStatus::Interrupted => Some(1),
         };
+
+        let is_cancelled = matches!(
+            completion.status,
+            crate::scheduler::executor::ExecutorStatus::Cancelled
+        );
+        let is_timed_out = matches!(
+            completion.status,
+            crate::scheduler::executor::ExecutorStatus::TimedOut
+        );
+
+        // Extract command string from config for result metadata
+        let command_str = match &request.config {
+            ChildJobConfig::Test(_) => Some("cargo test".into()),
+            ChildJobConfig::Build(cfg) => cfg
+                .argv
+                .as_ref()
+                .map(|a| a.join(" "))
+                .or_else(|| Some("cargo build".into())),
+            ChildJobConfig::Lint(cfg) => cfg
+                .argv
+                .as_ref()
+                .map(|a| a.join(" "))
+                .or_else(|| Some("cargo clippy".into())),
+            ChildJobConfig::Format(cfg) => cfg
+                .argv
+                .as_ref()
+                .map(|a| a.join(" "))
+                .or_else(|| Some("cargo fmt".into())),
+        };
+
+        // Infer framework from command for test operations
+        let framework = command_str.as_ref().and_then(|cmd| {
+            if cmd.starts_with("cargo") {
+                Some("cargo".into())
+            } else if cmd.starts_with("pytest") || cmd.starts_with("python") {
+                Some("pytest".into())
+            } else if cmd.starts_with("npm") || cmd.starts_with("npx") {
+                Some("npm".into())
+            } else if cmd.starts_with("make") {
+                Some("make".into())
+            } else {
+                None
+            }
+        });
 
         let details = match &request.config {
             ChildJobConfig::Test(_) => ChildJobDetails::Test(TestJobResult {
-                status: if success { "passed" } else { "failed" }.into(),
+                status: if success {
+                    "passed"
+                } else if is_cancelled {
+                    "cancelled"
+                } else if is_timed_out {
+                    "timed_out"
+                } else {
+                    "failed"
+                }
+                .into(),
+                framework,
+                cancelled: is_cancelled,
+                timed_out: is_timed_out,
                 ..Default::default()
             }),
             ChildJobConfig::Build(_) => ChildJobDetails::Build(BuildJobResult {
-                status: if success { "success" } else { "failure" }.into(),
+                status: if success {
+                    "success"
+                } else if is_cancelled {
+                    "cancelled"
+                } else if is_timed_out {
+                    "timed_out"
+                } else {
+                    "failure"
+                }
+                .into(),
+                command: command_str,
                 ..Default::default()
             }),
             ChildJobConfig::Lint(_) => ChildJobDetails::Lint(LintJobResult {
-                status: if success { "clean" } else { "warnings" }.into(),
+                status: if success {
+                    "clean"
+                } else if is_cancelled {
+                    "cancelled"
+                } else if is_timed_out {
+                    "timed_out"
+                } else {
+                    "warnings"
+                }
+                .into(),
+                command: command_str,
                 ..Default::default()
             }),
             ChildJobConfig::Format(_) => ChildJobDetails::Format(FormatJobResult {
-                status: if success { "clean" } else { "needs_formatting" }.into(),
+                status: if success {
+                    "clean"
+                } else if is_cancelled {
+                    "cancelled"
+                } else if is_timed_out {
+                    "timed_out"
+                } else {
+                    "needs_formatting"
+                }
+                .into(),
+                command: command_str,
+                would_change: !success && !is_cancelled && !is_timed_out,
                 ..Default::default()
             }),
         };

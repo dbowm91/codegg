@@ -194,6 +194,9 @@ cargo test -p codegg --lib tool::bash
 
 # Tool programs
 cargo test -p codegg --test tool_program_read_palette
+cargo test -p codegg --test tool_program_child_jobs
+cargo test -p codegg --test tool_program_build_test_matrix
+cargo test -p codegg --test tool_program_child_recovery
 cargo test -p codegg --test tool_contract_guards
 
 # Adversarial tests

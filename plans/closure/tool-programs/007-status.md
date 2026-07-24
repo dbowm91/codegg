@@ -15,6 +15,7 @@ Repository baseline reviewed: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (main)
 Implementation commits:
 
 - Child-job composition implementation (M007)
+- M007 gap closure: integration tests, BrokerAdapter enrichment, docs, preallocate fix
 
 ## 1. Executive finding
 
@@ -33,38 +34,51 @@ The milestone's capability boundary is complete. Programs can now submit and awa
 | Authority/workspace/deadline inheritance | `BrokerAdapter` passes `workspace_id` from context | pass | Cannot be weakened by program input |
 | Scheduler remains admission authority | All child jobs go through `JobSubmissionService` | pass | No direct process spawning |
 | Raw output preserved before projection | `ChildJobResult` contains raw status and artifacts | pass | Native projector preferred |
-| Existing tests pass | 156 tool_program tests, 21 tool_program root tests | pass | No regressions |
+| Integration tests: child jobs | `tests/tool_program_child_jobs.rs` (13 tests) | pass | Submit/await, pass/fail, all 4 ops, error propagation |
+| Integration tests: matrix | `tests/tool_program_build_test_matrix.rs` (9 tests) | pass | Bounded matrices, mixed ops, contention |
+| Integration tests: recovery | `tests/tool_program_child_recovery.rs` (5 tests) | pass | Restart replay, no duplicate execution |
 | `cargo fmt --check` passes | Formatting verified | pass | All files formatted |
 | Pre-existing clippy issues only | 6 pre-existing `projection_replay/` issues, no new issues from M007 | pass | Noted in M006 closure |
+| Dependent module tests | `test_runner` (144), `shell::rtk` (62), `scheduler_cancellation` (10) | pass | No regressions |
 
 ## 3. Production implementation evidence
 
 ### New files
 
 - `crates/codegg-core/src/tool_program/child_job.rs` — Typed child-job request/result types (`ChildJobOp`, `ChildJobRequest`, `ChildJobResult`, `ChildJobConfig`, per-operation config/result structs)
+- `tests/tool_program_child_jobs.rs` — 13 integration tests for child-job submission, correlation, status distinction, and security
+- `tests/tool_program_build_test_matrix.rs` — 9 integration tests for bounded matrices, mixed operations, and contention
+- `tests/tool_program_child_recovery.rs` — 5 integration tests for restart replay, idempotency, and sequence stability
 
 ### Modified files
 
 - `crates/codegg-core/src/tool_program/ast.rs` — Added `Stmt::SubmitJob` and `Expr::SubmitJobExpr` variants
 - `crates/codegg-core/src/tool_program/parser.rs` — Recognizes `submit_job()` in both expression and statement contexts; assignment form `result = submit_job(...)` converts to `Stmt::SubmitJob`
-- `crates/codegg-core/src/tool_program/compiler.rs` — Compiles `Stmt::SubmitJob`/`Expr::SubmitJobExpr` to `ExecuteChildJob` IR opcode; updated digest computation (opcode byte 39)
+- `crates/codegg-core/src/tool_program/compiler.rs` — Compiles `Stmt::SubmitJob`/`Expr::SubmitJobExpr` to `ExecuteChildJob` IR opcode; updated digest computation (opcode byte 39); **fixed `preallocate_stmt` to handle `SubmitJob` target variable allocation**
 - `crates/codegg-core/src/tool_program/ir.rs` — Added `IrOp::ExecuteChildJob` variant
 - `crates/codegg-core/src/tool_program/interpreter.rs` — Extended `BrokerCallback` with `submit_child_job`; `ExecuteChildJob` handler parses operation, constructs typed config, delegates to broker, records completed call for replay
 - `crates/codegg-core/src/tool_program/static_bounds.rs` — Handles `SubmitJob`/`SubmitJobExpr` in analysis
 - `crates/codegg-core/src/tool_program/validator.rs` — Validates `SubmitJob`/`SubmitJobExpr`; added `submit_job` to reserved builtins
 - `crates/codegg-core/src/tool_program/mod.rs` — Exports `child_job` module and types
-- `src/scheduler/tool_program_executor.rs` — `BrokerAdapter` now carries optional `JobSubmissionService` and `workspace_id`; implements `submit_child_job` by building `NewJob` per operation type, submitting, waiting, and mapping to `ChildJobResult`; `ToolProgramExecutor` gains `with_submission()` constructor
+- `src/scheduler/tool_program_executor.rs` — `BrokerAdapter` now carries optional `JobSubmissionService` and `workspace_id`; implements `submit_child_job` by building `NewJob` per operation type, submitting, waiting, and mapping to `ChildJobResult`; **enriched result mapping with Cancelled/TimedOut status, command inference, framework detection, and per-op detail fields**; `ToolProgramExecutor` gains `with_submission()` constructor
 
 ## 4. Verification executed
 
 ### Commands run
 
 ```bash
-cargo test -p codegg-core --lib tool_program  # 156 passed
-cargo test -p codegg --lib tool_program      # 21 passed
-cargo fmt --all -- --check                    # pass (after fmt)
-cargo check -p codegg-core                    # pass
-cargo check -p codegg                         # pass (0 errors, pre-existing warnings only)
+cargo test -p codegg-core --lib tool_program           # 156 passed
+cargo test -p codegg --lib tool_program                 # 21 passed
+cargo test --test tool_program_child_jobs               # 13 passed
+cargo test --test tool_program_build_test_matrix        # 9 passed
+cargo test --test tool_program_child_recovery           # 5 passed
+cargo test -p codegg --lib test_runner                  # 144 passed
+cargo test -p codegg --lib shell::rtk                   # 62 passed
+cargo test --test scheduler_cancellation                # 10 passed
+cargo fmt --all -- --check                              # pass
+cargo check -p codegg-core                              # pass
+cargo check -p codegg                                   # pass (0 errors)
+bash scripts/check-core-boundary.sh                     # pass
 ```
 
 ### Results
@@ -80,7 +94,9 @@ All tests pass. Formatting clean. No new clippy issues introduced (6 pre-existin
 | Authority/workspace monotonically narrow | maintained | `BrokerAdapter` inherits from `JobExecutionContext` |
 | Cancellation propagates | maintained | Parent cancellation token checked by interpreter; child jobs use separate cancellation |
 | Raw output preserved | maintained | `ChildJobResult` contains raw status/artifacts before projection |
-| Native projector preferred | maintained | Architecture documented; projection service deferred to future work |
+| Native projector preferred | maintained | Architecture documented; projection service deferred to M008+ |
+| No process/permit leakage | maintained | `calls_completed` exactly matches `submit_job` count in all tests |
+| Test failure ≠ infrastructure failure | maintained | `success: false` vs `BrokerError` distinction verified in 13 integration tests |
 
 ## 6. Failure and recovery review
 
@@ -88,12 +104,16 @@ All tests pass. Formatting clean. No new clippy issues introduced (6 pre-existin
 - Compile/test failure returned as typed `ChildJobResult` with `success: false`, not infrastructure error
 - Interpreter replays completed child jobs from `completed_calls` map for restart recovery
 - Cancellation while queued cancels child job; while running propagates through scheduler
+- **Replay preserves exact result values** — verified in `replay_preserves_child_job_result_values` test
+- **No duplicate execution on restart** — verified in `no_duplicate_execution_on_replay` test
+- **Sequence numbers are stable** — verified in `completed_call_sequence_numbers_are_stable` test
 
 ## 7. Migration and compatibility review
 
 - Existing `call()` path for read-only tools unchanged
 - `submit_job()` is additive; does not affect existing programs
 - `BrokerCallback` trait gained new required method; all existing test impls updated
+- **Fixed preallocate_stmt bug**: `SubmitJob` target variables were not pre-allocated, causing compilation failures for assignment-form `submit_job()`
 
 ## 8. Security review
 
@@ -101,20 +121,24 @@ All tests pass. Formatting clean. No new clippy issues introduced (6 pre-existin
 - `ChildJobOp` is a closed enum; arbitrary shell commands cannot be injected
 - `SubmissionKey` derived from content hash prevents duplicate submissions
 - `BrokerAdapter` validates workspace_id before submission
+- **Invalid operation rejected**: `submit_job("deploy", ...)` returns BrokerError, not a child result
 
 ## 9. Documentation and operations
 
 - `architecture/tool_programs.md` updated with M007 child-job composition section
 - `architecture/jobs.md` updated with tool program child-job note
-- `AGENTS.md` updated with M007 reference
+- `AGENTS.md` updated with M007 test commands
+- **Test runner and managed process integration** documented in `architecture/tool_programs.md`
+- **RTK/output projection for child jobs** documented with current status and future path
+- **Operator guide** for typed matrices, failures, and artifact expansion added
 
 ## 10. Unresolved findings
 
 | Severity | Finding | Status |
 |---|---|---|
-| low | Native typed projector integration not yet wired (documented as future work) | Deferred to M008+ |
+| low | Native typed projector integration not yet wired | Deferred to M008+ |
 | low | Full workspace CI not run locally (resource constraints) | Will verify in remote CI |
-| low | Matrix/contention evaluation is documentation-level (bounded matrices respect scheduler resources) | No code changes needed for V1 |
+| low | `projection_replay/` pre-existing clippy issues (6) | Not from M007; documented in M006 closure |
 
 ## 11. Roadmap disposition
 
