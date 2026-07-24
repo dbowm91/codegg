@@ -992,28 +992,173 @@ manages durable notification records with claim/ack semantics:
 - **Expire**: Stale claimed notifications (lease timeout).
 - **Session bound**: Enforce max pending per session.
 
+### NotificationPolicy
+
+`NotificationPolicy` configures queue bounds and backpressure:
+
+```rust
+pub struct NotificationPolicy {
+    pub max_pending_per_session: usize, // default: 16
+    pub claim_lease_ms: i64,            // default: 300_000 (5 min)
+    pub max_payload_bytes: usize,       // default: 8_192
+}
+```
+
+### Payload Digest
+
+Every `ToolProgramNotification` carries a `payload_digest` field
+computed from the program_id, status, summary, and success flag.
+This enables idempotency verification: duplicate terminal events
+produce the same digest and the same notification identity.
+
+### Three-Way Classification
+
+Notifications are classified into three categories as required by
+the plan:
+
+- **`Completed`** — program finished successfully.
+- **`IncompleteRecoverable`** — program was incomplete but can be
+  retried (timeout, stall, interrupted).
+- **`FailedTerminal`** — program reached a terminal failure that is
+  not recoverable (compile error, policy denial, resource exhaustion).
+
+The AgentLoop's `inject_pending_notifications()` method formats
+different system messages for each classification.
+
 ### Projection Events
 
 New projection events for frontend-neutral visibility:
 
-- `ToolProgramSubmitted { program_id, job_id, submitted_at }`
-- `ToolProgramTerminal { program_id, job_id, status, summary, completed_at }`
+- `ToolProgramSubmitted { program_id, job_id, submitted_at }` — program submitted
+- `ToolProgramAdmitted { program_id, job_id, admitted_at }` — job admitted by scheduler
+- `ToolProgramStarted { program_id, job_id, attempt_id, started_at }` — execution begins
+- `ToolProgramProgress { program_id, job_id, message, calls_completed, at }` — bounded progress
+- `ToolProgramWaitingForCall { program_id, job_id, call_id, tool_name, at }` — waiting for user permission
+- `ToolProgramWaitingForJob { program_id, job_id, depends_on_job_id, at }` — waiting for child job
+- `ToolProgramRetryBackoff { program_id, job_id, attempt, backoff_ms, reason, at }` — retrying
+- `ToolProgramTerminal { program_id, job_id, status, summary, completed_at }` — terminal state
 
-These are mapped from `CoreEvent::ToolProgramCompleted` and
-`CoreEvent::ToolProgramFailed` through the projection adapter.
+These are mapped from `CoreEvent::ToolProgramCompleted`,
+`CoreEvent::ToolProgramFailed`, and `CoreEvent::ToolProgramUpdated`
+through the projection adapter. Both the protocol-level adapter
+(`crates/codegg-protocol/src/projection/adapters.rs`) and the
+core-level adapter (`crates/codegg-core/src/projection_replay/publication.rs`)
+handle all 6 intermediate states: `admitted`, `running`, `progress`,
+`waiting_for_call`, `waiting_for_job`, `retry_backoff`.
+
+### ToolProgramSummary Snapshot
+
+The `SessionProjectionSnapshot` includes a `tool_programs` field
+carrying `ToolProgramSummary` records with full lifecycle state:
+
+- `program_id`, `job_id`, `state`, `phase`, `language`
+- `parent_turn_id`, `parent_agent_id`
+- `calls_completed`, `child_jobs_running`
+- `submitted_at`, `started_at`, `completed_at`
+- `failure_class`, `terminal_handle`, `last_progress`
+
+The reducer upserts summaries when projection events arrive, tracking
+the full lifecycle from submission through terminal state. String
+fields are truncated to `MAX_PROJECTION_STRING_BYTES` (4,096 bytes)
+to prevent unbounded payloads.
+
+### ToolProgramDetail
+
+`ToolProgramDetail` extends `ToolProgramSummary` with manifest
+metadata for full inspection:
+
+- `source_hash` — SHA-256 of the restricted-Python source
+- `ir_hash` — SHA-256 of the compiled intermediate representation
+- `checkpoint_version` — last successful step version
+- `manifest_summary` — language version, allowed tools, budgets
+- `artifacts` — bounded artifact handles for program outputs
+- `total_calls` — total call count
+- `call_page` — paginated call history
+
+### ToolProgramCallPage
+
+Paginated call history for a program:
+
+```rust
+pub struct ToolProgramCallPage {
+    pub program_id: String,
+    pub offset: u32,
+    pub total_calls: u32,
+    pub has_more: bool,
+    pub calls: Vec<ToolProgramCallSummary>,
+}
+```
+
+Each `ToolProgramCallSummary` carries redacted call data:
+tool name, arguments summary, result summary, success flag,
+duration, timestamps. Raw source and output bodies are never
+included.
+
+### Observer Visibility
+
+Projection events have explicit visibility classification:
+
+- **`Public`**: Terminal, started, waiting_for_call events — safe
+  for all frontends.
+- **`ClientLocal`**: Submitted, admitted, progress, waiting_for_job,
+  retry_backoff — internal sequencing details.
+
+The `ToolProgramSummary` `normalise()` method truncates all string
+fields to prevent raw source or output bodies from leaking into
+projection snapshots.
+
+### Daemon Protocol
+
+Tool program inspect/list operations:
+
+- `ToolProgramList { session_id, state_filter }` → `ToolProgramList { programs }`
+- `ToolProgramInspect { program_id }` → `ToolProgramInspect { detail }`
+- `ToolProgramCallPage { program_id, offset }` → `ToolProgramCallPage { page }`
+
+### Cancellation
+
+The `ToolProgramTool::cancel(job_id)` method calls the scheduler's
+`request_cancel` to signal the executor's cancellation token. This is
+idempotent: cancelling an already-completed or already-cancelled
+program is a no-op.
+
+### Notification Recovery
+
+After a daemon restart, the notification service is rebuilt from the
+job store's terminal state. The `recover_from_terminal_jobs` method
+takes a list of `RecoveredTerminalJob` records and creates pending
+notifications for any that have not been acknowledged. This is
+idempotent: duplicate program_ids are ignored. Each recovered
+notification gets a computed `payload_digest` and a three-way
+`classification`.
 
 ### AgentLoop Integration
 
 At the start of each turn, the AgentLoop checks for pending
 background program notifications and injects them as system
-messages:
+messages with three-way classification:
 
 ```
-Background program tp-abc123 completed successfully: status=Completed steps=5000 calls=3
+Background program tp-abc123 completed successfully: summary
+Background program tp-abc123 is incomplete but recoverable (timeout): summary
+Background program tp-abc123 failed terminally (compile_error): summary
 ```
 
 The notification is claimed before injection and acknowledged
 after, ensuring exactly-once delivery.
+
+### TUI Integration
+
+The TUI sidebar includes a **Tool Programs** section showing
+active and recently completed programs:
+
+- State icon: ✓ (completed), ✗ (failed), ● (running), ○ (admitted)
+- Short program ID (8 chars)
+- State label
+- Last progress summary
+
+The status bar includes a `programs:N` activity chip when
+background programs are running.
 
 ### Invariants
 
@@ -1031,3 +1176,110 @@ after, ensuring exactly-once delivery.
    logically running or cause repeated model turns.
 8. Frontend renders projections and never owns program state or
    terminal-delivery truth.
+
+## M009: OpenAI Responses Hosted-Program Adapter
+
+### Overview
+
+The Responses API adapter provides an optional backend for executing
+tool programs through OpenAI's Responses API format. Hosted execution
+is an optimization/backend choice, not a second policy or persistence
+architecture.
+
+### Module: `responses_api` (codegg-providers)
+
+`crates/codegg-providers/src/responses_api.rs` owns:
+
+- `ResponsesRequest` / `ResponsesTool` — wire types for the Responses API
+- `ResponseItem` — conversation items (Message, FunctionCall, FunctionCallOutput, HostedTool)
+- `ResponseObject` / `ResponsesUsage` / `ResponsesIncompleteDetails` — response metadata
+- `ResponsesStreamEvent` — SSE event types for streaming responses
+- `ResponsesTransport` — HTTP transport for the Responses API (separate from Chat Completions)
+- `HostedProgramEvent` — provider-neutral normalized events for program lifecycle
+- `HostedProgramAdapter` — bridges hosted items to ToolBroker and scheduler
+- `HostedBackendPolicy` / `ResolvedBackend` — backend selection and fallback
+- `HostedCallIdentity` / `CompletedHostedCall` — deduplication and call tracking
+- `ContinuationState` — opaque provider continuation state
+
+### Provider Capabilities
+
+`ProviderCapabilities` (provider_core.rs) now includes:
+
+- `supports_responses_api` — whether the provider supports Responses format
+- `supports_hosted_programs` — whether provider-hosted programmatic tool calling is available
+- `supports_client_owned_nested_calls` — nested function call support
+- `supports_hosted_continuation` — background/continuation support
+- `hosted_languages` — supported hosted execution languages
+- `max_response_items` / `max_nested_calls` — provider limits
+
+OpenAI is the only provider with Responses API support. All others
+default to native restricted Python execution.
+
+### Hosted Program Lifecycle
+
+```
+HostedProgramAdapter::new(program_id, capabilities, policy)
+    |
+    v
+process_stream_event(ResponseCreated)  →  ProgramStarted event
+    |
+    v
+process_stream_event(OutputItemAdded(FunctionCall))
+    |
+    +-- [duplicate call_id] → NestedCallResult (recorded result)
+    +-- [mismatched args]   → Error (call_identity_mismatch)
+    +-- [new call]          → NestedCall event
+    |
+    v
+[caller executes through ToolBroker]
+    |
+    v
+record_call_result(call_id, ...)  →  CompletedHostedCall persisted
+    |
+    v
+build_call_output(call_id, result)  →  FunctionCallOutput item
+    |
+    v
+process_stream_event(OutputItemDone / ResponseCompleted)
+    →  Terminal event + Usage event
+```
+
+### Backend Selection
+
+`HostedBackendPolicy` controls native vs hosted execution:
+
+| Policy | Hosted | Native | Fallback |
+|--------|--------|--------|----------|
+| NativeOnly | No | Yes | No |
+| HostedPreferred | Yes | Yes | Yes |
+| HostedRequired | Yes | No | No |
+| NativePreferred | No | Yes | Yes |
+
+Resolution is based on `ProviderCapabilities::can_host_programs()`.
+
+### Deduplication and Replay
+
+Every nested call is tracked by provider call ID. If the provider
+replays a call after transport retry, the adapter returns the
+recorded result without re-executing. Mismatched arguments on a
+repeated call ID produce a terminal `call_identity_mismatch` error.
+
+### Continuation
+
+Incomplete responses produce a `ProgramIncomplete` event with a
+continuation token (response ID) and optional fingerprint. The
+continuation state is persisted for restart recovery.
+
+### Security
+
+- Hosted calls execute through the same ToolBroker pipeline as native calls.
+- DirectOnly tools are rejected by the broker's caller-policy check.
+- Provider-generated arguments are validated as untrusted model output.
+- Provider item IDs are compatibility values, not CodeGG durable identities.
+- Auth headers, tokens, and fingerprints are redacted in logs.
+
+### Fixtures
+
+`fixture_function_call()`, `fixture_function_call_output()`,
+`fixture_response_completed()` provide deterministic test data for
+unit and integration tests.

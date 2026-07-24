@@ -83,36 +83,76 @@ impl Provider for Box<dyn Provider> {
     }
 }
 
-/// Provider capabilities for tool deferral and request limits.
+/// Provider capabilities for tool deferral, request limits, and
+/// hosted programmatic tool calling.
 ///
-/// Determines which providers support deferred tool loading and tool references,
-/// allowing the agent loop to partition tools into immediate vs deferred arrays.
+/// Determines which providers support deferred tool loading, tool references,
+/// and the Responses API with hosted program support, allowing the agent loop
+/// to partition tools into immediate vs deferred arrays and select the
+/// appropriate execution backend.
 #[derive(Debug, Clone, Default)]
 pub struct ProviderCapabilities {
     pub supports_defer_loading: bool,
     pub supports_tool_references: bool,
     pub max_tools_per_request: Option<usize>,
+    /// Whether the provider supports the Responses API format.
+    pub supports_responses_api: bool,
+    /// Whether the provider supports hosted programmatic tool calling
+    /// (provider-executed programs with client-owned nested function calls).
+    pub supports_hosted_programs: bool,
+    /// Whether the provider supports client-owned nested function calls
+    /// within hosted programs.
+    pub supports_client_owned_nested_calls: bool,
+    /// Whether the provider supports background/continuation for hosted programs.
+    pub supports_hosted_continuation: bool,
+    /// Supported hosted program languages (e.g. "python", "javascript").
+    pub hosted_languages: Vec<String>,
+    /// Maximum number of items allowed in a single Responses request.
+    pub max_response_items: Option<usize>,
+    /// Maximum number of nested function calls per response.
+    pub max_nested_calls: Option<usize>,
 }
 
 impl ProviderCapabilities {
     /// Get capabilities for a specific provider by ID.
     ///
     /// Conservative defaults: providers without explicit support
-    /// default to not supporting deferral.
+    /// default to not supporting deferral or hosted programs.
     pub fn for_provider(provider_id: &str) -> Self {
         match provider_id {
             "anthropic" => Self {
                 supports_defer_loading: true,
                 supports_tool_references: true,
                 max_tools_per_request: None,
+                ..Default::default()
             },
             "openai" => Self {
                 supports_defer_loading: true,
                 supports_tool_references: true,
                 max_tools_per_request: Some(128),
+                supports_responses_api: true,
+                supports_hosted_programs: true,
+                supports_client_owned_nested_calls: true,
+                supports_hosted_continuation: true,
+                hosted_languages: vec!["python".to_string()],
+                max_response_items: Some(100),
+                max_nested_calls: Some(50),
             },
             _ => Self::default(),
         }
+    }
+
+    /// Whether this provider can execute hosted programs.
+    pub fn can_host_programs(&self) -> bool {
+        self.supports_responses_api && self.supports_hosted_programs
+    }
+
+    /// Whether this provider supports the full hosted program lifecycle
+    /// (continuation, nested calls, background).
+    pub fn full_hosted_support(&self) -> bool {
+        self.can_host_programs()
+            && self.supports_client_owned_nested_calls
+            && self.supports_hosted_continuation
     }
 }
 

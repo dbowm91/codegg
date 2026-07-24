@@ -1,6 +1,6 @@
 # Tool Programs Milestone 009 — OpenAI Responses Hosted-Program Adapter
 
-Status: blocked pending Milestone 008 closure and stable provider capability interface
+Status: closed
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 

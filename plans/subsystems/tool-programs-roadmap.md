@@ -508,5 +508,5 @@ This subsystem is closed only when:
 | 006 | closed | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | `plans/closure/tool-programs/006-status.md` | — |
 | 007 | closed | `plans/implementation/tool-programs/007-build-test-child-job-composition.md` | `plans/closure/tool-programs/007-status.md` | — |
 | 008 | closed | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | `plans/closure/tool-programs/008-status.md` | — |
-| 009 | ready | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | — | stable provider capability interface |
+| 009 | closed | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | `plans/closure/tool-programs/009-status.md` | — |
 | 010 | ready | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | — | M009 soft; local Eggpool operational input |

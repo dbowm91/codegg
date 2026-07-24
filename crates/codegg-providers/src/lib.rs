@@ -27,6 +27,7 @@ pub mod openai;
 pub mod openai_compatible;
 pub mod opencode_zen;
 pub mod openrouter;
+pub mod responses_api;
 pub mod sse_parser;
 pub mod text_tool_parser;
 pub mod vertex;
@@ -54,6 +55,12 @@ pub use provider_core::{
     register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
     EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
     ProviderRegistry, ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE,
+};
+pub use responses_api::{
+    CompletedHostedCall, ContinuationState, HostedBackendPolicy, HostedCallIdentity,
+    HostedProgramAdapter, HostedProgramEvent, HostedProgramMetadata, HostedUsage, ResolvedBackend,
+    ResponseItem, ResponseObject, ResponsesRequest, ResponsesStreamEvent, ResponsesTool,
+    ResponsesTransport, ResponsesUsage,
 };
 
 // The core provider types and registration logic
