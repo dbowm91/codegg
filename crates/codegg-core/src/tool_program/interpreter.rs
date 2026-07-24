@@ -494,7 +494,12 @@ pub trait BrokerCallback: Send + Sync {
     async fn submit_child_job(
         &self,
         request: &ChildJobRequest,
-    ) -> Result<ChildJobResult, InterpreterError>;
+    ) -> Result<ChildJobResult, InterpreterError> {
+        let _ = request;
+        Err(InterpreterError::BrokerError(
+            "child-job execution is not supported by this broker".into(),
+        ))
+    }
 
     /// Emit a heartbeat with current budget snapshot. Called at
     /// meaningful progress boundaries (instruction milestones,

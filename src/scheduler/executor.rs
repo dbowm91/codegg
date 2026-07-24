@@ -125,6 +125,9 @@ pub struct JobExecutionContext {
     pub attempt_id: AttemptId,
     pub daemon_generation: DaemonGeneration,
     pub workspace_id: WorkspaceId,
+    /// Canonical workspace root captured from the scheduler-owned lease.
+    /// Executors must use this instead of consulting process-global CWD.
+    pub workspace_root: std::path::PathBuf,
     pub cancellation: CancellationToken,
     pub progress: Arc<dyn JobProgressSink>,
     pub resources: ResourcePermitGuard,
@@ -254,6 +257,8 @@ impl ExecutorRegistry {
 pub enum ExecutorRegistryError {
     #[error("executor already registered: {0:?}")]
     Duplicate(ExecutorKind),
+    #[error("executor registry is busy during synchronous registration")]
+    Busy,
     #[error("no executor for job kind '{kind}'", kind = .0.as_str())]
     Unsupported(JobKind),
 }

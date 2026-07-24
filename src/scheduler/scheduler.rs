@@ -246,6 +246,20 @@ impl JobScheduler {
         Ok(())
     }
 
+    /// Register one executor during synchronous daemon construction. The
+    /// construction path runs before the scheduler loop is spawned, so a
+    /// failed `try_lock` is a wiring error rather than a condition to defer.
+    pub fn register_executor_sync(
+        &self,
+        exec: Arc<dyn JobExecutor>,
+    ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
+        let mut g = self
+            .executors
+            .try_lock()
+            .map_err(|_| crate::scheduler::executor::ExecutorRegistryError::Busy)?;
+        g.register(exec)
+    }
+
     /// Synchronous default-executor registration helper. Builds the
     /// test/managed-argv/subagent executors with no RunStore / event
     /// sink wiring (the daemon reconnects them at runtime) and
@@ -733,6 +747,7 @@ impl JobScheduler {
             attempt_id: attempt.attempt_id.clone(),
             daemon_generation: self.daemon_generation.clone(),
             workspace_id: job.workspace_id.clone(),
+            workspace_root: lease.path_policy().canonical_root.clone(),
             cancellation: cancellation.clone(),
             progress: Arc::new(NoopSink),
             resources: permit,

@@ -44,7 +44,7 @@ pub struct Database {
 
 impl Database {
     pub async fn new(path: &str) -> Result<Self, StorageError> {
-        let pool = connect_and_configure(path).await?;
+        let pool = connect_and_configure(path, 10).await?;
         crate::session::schema::migrate(&pool).await?;
 
         let db = Self { pool };
@@ -168,7 +168,7 @@ pub async fn init_pool_at(db_path: &Path) -> Result<SqlitePool, StorageError> {
 
     let db_path_str = db_path.to_string_lossy().to_string();
 
-    let pool = connect_and_configure(&db_path_str).await?;
+    let pool = connect_and_configure(&db_path_str, 10).await?;
 
     info!(
         "database initialized successfully at: {}",
@@ -178,13 +178,36 @@ pub async fn init_pool_at(db_path: &Path) -> Result<SqlitePool, StorageError> {
     Ok(pool)
 }
 
-async fn connect_and_configure(path: &str) -> Result<SqlitePool, StorageError> {
+/// Initialize a SQLite pool with one connection for schema migration.
+///
+/// The historical schema migrator uses an explicit transaction while it
+/// accepts a pool. A single-connection pool keeps every migration statement
+/// on that transaction's connection and prevents a fresh catalog from
+/// self-deadlocking while it is bootstrapped.
+pub async fn init_pool_at_for_migration(db_path: &Path) -> Result<SqlitePool, StorageError> {
+    let dir = db_path.parent().ok_or_else(|| {
+        StorageError::Database(format!("invalid database path: {}", db_path.display()))
+    })?;
+    tokio::fs::create_dir_all(dir).await.map_err(|e| {
+        StorageError::Database(format!(
+            "failed to create database directory {}: {}",
+            dir.display(),
+            e
+        ))
+    })?;
+    connect_and_configure(&db_path.to_string_lossy(), 1).await
+}
+
+async fn connect_and_configure(
+    path: &str,
+    max_connections: u32,
+) -> Result<SqlitePool, StorageError> {
     let options = SqliteConnectOptions::from_str(path)
         .map_err(|e| StorageError::Database(format!("invalid database path {}: {}", path, e)))?
         .create_if_missing(true);
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(10)
+        .max_connections(max_connections)
         .acquire_timeout(Duration::from_secs(30))
         .connect_with(options)
         .await

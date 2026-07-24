@@ -254,8 +254,8 @@ impl CoreDaemon {
             config.scheduler.as_ref(),
         )
         .unwrap_or_default();
-        let scheduler = if let Some(existing) = deps.scheduler.clone() {
-            existing
+        let (scheduler, should_spawn_scheduler) = if let Some(existing) = deps.scheduler.clone() {
+            (existing, false)
         } else if scheduler_config.enabled {
             let scheduler_arc = crate::scheduler::JobScheduler::new(
                 deps.job_store.clone(),
@@ -268,26 +268,48 @@ impl CoreDaemon {
                 .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone());
             let (tx, _rx) = tokio::sync::mpsc::channel(64);
             let _ = scheduler_arc.set_event_sink_blocking(tx);
-            let _handle = scheduler_arc.spawn_run();
-            scheduler_arc
+            (scheduler_arc, true)
         } else {
             // Even when disabled, build a placeholder scheduler so
             // snapshots and introspection still work.
-            crate::scheduler::JobScheduler::new(
-                deps.job_store.clone(),
-                workspace_services.clone(),
-                scheduler_config.clone(),
-                deps.daemon_generation.clone(),
+            (
+                crate::scheduler::JobScheduler::new(
+                    deps.job_store.clone(),
+                    workspace_services.clone(),
+                    scheduler_config.clone(),
+                    deps.daemon_generation.clone(),
+                ),
+                false,
             )
         };
         deps.scheduler = Some(scheduler.clone());
-        deps.scheduler_config = scheduler_config;
-        deps.submission = Some(crate::scheduler::JobSubmissionService::new(
+        deps.scheduler_config = scheduler_config.clone();
+        let submission = crate::scheduler::JobSubmissionService::new(
             deps.job_store.clone(),
-            scheduler,
+            scheduler.clone(),
             workspace_services.clone(),
             deps.daemon_generation.clone(),
-        ));
+        );
+        deps.submission = Some(submission.clone());
+
+        // The Tool Program executor needs the daemon-owned submission facade
+        // for nested child jobs. Install it only after the scheduler exists,
+        // but before the scheduler loop is spawned, so production execution
+        // cannot fall back to an executor with no child-job authority.
+        if scheduler_config.enabled {
+            if let Err(error) = scheduler.register_executor_sync(Arc::new(
+                crate::scheduler::tool_program_executor::ToolProgramExecutor::default()
+                    .with_submission(submission),
+            )) {
+                tracing::debug!(
+                    ?error,
+                    "tool program executor already supplied by scheduler"
+                );
+            }
+        }
+        if should_spawn_scheduler {
+            let _handle = scheduler.spawn_run();
+        }
 
         Self {
             daemon_id,
@@ -5775,20 +5797,104 @@ impl CoreDaemon {
                 session_id,
                 state_filter,
             } => {
-                // Tool programs are stored in the projection snapshot.
-                // For now, return an empty list — the full implementation
-                // requires the notification service to be wired into the
-                // daemon's projection seam.
-                let _ = (session_id, state_filter);
-                Ok(CoreResponse::ToolProgramList { programs: vec![] })
+                let query = codegg_core::jobs::store::JobStoreQuery {
+                    kinds: vec![codegg_core::jobs::JobKind::ToolProgram],
+                    session_id: Some(session_id),
+                    limit: Some(
+                        codegg_protocol::projection::limits::MAX_PROJECTION_TOOL_PROGRAMS as u32,
+                    ),
+                    ..Default::default()
+                };
+                let summaries = match self.deps.job_store.list_jobs(query).await {
+                    Ok(summaries) => summaries,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "tool_program_list_failed".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let mut programs = Vec::new();
+                for summary in summaries {
+                    let job = match self.deps.job_store.get_job(&summary.job_id).await {
+                        Ok(job) => job,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "tool_program_list_failed".into(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                    if let Some(job) = job {
+                        let program = tool_program_summary_from_job(&job, &[], 0);
+                        if state_filter
+                            .as_deref()
+                            .map(|state| program.state == state)
+                            .unwrap_or(true)
+                        {
+                            programs.push(program);
+                        }
+                    }
+                }
+                Ok(CoreResponse::ToolProgramList { programs })
             }
             CoreRequest::ToolProgramInspect { program_id } => {
-                let _ = program_id;
-                Ok(CoreResponse::ToolProgramInspect { detail: None })
+                let job = match self.find_tool_program_job(&program_id).await {
+                    Ok(job) => job,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "tool_program_inspect_failed".into(),
+                            message: error,
+                        });
+                    }
+                };
+                let Some(job) = job else {
+                    return Ok(CoreResponse::ToolProgramInspect { detail: None });
+                };
+                let attempts = match self.deps.job_store.list_attempts(&job.job_id).await {
+                    Ok(attempts) => attempts,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "tool_program_inspect_failed".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let call_page = match self.tool_program_call_page_for_job(&job, 0).await {
+                    Ok(page) => page,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "tool_program_inspect_failed".into(),
+                            message: error,
+                        });
+                    }
+                };
+                let mut detail = tool_program_detail_from_job(&job, &attempts, call_page);
+                detail.normalise();
+                Ok(CoreResponse::ToolProgramInspect {
+                    detail: Some(detail),
+                })
             }
             CoreRequest::ToolProgramCallPage { program_id, offset } => {
-                let _ = (program_id, offset);
-                Ok(CoreResponse::ToolProgramCallPage { page: None })
+                let job = match self.find_tool_program_job(&program_id).await {
+                    Ok(job) => job,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "tool_program_call_page_failed".into(),
+                            message: error,
+                        });
+                    }
+                };
+                let Some(job) = job else {
+                    return Ok(CoreResponse::ToolProgramCallPage { page: None });
+                };
+                match self.tool_program_call_page_for_job(&job, offset).await {
+                    Ok(page) => Ok(CoreResponse::ToolProgramCallPage { page: Some(page) }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "tool_program_call_page_failed".into(),
+                        message: error,
+                    }),
+                }
             }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
@@ -5798,6 +5904,150 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+
+    async fn find_tool_program_job(
+        &self,
+        program_id: &str,
+    ) -> Result<Option<codegg_core::jobs::JobRecord>, String> {
+        let query = codegg_core::jobs::store::JobStoreQuery {
+            kinds: vec![codegg_core::jobs::JobKind::ToolProgram],
+            limit: Some(256),
+            ..Default::default()
+        };
+        let summaries = self
+            .deps
+            .job_store
+            .list_jobs(query)
+            .await
+            .map_err(|error| error.to_string())?;
+        for summary in summaries {
+            if let Some(job) = self
+                .deps
+                .job_store
+                .get_job(&summary.job_id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                if tool_program_id(&job).is_some_and(|id| id == program_id) {
+                    return Ok(Some(job));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    async fn tool_program_call_page_for_job(
+        &self,
+        job: &codegg_core::jobs::JobRecord,
+        offset: u32,
+    ) -> Result<codegg_protocol::projection::dto::ToolProgramCallPage, String> {
+        let program_id = tool_program_id(job).unwrap_or_default();
+        let lease = self
+            .workspace_services
+            .acquire(&job.workspace_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        crate::tool::tool_program_ledger::ToolProgramLedger::new(
+            &lease.path_policy().canonical_root,
+        )
+        .read_page(program_id, offset)
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn tool_program_id(job: &codegg_core::jobs::JobRecord) -> Option<&str> {
+    match &job.payload {
+        codegg_core::jobs::JobPayload::ToolProgram { program_id, .. } => Some(program_id),
+        _ => None,
+    }
+}
+
+fn tool_program_summary_from_job(
+    job: &codegg_core::jobs::JobRecord,
+    attempts: &[codegg_core::jobs::JobAttempt],
+    calls_completed: u32,
+) -> codegg_protocol::projection::dto::ToolProgramSummary {
+    let (program_id, source_digest, _ir_digest) = match &job.payload {
+        codegg_core::jobs::JobPayload::ToolProgram {
+            program_id,
+            source_digest,
+            ir_digest,
+            ..
+        } => (program_id.clone(), source_digest.clone(), ir_digest.clone()),
+        _ => (job.job_id.to_string(), String::new(), None),
+    };
+    let started_at = attempts.iter().find_map(|attempt| {
+        attempt
+            .started_at
+            .map(|timestamp| timestamp.timestamp_millis())
+    });
+    let completed_at = job
+        .terminal_at
+        .map(|timestamp| timestamp.timestamp_millis());
+    let failure_class = if job.state == codegg_core::jobs::JobState::Completed {
+        None
+    } else if job.state.is_terminal() {
+        Some(job.state.as_str().to_string())
+    } else {
+        None
+    };
+    let mut summary = codegg_protocol::projection::dto::ToolProgramSummary {
+        program_id,
+        job_id: job.job_id.to_string(),
+        state: job.state.as_str().to_string(),
+        phase: None,
+        language: "restricted_python".into(),
+        parent_turn_id: job.turn_id.clone(),
+        parent_agent_id: None,
+        calls_completed,
+        child_jobs_running: 0,
+        submitted_at: job.created_at.timestamp_millis(),
+        started_at,
+        completed_at,
+        failure_class,
+        terminal_handle: Some(job.job_id.to_string()),
+        last_progress: if source_digest.is_empty() {
+            None
+        } else {
+            Some("source verified at executor admission".into())
+        },
+    };
+    summary.normalise();
+    summary
+}
+
+fn tool_program_detail_from_job(
+    job: &codegg_core::jobs::JobRecord,
+    attempts: &[codegg_core::jobs::JobAttempt],
+    call_page: codegg_protocol::projection::dto::ToolProgramCallPage,
+) -> codegg_protocol::projection::dto::ToolProgramDetail {
+    let (source_hash, ir_hash, manifest_summary) = match &job.payload {
+        codegg_core::jobs::JobPayload::ToolProgram {
+            source_digest,
+            ir_digest,
+            allowed_tools,
+            ..
+        } => (
+            Some(source_digest.clone()),
+            ir_digest.clone(),
+            Some(format!(
+                "language=restricted_python; allowed_tools={}; source withheld",
+                allowed_tools.join(",")
+            )),
+        ),
+        _ => (None, None, None),
+    };
+    let total_calls = call_page.total_calls;
+    codegg_protocol::projection::dto::ToolProgramDetail {
+        summary: tool_program_summary_from_job(job, attempts, total_calls),
+        source_hash,
+        ir_hash,
+        checkpoint_version: None,
+        manifest_summary,
+        artifacts: Vec::new(),
+        total_calls,
+        call_page: Some(call_page),
     }
 }
 
