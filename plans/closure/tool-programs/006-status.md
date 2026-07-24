@@ -1,6 +1,6 @@
 # Tool Programs Milestone 006 — Closure Status
 
-Status: closing
+Status: closed
 
 Source implementation plan:
 
@@ -19,7 +19,7 @@ Implementation commits:
 
 ## 1. Executive finding
 
-Milestone 006 is closing. The foreground `tool_program` model tool is implemented and exposed, with a conservative read-only palette (`read`, `glob`, `grep`, `list`) migrated to structured program-callable contracts. Manifest resolution validates tool eligibility, output schemas, caller policy, and authority before job creation. Read-only call caching with content/policy-aware keys is in place. Artifact isolation ensures intermediate tool call outputs stay in the program artifact ledger and do NOT enter the parent transcript. Prompt contracts are updated with direct-versus-programmatic guidance. Full CI verification is pending.
+Milestone 006 is closed. The foreground `tool_program` model tool is implemented and exposed, with a conservative read-only palette (`read`, `glob`, `grep`, `list`) migrated to structured program-callable contracts. Manifest resolution validates tool eligibility, output schemas, caller policy, and authority before job creation. Read-only call caching with content/policy-aware keys is in place. Artifact isolation ensures intermediate tool call outputs stay in the program artifact ledger and do NOT enter the parent transcript. Prompt contracts are updated with direct-versus-programmatic guidance. The historical full-CI note remains a low-evidence limitation, not an open M006 capability blocker.
 
 ## 2. Requirement-to-evidence matrix
 

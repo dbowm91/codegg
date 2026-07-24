@@ -449,6 +449,16 @@ async fn main() -> Result<(), AppError> {
             // Fallback to no-op subscriber if we can't create the file, to avoid stdout/stderr flood in TUI
             tracing_subscriber::registry().init();
         }
+    } else if matches!(cli.command, Some(Commands::CoreStdio)) {
+        // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
+        // on stderr so a diagnostic can never corrupt a response frame.
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_level)),
+            )
+            .with_writer(std::io::stderr)
+            .init();
     } else if cli.command.is_none() {
         // Silent by default in TUI mode if no verbose flag
         tracing_subscriber::registry().init();
@@ -2239,10 +2249,27 @@ async fn run_core_stdio() -> Result<(), AppError> {
         .ok()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let pool = storage::init_legacy_project_store(Path::new(&project_dir)).await?;
+    let catalog_paths = std::env::var_os("CODEGG_CORE_STDIO_CATALOG")
+        .map(std::path::PathBuf::from)
+        .map(|data_root| storage::DaemonPaths::with_overrides(Some(data_root), None))
+        .unwrap_or_default();
+    let migration_pool =
+        storage::init_pool_at_for_migration(&catalog_paths.catalog_db_path()).await?;
+    codegg::session::schema::migrate(&migration_pool).await?;
+    migration_pool.close().await;
+    let pool = storage::init_daemon_catalog(&catalog_paths).await?;
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
-    let config = Config::load().unwrap_or_default();
+    let mut config = Config::load().unwrap_or_default();
+    if std::env::var_os("CODEGG_CORE_STDIO_CATALOG").is_some() {
+        // The isolated harness must not inherit an operator's rollout toggle;
+        // it is explicitly testing the production scheduler/executor path.
+        config.scheduler = Some(codegg::config::schema::SchedulerConfig {
+            enabled: Some(true),
+            rollout: Some(codegg::config::schema::SchedulerRolloutConfig::Mandatory),
+            ..Default::default()
+        });
+    }
     let agents = agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir)))?;
 
     let mut subagent_registry = ProviderRegistry::new();
@@ -2263,14 +2290,13 @@ async fn run_core_stdio() -> Result<(), AppError> {
         std::time::Duration::from_secs(10),
     );
 
-    let core = codegg::core::InprocCoreClient::new(
+    let deps = codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
+        pool.clone(),
         Some(subagent_pool),
         Some(memory_store),
         Some(scheduler),
-        Some(pool),
-        config,
-        None,
     );
+    let core = codegg::core::InprocCoreClient::with_deps(deps, config);
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();

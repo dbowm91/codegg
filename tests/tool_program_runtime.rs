@@ -22,6 +22,11 @@ use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
 fn sample_job(program_id: &str, source: &str) -> JobRecord {
     let now = chrono::Utc::now();
     let source_digest = ProgramStore::digest_source(source);
+    let source_ref = codegg::tool::tool_program_source::ToolProgramSourceStore::new(
+        &std::env::current_dir().unwrap(),
+    )
+    .persist(source)
+    .unwrap();
     JobRecord {
         job_id: JobId::new_unchecked("j-tp-integration"),
         workspace_id: WorkspaceId::new_unchecked("ws-integration"),
@@ -36,6 +41,9 @@ fn sample_job(program_id: &str, source: &str) -> JobRecord {
             ir_digest: None,
             authority_digest: "auth_test".to_string(),
             submission_key: "sub_test".to_string(),
+            source_ref: Some(source_ref.relative_path),
+            source_length: Some(source_ref.length),
+            allowed_tools: Vec::new(),
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -67,6 +75,7 @@ fn make_ctx(job: JobRecord, cancelled: bool) -> JobExecutionContext {
         attempt_id: AttemptId::new_unchecked("att-integration"),
         daemon_generation: DaemonGeneration::new_unchecked("gen-1"),
         workspace_id: WorkspaceId::new_unchecked("ws-integration"),
+        workspace_root: std::env::current_dir().unwrap(),
         cancellation: token,
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),

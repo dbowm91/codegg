@@ -57,6 +57,8 @@ pub mod terminal;
 pub mod test;
 pub mod todo;
 pub mod tool_program;
+pub mod tool_program_ledger;
+pub mod tool_program_source;
 pub mod tool_search;
 pub mod util;
 pub mod webfetch;

@@ -159,6 +159,7 @@ pub struct BrokerAdapter {
     program_id: String,
     submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
     workspace_id: Option<codegg_core::workspace::WorkspaceId>,
+    allowed_tools: Option<std::collections::HashSet<String>>,
     cwd: std::path::PathBuf,
 }
 
@@ -170,6 +171,7 @@ impl BrokerAdapter {
             program_id,
             submission: None,
             workspace_id: None,
+            allowed_tools: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         }
     }
@@ -191,11 +193,24 @@ impl BrokerAdapter {
         self.cwd = cwd;
         self
     }
+
+    pub fn with_allowed_tools(mut self, tools: Vec<String>) -> Self {
+        self.allowed_tools = Some(tools.into_iter().collect());
+        self
+    }
 }
 
 #[async_trait]
 impl BrokerCallback for BrokerAdapter {
     async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError> {
+        if let Some(allowed_tools) = &self.allowed_tools {
+            if !allowed_tools.contains(&request.tool_name) {
+                return Err(InterpreterError::BrokerError(format!(
+                    "tool '{}' is not in the frozen Tool Program manifest",
+                    request.tool_name
+                )));
+            }
+        }
         let ctx = BrokerInvocationContext {
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),
@@ -527,6 +542,8 @@ impl JobExecutor for ToolProgramExecutor {
                 program_id,
                 source_digest,
                 authority_digest,
+                source_ref,
+                source_length,
                 ..
             } => {
                 if program_id.is_empty() {
@@ -540,6 +557,11 @@ impl JobExecutor for ToolProgramExecutor {
                 if authority_digest.is_empty() {
                     return Err(ExecutorValidationError::MissingField(
                         "authority_digest".into(),
+                    ));
+                }
+                if source_ref.is_none() || source_length.is_none() {
+                    return Err(ExecutorValidationError::MissingField(
+                        "source_ref/source_length".into(),
                     ));
                 }
                 Ok(())
@@ -561,18 +583,32 @@ impl JobExecutor for ToolProgramExecutor {
             .await;
 
         // Extract payload
-        let (program_id, source_digest, ir_digest, authority_digest) = match &ctx.job.payload {
+        let (
+            program_id,
+            source_digest,
+            ir_digest,
+            authority_digest,
+            source_ref,
+            source_length,
+            allowed_tools,
+        ) = match &ctx.job.payload {
             JobPayload::ToolProgram {
                 program_id,
                 source_digest,
                 ir_digest,
                 authority_digest,
+                source_ref,
+                source_length,
+                allowed_tools,
                 ..
             } => (
                 program_id.clone(),
                 source_digest.clone(),
                 ir_digest.clone(),
                 authority_digest.clone(),
+                source_ref.clone(),
+                *source_length,
+                allowed_tools.clone(),
             ),
             _ => {
                 return ExecutorCompletion {
@@ -593,15 +629,9 @@ impl JobExecutor for ToolProgramExecutor {
             .progress(ctx.job_id(), "tool_program: validating")
             .await;
 
-        // For M005, we use a fixture program. The IR should be provided
-        // via the job payload or loaded from the program store.
-        // Since we don't have full store integration yet, we compile
-        // from source if available, or use a fixture.
-        //
-        // In production (M006+), the IR would be loaded from the
-        // content-addressed store using source_digest and ir_digest.
-
-        // Validate authority digest is not empty (already checked in validate)
+        // The authority digest is persisted for audit correlation. The
+        // source and manifest are independently verified below before any
+        // interpreter instruction is admitted.
         let _ = authority_digest;
 
         // Emit progress: loading IR
@@ -610,12 +640,57 @@ impl JobExecutor for ToolProgramExecutor {
             .progress(ctx.job_id(), "tool_program: loading IR")
             .await;
 
-        // For M005, compile a fixture program based on the source digest.
-        // In production, this would load from the content-addressed store.
-        let fixture_source =
-            "emit({\"status\": \"ok\", \"program_id\": \"".to_string() + &program_id + "\"})\n";
+        let source_ref = match (source_ref, source_length) {
+            (Some(relative_path), Some(length)) => {
+                crate::tool::tool_program_source::ToolProgramSourceRef {
+                    digest: source_digest.clone(),
+                    length,
+                    relative_path,
+                }
+            }
+            _ => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: "missing durable tool-program source reference".into(),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        let source = match crate::tool::tool_program_source::ToolProgramSourceStore::new(
+            &ctx.workspace_root,
+        )
+        .retrieve(&source_ref)
+        {
+            Ok(source) => source,
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("source verification failed: {}", error),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        if codegg_core::tool_program::ProgramStore::digest_source(&source) != source_digest {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "source verification failed: digest mismatch".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
 
-        let compilation = match codegg_core::tool_program::compile_program(&fixture_source) {
+        let compilation = match codegg_core::tool_program::compile_program(&source) {
             Ok(c) => c,
             Err(e) => {
                 return ExecutorCompletion {
@@ -643,17 +718,19 @@ impl JobExecutor for ToolProgramExecutor {
             };
         }
 
-        // Source/IR digest validation against the content-addressed store
-        // is deferred to M006 when ProgramStore integration is available.
-        // For M005, we verify IR integrity (digest matches instructions)
-        // and non-empty digests at admission time (validate() above).
-        //
-        // In production (M006+), the executor would:
-        // 1. Load source from ContentAddressedStore by source_digest
-        // 2. Recompile and verify ir_digest matches
-        // 3. Load manifest and verify authority_digest
-        let _ = &source_digest;
-        let _ = &ir_digest;
+        if let Some(expected_ir_digest) = ir_digest {
+            if compilation.ir.digest != expected_ir_digest {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: "IR verification failed: digest mismatch".into(),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        }
 
         // Emit progress: executing
         let _ = ctx
@@ -711,8 +788,8 @@ impl JobExecutor for ToolProgramExecutor {
             broker_adapter = broker_adapter.with_submission(submission.clone());
         }
         broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
-        broker_adapter = broker_adapter
-            .with_cwd(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        broker_adapter = broker_adapter.with_cwd(ctx.workspace_root.clone());
+        broker_adapter = broker_adapter.with_allowed_tools(allowed_tools);
 
         // Build run configuration
         let run_config = RunConfig {
@@ -753,13 +830,30 @@ impl JobExecutor for ToolProgramExecutor {
             result.calls_completed
         );
         if let Some(ref output) = result.output {
-            summary.push_str(&format!("\noutput: {}", output));
+            let _ = output;
+            summary.push_str("\noutput_present=true");
         }
-        if let Some(ref err) = result.error_message {
-            summary.push_str(&format!("\nerror: {}", err));
+        if result.error_message.is_some() {
+            summary.push_str("\nerror_present=true");
         }
         if let Some(ref class) = result.failure_class {
             summary.push_str(&format!("\nfailure_class: {}", class));
+        }
+
+        if let Err(error) =
+            crate::tool::tool_program_ledger::ToolProgramLedger::new(&ctx.workspace_root)
+                .persist_completed_calls(&program_id, interpreter.completed_calls())
+        {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: format!("call ledger persistence failed: {error}"),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    cpu_time_ms: None,
+                    peak_memory_mb: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+            };
         }
 
         ExecutorCompletion {
@@ -802,6 +896,9 @@ mod tests {
                 ir_digest: None,
                 authority_digest: "auth_digest_abc".to_string(),
                 submission_key: "key_123".to_string(),
+                source_ref: Some(format!("{}.py", source_digest)),
+                source_length: Some(0),
+                allowed_tools: Vec::new(),
             },
             resource_request: ResourceRequest::default(),
             timeout: None,
@@ -917,19 +1014,33 @@ mod tests {
         use crate::scheduler::permit::ResourcePermitGuard;
         use codegg_core::jobs::AttemptId;
         use codegg_core::workspace::WorkspaceId;
+        let fixture_source = "emit({\"status\": \"ok\", \"program_id\": \"test_prog\"})\n";
+        let source_ref = crate::tool::tool_program_source::ToolProgramSourceStore::new(
+            &std::env::current_dir().unwrap(),
+        )
+        .persist(fixture_source)
+        .unwrap();
 
         let exec = ToolProgramExecutor::default();
-        let source = codegg_core::tool_program::ProgramStore::digest_source(
-            "emit({\"status\": \"ok\", \"program_id\": \"test_prog\"})\n",
-        );
+        let source = codegg_core::tool_program::ProgramStore::digest_source(fixture_source);
 
-        let job = sample_tool_program_job("test_prog", &source);
+        let mut job = sample_tool_program_job("test_prog", &source);
+        if let JobPayload::ToolProgram {
+            source_ref: ref mut job_source_ref,
+            source_length: ref mut job_source_length,
+            ..
+        } = job.payload
+        {
+            *job_source_ref = Some(source_ref.relative_path);
+            *job_source_length = Some(source_ref.length);
+        }
 
         let ctx = JobExecutionContext {
             job,
             attempt_id: AttemptId::new_unchecked("att-1"),
             daemon_generation: codegg_core::jobs::DaemonGeneration::new_unchecked("gen-1"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
+            workspace_root: std::env::current_dir().unwrap(),
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(NoopProgressSink),
             resources: ResourcePermitGuard::new_orphan(Default::default()),
@@ -962,6 +1073,7 @@ mod tests {
             attempt_id: AttemptId::new_unchecked("att-2"),
             daemon_generation: codegg_core::jobs::DaemonGeneration::new_unchecked("gen-1"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
+            workspace_root: std::env::current_dir().unwrap(),
             cancellation: token,
             progress: Arc::new(NoopProgressSink),
             resources: ResourcePermitGuard::new_orphan(Default::default()),

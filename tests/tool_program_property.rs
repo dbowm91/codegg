@@ -86,6 +86,7 @@ fn count_stmt_steps(stmt: &codegg_core::tool_program::Stmt) -> u64 {
             }
             s
         }
+        Stmt::SubmitJob { op, config, .. } => 2 + count_expr_steps(op) + count_expr_steps(config),
         Stmt::Emit { value, .. } => 1 + count_expr_steps(value),
         Stmt::Fail {
             reason: Some(r), ..
@@ -160,6 +161,9 @@ fn count_expr_steps(expr: &codegg_core::tool_program::Expr) -> u64 {
                 s += count_expr_steps(d);
             }
             s
+        }
+        Expr::SubmitJobExpr { op, config, .. } => {
+            2 + count_expr_steps(op) + count_expr_steps(config)
         }
         Expr::List { elements, .. } => {
             let mut s = 1;

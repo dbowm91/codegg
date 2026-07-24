@@ -4,6 +4,13 @@ Tool Programs introduce a durable, versioned domain model for
 agent-submitted bounded programs that invoke approved CodeGG tools
 through deterministic control flow.
 
+M010 closes the executable native path: production submission persists
+source under `.codegg/tool_program_sources/`, the scheduler admits
+`JobKind::ToolProgram`, the executor compiles the submitted source, and
+public inspection reads bounded call summaries from the atomic
+`.codegg/tool_program_calls/` ledger. The external harness drives this path
+through `core-stdio`; it does not instantiate an alternate executor.
+
 ## Ownership
 
 `crates/codegg-core/src/tool_program/` owns:
@@ -122,8 +129,13 @@ and `gc`.
 - Submission service verifies referenced records and hashes before
   creating the job.
 - `ToolProgramExecutor` (`src/scheduler/tool_program_executor.rs`)
-  loads verified IR, creates a `MeteredInterpreter`, and runs it
-  through the scheduler's admission-controlled execution path.
+  loads and verifies the immutable source reference, compiles the submitted
+  source, creates a `MeteredInterpreter`, and runs it through the scheduler's
+  admission-controlled execution path. The executor is registered in the
+  daemon's default scheduler registry.
+- `JobPayload::ToolProgram` carries the source reference/length and the
+  frozen allowed-tool manifest. The broker adapter rejects calls outside that
+  manifest before invoking `ToolBroker`.
 
 ## Call Ledger
 
@@ -229,14 +241,28 @@ interpreter.
 implements `JobExecutor` for `JobKind::ToolProgram`. The executor:
 
 1. Validates `JobPayload::ToolProgram` fields (program_id,
-   source_digest, authority_digest non-empty).
-2. Compiles the submitted source to IR (fixture in M005;
-   content-addressed store in M006).
+   source_digest, authority_digest, source reference, and source length).
+2. Loads the immutable workspace-local source and verifies digest and length,
+   then compiles that submitted source to IR.
 3. Verifies IR integrity via `verify_ir_integrity()`.
 4. Creates `MeteredInterpreter` with `RuntimeLimits` derived from
    IR bounds plus executor-configured timeouts.
-5. Creates `BrokerAdapter` bridging interpreter to real `ToolBroker`.
+5. Creates `BrokerAdapter` bridging interpreter to real `ToolBroker` and
+   enforces the frozen allowed-tool manifest.
 6. Runs with `CancellationToken` support and typed terminal mapping.
+7. Atomically persists a redacted bounded call ledger for public inspection.
+
+### Native inspection and harness
+
+`ToolProgramList`, `ToolProgramInspect`, and `ToolProgramCallPage` are
+daemon-owned views over durable jobs, attempts, workspace source hashes, and
+the call ledger. Raw source, arguments, and result bodies are not returned.
+The reusable `scripts/e2e/tool_program_harness.py` supports deterministic
+scripted tests, an isolated production `core-stdio` run, exact-model
+Eggpool validation, and an explicitly skipped ACP mode until that adapter is
+scheduled. Eggpool requires `CODEGG_EGGPOOL_URL`,
+`CODEGG_EGGPOOL_API_KEY`, `CODEGG_EGGPOOL_CONNECTION_ID`, the exact
+`mimo-v2.5` model, and `--no-model-fallback`.
 
 ### Timeout Configuration
 
@@ -1408,3 +1434,76 @@ and native backends:
 `fixture_function_call()`, `fixture_function_call_output()`,
 `fixture_response_completed()` provide deterministic test data for
 unit and integration tests.
+
+## M010 — Harness, Eggpool, Chaos, Performance, and Closure
+
+### Scenario Schema
+
+The scenario format is a versioned, reproducible test case:
+
+- **Source**: restricted-Python code compiled through the full pipeline.
+- **Broker**: configurable fault injection (deterministic, faulty, rate-limited, panicking, counting).
+- **Bounds**: max steps, iterations, deadline, per-call timeout.
+- **Assertions**: expected status, call count range, output content, failure class.
+- **Seed**: deterministic chaos seed for reproducible fault injection.
+
+Scenarios are defined in `tests/tool_program_scenarios.rs` and run
+through the in-process `MeteredInterpreter` + `BrokerCallback` pipeline.
+
+### Fault Injection Framework
+
+Named injection points with typed outcomes:
+
+| Boundary | Injection | Recovery |
+|----------|-----------|----------|
+| Broker transient failure | Fail on Nth call | Program fails or recovers depending on call criticality |
+| Provider rate limit | RateLimitedBroker | Program reaches terminal state |
+| Worker panic | AlwaysPanicBroker | Panic caught by test harness, program fails |
+| Step budget exhaustion | `RuntimeLimits.max_steps` | Incomplete status, continuation possible |
+| Iteration budget | `RuntimeLimits.max_iterations` | Incomplete status |
+| Cancellation | `CancellationToken` | Cancelled status, resources released |
+| Malformed output | Null/empty tool result | Program completes or fails based on usage |
+
+Mixed-fault runs use `SeededChaosBroker` with configurable failure
+probability (5–50%) and deterministic seeds. All runs must reach
+terminal state (Completed, Failed, Incomplete, or Recoverable).
+
+### Resource Convergence
+
+Measured before/after each scenario:
+
+- `calls_completed` — matches expected call count
+- `completed_calls` vec — bounded by `calls_completed`
+- `bytes_used` — positive for programs with tool calls
+- `steps_used` — positive for non-trivial programs
+- `iterations_used` — positive for loop programs
+- No leaked tasks, processes, or permits across repeated runs
+
+### Eggpool Model Profile
+
+- Reads endpoint from `CODEGG_EGGPOOL_URL` and credential from `CODEGG_EGGPOOL_API_KEY`.
+- Requires exact model string `mimo-v2.5`; rejects fallback, alias expansion, or provider substitution.
+- Probes model identity before scenarios; records redacted endpoint class only.
+- Live runs optional/skippable when environment variables are absent.
+
+### External Harness
+
+`scripts/e2e/tool_program_harness.py` provides three modes:
+
+1. **scripted** — runs deterministic cargo tests, reports pass/fail/duration
+2. **eggpool** — verifies model identity, optionally runs live scenarios
+3. **acp** — placeholder for ACP transport adapter (when available)
+
+The harness is a client of CodeGG, not an alternate executor.
+
+### Evidence Requirements
+
+Closure requires:
+
+- Deterministic scenario inventory and outcomes
+- Fault points, rates, seeds, repetitions, deadlines, and convergence counts
+- Direct/programmatic correctness, evidence, turns, tokens, latency, cache, artifacts
+- Process/task/permit/job/call/notification/resource baseline and final measurements
+- Security review and static guard output
+- Eggpool exact-model evidence or explicit operational blocker
+- Known limitations and severity-ranked findings

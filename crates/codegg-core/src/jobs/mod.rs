@@ -736,6 +736,17 @@ pub enum JobPayload {
         authority_digest: String,
         /// Submission key for idempotency.
         submission_key: String,
+        /// Workspace-local immutable source reference. The executor must
+        /// verify this reference against `source_digest` before execution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_ref: Option<String>,
+        /// Byte length of the referenced source body.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_length: Option<u64>,
+        /// Frozen Tool Broker manifest. An empty list is retained for
+        /// compatibility with old persisted jobs and denies all calls.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_tools: Vec<String>,
     },
     Maintenance {
         task: String,

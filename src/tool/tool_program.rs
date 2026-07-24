@@ -250,16 +250,17 @@ impl Tool for ToolProgramTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let result = self.execute_impl(input).await?;
+        let result = self.execute_impl(input, None).await?;
         Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()))
     }
 
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let value = self.execute_impl(input.clone()).await?;
+        let workspace_root = ctx.map(|context| context.cwd);
+        let value = self.execute_impl(input.clone(), workspace_root).await?;
         let display = value
             .get("status")
             .and_then(|s| s.as_str())
@@ -282,7 +283,11 @@ impl Tool for ToolProgramTool {
 }
 
 impl ToolProgramTool {
-    async fn execute_impl(&self, input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+    async fn execute_impl(
+        &self,
+        input: serde_json::Value,
+        workspace_root: Option<std::path::PathBuf>,
+    ) -> Result<serde_json::Value, ToolError> {
         let source = input
             .get("source")
             .and_then(|s| s.as_str())
@@ -320,6 +325,11 @@ impl ToolProgramTool {
         if tools.is_empty() {
             return Err(ToolError::Format("tools array must not be empty".into()));
         }
+        if tools.len() > 64 {
+            return Err(ToolError::Format(
+                "tools array exceeds the 64-tool limit".into(),
+            ));
+        }
 
         // Step 1: Compile the program
         let compilation = tool_program::compile_program(source)
@@ -337,8 +347,13 @@ impl ToolProgramTool {
         let source_digest = ProgramStore::digest_source(source);
         let program_id = format!("tp-{}", &source_digest[..16.min(source_digest.len())]);
 
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace_root = workspace_root.unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+        let source_ref =
+            crate::tool::tool_program_source::ToolProgramSourceStore::new(&workspace_root)
+                .persist(source)
+                .map_err(|e| ToolError::Execution(format!("source persistence failed: {}", e)))?;
         let workspace_id = submission
             .workspace_id_for_root(&workspace_root)
             .await
@@ -360,6 +375,9 @@ impl ToolProgramTool {
                 ir_digest: Some(compilation.ir.digest.clone()),
                 authority_digest: source_digest.clone(),
                 submission_key: format!("tp-submit:{}", source_digest),
+                source_ref: Some(source_ref.relative_path),
+                source_length: Some(source_ref.length),
+                allowed_tools: tools,
             },
             resource_request: ResourceRequest::for_kind(JobKind::ToolProgram),
             timeout: Some(std::time::Duration::from_millis(timeout_ms)),

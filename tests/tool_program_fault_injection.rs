@@ -697,6 +697,11 @@ async fn authority_digest_validated_at_admission() {
         use codegg_core::workspace::WorkspaceId;
         let now = chrono::Utc::now();
         let source_digest = ProgramStore::digest_source(source);
+        let source_ref = codegg::tool::tool_program_source::ToolProgramSourceStore::new(
+            &std::env::current_dir().unwrap(),
+        )
+        .persist(source)
+        .unwrap();
         JobRecord {
             job_id: JobId::new_unchecked("j-auth"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
@@ -711,6 +716,9 @@ async fn authority_digest_validated_at_admission() {
                 ir_digest: None,
                 authority_digest: "auth_test".to_string(),
                 submission_key: "sub_test".to_string(),
+                source_ref: Some(source_ref.relative_path),
+                source_length: Some(source_ref.length),
+                allowed_tools: Vec::new(),
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

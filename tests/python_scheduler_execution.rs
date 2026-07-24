@@ -328,6 +328,7 @@ async fn legacy_script_path_payload_rejected_without_source() {
     let ctx = codegg::scheduler::executor::JobExecutionContext {
         job: job.clone(),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
+        workspace_root: std::env::current_dir().unwrap(),
         attempt_id: codegg_core::jobs::AttemptId::new_unchecked("a-1"),
         daemon_generation: DaemonGeneration::new_unchecked("gen-test"),
         cancellation: tokio_util::sync::CancellationToken::new(),
@@ -472,6 +473,7 @@ async fn python_executor_cancelled_before_launch() {
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         attempt_id: codegg_core::jobs::AttemptId::new_unchecked("a-cancel"),
         daemon_generation: DaemonGeneration::new_unchecked("gen-test"),
+        workspace_root: std::env::current_dir().unwrap(),
         cancellation,
         progress: Arc::new(codegg::scheduler::executors::NullProgressSink),
         resources: ResourcePermitGuard::new_orphan(PermitDimensions::default()),
@@ -545,6 +547,7 @@ async fn python_executor_rejects_cwd_outside_workspace() {
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         attempt_id: codegg_core::jobs::AttemptId::new_unchecked("a-cwd"),
         daemon_generation: DaemonGeneration::new_unchecked("gen-test"),
+        workspace_root: std::env::current_dir().unwrap(),
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(codegg::scheduler::executors::NullProgressSink),
         resources: ResourcePermitGuard::new_orphan(PermitDimensions::default()),
