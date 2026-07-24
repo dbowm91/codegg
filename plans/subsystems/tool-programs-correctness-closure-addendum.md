@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 011 implementation in progress
+Status: closed — Milestone 011 accepted; live hosted-provider transport remains an operational evidence condition
 
 Canonical subsystem roadmap:
 
@@ -117,7 +117,7 @@ The eventual closure record must be created at:
 | 008 | historical closed; revalidated by M011 | Durable terminal notification and parent-session delivery require correction |
 | 009 | historical closed; revalidated by M011 | Provider infrastructure retained; production runtime selection requires correction |
 | 010 | conditionally closed, historical | Native harness retained; strict closure findings transfer to M011 |
-| 011 | active | Production correctness and ownership closure |
+| 011 | closed | Production correctness and ownership closure accepted by `plans/closure/tool-programs/011-status.md` |
 
 ## 7. Completion definition
 

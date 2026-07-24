@@ -152,12 +152,12 @@ pub struct RecoveredTerminalJob {
     pub created_at: i64,
 }
 
-/// In-memory notification store with claim/ack semantics.
+/// Notification store with claim/ack semantics.
 ///
-/// This is daemon-scoped and does not persist to SQLite. On restart,
-/// the job store's terminal state is the source of truth, and
-/// reconciliation re-creates pending notifications from terminal jobs
-/// that have not yet been acknowledged.
+/// The daemon-scoped cache is backed by SQLite in production through
+/// [`Self::with_pool`]. On restart, terminal job state and the durable
+/// notification table are reconciled so acknowledged notifications are not
+/// recreated.
 pub struct ToolProgramNotificationService {
     /// notification_id → notification record.
     pub notifications: RwLock<HashMap<String, ToolProgramNotification>>,

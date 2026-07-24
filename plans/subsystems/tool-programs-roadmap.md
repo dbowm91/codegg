@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: active/closing — Milestone 010 conditionally closed; live Eggpool, ACP, and CI evidence outstanding
+Status: closed — Milestone 011 strict native production correctness and ownership closure accepted; live hosted-provider transport remains an operational evidence condition
 
 Long-term references:
 
