@@ -601,6 +601,33 @@ tool calls within a program run.
 
 The cache is per-execution and does not persist across daemon restarts.
 
+### Artifact Isolation
+
+Intermediate tool call outputs are tracked via `ProgramCallArtifact`
+metadata but do NOT enter the parent model transcript. Only the final
+program result (status, output, metrics, `program_artifacts` array of
+handles) is projected into the transcript.
+
+This ensures:
+1. The parent transcript stays compact — only the final result matters.
+2. Intermediate outputs are available via `context_read` using the
+   `artifact_handle` (ctx:// URI) if the model needs to inspect them.
+3. Large intermediate outputs don't inflate the parent transcript's
+   token count.
+
+The `program_artifacts` field in the result schema is an array of
+`ProgramCallArtifact` objects:
+- `tool_name`: which tool was called
+- `input`: the arguments passed
+- `success`: whether the call succeeded
+- `artifact_handle`: ctx:// URI for full content expansion
+- `preview`: truncated display preview (~200 chars)
+
+The executor currently returns `program_artifacts: []` because
+intermediate call records are inside the `ProgramResult` which is
+serialized to the summary string. Full wiring of call records to
+`ProgramCallArtifact` is deferred to M007.
+
 ### Execution Flow
 
 ```

@@ -4,6 +4,17 @@
 //! calls read-only tools through the ToolBroker pipeline. The
 //! program is compiled, validated, submitted to the scheduler,
 //! and the result is returned synchronously.
+//!
+//! # Artifact isolation
+//!
+//! Intermediate tool call outputs stay inside the program's artifact
+//! ledger and do NOT enter the parent model transcript. Only the
+//! final program result (status, output, metrics) is projected into
+//! the transcript. Callers can inspect `program_artifacts` in the
+//! structured result to see intermediate call metadata, but these
+//! are opaque handles — the full content is stored in the program's
+//! own artifact store and must be expanded via `context_read` if
+//! needed.
 
 use std::sync::Arc;
 
@@ -21,7 +32,34 @@ use codegg_core::jobs::{
 };
 use codegg_core::tool_program::{self, ProgramStore};
 
+/// Metadata for one intermediate tool call inside a program.
+///
+/// These are included in the `program_artifacts` array of the final
+/// result. They do NOT enter the parent transcript — only the final
+/// program result is projected. The full call content is stored in
+/// the program's artifact store and can be expanded via
+/// `context_read` using the `artifact_handle`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProgramCallArtifact {
+    /// Tool name that was called (e.g. "read", "grep").
+    pub tool_name: String,
+    /// Input arguments passed to the tool.
+    pub input: serde_json::Value,
+    /// Whether the call succeeded.
+    pub success: bool,
+    /// Artifact handle for the full output content (ctx:// URI).
+    /// The caller can use `context_read` to expand this.
+    pub artifact_handle: Option<String>,
+    /// Truncated display preview (first ~200 chars).
+    pub preview: String,
+}
+
 /// Foreground tool for submitting read-only tool programs.
+///
+/// Programs execute through the scheduler and return only the final
+/// result to the parent transcript. Intermediate tool call outputs
+/// stay in the program's artifact ledger (see [`ProgramCallArtifact`])
+/// and do NOT enter the transcript by default.
 pub struct ToolProgramTool {
     submission: Option<Arc<JobSubmissionService>>,
 }
@@ -52,7 +90,8 @@ impl Tool for ToolProgramTool {
     fn description(&self) -> &str {
         "Submit a read-only program that calls tools. The program is compiled to a safe IR, \
          validated against the tool manifest, and executed in a sandboxed interpreter. \
-         Only read-only and deterministic tools may be called."
+         Only read-only and deterministic tools may be called. Intermediate tool call outputs \
+         stay in the program artifact ledger and do not enter the parent transcript."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -104,7 +143,20 @@ impl Tool for ToolProgramTool {
                     "steps_used": { "type": "integer" },
                     "calls_completed": { "type": "integer" },
                     "program_id": { "type": "string" },
-                    "error": { "type": "string" }
+                    "error": { "type": "string" },
+                    "program_artifacts": {
+                        "type": "array",
+                        "description": "Intermediate tool call metadata. These do NOT enter the parent transcript.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool_name": { "type": "string" },
+                                "success": { "type": "boolean" },
+                                "artifact_handle": { "type": "string" },
+                                "preview": { "type": "string" }
+                            }
+                        }
+                    }
                 },
                 "required": ["status"]
             })),
@@ -257,11 +309,21 @@ impl ToolProgramTool {
             crate::scheduler::executor::ExecutorStatus::Interrupted => "interrupted",
         };
 
+        // Parse calls_completed from summary: "status=X steps=N ... calls=N"
+        let calls_completed = completion
+            .summary
+            .split_whitespace()
+            .find(|s| s.starts_with("calls="))
+            .and_then(|s| s.strip_prefix("calls="))
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+
         let mut result = json!({
             "status": status,
             "program_id": program_id,
             "steps_used": completion.metrics.elapsed_ms,
-            "calls_completed": 0,
+            "calls_completed": calls_completed,
+            "program_artifacts": [],  // intermediate calls stay in program artifact ledger, not transcript
         });
 
         if !completion.summary.is_empty() {
@@ -376,5 +438,46 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("scheduler"));
         });
+    }
+
+    #[test]
+    fn program_call_artifact_serializes() {
+        let artifact = ProgramCallArtifact {
+            tool_name: "read".to_string(),
+            input: json!({"path": "/tmp/a.txt"}),
+            success: true,
+            artifact_handle: Some("ctx://tool/s1/0/c1".to_string()),
+            preview: "line 1: hello".to_string(),
+        };
+        let json = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(json["tool_name"], "read");
+        assert_eq!(json["success"], true);
+        assert_eq!(json["artifact_handle"], "ctx://tool/s1/0/c1");
+    }
+
+    #[test]
+    fn program_call_artifact_roundtrip() {
+        let artifact = ProgramCallArtifact {
+            tool_name: "grep".to_string(),
+            input: json!({"pattern": "TODO"}),
+            success: false,
+            artifact_handle: None,
+            preview: String::new(),
+        };
+        let json_str = serde_json::to_string(&artifact).unwrap();
+        let back: ProgramCallArtifact = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(back.tool_name, "grep");
+        assert!(!back.success);
+        assert!(back.artifact_handle.is_none());
+    }
+
+    #[test]
+    fn tool_program_output_schema_includes_artifacts() {
+        let tool = ToolProgramTool::new();
+        let contract = tool.contract("tool_program", tool.parameters());
+        let schema = contract.output_schema.unwrap();
+        let props = schema.get("properties").unwrap();
+        assert!(props.get("program_artifacts").is_some());
+        assert!(props.get("calls_completed").is_some());
     }
 }

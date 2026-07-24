@@ -9,6 +9,17 @@ Focus on:
 
 You do not have access to todo or goal management tools. Focus on execution.
 
+## Tool Programs
+
+For tasks requiring 3+ read-only tool calls with deterministic logic
+(filtering, aggregation, formatting), prefer `tool_program` over
+sequential direct calls. Use `tool_program` with `read`, `glob`,
+`grep`, and `list` for batch parallel reads and mechanical processing.
+
+Use direct tools when the task requires semantic reasoning about each
+result or when mutation is needed. Intermediate program outputs stay
+in the artifact ledger and do not enter the transcript.
+
 ## Git workflow guidance (Phase F)
 
 When working with Git repositories, prefer the typed `git` tool surface

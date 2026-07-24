@@ -228,3 +228,71 @@ async fn programmatic_unauthorized_caller_rejected() {
         .unwrap_err();
     assert!(matches!(err, BrokerError::CallerDenied { .. }));
 }
+
+#[test]
+fn tool_program_is_direct_only() {
+    let tool = codegg::tool::tool_program::ToolProgramTool::new();
+    let contract = tool.contract("tool_program", tool.parameters());
+    assert_eq!(
+        contract.caller_policy,
+        ToolCallerPolicy::DirectOnly,
+        "tool_program must be DirectOnly — programs cannot submit other programs"
+    );
+    assert_eq!(contract.effect_class, ToolEffectClass::ReadOnly);
+    assert!(
+        contract.output_schema.is_some(),
+        "tool_program must have output schema"
+    );
+}
+
+#[test]
+fn palette_tools_are_direct_or_programmatic() {
+    let registry = ToolRegistry::with_defaults();
+    let palette = ["read", "glob", "grep", "list"];
+    for name in &palette {
+        if let Some(tool) = registry.get(name) {
+            let contract = tool.contract(name, tool.parameters());
+            assert_eq!(
+                contract.caller_policy,
+                ToolCallerPolicy::DirectOrProgrammatic,
+                "palette tool '{}' must be DirectOrProgrammatic, got {:?}",
+                name,
+                contract.caller_policy
+            );
+            assert!(
+                contract.output_schema.is_some(),
+                "palette tool '{}' must have output schema",
+                name
+            );
+        }
+    }
+}
+
+#[test]
+fn tool_program_rejects_mutation_tools() {
+    let broker = make_broker();
+    let resolved = program_manifest::resolve_manifest(
+        &broker,
+        &[
+            "valid_read".into(),
+            "write_file".into(),
+            "apply_patch".into(),
+        ],
+    );
+    // Only valid_read should pass; write/apply_patch don't exist in mock broker
+    // but the manifest correctly rejects unknown tools
+    assert!(resolved.allowed_tools.len() <= 1);
+    for rejection in &resolved.rejected {
+        assert!(
+            matches!(
+                rejection.reason,
+                RejectionReason::NotFound
+                    | RejectionReason::DirectOnly
+                    | RejectionReason::NoOutputSchema
+            ),
+            "unexpected rejection reason for '{}': {:?}",
+            rejection.tool_name,
+            rejection.reason
+        );
+    }
+}

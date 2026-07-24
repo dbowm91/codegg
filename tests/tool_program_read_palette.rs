@@ -497,3 +497,132 @@ async fn direct_and_programmatic_read_produce_same_output() {
         program_result.value.terminal_status
     );
 }
+
+#[tokio::test]
+async fn direct_and_programmatic_glob_produce_same_output() {
+    let registry = make_registry();
+    let broker = ToolBroker::new(&registry);
+
+    let agent_result = broker
+        .execute(
+            &registry,
+            "glob",
+            json!({"pattern": "**/*.rs"}),
+            agent_ctx(),
+        )
+        .await
+        .unwrap();
+
+    let program_result = broker
+        .execute(
+            &registry,
+            "glob",
+            json!({"pattern": "**/*.rs"}),
+            program_ctx("prog-1"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(agent_result.value.display, program_result.value.display);
+    assert_eq!(
+        agent_result.value.terminal_status,
+        program_result.value.terminal_status
+    );
+}
+
+#[tokio::test]
+async fn direct_and_programmatic_grep_produce_same_output() {
+    let registry = make_registry();
+    let broker = ToolBroker::new(&registry);
+
+    let agent_result = broker
+        .execute(
+            &registry,
+            "grep",
+            json!({"pattern": "fn main"}),
+            agent_ctx(),
+        )
+        .await
+        .unwrap();
+
+    let program_result = broker
+        .execute(
+            &registry,
+            "grep",
+            json!({"pattern": "fn main"}),
+            program_ctx("prog-1"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(agent_result.value.display, program_result.value.display);
+    assert_eq!(
+        agent_result.value.terminal_status,
+        program_result.value.terminal_status
+    );
+}
+
+#[tokio::test]
+async fn direct_and_programmatic_list_produce_same_output() {
+    let registry = make_registry();
+    let broker = ToolBroker::new(&registry);
+
+    let agent_result = broker
+        .execute(&registry, "list", json!({"path": "."}), agent_ctx())
+        .await
+        .unwrap();
+
+    let program_result = broker
+        .execute(
+            &registry,
+            "list",
+            json!({"path": "."}),
+            program_ctx("prog-1"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(agent_result.value.display, program_result.value.display);
+    assert_eq!(
+        agent_result.value.terminal_status,
+        program_result.value.terminal_status
+    );
+}
+
+#[tokio::test]
+async fn direct_and_programmatic_routes_preserve_structured_value() {
+    let registry = make_registry();
+    let broker = ToolBroker::new(&registry);
+
+    for name in &["read", "glob", "grep", "list"] {
+        let input = match *name {
+            "read" => json!({"path": "/tmp/test.txt"}),
+            "glob" => json!({"pattern": "**/*.rs"}),
+            "grep" => json!({"pattern": "fn"}),
+            "list" => json!({"path": "."}),
+            _ => unreachable!(),
+        };
+
+        let agent_result = broker
+            .execute(&registry, name, input.clone(), agent_ctx())
+            .await
+            .unwrap();
+        let program_result = broker
+            .execute(&registry, name, input, program_ctx("prog-eq"))
+            .await
+            .unwrap();
+
+        // Both routes produce the same display text
+        assert_eq!(
+            agent_result.value.display, program_result.value.display,
+            "tool {} display mismatch between direct and programmatic routes",
+            name
+        );
+        // Both routes produce the same terminal status
+        assert_eq!(
+            agent_result.value.terminal_status, program_result.value.terminal_status,
+            "tool {} status mismatch between direct and programmatic routes",
+            name
+        );
+    }
+}
