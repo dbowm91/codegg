@@ -76,6 +76,13 @@ pub enum Stmt {
         descriptors: Vec<Expr>,
         span: Span,
     },
+    /// `target = submit_job("op", {...})` — submit a scheduler-owned child job.
+    SubmitJob {
+        target: Ident,
+        op: Expr,
+        config: Expr,
+        span: Span,
+    },
     /// `emit(expr)`
     Emit { value: Expr, span: Span },
     /// `fail([expr])`
@@ -160,6 +167,12 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `submit_job("op", {...})` — submit a scheduler-owned child job.
+    SubmitJobExpr {
+        op: Box<Expr>,
+        config: Box<Expr>,
+        span: Span,
+    },
     /// `call({...}, key=val, ...)`
     ToolCallExpr {
         descriptor: Box<Expr>,
@@ -209,6 +222,7 @@ impl Expr {
             | Expr::CallBuiltin { span: s, .. }
             | Expr::MethodCall { span: s, .. }
             | Expr::ToolCallExpr { span: s, .. }
+            | Expr::SubmitJobExpr { span: s, .. }
             | Expr::ParallelExpr { span: s, .. }
             | Expr::List { span: s, .. }
             | Expr::Tuple { span: s, .. }

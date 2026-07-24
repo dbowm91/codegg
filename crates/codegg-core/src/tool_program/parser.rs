@@ -141,6 +141,17 @@ fn convert_stmt(
                     }
                 }
             }
+            // Convert `result = submit_job("op", {...})` to Stmt::SubmitJob
+            if let Expr::SubmitJobExpr { op, config, .. } = &value {
+                if targets.len() == 1 {
+                    return Ok(Stmt::SubmitJob {
+                        target: targets.into_iter().next().unwrap(),
+                        op: *op.clone(),
+                        config: *config.clone(),
+                        span: Span::new(0, 0),
+                    });
+                }
+            }
             Ok(Stmt::Assign {
                 targets,
                 value,
@@ -304,7 +315,7 @@ fn convert_stmt(
     }
 }
 
-/// Convert an expression statement, recognizing call(), emit(), fail().
+/// Convert an expression statement, recognizing call(), submit_job(), emit(), fail().
 fn convert_expr_stmt(
     expr: &PyExpr,
     source: &str,
@@ -345,16 +356,38 @@ fn convert_expr_stmt(
                         span: Span::new(0, 0),
                     });
                 }
+                if n.id.as_str() == "submit_job" {
+                    if c.args.len() < 2 {
+                        return Err(ToolProgramError::Parse(Diagnostic::new(
+                            DiagnosticCode::UnsupportedSyntax,
+                            "submit_job() requires operation and config arguments".to_string(),
+                            SourceSpan::new(0, 0),
+                        )));
+                    }
+                    let op = convert_expr(&c.args[0], source, node_count, depth)?;
+                    let config = convert_expr(&c.args[1], source, node_count, depth)?;
+                    return Ok(Stmt::SubmitJob {
+                        target: Ident {
+                            name: "_submit_job_result".into(),
+                            span: Span::new(0, 0),
+                        },
+                        op,
+                        config,
+                        span: Span::new(0, 0),
+                    });
+                }
             }
             Err(ToolProgramError::Parse(Diagnostic::new(
                 DiagnosticCode::UnsupportedSyntax,
-                "expression statements must be assignment, call(), emit(), or fail()".to_string(),
+                "expression statements must be assignment, call(), submit_job(), emit(), or fail()"
+                    .to_string(),
                 SourceSpan::new(0, 0),
             )))
         }
         _ => Err(ToolProgramError::Parse(Diagnostic::new(
             DiagnosticCode::UnsupportedSyntax,
-            "expression statements must be assignment, call(), emit(), or fail()".to_string(),
+            "expression statements must be assignment, call(), submit_job(), emit(), or fail()"
+                .to_string(),
             SourceSpan::new(0, 0),
         ))),
     }
@@ -572,6 +605,22 @@ fn convert_expr(
                         }
                         return Ok(Expr::ParallelExpr {
                             descriptors,
+                            span: Span::new(0, 0),
+                        });
+                    }
+                    "submit_job" => {
+                        if c.args.len() < 2 {
+                            return Err(ToolProgramError::Parse(Diagnostic::new(
+                                DiagnosticCode::UnsupportedSyntax,
+                                "submit_job() requires operation and config arguments".to_string(),
+                                SourceSpan::new(0, 0),
+                            )));
+                        }
+                        let op = convert_expr(&c.args[0], source, node_count, depth)?;
+                        let config = convert_expr(&c.args[1], source, node_count, depth)?;
+                        return Ok(Expr::SubmitJobExpr {
+                            op: Box::new(op),
+                            config: Box::new(config),
                             span: Span::new(0, 0),
                         });
                     }

@@ -422,7 +422,7 @@ Ownership: `crates/codegg-core/src/tool_program/` — submodules:
 | `parser.rs` | rustpython-parser wrapper (~1100 lines) |
 | `validator.rs` | Semantic validator: built-in shadowing, allowed methods, scope |
 | `static_bounds.rs` | Bound analyzer: max steps, iterations, calls, parallel width, nesting |
-| `ir.rs` | Versioned IR types, 38 opcodes, SHA-256 deterministic digest |
+| `ir.rs` | Versioned IR types, 39 opcodes (incl. `ExecuteChildJob`), SHA-256 deterministic digest |
 | `compiler.rs` | IR compiler: AST → flat instruction sequence (~620 lines) |
 | `ir_verifier.rs` | IR verifier: jump targets, local slots, pool refs, bounds, terminal |
 | `diagnostics.rs` | 20 diagnostic codes (TP001–TP018, TP998, TP999), bounded source spans |
@@ -626,7 +626,7 @@ The `program_artifacts` field in the result schema is an array of
 The executor currently returns `program_artifacts: []` because
 intermediate call records are inside the `ProgramResult` which is
 serialized to the summary string. Full wiring of call records to
-`ProgramCallArtifact` is deferred to M007.
+`ProgramCallArtifact` remains a future improvement.
 
 ### Execution Flow
 
@@ -682,12 +682,145 @@ ExecutorCompletion returned to scheduler
 
 Thread-safe via `Arc<Mutex<...>>`. Concurrent access tested.
 
+## M007: Child-Job Composition
+
+M007 allows tool programs to submit scheduler-owned build, test, lint,
+and format operations as child jobs. Programs call `submit_job(op, config)`
+which compiles to the `ExecuteChildJob` IR opcode. The broker adapter
+translates typed requests into canonical `NewJob` submissions via
+`JobSubmissionService` and waits for completion.
+
+### `submit_job()` Language Construct
+
+The `submit_job()` built-in accepts an operation string and a config
+dict. It may be used as an expression statement or assigned:
+
+```python
+# Assigned form — result is a dict with success, exit_code, duration_ms, details
+result = submit_job("test", {"scope": "workspace", "timeout_secs": 120})
+
+# Expression statement form (result discarded to implicit _submit_job_result)
+submit_job("build", {"argv": ["cargo", "build", "--release"]})
+```
+
+Parsing: `submit_job("op", {...})` is recognized by the parser in both
+`Stmt::SubmitJob` (assigned) and `Expr::SubmitJobExpr` (expression)
+forms. It is a reserved builtin alongside `call`, `parallel`, `emit`,
+and `fail` (`validator.rs`).
+
+### `ExecuteChildJob` IR Opcode
+
+```rust
+IrOp::ExecuteChildJob  // opcode 39 — 39 total opcodes in IR
+```
+
+The compiler emits:
+
+1. `Checkpoint` before submission (for restart recovery)
+2. Push operation string and config dict onto stack
+3. `ExecuteChildJob` — pops op and config, submits via broker, pushes result
+4. `Checkpoint` after completion
+5. `StoreLocal` to assign the result
+
+### Types (`child_job.rs`)
+
+All types live in `crates/codegg-core/src/tool_program/child_job.rs`
+and are re-exported from `mod.rs`.
+
+**`ChildJobOp`** — operation kind:
+
+| Variant | Meaning |
+|---------|---------|
+| `Test` | Test execution (cargo test, pytest, etc.) |
+| `Build` | Build/compile (cargo build, make, etc.) |
+| `Lint` | Lint/check (clippy, eslint, etc.) |
+| `Format` | Format/check-format (cargo fmt --check, etc.) |
+
+**`ChildJobConfig`** — typed per-operation configuration:
+
+| Variant | Key fields |
+|---------|------------|
+| `Test(TestJobConfig)` | `scope` (workspace/package/file/previous_failures/custom), `cwd`, `timeout_secs`, `stall_timeout_secs`, `max_report_bytes` |
+| `Build(BuildJobConfig)` | `argv`, `cwd`, `timeout_secs` |
+| `Lint(LintJobConfig)` | `argv`, `cwd`, `timeout_secs` |
+| `Format(FormatJobConfig)` | `argv`, `cwd`, `timeout_secs` |
+
+**`ChildJobRequest`** — submission request:
+- `op: ChildJobOp` — operation kind
+- `config: ChildJobConfig` — operation-specific config
+
+**`ChildJobResult`** — completion result:
+- `success: bool`, `exit_code: Option<i32>`, `duration_ms: u64`
+- `details: ChildJobDetails` — per-op result (TestJobResult, BuildJobResult, LintJobResult, FormatJobResult)
+- `artifacts: Vec<String>` — artifact handles for stdout/stderr/logs
+- `error: Option<String>`
+
+### `BrokerCallback::submit_child_job` Trait Method
+
+```rust
+#[async_trait]
+pub trait BrokerCallback: Send + Sync {
+    async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError>;
+    async fn submit_child_job(
+        &self,
+        request: &ChildJobRequest,
+    ) -> Result<ChildJobResult, InterpreterError>;
+}
+```
+
+The interpreter calls `broker.submit_child_job(&request)` from the
+`ExecuteChildJob` handler. Child jobs count toward the `max_dynamic_calls`
+budget and are recorded in the completed-calls map for replay.
+
+### BrokerAdapter Child-Job Submission
+
+`BrokerAdapter` (`src/scheduler/tool_program_executor.rs`) implements
+`submit_child_job` by:
+
+1. Mapping `ChildJobConfig` to `(JobKind, JobPayload, Option<Duration>)`:
+   - `Test` → `JobKind::Test`, `JobPayload::Test { command, argv, cwd, scope }`
+   - `Build` → `JobKind::Build`, `JobPayload::ManagedArgv { argv, cwd }`
+   - `Lint` → `JobKind::Lint`, `JobPayload::ManagedArgv { argv, cwd }`
+   - `Format` → `JobKind::Format`, `JobPayload::ManagedArgv { argv, cwd }`
+2. Generating an idempotent `SubmissionKey` from program_id + config SHA-256
+3. Constructing a `NewJob` with the parent's `workspace_id`, `JobSource::Interactive`, `RetryPolicy::no_retry()`, `IdempotencyClass::SafeRepeat`
+4. Submitting via `JobSubmissionService::submit()`
+5. Waiting for completion via `scheduler().wait_for_completion(job_id, timeout)`
+6. Mapping `ExecutorStatus` to `ChildJobResult` with per-op typed details
+
+Default argv when none provided: test=`cargo test`, build=`cargo build`,
+lint=`cargo clippy -- -D warnings`, format=`cargo fmt -- --check`.
+
+### Authority and Workspace Inheritance
+
+Child jobs inherit from the parent program:
+- **workspace_id**: taken from `BrokerAdapter.workspace_id` (the program's workspace)
+- **source**: `JobSource::Interactive`
+- **exclusivity**: `ResourceRequest::for_kind(kind)` — no weakening allowed
+- **deadline**: program-supplied `timeout_secs` mapped to job timeout; parent's wall deadline used as fallback
+- **retry**: `RetryPolicy::no_retry()` — child jobs are not retried
+- **idempotency**: `SafeRepeat` — safe to re-submit on restart
+
+Raw shell commands and arbitrary argv from the program config are
+validated by the scheduler's resource and exclusivity rules. Programs
+cannot weaken resource requests or exclusivity keys.
+
+### Operation-to-Scheduler Mapping
+
+| ChildJobOp | JobKind | JobPayload | Default argv |
+|------------|---------|------------|--------------|
+| `Test` | `Test` | `Test { command, argv, cwd, scope }` | `["cargo", "test"]` |
+| `Build` | `Build` | `ManagedArgv { argv, cwd }` | `["cargo", "build"]` |
+| `Lint` | `Lint` | `ManagedArgv { argv, cwd }` | `["cargo", "clippy", "--", "-D", "warnings"]` |
+| `Format` | `Format` | `ManagedArgv { argv, cwd }` | `["cargo", "fmt", "--", "--check"]` |
+
 ## Source Files (M006)
 
 | File | Purpose |
 |------|---------|
 | `crates/codegg-core/src/tool_program/` | Domain types, store, interpreter, IR, compiler, verifier |
+| `crates/codegg-core/src/tool_program/child_job.rs` | Child-job request/result types (ChildJobOp, ChildJobRequest, ChildJobResult) |
 | `src/tool/tool_program.rs` | Foreground model-facing `tool_program` tool |
 | `src/tool/program_manifest.rs` | Manifest resolution — tool eligibility gating |
 | `src/tool/program_cache.rs` | Read-only call cache with content/policy-aware keys |
-| `src/scheduler/tool_program_executor.rs` | Scheduler executor with `BrokerAdapter` for real pipeline |
+| `src/scheduler/tool_program_executor.rs` | Scheduler executor with `BrokerAdapter` for real pipeline and child-job submission |

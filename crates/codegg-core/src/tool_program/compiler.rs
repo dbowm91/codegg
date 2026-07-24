@@ -305,6 +305,30 @@ fn compile_stmt(stmt: &Stmt, compiler: &mut Compiler) -> Result<(), ToolProgramE
             })?;
             compiler.push(IrOp::StoreLocal { slot }, *span);
         }
+        Stmt::SubmitJob {
+            target,
+            op,
+            config,
+            span,
+        } => {
+            // Checkpoint before child job submission
+            compiler.push(IrOp::Checkpoint, *span);
+            // Push operation and config onto stack
+            compile_expr(op, compiler)?;
+            compile_expr(config, compiler)?;
+            // Execute child job (submits through broker, waits for completion)
+            compiler.push(IrOp::ExecuteChildJob, *span);
+            // Checkpoint after child job completion
+            compiler.push(IrOp::Checkpoint, *span);
+            let slot = compiler.lookup_local(&target.name).ok_or_else(|| {
+                ToolProgramError::Compile(Diagnostic::new(
+                    DiagnosticCode::InternalError,
+                    format!("unallocated local '{}'", target.name),
+                    SourceSpan::new(span.start, span.len()),
+                ))
+            })?;
+            compiler.push(IrOp::StoreLocal { slot }, *span);
+        }
         Stmt::Parallel {
             target,
             descriptors,
@@ -722,6 +746,11 @@ fn compile_expr(expr: &Expr, compiler: &mut Compiler) -> Result<(), ToolProgramE
             compiler.push(IrOp::ConstructCall, *span);
             compiler.push(IrOp::ExecuteCall, *span);
         }
+        Expr::SubmitJobExpr { op, config, span } => {
+            compile_expr(op, compiler)?;
+            compile_expr(config, compiler)?;
+            compiler.push(IrOp::ExecuteChildJob, *span);
+        }
         Expr::ParallelExpr { descriptors, span } => {
             let count = descriptors.len() as u32;
             for d in descriptors {
@@ -943,6 +972,7 @@ fn digest_op(hasher: &mut Sha256, op: &IrOp) {
         IrOp::Fail => hasher.update([36]),
         IrOp::Checkpoint => hasher.update([37]),
         IrOp::Return => hasher.update([38]),
+        IrOp::ExecuteChildJob => hasher.update([39]),
     }
 }
 

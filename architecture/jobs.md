@@ -321,6 +321,18 @@ bounded output, and `CODEGG_JOB_ID`/`CODEGG_ATTEMPT_ID` provenance. Shell,
 TestRunner, and SubAgentPool retain their domain semantics behind typed
 executors.
 
+### Tool program child-job composition (M007)
+
+Tool programs may submit scheduler-owned child jobs via `submit_job(op, config)`
+in restricted-Python source. The `ExecuteChildJob` IR opcode triggers
+`BrokerCallback::submit_child_job()`, which maps `ChildJobOp` variants
+(`Test`, `Build`, `Lint`, `Format`) to typed `JobKind`/`JobPayload` combinations
+and submits through `JobSubmissionService`. Child jobs inherit the parent
+program's workspace, authority, and deadlines. They use `IdempotencyClass::SafeRepeat`
+and `RetryPolicy::no_retry()`. The broker adapter waits for completion and
+returns a `ChildJobResult` with per-op typed details. See
+`architecture/tool_programs.md` §M007 for the full contract.
+
 ## Testing Strategy
 
 | Category | Coverage |

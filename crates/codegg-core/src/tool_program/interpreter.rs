@@ -18,6 +18,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use super::child_job::{ChildJobRequest, ChildJobResult};
 use super::ir::{IrBinOp, IrCmpOp, IrInstruction, IrOp, IrProgram, IrUnaryOp};
 
 // ── Program value (metered, JSON-compatible) ──────────────────────
@@ -486,6 +487,14 @@ pub struct CompletedCall {
 pub trait BrokerCallback: Send + Sync {
     /// Execute a tool call through the broker.
     async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError>;
+
+    /// Submit a scheduler-owned child job and wait for completion.
+    /// The broker translates the typed request into a canonical `NewJob`,
+    /// submits through `JobSubmissionService`, and returns the structured result.
+    async fn submit_child_job(
+        &self,
+        request: &ChildJobRequest,
+    ) -> Result<ChildJobResult, InterpreterError>;
 
     /// Emit a heartbeat with current budget snapshot. Called at
     /// meaningful progress boundaries (instruction milestones,
@@ -1144,6 +1153,133 @@ impl MeteredInterpreter {
                         "ParallelExecute: expected list".into(),
                     ));
                 }
+            }
+
+            // ── Child job submission ──
+            IrOp::ExecuteChildJob => {
+                let config_val = self.pop()?;
+                let op_val = self.pop()?;
+
+                // Parse operation string
+                let op_str = match &op_val {
+                    ProgramValue::String(s) => s.clone(),
+                    _ => {
+                        return Err(InterpreterError::TypeError(
+                            "ExecuteChildJob: operation must be a string".into(),
+                        ))
+                    }
+                };
+
+                let op: super::child_job::ChildJobOp = op_str
+                    .parse()
+                    .map_err(|e: String| InterpreterError::BrokerError(e))?;
+
+                // Parse config dict into the typed config
+                let config = match &config_val {
+                    ProgramValue::Dict(_pairs) => {
+                        let config_json = config_val.to_json();
+                        match op {
+                            super::child_job::ChildJobOp::Test => {
+                                let cfg: super::child_job::TestJobConfig =
+                                    serde_json::from_value(config_json).map_err(|e| {
+                                        InterpreterError::BrokerError(format!(
+                                            "invalid test config: {}",
+                                            e
+                                        ))
+                                    })?;
+                                super::child_job::ChildJobConfig::Test(cfg)
+                            }
+                            super::child_job::ChildJobOp::Build => {
+                                let cfg: super::child_job::BuildJobConfig =
+                                    serde_json::from_value(config_json).map_err(|e| {
+                                        InterpreterError::BrokerError(format!(
+                                            "invalid build config: {}",
+                                            e
+                                        ))
+                                    })?;
+                                super::child_job::ChildJobConfig::Build(cfg)
+                            }
+                            super::child_job::ChildJobOp::Lint => {
+                                let cfg: super::child_job::LintJobConfig =
+                                    serde_json::from_value(config_json).map_err(|e| {
+                                        InterpreterError::BrokerError(format!(
+                                            "invalid lint config: {}",
+                                            e
+                                        ))
+                                    })?;
+                                super::child_job::ChildJobConfig::Lint(cfg)
+                            }
+                            super::child_job::ChildJobOp::Format => {
+                                let cfg: super::child_job::FormatJobConfig =
+                                    serde_json::from_value(config_json).map_err(|e| {
+                                        InterpreterError::BrokerError(format!(
+                                            "invalid format config: {}",
+                                            e
+                                        ))
+                                    })?;
+                                super::child_job::ChildJobConfig::Format(cfg)
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(InterpreterError::TypeError(
+                            "ExecuteChildJob: config must be a dict".into(),
+                        ))
+                    }
+                };
+
+                let request = ChildJobRequest { op, config };
+
+                // Check call budget (child jobs count as a call)
+                if self.budget.calls as u64 >= self.limits.max_dynamic_calls {
+                    return Err(InterpreterError::BudgetExceeded(format!(
+                        "call count {} exceeds max {}",
+                        self.budget.calls, self.limits.max_dynamic_calls
+                    )));
+                }
+
+                // Execute through broker's child-job submission
+                let seq = self.next_call_seq;
+                self.next_call_seq += 1;
+
+                let result = if let Some(completed) = self.completed_calls.get(&seq) {
+                    // Replay: reconstruct the result from completed call
+                    completed.result.clone()
+                } else {
+                    self.budget.inflight_calls += 1;
+                    let call_result = broker.submit_child_job(&request).await;
+                    self.budget.inflight_calls -= 1;
+
+                    match call_result {
+                        Ok(child_result) => {
+                            // Convert ChildJobResult to ProgramValue
+                            let result_json = serde_json::to_value(&child_result)
+                                .map_err(|e| InterpreterError::InternalError(e.to_string()))?;
+                            let call_result = CallResult {
+                                output: ProgramValue::ToolResult(result_json),
+                                artifacts: child_result.artifacts,
+                            };
+                            // Record as completed for replay
+                            self.completed_calls.insert(
+                                seq,
+                                CompletedCall {
+                                    sequence: seq,
+                                    request: CallRequest {
+                                        tool_name: format!("submit_job:{}", request.op),
+                                        input: serde_json::to_value(&request).unwrap_or_default(),
+                                        call_id: None,
+                                    },
+                                    result: call_result.clone(),
+                                },
+                            );
+                            call_result
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+
+                self.budget.calls += 1;
+                self.push(result.output)?;
             }
 
             // ── Terminal ──
@@ -1838,6 +1974,15 @@ mod tests {
                 artifacts: vec![],
             })
         }
+
+        async fn submit_child_job(
+            &self,
+            _request: &ChildJobRequest,
+        ) -> Result<ChildJobResult, InterpreterError> {
+            Err(InterpreterError::BrokerError(
+                "noop broker does not support child jobs".into(),
+            ))
+        }
     }
 
     fn run_program(source: &str) -> ProgramResult {
@@ -2378,6 +2523,15 @@ emit({k: v})
                 })
             }
 
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                Err(InterpreterError::BrokerError(
+                    "heartbeat broker does not support child jobs".into(),
+                ))
+            }
+
             async fn heartbeat(&self, _budget: &BudgetSnapshot) {
                 self.count.fetch_add(1, Ordering::Relaxed);
             }
@@ -2414,6 +2568,15 @@ emit({k: v})
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
                 })
+            }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                Err(InterpreterError::BrokerError(
+                    "slow broker does not support child jobs".into(),
+                ))
             }
         }
 
@@ -2463,6 +2626,15 @@ emit({k: v})
                     artifacts: vec![],
                 })
             }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                Err(InterpreterError::BrokerError(
+                    "slow broker does not support child jobs".into(),
+                ))
+            }
         }
 
         let compilation =
@@ -2506,6 +2678,15 @@ emit({k: v})
                     })
                 }
             }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                Err(InterpreterError::BrokerError(
+                    "flaky broker does not support child jobs".into(),
+                ))
+            }
         }
 
         let compilation =
@@ -2537,6 +2718,13 @@ emit({k: v})
                 &self,
                 _request: &CallRequest,
             ) -> Result<CallResult, InterpreterError> {
+                Err(InterpreterError::BrokerError("permanent".into()))
+            }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
                 Err(InterpreterError::BrokerError("permanent".into()))
             }
         }
@@ -2586,6 +2774,23 @@ emit({k: v})
                     artifacts: vec![],
                 })
             }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                // This should never be called because inflight budget blocks
+                Ok(ChildJobResult {
+                    success: true,
+                    exit_code: Some(0),
+                    duration_ms: 0,
+                    details: crate::tool_program::child_job::ChildJobDetails::Test(
+                        crate::tool_program::child_job::TestJobResult::default(),
+                    ),
+                    artifacts: vec![],
+                    error: None,
+                })
+            }
         }
 
         let compilation =
@@ -2631,6 +2836,15 @@ emit({k: v})
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
                 })
+            }
+
+            async fn submit_child_job(
+                &self,
+                _request: &ChildJobRequest,
+            ) -> Result<ChildJobResult, InterpreterError> {
+                Err(InterpreterError::BrokerError(
+                    "tracking broker does not support child jobs".into(),
+                ))
             }
         }
 

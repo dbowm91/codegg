@@ -11,7 +11,7 @@ use crate::tool_program::diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
 use crate::tool_program::ToolProgramError;
 
 /// Reserved built-in names that cannot be shadowed.
-const RESERVED_BUILTINS: &[&str] = &["call", "parallel", "emit", "fail"];
+const RESERVED_BUILTINS: &[&str] = &["call", "parallel", "submit_job", "emit", "fail"];
 
 /// Allowed method names on objects.
 const ALLOWED_METHODS: &[&str] = &[
@@ -125,6 +125,18 @@ fn validate_stmt(
             for desc in descriptors {
                 validate_expr(desc, scope)?;
             }
+            check_reserved_name(&target.name, target.span)?;
+            scope.insert(target.name.clone());
+            let _ = span;
+        }
+        Stmt::SubmitJob {
+            target,
+            op,
+            config,
+            span,
+        } => {
+            validate_expr(op, scope)?;
+            validate_expr(config, scope)?;
             check_reserved_name(&target.name, target.span)?;
             scope.insert(target.name.clone());
             let _ = span;
@@ -266,6 +278,10 @@ fn validate_expr(expr: &Expr, scope: &HashSet<String>) -> Result<(), ToolProgram
             Ok(())
         }
         Expr::Parenthesized { inner, .. } => validate_expr(inner, scope),
+        Expr::SubmitJobExpr { op, config, .. } => {
+            validate_expr(op, scope)?;
+            validate_expr(config, scope)
+        }
     }
 }
 

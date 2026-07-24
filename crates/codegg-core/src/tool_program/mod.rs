@@ -18,6 +18,7 @@
 //! - Unsupported syntax fails closed with bounded diagnostics.
 
 pub mod ast;
+pub mod child_job;
 pub mod compiler;
 pub mod diagnostics;
 pub mod guards;
@@ -30,6 +31,7 @@ pub mod store;
 pub mod validator;
 
 pub use ast::{Expr, Program, Slice, Stmt};
+pub use child_job::{ChildJobConfig, ChildJobDetails, ChildJobOp, ChildJobRequest, ChildJobResult};
 pub use compiler::compile;
 pub use diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
 pub use guards::{cpython_execution_is_forbidden, ToolProgramCompilerIsParseOnly};

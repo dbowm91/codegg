@@ -66,6 +66,44 @@ impl BrokerCallback for FixtureBroker {
         })
     }
 
+    async fn submit_child_job(
+        &self,
+        request: &codegg_core::tool_program::child_job::ChildJobRequest,
+    ) -> Result<codegg_core::tool_program::child_job::ChildJobResult, InterpreterError> {
+        use codegg_core::tool_program::child_job::*;
+        let details = match request.op {
+            ChildJobOp::Test => ChildJobDetails::Test(TestJobResult {
+                status: "passed".into(),
+                framework: Some("fixture".into()),
+                total: Some(1),
+                passed: Some(1),
+                failed: Some(0),
+                skipped: Some(0),
+                ..Default::default()
+            }),
+            ChildJobOp::Build => ChildJobDetails::Build(BuildJobResult {
+                status: "success".into(),
+                ..Default::default()
+            }),
+            ChildJobOp::Lint => ChildJobDetails::Lint(LintJobResult {
+                status: "clean".into(),
+                ..Default::default()
+            }),
+            ChildJobOp::Format => ChildJobDetails::Format(FormatJobResult {
+                status: "clean".into(),
+                ..Default::default()
+            }),
+        };
+        Ok(ChildJobResult {
+            success: true,
+            exit_code: Some(0),
+            duration_ms: 100,
+            details,
+            artifacts: vec![],
+            error: None,
+        })
+    }
+
     async fn heartbeat(&self, _budget: &BudgetSnapshot) {
         self.heartbeat_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -79,11 +117,24 @@ impl BrokerCallback for FixtureBroker {
 pub struct ToolProgramExecutor {
     broker: Arc<ToolBroker>,
     registry: Arc<ToolRegistry>,
+    submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
 }
 
 impl ToolProgramExecutor {
     pub fn new(broker: Arc<ToolBroker>, registry: Arc<ToolRegistry>) -> Self {
-        Self { broker, registry }
+        Self {
+            broker,
+            registry,
+            submission: None,
+        }
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::submission::JobSubmissionService>,
+    ) -> Self {
+        self.submission = Some(submission);
+        self
     }
 }
 
@@ -92,7 +143,11 @@ impl Default for ToolProgramExecutor {
         // Default creates with a minimal setup - only used in tests
         let registry = Arc::new(ToolRegistry::with_defaults());
         let broker = Arc::new(ToolBroker::new(&registry));
-        Self { broker, registry }
+        Self {
+            broker,
+            registry,
+            submission: None,
+        }
     }
 }
 
@@ -102,6 +157,9 @@ pub struct BrokerAdapter {
     broker: Arc<ToolBroker>,
     registry: Arc<ToolRegistry>,
     program_id: String,
+    submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
+    workspace_id: Option<codegg_core::workspace::WorkspaceId>,
+    cwd: std::path::PathBuf,
 }
 
 impl BrokerAdapter {
@@ -110,7 +168,28 @@ impl BrokerAdapter {
             broker,
             registry,
             program_id,
+            submission: None,
+            workspace_id: None,
+            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         }
+    }
+
+    pub fn with_submission(
+        mut self,
+        submission: Arc<crate::scheduler::submission::JobSubmissionService>,
+    ) -> Self {
+        self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_workspace_id(mut self, workspace_id: codegg_core::workspace::WorkspaceId) -> Self {
+        self.workspace_id = Some(workspace_id);
+        self
+    }
+
+    pub fn with_cwd(mut self, cwd: std::path::PathBuf) -> Self {
+        self.cwd = cwd;
+        self
     }
 }
 
@@ -121,9 +200,9 @@ impl BrokerCallback for BrokerAdapter {
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),
             },
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            cwd: self.cwd.clone(),
             session_id: None,
-            workspace_id: None,
+            workspace_id: self.workspace_id.as_ref().map(|w| w.to_string()),
             agent_id: None,
             turn_id: None,
             job_id: None,
@@ -163,6 +242,181 @@ impl BrokerCallback for BrokerAdapter {
             }
             Err(e) => Err(InterpreterError::BrokerError(e.to_string())),
         }
+    }
+
+    async fn submit_child_job(
+        &self,
+        request: &codegg_core::tool_program::child_job::ChildJobRequest,
+    ) -> Result<codegg_core::tool_program::child_job::ChildJobResult, InterpreterError> {
+        use crate::scheduler::submission::SubmissionKey;
+        use codegg_core::tool_program::child_job::*;
+
+        let submission = self.submission.as_ref().ok_or_else(|| {
+            InterpreterError::BrokerError("child job submission requires scheduler service".into())
+        })?;
+
+        let workspace_id = self.workspace_id.as_ref().ok_or_else(|| {
+            InterpreterError::BrokerError("child job requires workspace_id".into())
+        })?;
+
+        // Build the NewJob based on operation type
+        let (kind, payload, timeout) = match &request.config {
+            ChildJobConfig::Test(cfg) => {
+                let argv = vec!["cargo".into(), "test".into()];
+                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+                (
+                    codegg_core::jobs::JobKind::Test,
+                    codegg_core::jobs::JobPayload::Test {
+                        command: "cargo test".into(),
+                        argv,
+                        cwd: cfg.cwd.clone(),
+                        scope: cfg.scope.clone(),
+                    },
+                    timeout,
+                )
+            }
+            ChildJobConfig::Build(cfg) => {
+                let argv = cfg
+                    .argv
+                    .clone()
+                    .unwrap_or_else(|| vec!["cargo".into(), "build".into()]);
+                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+                (
+                    codegg_core::jobs::JobKind::Build,
+                    codegg_core::jobs::JobPayload::ManagedArgv {
+                        argv,
+                        cwd: cfg.cwd.clone(),
+                    },
+                    timeout,
+                )
+            }
+            ChildJobConfig::Lint(cfg) => {
+                let argv = cfg.argv.clone().unwrap_or_else(|| {
+                    vec![
+                        "cargo".into(),
+                        "clippy".into(),
+                        "--".into(),
+                        "-D".into(),
+                        "warnings".into(),
+                    ]
+                });
+                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+                (
+                    codegg_core::jobs::JobKind::Lint,
+                    codegg_core::jobs::JobPayload::ManagedArgv {
+                        argv,
+                        cwd: cfg.cwd.clone(),
+                    },
+                    timeout,
+                )
+            }
+            ChildJobConfig::Format(cfg) => {
+                let argv = cfg.argv.clone().unwrap_or_else(|| {
+                    vec!["cargo".into(), "fmt".into(), "--".into(), "--check".into()]
+                });
+                let timeout = cfg.timeout_secs.map(std::time::Duration::from_secs);
+                (
+                    codegg_core::jobs::JobKind::Format,
+                    codegg_core::jobs::JobPayload::ManagedArgv {
+                        argv,
+                        cwd: cfg.cwd.clone(),
+                    },
+                    timeout,
+                )
+            }
+        };
+
+        // Create submission key for idempotency
+        let config_hash = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(format!("{:?}", request.op).as_bytes());
+            hasher.update(format!("{:?}", request.config).as_bytes());
+            format!("{:x}", hasher.finalize())
+        };
+        let submission_key =
+            SubmissionKey::new(format!("child-job:{}:{}", self.program_id, config_hash)).map_err(
+                |e| InterpreterError::BrokerError(format!("invalid submission key: {}", e)),
+            )?;
+
+        let new_job = codegg_core::jobs::NewJob {
+            workspace_id: workspace_id.clone(),
+            session_id: None,
+            turn_id: None,
+            kind,
+            source: codegg_core::jobs::JobSource::Interactive,
+            priority: codegg_core::jobs::JobPriority::Normal,
+            payload,
+            resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
+            timeout,
+            retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+            idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
+            not_before: None,
+            deadline: None,
+            schedule_id: None,
+            depends_on: vec![],
+        };
+
+        // Submit and wait
+        let submitted = submission
+            .submit(Some(submission_key), new_job)
+            .await
+            .map_err(|e| {
+                InterpreterError::BrokerError(format!("child job submission failed: {}", e))
+            })?;
+
+        let wait_timeout = timeout
+            .map(|d| d + std::time::Duration::from_secs(30))
+            .unwrap_or_else(|| std::time::Duration::from_secs(300));
+
+        let completion = submission
+            .scheduler()
+            .wait_for_completion(&submitted.job_id, wait_timeout)
+            .await
+            .map_err(|e| InterpreterError::BrokerError(format!("child job wait failed: {}", e)))?;
+
+        // Map ExecutorStatus to ChildJobResult
+        let success = matches!(
+            completion.status,
+            crate::scheduler::executor::ExecutorStatus::Completed
+        );
+        let exit_code = match completion.status {
+            crate::scheduler::executor::ExecutorStatus::Completed => Some(0),
+            crate::scheduler::executor::ExecutorStatus::Failed => Some(1),
+            _ => None,
+        };
+
+        let details = match &request.config {
+            ChildJobConfig::Test(_) => ChildJobDetails::Test(TestJobResult {
+                status: if success { "passed" } else { "failed" }.into(),
+                ..Default::default()
+            }),
+            ChildJobConfig::Build(_) => ChildJobDetails::Build(BuildJobResult {
+                status: if success { "success" } else { "failure" }.into(),
+                ..Default::default()
+            }),
+            ChildJobConfig::Lint(_) => ChildJobDetails::Lint(LintJobResult {
+                status: if success { "clean" } else { "warnings" }.into(),
+                ..Default::default()
+            }),
+            ChildJobConfig::Format(_) => ChildJobDetails::Format(FormatJobResult {
+                status: if success { "clean" } else { "needs_formatting" }.into(),
+                ..Default::default()
+            }),
+        };
+
+        Ok(ChildJobResult {
+            success,
+            exit_code,
+            duration_ms: completion.metrics.elapsed_ms,
+            details,
+            artifacts: vec![],
+            error: if !success {
+                Some(completion.summary)
+            } else {
+                None
+            },
+        })
     }
 
     async fn heartbeat(&self, _budget: &BudgetSnapshot) {}
@@ -359,11 +613,17 @@ impl JobExecutor for ToolProgramExecutor {
         let mut interpreter = MeteredInterpreter::new(compilation.ir, limits);
 
         // Create real broker adapter
-        let broker_adapter = BrokerAdapter::new(
+        let mut broker_adapter = BrokerAdapter::new(
             self.broker.clone(),
             self.registry.clone(),
             program_id.clone(),
         );
+        if let Some(ref submission) = self.submission {
+            broker_adapter = broker_adapter.with_submission(submission.clone());
+        }
+        broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
+        broker_adapter = broker_adapter
+            .with_cwd(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
         // Build run configuration
         let run_config = RunConfig {

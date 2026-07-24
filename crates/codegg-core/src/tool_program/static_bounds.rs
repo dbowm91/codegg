@@ -268,6 +268,12 @@ fn analyze_stmt(
             state.parallel_depth -= 1;
             state.estimated_steps += 2 + count as u64;
         }
+        Stmt::SubmitJob { op, config, .. } => {
+            analyze_expr(op, state, depth)?;
+            analyze_expr(config, state, depth)?;
+            state.call_site_count += 1;
+            state.estimated_steps += 3; // submit + wait + result
+        }
         Stmt::Emit { value, .. } => {
             analyze_expr(value, state, depth)?;
             state.estimated_steps += 1;
@@ -449,6 +455,12 @@ fn analyze_expr(
         }
         Expr::Parenthesized { inner, .. } => {
             analyze_expr(inner, state, depth)?;
+        }
+        Expr::SubmitJobExpr { op, config, .. } => {
+            analyze_expr(op, state, depth)?;
+            analyze_expr(config, state, depth)?;
+            state.call_site_count += 1;
+            state.estimated_steps += 3; // submit + wait + result
         }
     }
     Ok(())

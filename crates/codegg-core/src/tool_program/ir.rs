@@ -169,6 +169,9 @@ pub enum IrOp {
     Checkpoint,
     /// Return from the program (implicit at end).
     Return,
+    /// Execute a child job: pops operation and config from stack,
+    /// submits through the broker, waits for completion, pushes result.
+    ExecuteChildJob,
 }
 
 /// Binary operation kinds for IR.
@@ -276,6 +279,7 @@ impl fmt::Display for IrOp {
             IrOp::Fail => write!(f, "Fail"),
             IrOp::Checkpoint => write!(f, "Checkpoint"),
             IrOp::Return => write!(f, "Return"),
+            IrOp::ExecuteChildJob => write!(f, "ExecuteChildJob"),
         }
     }
 }
