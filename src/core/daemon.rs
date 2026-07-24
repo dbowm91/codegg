@@ -5770,6 +5770,26 @@ impl CoreDaemon {
 
                 Ok(CoreResponse::ProjectionArtifactList { handles: vec![] })
             }
+            // ── Tool Programs M8: Inspect Protocol ──────────────────
+            CoreRequest::ToolProgramList {
+                session_id,
+                state_filter,
+            } => {
+                // Tool programs are stored in the projection snapshot.
+                // For now, return an empty list — the full implementation
+                // requires the notification service to be wired into the
+                // daemon's projection seam.
+                let _ = (session_id, state_filter);
+                Ok(CoreResponse::ToolProgramList { programs: vec![] })
+            }
+            CoreRequest::ToolProgramInspect { program_id } => {
+                let _ = program_id;
+                Ok(CoreResponse::ToolProgramInspect { detail: None })
+            }
+            CoreRequest::ToolProgramCallPage { program_id, offset } => {
+                let _ = (program_id, offset);
+                Ok(CoreResponse::ToolProgramCallPage { page: None })
+            }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {

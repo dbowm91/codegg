@@ -71,6 +71,7 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::ProjectionStreamEvent { .. } => SafePublicationClass::Internal,
         CoreEvent::ToolProgramCompleted { .. } => SafePublicationClass::Safe,
         CoreEvent::ToolProgramFailed { .. } => SafePublicationClass::Safe,
+        CoreEvent::ToolProgramUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::QuestionPending { .. } => SafePublicationClass::Safe,
     }
 }
@@ -114,6 +115,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::JobCreated { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramCompleted { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramFailed { session_id, .. } => session_id.is_some(),
+        CoreEvent::ToolProgramUpdated { session_id, .. } => session_id.is_some(),
         _ => false,
     }
 }
@@ -500,6 +502,16 @@ mod tests {
                 status: "failed".into(),
                 error: "err".into(),
                 failure_class: None,
+            },
+            CoreEvent::ToolProgramUpdated {
+                session_id: Some("s".into()),
+                program_id: "tp-1".into(),
+                job_id: "j".into(),
+                state: "running".into(),
+                phase: None,
+                calls_completed: 2,
+                failure_class: None,
+                summary: None,
             },
             CoreEvent::ProjectionStreamEvent {
                 subscription_id: codegg_protocol::projection::replay::ProjectionSubscriptionId(

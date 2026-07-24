@@ -399,6 +399,69 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone().unwrap_or_default(), None, event))
         }
+        CoreEvent::ToolProgramUpdated {
+            program_id,
+            job_id,
+            state,
+            phase,
+            calls_completed,
+            summary,
+            session_id,
+            ..
+        } => {
+            let event = match state.as_str() {
+                "admitted" => ProjectionEvent::ToolProgramAdmitted {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    admitted_at: envelope.timestamp_ms,
+                },
+                "running" => ProjectionEvent::ToolProgramStarted {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    attempt_id: phase.clone(),
+                    started_at: envelope.timestamp_ms,
+                },
+                "progress" => ProjectionEvent::ToolProgramProgress {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    message: summary.clone().unwrap_or_default(),
+                    calls_completed: *calls_completed,
+                    at: envelope.timestamp_ms,
+                },
+                "waiting_for_call" => {
+                    let tool_name = phase.as_deref().unwrap_or("unknown");
+                    ProjectionEvent::ToolProgramWaitingForCall {
+                        program_id: program_id.clone(),
+                        job_id: job_id.clone(),
+                        call_id: String::new(),
+                        tool_name: tool_name.to_string(),
+                        at: envelope.timestamp_ms,
+                    }
+                }
+                "waiting_for_job" => {
+                    let depends_on = phase.as_deref().unwrap_or("");
+                    ProjectionEvent::ToolProgramWaitingForJob {
+                        program_id: program_id.clone(),
+                        job_id: job_id.clone(),
+                        depends_on_job_id: depends_on.to_string(),
+                        at: envelope.timestamp_ms,
+                    }
+                }
+                "retry_backoff" => ProjectionEvent::ToolProgramRetryBackoff {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    attempt: *calls_completed,
+                    backoff_ms: 0,
+                    reason: summary.clone().unwrap_or_default(),
+                    at: envelope.timestamp_ms,
+                },
+                _ => ProjectionEvent::Diagnostic {
+                    code: "tool_program_updated".into(),
+                    message: format!("program={program_id} state={state}"),
+                },
+            };
+            Some((session_id.clone().unwrap_or_default(), None, event))
+        }
         _ => None,
     };
 

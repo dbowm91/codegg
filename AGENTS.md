@@ -200,6 +200,7 @@ cargo test -p codegg --test tool_program_child_recovery
 cargo test -p codegg --test tool_program_background
 cargo test -p codegg --test tool_program_notifications
 cargo test -p codegg --test tool_program_projection
+cargo test -p codegg --test tool_program_lifecycle
 cargo test -p codegg --test tool_contract_guards
 
 # Adversarial tests

@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
-    JobProjection, RunProjection, SessionSummaryProjection, WorkspaceSummaryProjection,
+    JobProjection, RunProjection, SessionSummaryProjection, ToolProgramSummary,
+    WorkspaceSummaryProjection,
 };
 use crate::projection::limits::{
     MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS, MAX_PROJECTION_RUNS,
+    MAX_PROJECTION_TOOL_PROGRAMS,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -53,6 +55,8 @@ pub struct SessionProjectionSnapshot {
     pub runs: Vec<RunProjection>,
     /// Active and recently observed durable jobs.
     pub jobs: Vec<JobProjection>,
+    /// Active and recently completed background tool programs.
+    pub tool_programs: Vec<ToolProgramSummary>,
     /// Bounded diagnostic list emitted by the reducer.
     pub diagnostics: Vec<ProjectionDiagnostic>,
 }
@@ -105,6 +109,7 @@ impl SessionProjectionSnapshot {
             recent_turns: Vec::new(),
             runs: Vec::new(),
             jobs: Vec::new(),
+            tool_programs: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
@@ -135,6 +140,23 @@ impl SessionProjectionSnapshot {
             self.jobs.remove(0);
         }
         self.jobs.push(job);
+    }
+
+    /// Upsert a tool program summary, dropping the oldest if the cap
+    /// is reached.
+    pub fn upsert_tool_program(&mut self, program: ToolProgramSummary) {
+        if let Some(slot) = self
+            .tool_programs
+            .iter_mut()
+            .find(|p| p.program_id == program.program_id)
+        {
+            *slot = program;
+            return;
+        }
+        if self.tool_programs.len() >= MAX_PROJECTION_TOOL_PROGRAMS {
+            self.tool_programs.remove(0);
+        }
+        self.tool_programs.push(program);
     }
 }
 

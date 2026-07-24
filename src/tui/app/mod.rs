@@ -3320,6 +3320,18 @@ impl App {
             activity.push(format!("shell:{}", self.shell_handles.len()));
         }
 
+        // Tool programs from projection snapshot
+        if let Some((_, ref snapshot)) = self.projection_client.active_snapshot() {
+            let active_programs = snapshot
+                .tool_programs
+                .iter()
+                .filter(|p| p.state != "completed" && p.state != "failed")
+                .count();
+            if active_programs > 0 {
+                activity.push(format!("programs:{active_programs}"));
+            }
+        }
+
         let pending_diffs = self
             .session_state
             .changed_files
@@ -3409,6 +3421,26 @@ impl App {
         let derived = &self.session_state_derived;
         self.sidebar.set_goal(derived.goal.clone());
         self.sidebar.set_plan(derived.plan.clone());
+
+        // Populate tool programs from projection snapshot
+        if let Some((_, ref snapshot)) = self.projection_client.active_snapshot() {
+            use super::components::sidebar::SidebarToolProgram;
+            self.sidebar.set_tool_programs(
+                snapshot
+                    .tool_programs
+                    .iter()
+                    .map(|p| SidebarToolProgram {
+                        program_id: p.program_id.clone(),
+                        state: p.state.clone(),
+                        language: p.language.clone(),
+                        calls_completed: p.calls_completed,
+                        summary: p.last_progress.clone(),
+                    })
+                    .collect(),
+            );
+        } else {
+            self.sidebar.set_tool_programs(Vec::new());
+        }
 
         frame.render_widget(&self.sidebar, area);
     }

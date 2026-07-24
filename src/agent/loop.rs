@@ -1727,7 +1727,11 @@ impl AgentLoop {
     /// Check for pending background tool program notifications and
     /// inject them as system messages. Called at safe turn boundaries
     /// (start of each run).
+    ///
+    /// Classifies notifications into three categories as required by
+    /// the plan: completed, incomplete-recoverable, and failed-terminal.
     async fn inject_pending_notifications(&self, messages: &mut Vec<Message>) {
+        use codegg_protocol::projection::dto::NotificationClassification;
         let Some(ref svc) = self.notification_service else {
             return;
         };
@@ -1738,18 +1742,29 @@ impl AgentLoop {
         // Claim each notification in deterministic order
         for notification in &pending {
             if svc.claim(&notification.notification_id).await {
-                let text = if notification.success {
-                    format!(
-                        "Background program {} completed successfully: {}",
-                        notification.program_id, notification.summary
-                    )
-                } else {
-                    format!(
-                        "Background program {} failed ({}): {}",
-                        notification.program_id,
-                        notification.failure_class.as_deref().unwrap_or("unknown"),
-                        notification.summary
-                    )
+                let text = match notification.classification {
+                    NotificationClassification::Completed => {
+                        format!(
+                            "Background program {} completed successfully: {}",
+                            notification.program_id, notification.summary
+                        )
+                    }
+                    NotificationClassification::IncompleteRecoverable => {
+                        format!(
+                            "Background program {} is incomplete but recoverable ({}): {}",
+                            notification.program_id,
+                            notification.failure_class.as_deref().unwrap_or("unknown"),
+                            notification.summary
+                        )
+                    }
+                    NotificationClassification::FailedTerminal => {
+                        format!(
+                            "Background program {} failed terminally ({}): {}",
+                            notification.program_id,
+                            notification.failure_class.as_deref().unwrap_or("unknown"),
+                            notification.summary
+                        )
+                    }
                 };
                 messages.push(Message::System {
                     content: std::sync::Arc::new(text),

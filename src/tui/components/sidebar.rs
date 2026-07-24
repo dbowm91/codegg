@@ -19,6 +19,7 @@ pub enum SidebarSection {
     Plan,
     Todos,
     FileChanges,
+    ToolPrograms,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +37,16 @@ pub struct SidebarFileChange {
     pub action: String,
     pub diff_preview: Vec<String>,
     pub diff_state: DiffStatsState,
+}
+
+/// Compact representation of a tool program for the sidebar display.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarToolProgram {
+    pub program_id: String,
+    pub state: String,
+    pub language: String,
+    pub calls_completed: u32,
+    pub summary: Option<String>,
 }
 
 pub struct SidebarWidget {
@@ -58,11 +69,14 @@ pub struct SidebarWidget {
     pub project_root: Option<String>,
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
+    /// Active and recently completed background tool programs.
+    pub tool_programs: Vec<SidebarToolProgram>,
     scroll_offset: usize,
     goal_collapsed: bool,
     plan_collapsed: bool,
     todos_collapsed: bool,
     file_changes_collapsed: bool,
+    tool_programs_collapsed: bool,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
@@ -89,11 +103,13 @@ impl SidebarWidget {
             project_root: None,
             goal: None,
             plan: None,
+            tool_programs: Vec::new(),
             scroll_offset: 0,
             goal_collapsed: false,
             plan_collapsed: false,
             todos_collapsed: false,
             file_changes_collapsed: false,
+            tool_programs_collapsed: false,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -151,6 +167,10 @@ impl SidebarWidget {
         self.plan = plan;
     }
 
+    pub fn set_tool_programs(&mut self, programs: Vec<SidebarToolProgram>) {
+        self.tool_programs = programs;
+    }
+
     pub fn toggle_focused(&mut self) {}
 
     pub fn focus_next(&mut self) {}
@@ -180,6 +200,9 @@ impl SidebarWidget {
             SidebarSection::Todos => self.todos_collapsed = !self.todos_collapsed,
             SidebarSection::FileChanges => {
                 self.file_changes_collapsed = !self.file_changes_collapsed;
+            }
+            SidebarSection::ToolPrograms => {
+                self.tool_programs_collapsed = !self.tool_programs_collapsed;
             }
         }
         true
@@ -317,6 +340,16 @@ impl SidebarWidget {
             if !self.file_changes_collapsed {
                 for i in 0..self.file_changes.len() {
                     targets.push(HoveredElement::FileChange(i));
+                }
+            }
+        }
+
+        if !self.tool_programs.is_empty() {
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::ToolPrograms));
+            if !self.tool_programs_collapsed {
+                for _ in 0..self.tool_programs.len() {
+                    targets.push(HoveredElement::None);
                 }
             }
         }
@@ -584,6 +617,40 @@ impl SidebarWidget {
             }
         }
 
+        if !self.tool_programs.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(self.collapsible_header(
+                &format!(" Tool Programs ({}) ", self.tool_programs.len()),
+                self.tool_programs_collapsed,
+            ));
+            if !self.tool_programs_collapsed {
+                for prog in &self.tool_programs {
+                    let state_icon = match prog.state.as_str() {
+                        "completed" => ("✓", Style::default().fg(self.theme.success)),
+                        "failed" => ("✗", Style::default().fg(self.theme.error)),
+                        "running" => ("●", Style::default().fg(self.theme.warning)),
+                        "admitted" => ("○", Style::default().fg(self.theme.muted)),
+                        _ => ("~", Style::default().fg(self.theme.muted)),
+                    };
+                    let short_id: String = prog.program_id.chars().take(8).collect();
+                    let summary_part = prog
+                        .summary
+                        .as_deref()
+                        .map(|s| format!(" {}", clean_inline_text(s, width.saturating_sub(20))))
+                        .unwrap_or_default();
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {} ", state_icon.0), state_icon.1),
+                        Span::styled(
+                            clean_inline_text(&short_id, 8),
+                            Style::default().fg(self.theme.muted),
+                        ),
+                        Span::raw(format!(" ({})", prog.state)),
+                        Span::raw(summary_part),
+                    ]));
+                }
+            }
+        }
+
         lines
     }
 
@@ -595,6 +662,9 @@ impl SidebarWidget {
                 SidebarSection::Todos => "Click to collapse/expand todos".to_string(),
                 SidebarSection::FileChanges => {
                     "Click to collapse/expand modified files".to_string()
+                }
+                SidebarSection::ToolPrograms => {
+                    "Click to collapse/expand tool programs".to_string()
                 }
             },
             HoveredElement::Todo(idx) => self

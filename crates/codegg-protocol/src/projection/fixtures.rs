@@ -73,6 +73,7 @@ pub fn idle_snapshot() -> SessionProjectionSnapshot {
         recent_turns: Vec::new(),
         runs: Vec::new(),
         jobs: Vec::new(),
+        tool_programs: Vec::new(),
         diagnostics: Vec::new(),
     }
 }

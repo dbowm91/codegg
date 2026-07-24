@@ -45,6 +45,23 @@ pub const MAX_PROJECTION_ARTIFACTS: usize = 32;
 /// Maximum number of job projections retained per workspace.
 pub const MAX_PROJECTION_JOBS: usize = 32;
 
+/// Maximum number of background tool program projections retained
+/// per session.
+pub const MAX_PROJECTION_TOOL_PROGRAMS: usize = 32;
+
+/// Maximum number of call entries returned in a single
+/// [`crate::projection::dto::ToolProgramCallPage`].
+pub const MAX_PROJECTION_CALL_PAGE_SIZE: usize = 32;
+
+/// Maximum number of call summaries retained in a
+/// [`crate::projection::dto::ToolProgramDetail`] before older entries
+/// are evicted.
+pub const MAX_PROJECTION_TOOL_PROGRAM_CALLS: usize = 128;
+
+/// Maximum number of background tool program notifications retained
+/// per session before the oldest pending notification is suppressed.
+pub const MAX_PROJECTION_NOTIFICATION_BOUND: usize = 16;
+
 /// Maximum number of subagent (task_id) projections retained per
 /// session.
 pub const MAX_PROJECTION_SUBAGENTS: usize = 16;

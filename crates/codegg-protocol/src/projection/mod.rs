@@ -59,8 +59,9 @@ pub use controller::{
 };
 pub use dto::{
     AgentTreeNodeProjection, ArtifactHandleProjection, JobProjection, MessageProjection,
-    PermissionProjection, ProjectSummaryProjection, QuestionProjection, RunProjection,
-    SessionSummaryProjection, ToolProjection, TurnProjection, VisibilityClass,
+    NotificationClassification, PermissionProjection, ProjectSummaryProjection, QuestionProjection,
+    RunProjection, SessionSummaryProjection, ToolProgramCallPage, ToolProgramCallSummary,
+    ToolProgramDetail, ToolProgramSummary, ToolProjection, TurnProjection, VisibilityClass,
     WorkspaceSummaryProjection,
 };
 pub use event::{ProjectionEnvelope, ProjectionEvent, ProjectionStreamScope, EVENT_KIND_PREFIX};
@@ -71,12 +72,13 @@ pub use fixtures::{
     subagent_event_script, FIXTURE_PROJECT_ID, FIXTURE_SESSION_ID, FIXTURE_WORKSPACE_ID,
 };
 pub use limits::{
-    MAX_PROJECTION_ARTIFACTS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_DIFF_LINES,
-    MAX_PROJECTION_JOBS, MAX_PROJECTION_MESSAGES, MAX_PROJECTION_PENDING_PERMISSIONS,
+    MAX_PROJECTION_ARTIFACTS, MAX_PROJECTION_CALL_PAGE_SIZE, MAX_PROJECTION_DIAGNOSTICS,
+    MAX_PROJECTION_DIFF_LINES, MAX_PROJECTION_JOBS, MAX_PROJECTION_MESSAGES,
+    MAX_PROJECTION_NOTIFICATION_BOUND, MAX_PROJECTION_PENDING_PERMISSIONS,
     MAX_PROJECTION_PENDING_QUESTIONS, MAX_PROJECTION_RECENT_TOOLS, MAX_PROJECTION_RUNS,
     MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_SESSIONS, MAX_PROJECTION_STRING_BYTES,
     MAX_PROJECTION_SUBAGENTS, MAX_PROJECTION_TOOL_ARGS_BYTES, MAX_PROJECTION_TOOL_OUTPUT_BYTES,
-    MAX_PROJECTION_TRUNCATION_MARKER_BYTES,
+    MAX_PROJECTION_TOOL_PROGRAM_CALLS, MAX_PROJECTION_TRUNCATION_MARKER_BYTES,
 };
 pub use reducer::{
     ApplyOutcome, ProjectionReducer, ProjectionState, ReducerError, ReducerEventInput,

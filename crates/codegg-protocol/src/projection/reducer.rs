@@ -36,7 +36,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::projection::dto::{
-    AgentTreeStatus, PermissionStatus, ToolOutputProjection, ToolProjection, ToolStatus, TurnStatus,
+    AgentTreeStatus, PermissionStatus, ToolOutputProjection, ToolProgramSummary, ToolProjection,
+    ToolStatus, TurnStatus,
 };
 use crate::projection::event::{ProjectionEnvelope, ProjectionEvent};
 use crate::projection::limits::{
@@ -1033,6 +1034,35 @@ impl ProjectionReducer {
                 summary,
                 completed_at,
             } => {
+                let existing = snapshot
+                    .tool_programs
+                    .iter()
+                    .find(|p| p.program_id == *program_id)
+                    .cloned();
+                let mut program = existing.unwrap_or_else(|| ToolProgramSummary {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    state: "submitted".to_string(),
+                    phase: None,
+                    language: "restricted_python".to_string(),
+                    parent_turn_id: None,
+                    parent_agent_id: None,
+                    calls_completed: 0,
+                    child_jobs_running: 0,
+                    submitted_at: *completed_at,
+                    started_at: None,
+                    completed_at: None,
+                    failure_class: None,
+                    terminal_handle: None,
+                    last_progress: None,
+                });
+                program.state = truncate_str(status, MAX_PROJECTION_STRING_BYTES).into_owned();
+                program.completed_at = Some(*completed_at);
+                program.last_progress =
+                    Some(truncate_str(summary, MAX_PROJECTION_STRING_BYTES).into_owned());
+                program.terminal_handle = Some(program.job_id.clone());
+                program.normalise();
+                snapshot.upsert_tool_program(program);
                 let mut diag = ProjectionDiagnostic::new(
                     "tool_program_terminal",
                     format!(
@@ -1045,6 +1075,192 @@ impl ProjectionReducer {
                 snapshot.push_diagnostic(diag);
                 snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
                 ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolProgramAdmitted {
+                program_id,
+                job_id,
+                admitted_at,
+            } => {
+                let existing = snapshot
+                    .tool_programs
+                    .iter()
+                    .find(|p| p.program_id == *program_id)
+                    .cloned();
+                let mut program = existing.unwrap_or_else(|| ToolProgramSummary {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    state: "submitted".to_string(),
+                    phase: None,
+                    language: "restricted_python".to_string(),
+                    parent_turn_id: None,
+                    parent_agent_id: None,
+                    calls_completed: 0,
+                    child_jobs_running: 0,
+                    submitted_at: *admitted_at,
+                    started_at: None,
+                    completed_at: None,
+                    failure_class: None,
+                    terminal_handle: None,
+                    last_progress: None,
+                });
+                program.state = "admitted".to_string();
+                program.normalise();
+                snapshot.upsert_tool_program(program);
+                let mut diag = ProjectionDiagnostic::new(
+                    "tool_program_admitted",
+                    format!("program={program_id} job={job_id}"),
+                    *admitted_at,
+                );
+                diag.session_id = input.session_id.clone();
+                snapshot.push_diagnostic(diag);
+                snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolProgramStarted {
+                program_id,
+                job_id,
+                attempt_id: _,
+                started_at,
+            } => {
+                let existing = snapshot
+                    .tool_programs
+                    .iter()
+                    .find(|p| p.program_id == *program_id)
+                    .cloned();
+                let mut program = existing.unwrap_or_else(|| ToolProgramSummary {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    state: "submitted".to_string(),
+                    phase: None,
+                    language: "restricted_python".to_string(),
+                    parent_turn_id: None,
+                    parent_agent_id: None,
+                    calls_completed: 0,
+                    child_jobs_running: 0,
+                    submitted_at: *started_at,
+                    started_at: None,
+                    completed_at: None,
+                    failure_class: None,
+                    terminal_handle: None,
+                    last_progress: None,
+                });
+                program.state = "running".to_string();
+                program.started_at = Some(*started_at);
+                program.normalise();
+                snapshot.upsert_tool_program(program);
+                let mut diag = ProjectionDiagnostic::new(
+                    "tool_program_started",
+                    format!("program={program_id} job={job_id}"),
+                    *started_at,
+                );
+                diag.session_id = input.session_id.clone();
+                snapshot.push_diagnostic(diag);
+                snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolProgramProgress {
+                program_id,
+                job_id: _,
+                message,
+                calls_completed,
+                at: _,
+            } => {
+                if let Some(program) = snapshot
+                    .tool_programs
+                    .iter_mut()
+                    .find(|p| p.program_id == *program_id)
+                {
+                    program.calls_completed = *calls_completed;
+                    program.last_progress =
+                        Some(truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned());
+                    program.normalise();
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_tool_program_progress",
+                        "ToolProgramProgress referenced an unknown program",
+                    )
+                }
+            }
+            ProjectionEvent::ToolProgramWaitingForCall {
+                program_id,
+                job_id: _,
+                call_id: _,
+                tool_name,
+                at: _,
+            } => {
+                if let Some(program) = snapshot
+                    .tool_programs
+                    .iter_mut()
+                    .find(|p| p.program_id == *program_id)
+                {
+                    program.phase =
+                        Some(format!("waiting_for_call:{}", truncate_str(tool_name, 64)));
+                    program.normalise();
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_tool_program_waiting",
+                        "ToolProgramWaitingForCall referenced an unknown program",
+                    )
+                }
+            }
+            ProjectionEvent::ToolProgramWaitingForJob {
+                program_id,
+                job_id: _,
+                depends_on_job_id: _,
+                at: _,
+            } => {
+                if let Some(program) = snapshot
+                    .tool_programs
+                    .iter_mut()
+                    .find(|p| p.program_id == *program_id)
+                {
+                    program.phase = Some("waiting_for_child_job".to_string());
+                    program.child_jobs_running = program.child_jobs_running.saturating_add(1);
+                    program.normalise();
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_tool_program_waiting_job",
+                        "ToolProgramWaitingForJob referenced an unknown program",
+                    )
+                }
+            }
+            ProjectionEvent::ToolProgramRetryBackoff {
+                program_id,
+                job_id: _,
+                attempt,
+                backoff_ms,
+                reason,
+                at: _,
+            } => {
+                if let Some(program) = snapshot
+                    .tool_programs
+                    .iter_mut()
+                    .find(|p| p.program_id == *program_id)
+                {
+                    program.state = "retry_backoff".to_string();
+                    program.phase = Some(format!(
+                        "attempt={attempt} backoff={backoff_ms}ms reason={}",
+                        truncate_str(reason, 128)
+                    ));
+                    program.normalise();
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_tool_program_retry",
+                        "ToolProgramRetryBackoff referenced an unknown program",
+                    )
+                }
             }
         }
     }

@@ -135,3 +135,13 @@ fn tool_program_background_invalid_source_fails() {
         assert!(err.to_string().contains("compilation"));
     });
 }
+
+#[test]
+fn tool_program_cancel_without_submission_fails() {
+    let tool = codegg::tool::tool_program::ToolProgramTool::new();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let err = tool.cancel("j-1").await.unwrap_err();
+        assert!(err.to_string().contains("scheduler"));
+    });
+}

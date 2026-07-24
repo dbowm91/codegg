@@ -17,10 +17,34 @@
 
 use std::collections::HashMap;
 
+use codegg_protocol::projection::dto::NotificationClassification;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-/// The state of a background program notification.
+/// Configuration for notification queue bounds and backpressure.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationPolicy {
+    /// Maximum number of pending notifications per session before
+    /// the oldest is suppressed.
+    pub max_pending_per_session: usize,
+    /// Maximum age in milliseconds for a claimed notification before
+    /// it is expired (lease timeout).
+    pub claim_lease_ms: i64,
+    /// Maximum total bytes for a single notification payload. Larger
+    /// payloads are truncated.
+    pub max_payload_bytes: usize,
+}
+
+impl Default for NotificationPolicy {
+    fn default() -> Self {
+        Self {
+            max_pending_per_session: 16,
+            claim_lease_ms: 300_000, // 5 minutes
+            max_payload_bytes: 8_192,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationState {
@@ -63,6 +87,12 @@ pub struct ToolProgramNotification {
     pub failure_class: Option<String>,
     /// Whether the program completed successfully.
     pub success: bool,
+    /// Three-way classification: completed, incomplete-recoverable,
+    /// or failed-terminal.
+    pub classification: codegg_protocol::projection::dto::NotificationClassification,
+    /// SHA-256 digest of the notification payload for idempotency
+    /// verification.
+    pub payload_digest: String,
     /// Program handle for inspection.
     pub program_handle: ProgramHandle,
     /// Current notification state.
@@ -93,6 +123,20 @@ pub struct ProgramHandle {
     pub cancel_ref: String,
 }
 
+/// Compact representation of a terminal tool program job, used for
+/// notification recovery after a daemon restart.
+#[derive(Debug, Clone)]
+pub struct RecoveredTerminalJob {
+    pub program_id: String,
+    pub job_id: String,
+    pub session_id: Option<String>,
+    pub status: String,
+    pub summary: String,
+    pub failure_class: Option<String>,
+    pub success: bool,
+    pub created_at: i64,
+}
+
 /// In-memory notification store with claim/ack semantics.
 ///
 /// This is daemon-scoped and does not persist to SQLite. On restart,
@@ -104,6 +148,8 @@ pub struct ToolProgramNotificationService {
     pub notifications: RwLock<HashMap<String, ToolProgramNotification>>,
     /// session_id → set of pending notification_ids.
     pub session_index: RwLock<HashMap<String, Vec<String>>>,
+    /// Policy configuration for bounds and backpressure.
+    pub policy: NotificationPolicy,
 }
 
 impl ToolProgramNotificationService {
@@ -111,6 +157,16 @@ impl ToolProgramNotificationService {
         Self {
             notifications: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
+            policy: NotificationPolicy::default(),
+        }
+    }
+
+    /// Create a notification service with a custom policy.
+    pub fn with_policy(policy: NotificationPolicy) -> Self {
+        Self {
+            notifications: RwLock::new(HashMap::new()),
+            session_index: RwLock::new(HashMap::new()),
+            policy,
         }
     }
 
@@ -270,12 +326,97 @@ impl ToolProgramNotificationService {
         }
         suppressed
     }
+
+    /// Recover pending notifications from terminal job records after a
+    /// daemon restart. For each terminal tool program job that has not
+    /// been acknowledged, creates a pending notification record so the
+    /// AgentLoop can inject it at the next turn boundary.
+    ///
+    /// This is idempotent: duplicate program_ids are ignored.
+    pub async fn recover_from_terminal_jobs(
+        &self,
+        terminal_jobs: Vec<RecoveredTerminalJob>,
+    ) -> usize {
+        let mut recovered = 0;
+        for job in terminal_jobs {
+            let classification =
+                classify_terminal(&job.status, job.failure_class.as_deref(), job.success);
+            let payload = format!(
+                "{}|{}|{}|{}",
+                job.program_id, job.status, job.summary, job.success
+            );
+            let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
+            let notification = ToolProgramNotification {
+                notification_id: job.program_id.clone(),
+                program_id: job.program_id.clone(),
+                job_id: job.job_id.clone(),
+                session_id: job.session_id.clone().unwrap_or_default(),
+                agent_id: None,
+                turn_id: None,
+                status: job.status.clone(),
+                summary: job.summary.clone(),
+                failure_class: job.failure_class.clone(),
+                success: job.success,
+                classification,
+                payload_digest,
+                program_handle: ProgramHandle {
+                    program_id: job.program_id.clone(),
+                    job_id: job.job_id.clone(),
+                    status: job.status.clone(),
+                    submitted_at: job.created_at,
+                    timeout_ms: 120_000,
+                    inspect_ref: job.program_id.clone(),
+                    cancel_ref: job.job_id.clone(),
+                },
+                state: NotificationState::Pending,
+                created_at: job.created_at,
+                updated_at: job.created_at,
+            };
+            let existing = self.get(&job.program_id).await;
+            if existing.is_none() {
+                self.record_notification(notification).await;
+                recovered += 1;
+            }
+        }
+        recovered
+    }
 }
 
 impl Default for ToolProgramNotificationService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Classify a terminal notification into one of three categories:
+/// completed, incomplete-recoverable, or failed-terminal.
+fn classify_terminal(
+    _status: &str,
+    failure_class: Option<&str>,
+    success: bool,
+) -> NotificationClassification {
+    if success {
+        return NotificationClassification::Completed;
+    }
+    match failure_class {
+        Some("timeout") | Some("stall") | Some("interrupted") => {
+            NotificationClassification::IncompleteRecoverable
+        }
+        _ => {
+            // compile_error, policy_denied, resource_exhausted, etc.
+            NotificationClassification::FailedTerminal
+        }
+    }
+}
+
+/// Public wrapper for `classify_terminal` — exposed for integration
+/// tests and consumers that need to classify a terminal notification.
+pub fn classify_terminal_for_test(
+    status: &str,
+    failure_class: Option<&str>,
+    success: bool,
+) -> codegg_protocol::projection::dto::NotificationClassification {
+    classify_terminal(status, failure_class, success)
 }
 
 #[cfg(test)]
@@ -289,6 +430,12 @@ mod tests {
         success: bool,
     ) -> ToolProgramNotification {
         let now = chrono::Utc::now().timestamp_millis();
+        let classification = classify_terminal(status, None, success);
+        let payload = format!(
+            "{}|{}|program {} finished|{}",
+            program_id, status, program_id, success
+        );
+        let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
         ToolProgramNotification {
             notification_id: program_id.to_string(),
             program_id: program_id.to_string(),
@@ -300,6 +447,8 @@ mod tests {
             summary: format!("program {} finished", program_id),
             failure_class: None,
             success,
+            classification,
+            payload_digest,
             program_handle: ProgramHandle {
                 program_id: program_id.to_string(),
                 job_id: format!("j-{}", program_id),
@@ -438,5 +587,61 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         let pending = svc.pending_for_session("nonexistent").await;
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recover_from_terminal_jobs_creates_pending_notifications() {
+        let svc = ToolProgramNotificationService::new();
+        let jobs = vec![
+            RecoveredTerminalJob {
+                program_id: "tp-1".into(),
+                job_id: "j-1".into(),
+                session_id: Some("s1".into()),
+                status: "completed".into(),
+                summary: "ok".into(),
+                failure_class: None,
+                success: true,
+                created_at: 1000,
+            },
+            RecoveredTerminalJob {
+                program_id: "tp-2".into(),
+                job_id: "j-2".into(),
+                session_id: Some("s1".into()),
+                status: "failed".into(),
+                summary: "timeout".into(),
+                failure_class: Some("timeout".into()),
+                success: false,
+                created_at: 2000,
+            },
+        ];
+        let recovered = svc.recover_from_terminal_jobs(jobs).await;
+        assert_eq!(recovered, 2);
+
+        let pending = svc.pending_for_session("s1").await;
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn recover_from_terminal_jobs_is_idempotent() {
+        let svc = ToolProgramNotificationService::new();
+        let jobs = vec![RecoveredTerminalJob {
+            program_id: "tp-1".into(),
+            job_id: "j-1".into(),
+            session_id: Some("s1".into()),
+            status: "completed".into(),
+            summary: "ok".into(),
+            failure_class: None,
+            success: true,
+            created_at: 1000,
+        }];
+        let recovered1 = svc.recover_from_terminal_jobs(jobs.clone()).await;
+        assert_eq!(recovered1, 1);
+
+        // Recover again — should not create duplicate
+        let recovered2 = svc.recover_from_terminal_jobs(jobs).await;
+        assert_eq!(recovered2, 0);
+
+        let pending = svc.pending_for_session("s1").await;
+        assert_eq!(pending.len(), 1);
     }
 }

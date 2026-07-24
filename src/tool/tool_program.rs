@@ -101,6 +101,24 @@ impl ToolProgramTool {
         self.notification_service = Some(service);
         self
     }
+
+    /// Cancel a background tool program by its job_id. This is
+    /// idempotent: cancelling an already-completed or already-cancelled
+    /// program is a no-op.
+    pub async fn cancel(&self, job_id: &str) -> Result<(), ToolError> {
+        let submission = self.submission.as_ref().ok_or_else(|| {
+            ToolError::Disabled("tool_program requires scheduler submission service".into())
+        })?;
+        submission
+            .scheduler()
+            .request_cancel(
+                &codegg_core::jobs::JobId::new_unchecked(job_id),
+                "user_cancelled_via_tool_program",
+            )
+            .await
+            .map_err(|e| ToolError::Execution(format!("cancel failed: {}", e)))?;
+        Ok(())
+    }
 }
 
 impl Default for ToolProgramTool {
@@ -395,6 +413,9 @@ impl ToolProgramTool {
         // service is available. The executor will update this when the
         // program reaches a terminal state.
         if let Some(ref svc) = self.notification_service {
+            use codegg_protocol::projection::dto::NotificationClassification;
+            let payload = format!("{}|submitted||false", program_id);
+            let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
             let notification = ToolProgramNotification {
                 notification_id: program_id.clone(),
                 program_id: program_id.clone(),
@@ -406,6 +427,8 @@ impl ToolProgramTool {
                 summary: String::new(),
                 failure_class: None,
                 success: false,
+                classification: NotificationClassification::IncompleteRecoverable,
+                payload_digest,
                 program_handle: handle.clone(),
                 state: crate::scheduler::tool_program_notifications::NotificationState::Pending,
                 created_at: now,

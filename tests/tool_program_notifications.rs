@@ -7,6 +7,7 @@
 use codegg::scheduler::tool_program_notifications::{
     NotificationState, ProgramHandle, ToolProgramNotification, ToolProgramNotificationService,
 };
+use codegg_protocol::projection::dto::NotificationClassification;
 
 fn make_notification(
     program_id: &str,
@@ -15,6 +16,16 @@ fn make_notification(
     success: bool,
 ) -> ToolProgramNotification {
     let now = chrono::Utc::now().timestamp_millis();
+    let classification = if success {
+        NotificationClassification::Completed
+    } else {
+        NotificationClassification::IncompleteRecoverable
+    };
+    let payload = format!(
+        "{}|{}|program {} finished with status {}|{}",
+        program_id, status, program_id, status, success
+    );
+    let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
     ToolProgramNotification {
         notification_id: program_id.to_string(),
         program_id: program_id.to_string(),
@@ -30,6 +41,8 @@ fn make_notification(
             Some("timeout".into())
         },
         success,
+        classification,
+        payload_digest,
         program_handle: ProgramHandle {
             program_id: program_id.to_string(),
             job_id: format!("j-{}", program_id),
@@ -258,4 +271,99 @@ async fn notification_serialization_roundtrip() {
     assert_eq!(back.program_id, "tp-1");
     assert_eq!(back.session_id, "s1");
     assert!(back.success);
+}
+
+#[tokio::test]
+async fn recover_from_terminal_jobs_creates_pending() {
+    use codegg::scheduler::tool_program_notifications::RecoveredTerminalJob;
+    let svc = ToolProgramNotificationService::new();
+    let jobs = vec![
+        RecoveredTerminalJob {
+            program_id: "tp-1".into(),
+            job_id: "j-1".into(),
+            session_id: Some("s1".into()),
+            status: "completed".into(),
+            summary: "ok".into(),
+            failure_class: None,
+            success: true,
+            created_at: 1000,
+        },
+        RecoveredTerminalJob {
+            program_id: "tp-2".into(),
+            job_id: "j-2".into(),
+            session_id: Some("s1".into()),
+            status: "failed".into(),
+            summary: "timeout".into(),
+            failure_class: Some("timeout".into()),
+            success: false,
+            created_at: 2000,
+        },
+    ];
+    let recovered = svc.recover_from_terminal_jobs(jobs).await;
+    assert_eq!(recovered, 2);
+
+    let pending = svc.pending_for_session("s1").await;
+    assert_eq!(pending.len(), 2);
+
+    // Claim and ack one
+    assert!(svc.claim("tp-1").await);
+    assert!(svc.acknowledge("tp-1").await);
+
+    // Only tp-2 remains pending
+    let pending = svc.pending_for_session("s1").await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].program_id, "tp-2");
+}
+
+#[tokio::test]
+async fn recover_is_idempotent() {
+    use codegg::scheduler::tool_program_notifications::RecoveredTerminalJob;
+    let svc = ToolProgramNotificationService::new();
+    let jobs = vec![RecoveredTerminalJob {
+        program_id: "tp-1".into(),
+        job_id: "j-1".into(),
+        session_id: Some("s1".into()),
+        status: "completed".into(),
+        summary: "ok".into(),
+        failure_class: None,
+        success: true,
+        created_at: 1000,
+    }];
+    assert_eq!(svc.recover_from_terminal_jobs(jobs.clone()).await, 1);
+    assert_eq!(svc.recover_from_terminal_jobs(jobs).await, 0);
+    assert_eq!(svc.pending_for_session("s1").await.len(), 1);
+}
+
+#[tokio::test]
+async fn recover_skips_already_claimed() {
+    use codegg::scheduler::tool_program_notifications::RecoveredTerminalJob;
+    let svc = ToolProgramNotificationService::new();
+
+    // Manually create and claim a notification
+    let n = make_notification("tp-1", "s1", "completed", true);
+    svc.record_notification(n).await;
+    svc.claim("tp-1").await;
+
+    // Try to recover — should not overwrite the claimed notification
+    let jobs = vec![RecoveredTerminalJob {
+        program_id: "tp-1".into(),
+        job_id: "j-1".into(),
+        session_id: Some("s1".into()),
+        status: "completed".into(),
+        summary: "ok".into(),
+        failure_class: None,
+        success: true,
+        created_at: 1000,
+    }];
+    let recovered = svc.recover_from_terminal_jobs(jobs).await;
+    assert_eq!(recovered, 0);
+
+    // Should still be claimed, not pending
+    let pending = svc.pending_for_session("s1").await;
+    assert!(pending.is_empty());
+    let n = svc.get("tp-1").await.unwrap();
+    assert_eq!(
+        n.state,
+        codegg::scheduler::tool_program_notifications::NotificationState::Claimed
+    );
 }

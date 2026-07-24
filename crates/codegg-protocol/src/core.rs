@@ -453,6 +453,19 @@ pub enum CoreResponse {
     ProjectionArtifactList {
         handles: Vec<crate::projection::replay::ProjectionArtifactHandleDto>,
     },
+    // ── Tool Programs M8: Inspect Protocol ──────────────────────────
+    /// List of tool program summaries for a session.
+    ToolProgramList {
+        programs: Vec<crate::projection::dto::ToolProgramSummary>,
+    },
+    /// Detail view of a single tool program.
+    ToolProgramInspect {
+        detail: Option<crate::projection::dto::ToolProgramDetail>,
+    },
+    /// A page of call history for a tool program.
+    ToolProgramCallPage {
+        page: Option<crate::projection::dto::ToolProgramCallPage>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -981,6 +994,23 @@ pub enum CoreRequest {
     ProjectionArtifactList {
         project_id: String,
     },
+    // ── Tool Programs M8: Inspect Protocol ──────────────────────────
+    /// List tool programs for a session, optionally filtered by state.
+    ToolProgramList {
+        session_id: String,
+        #[serde(default)]
+        state_filter: Option<String>,
+    },
+    /// Inspect a single tool program's detail view.
+    ToolProgramInspect {
+        program_id: String,
+    },
+    /// Fetch a page of call history for a tool program.
+    ToolProgramCallPage {
+        program_id: String,
+        #[serde(default)]
+        offset: u32,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1341,6 +1371,25 @@ pub enum CoreEvent {
         status: String,
         error: String,
         failure_class: Option<String>,
+    },
+    /// A background tool program lifecycle update. Carries the current
+    /// state and optional metadata. The adapter maps this to the
+    /// appropriate projection event.
+    ToolProgramUpdated {
+        session_id: Option<String>,
+        program_id: String,
+        job_id: String,
+        /// Lifecycle state: admitted, running, progress, waiting,
+        /// retry_backoff.
+        state: String,
+        /// Optional phase within the state.
+        phase: Option<String>,
+        /// Number of tool calls completed so far.
+        calls_completed: u32,
+        /// Failure class if in a terminal failure state.
+        failure_class: Option<String>,
+        /// Compact progress/summary message.
+        summary: Option<String>,
     },
     Error {
         code: String,

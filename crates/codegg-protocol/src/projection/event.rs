@@ -246,6 +246,53 @@ pub enum ProjectionEvent {
         summary: String,
         completed_at: i64,
     },
+    /// A background tool program was admitted by the scheduler.
+    ToolProgramAdmitted {
+        program_id: String,
+        job_id: String,
+        admitted_at: i64,
+    },
+    /// A background tool program began execution.
+    ToolProgramStarted {
+        program_id: String,
+        job_id: String,
+        attempt_id: Option<String>,
+        started_at: i64,
+    },
+    /// A bounded progress update for a running background tool program.
+    ToolProgramProgress {
+        program_id: String,
+        job_id: String,
+        message: String,
+        calls_completed: u32,
+        at: i64,
+    },
+    /// A background tool program is waiting for user permission
+    /// (permission/call request).
+    ToolProgramWaitingForCall {
+        program_id: String,
+        job_id: String,
+        call_id: String,
+        tool_name: String,
+        at: i64,
+    },
+    /// A background tool program is waiting for a dependent child job
+    /// to complete.
+    ToolProgramWaitingForJob {
+        program_id: String,
+        job_id: String,
+        depends_on_job_id: String,
+        at: i64,
+    },
+    /// A background tool program is retrying after a transient failure.
+    ToolProgramRetryBackoff {
+        program_id: String,
+        job_id: String,
+        attempt: u32,
+        backoff_ms: u64,
+        reason: String,
+        at: i64,
+    },
     /// Token usage changed.
     TokenUsageUpdated {
         input_tokens: Option<usize>,
@@ -307,6 +354,12 @@ impl ProjectionEvent {
             ProjectionEvent::JobRemoved { .. } => false,
             ProjectionEvent::ToolProgramSubmitted { .. } => false,
             ProjectionEvent::ToolProgramTerminal { .. } => false,
+            ProjectionEvent::ToolProgramAdmitted { .. } => false,
+            ProjectionEvent::ToolProgramStarted { .. } => false,
+            ProjectionEvent::ToolProgramProgress { .. } => false,
+            ProjectionEvent::ToolProgramWaitingForCall { .. } => false,
+            ProjectionEvent::ToolProgramWaitingForJob { .. } => false,
+            ProjectionEvent::ToolProgramRetryBackoff { .. } => false,
             ProjectionEvent::TokenUsageUpdated { .. } => false,
             ProjectionEvent::ModelSelected { .. } => false,
             ProjectionEvent::AgentSelected { .. } => false,
@@ -332,6 +385,12 @@ impl ProjectionEvent {
             ProjectionEvent::JobRemoved { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::ToolProgramSubmitted { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::ToolProgramTerminal { .. } => VisibilityClass::Public,
+            ProjectionEvent::ToolProgramAdmitted { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::ToolProgramStarted { .. } => VisibilityClass::Public,
+            ProjectionEvent::ToolProgramProgress { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::ToolProgramWaitingForCall { .. } => VisibilityClass::Public,
+            ProjectionEvent::ToolProgramWaitingForJob { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::ToolProgramRetryBackoff { .. } => VisibilityClass::ClientLocal,
             _ => VisibilityClass::Public,
         }
     }

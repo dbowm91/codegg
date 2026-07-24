@@ -477,6 +477,21 @@ impl ProjectionClientState {
         self.mode().is_raw_compatibility()
     }
 
+    /// Return the active tab's projection snapshot, if available.
+    /// Returns `(stream_id, snapshot)` when the controller holds a
+    /// snapshot for the active tab.
+    pub fn active_snapshot(&self) -> Option<(ProjectionStreamId, &SessionProjectionSnapshot)> {
+        let tab_id = self.active_tab_id.as_deref()?;
+        let snaps = self.controller.snapshots();
+        for (stream_id, snap) in snaps {
+            if stream_id.as_str().ends_with(tab_id) {
+                return Some((stream_id.clone(), snap));
+            }
+        }
+        // Fallback: return any available snapshot.
+        snaps.iter().next().map(|(id, snap)| (id.clone(), snap))
+    }
+
     /// Whether the controller has been forced into unsupported mode.
     pub fn is_unsupported(&self) -> bool {
         self.mode().is_unsupported()

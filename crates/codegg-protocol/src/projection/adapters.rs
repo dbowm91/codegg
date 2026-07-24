@@ -105,6 +105,7 @@ pub fn snapshot_from_snapshot_session(
         recent_turns: Vec::new(),
         runs: Vec::new(),
         jobs: Vec::new(),
+        tool_programs: Vec::new(),
         diagnostics: Vec::new(),
     };
 
@@ -674,6 +675,82 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 completed_at: env.timestamp_ms,
             });
         }
+        CoreEvent::ToolProgramUpdated {
+            program_id,
+            job_id,
+            state,
+            phase,
+            calls_completed,
+            failure_class: _,
+            summary,
+            ..
+        } => match state.as_str() {
+            "admitted" => {
+                events.push(ProjectionEvent::ToolProgramAdmitted {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    admitted_at: env.timestamp_ms,
+                });
+            }
+            "running" => {
+                events.push(ProjectionEvent::ToolProgramStarted {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    attempt_id: phase.clone(),
+                    started_at: env.timestamp_ms,
+                });
+            }
+            "progress" => {
+                events.push(ProjectionEvent::ToolProgramProgress {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    message: summary
+                        .as_deref()
+                        .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).to_string())
+                        .unwrap_or_default(),
+                    calls_completed: *calls_completed,
+                    at: env.timestamp_ms,
+                });
+            }
+            "waiting_for_call" => {
+                let tool_name = phase.as_deref().unwrap_or("unknown");
+                events.push(ProjectionEvent::ToolProgramWaitingForCall {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    call_id: String::new(),
+                    tool_name: truncate_str(tool_name, MAX_PROJECTION_STRING_BYTES).to_string(),
+                    at: env.timestamp_ms,
+                });
+            }
+            "waiting_for_job" => {
+                let depends_on = phase.as_deref().unwrap_or("");
+                events.push(ProjectionEvent::ToolProgramWaitingForJob {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    depends_on_job_id: depends_on.to_string(),
+                    at: env.timestamp_ms,
+                });
+            }
+            "retry_backoff" => {
+                events.push(ProjectionEvent::ToolProgramRetryBackoff {
+                    program_id: program_id.clone(),
+                    job_id: job_id.clone(),
+                    attempt: *calls_completed,
+                    backoff_ms: 0,
+                    reason: summary
+                        .as_deref()
+                        .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).to_string())
+                        .unwrap_or_default(),
+                    at: env.timestamp_ms,
+                });
+            }
+            _ => {
+                events.push(ProjectionEvent::Diagnostic {
+                    code: "tool_program_updated".into(),
+                    message: format!("program={program_id} job={job_id} state={state}"),
+                });
+            }
+        },
         _ => {
             events.push(ProjectionEvent::Unknown {
                 variant_name: core_event_kind(&env.payload),
