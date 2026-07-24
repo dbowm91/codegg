@@ -21,6 +21,7 @@
 //! conservative defaults. The broker wraps their string output in a
 //! `ToolValue` so callers can consume typed results uniformly.
 
+use sha2::Digest;
 use std::path::PathBuf;
 
 use crate::error::ToolError;
@@ -90,11 +91,25 @@ pub struct BrokerInvocationContext {
     pub timeout_ms: Option<u64>,
     /// Submission key for idempotent deduplication.
     pub submission_key: Option<String>,
-    /// Whether the caller has already performed authority/permission
-    /// checks for this invocation. When `true`, the broker skips
-    /// its own step-4 authority check (used by AgentLoop which
-    /// checks permissions before entering the broker).
-    pub caller_authorized: bool,
+    /// Structured authority proof. An unverified caller is never allowed
+    /// to bypass the broker's authority and permission boundary.
+    pub authority: BrokerAuthority,
+    /// Cancellation propagated from the owning scheduler attempt.
+    pub cancellation: Option<tokio_util::sync::CancellationToken>,
+    /// Absolute deadline inherited from the owning scheduler attempt.
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Authority proof attached to a broker invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrokerAuthority {
+    /// No trusted permission decision accompanies the call.
+    Unverified,
+    /// The caller was admitted by the owning authority and policy revision.
+    Verified {
+        authority_ref: String,
+        policy_revision: Option<String>,
+    },
 }
 
 impl From<ToolExecutionContext> for BrokerInvocationContext {
@@ -111,7 +126,9 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
             permission_mode: ctx.permission_mode,
             timeout_ms: ctx.timeout_ms,
             submission_key: None,
-            caller_authorized: false,
+            authority: BrokerAuthority::Unverified,
+            cancellation: None,
+            deadline: ctx.deadline,
         }
     }
 }
@@ -142,6 +159,7 @@ pub struct BrokerResult {
 pub struct ToolBroker {
     catalog: ToolContractCatalog,
     config: ToolBrokerConfig,
+    artifact_store: Option<std::sync::Arc<dyn crate::context::ContextArtifactStore>>,
 }
 
 impl ToolBroker {
@@ -154,13 +172,41 @@ impl ToolBroker {
         Self {
             catalog,
             config: ToolBrokerConfig::default(),
+            artifact_store: None,
         }
     }
 
     /// Build with custom configuration.
     pub fn with_config(registry: &ToolRegistry, config: ToolBrokerConfig) -> Self {
         let catalog = Self::build_catalog(registry);
-        Self { catalog, config }
+        Self {
+            catalog,
+            config,
+            artifact_store: None,
+        }
+    }
+
+    /// Attach the canonical workspace artifact store. Large outputs are
+    /// persisted before a `ctx://` handle is returned.
+    pub fn with_artifact_store(
+        mut self,
+        artifact_store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
+    ) -> Self {
+        self.artifact_store = Some(artifact_store);
+        self
+    }
+
+    /// Clone the immutable contract snapshot for one workspace execution and
+    /// attach that workspace's durable artifact store.
+    pub fn for_workspace_artifacts(
+        &self,
+        artifact_store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
+    ) -> Self {
+        Self {
+            catalog: self.catalog.clone(),
+            config: self.config.clone(),
+            artifact_store: Some(artifact_store),
+        }
     }
 
     /// Access the contract catalog.
@@ -246,8 +292,7 @@ impl ToolBroker {
         // Step 4: authority — if the caller has not already performed
         // permission checks, the broker rejects the call. This ensures
         // programmatic callers go through the permission system.
-        if !ctx.caller_authorized && !matches!(ctx.caller, ToolCaller::Agent | ToolCaller::Internal)
-        {
+        if matches!(ctx.authority, BrokerAuthority::Unverified) {
             return Err(BrokerError::CallerDenied {
                 tool: contract.name.clone(),
                 caller: format!("{:?}", ctx.caller),
@@ -266,7 +311,24 @@ impl ToolBroker {
         }
 
         // Step 5: deadline/timeout
-        let effective_timeout_ms = ctx.timeout_ms.unwrap_or(self.config.default_timeout_ms);
+        let requested_timeout_ms = ctx.timeout_ms.unwrap_or(self.config.default_timeout_ms);
+        let effective_timeout_ms = ctx
+            .deadline
+            .map(|deadline| {
+                let remaining = (deadline - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(u64::MAX as u128) as u64;
+                requested_timeout_ms.min(remaining)
+            })
+            .unwrap_or(requested_timeout_ms);
+
+        if effective_timeout_ms == 0 {
+            return Err(BrokerError::Execution(
+                "broker invocation deadline elapsed".into(),
+            ));
+        }
 
         Ok(effective_timeout_ms)
     }
@@ -290,7 +352,7 @@ impl ToolBroker {
         let contract = self.lookup_contract(tool_name)?;
 
         // Steps 2-5: validation pipeline
-        let _effective_timeout = self.validate_pre_execution(contract, &ctx, &input)?;
+        let effective_timeout = self.validate_pre_execution(contract, &ctx, &input)?;
 
         // Step 7: execute
         let start = std::time::Instant::now();
@@ -299,12 +361,46 @@ impl ToolBroker {
             session_id: ctx.session_id.clone(),
             cwd: ctx.cwd.clone(),
             permission_mode: ctx.permission_mode.clone(),
-            timeout_ms: ctx.timeout_ms,
+            timeout_ms: Some(effective_timeout),
+            invocation_key: ctx.submission_key.clone(),
+            turn_id: ctx.turn_id.clone(),
+            agent_id: ctx.agent_id.clone(),
+            parent_job_id: ctx.job_id.clone(),
+            parent_attempt_id: ctx.attempt_id.clone(),
+            provider_name: None,
+            backend_policy: None,
+            cancellation: ctx.cancellation.clone(),
+            deadline: ctx.deadline,
         };
         let tool = registry
             .get(tool_name)
             .ok_or_else(|| BrokerError::NotFound(tool_name.to_string()))?;
-        let result = tool.execute_structured(input, Some(exec_ctx)).await;
+        if !ctx.cwd.is_dir() {
+            return Err(BrokerError::Execution(format!(
+                "broker working directory is not a directory: {}",
+                ctx.cwd.display()
+            )));
+        }
+        validate_json_schema(&contract.input_schema, &input).map_err(|reason| {
+            BrokerError::Execution(format!("input schema validation failed: {reason}"))
+        })?;
+        let result = match ctx.cancellation.clone() {
+            Some(token) => {
+                tokio::select! {
+                    _ = token.cancelled() => Err(ToolError::Timeout("broker invocation cancelled".into())),
+                    result = tokio::time::timeout(
+                        std::time::Duration::from_millis(effective_timeout),
+                        tool.execute_structured(input, Some(exec_ctx)),
+                    ) => result.unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
+                }
+            }
+            None => tokio::time::timeout(
+                std::time::Duration::from_millis(effective_timeout),
+                tool.execute_structured(input, Some(exec_ctx)),
+            )
+            .await
+            .unwrap_or_else(|_| Err(ToolError::Timeout("broker invocation timed out".into()))),
+        };
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
         match result {
@@ -312,7 +408,9 @@ impl ToolBroker {
                 // Steps 8-10: convert to typed value, validate, register artifacts
                 let value = self.normalize_result(tool_name, structured, elapsed_ms);
                 let value = self.validate_output(&contract, value)?;
-                let value = self.register_artifacts(tool_name, value);
+                let value = self
+                    .register_artifacts(tool_name, value, &ctx, &invocation_id)
+                    .await?;
                 Ok(BrokerResult {
                     value,
                     contract: contract.clone(),
@@ -393,9 +491,23 @@ impl ToolBroker {
     /// `truncated` is set to `true`.
     fn validate_output(
         &self,
-        _contract: &ToolContract,
+        contract: &ToolContract,
         mut value: ToolValue,
     ) -> Result<ToolValue, BrokerError> {
+        if let (Some(schema), Some(structured)) = (&contract.output_schema, &value.value) {
+            validate_json_schema(schema, structured).map_err(|reason| {
+                BrokerError::Execution(format!("output schema validation failed: {reason}"))
+            })?;
+            let structured_len = serde_json::to_vec(structured)
+                .map(|bytes| bytes.len())
+                .unwrap_or(usize::MAX);
+            if structured_len > self.config.max_output_bytes {
+                return Err(BrokerError::Execution(format!(
+                    "structured output exceeds {} bytes",
+                    self.config.max_output_bytes
+                )));
+            }
+        }
         let display_len = value.display.len();
         if display_len > self.config.max_output_bytes {
             value.display.truncate(self.config.max_output_bytes);
@@ -411,21 +523,119 @@ impl ToolBroker {
     /// When the output display exceeds `max_output_display_bytes`,
     /// the broker creates an artifact handle so downstream consumers
     /// can reference the content without embedding it in transcripts.
-    fn register_artifacts(&self, tool_name: &str, mut value: ToolValue) -> ToolValue {
+    async fn register_artifacts(
+        &self,
+        tool_name: &str,
+        mut value: ToolValue,
+        ctx: &BrokerInvocationContext,
+        invocation_id: &str,
+    ) -> Result<ToolValue, BrokerError> {
         let display_len = value.display.len();
         if display_len > self.config.max_output_display_bytes {
+            let persisted_content = value.display.clone();
+            let session_id = ctx
+                .session_id
+                .as_deref()
+                .unwrap_or("tool-program")
+                .to_string();
+            let handle = crate::context::ContextHandle::build_tool(
+                &session_id,
+                0,
+                &format!("{}-{}", tool_name, invocation_id),
+            )
+            .map_err(|error| BrokerError::Execution(error.to_string()))?;
+            if let Some(store) = &self.artifact_store {
+                let artifact = crate::context::ContextArtifact {
+                    handle: handle.clone(),
+                    session_id,
+                    turn_index: 0,
+                    tool_call_id: Some(invocation_id.to_string()),
+                    tool_name: Some(tool_name.to_string()),
+                    kind: crate::context::ArtifactKind::ToolResult,
+                    created_at_ms: chrono::Utc::now().timestamp_millis(),
+                    content_hash: crate::context::compute_content_hash(&persisted_content),
+                    redacted_content: persisted_content.clone(),
+                    raw_bytes_len: persisted_content.len(),
+                    estimated_tokens: crate::context::estimate_tokens(&persisted_content),
+                };
+                store
+                    .put(artifact)
+                    .await
+                    .map_err(|error| BrokerError::Execution(error.to_string()))?;
+            }
+            value.display.truncate(self.config.max_output_display_bytes);
             let artifact = super::contract::ToolArtifactHandle {
-                artifact_id: uuid::Uuid::new_v4().to_string(),
+                artifact_id: handle,
                 tool_name: tool_name.to_string(),
                 content_type: "text/plain".to_string(),
-                byte_length: display_len as u64,
-                digest: None,
+                byte_length: persisted_content.len() as u64,
+                digest: Some(format!(
+                    "sha256:{:x}",
+                    sha2::Sha256::digest(persisted_content.as_bytes())
+                )),
             };
             value.artifacts.push(artifact);
             value.truncated = true;
         }
-        value
+        Ok(value)
     }
+}
+
+/// Validate the bounded JSON-Schema subset used by tool contracts. The
+/// registry schemas are intentionally simple (objects, arrays, scalar
+/// types, properties, required, and enum), so keeping this validator local
+/// avoids accepting an unbounded schema engine in the broker boundary.
+fn validate_json_schema(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(expected) = schema.get("type").and_then(serde_json::Value::as_str) {
+        let valid = match expected {
+            "object" => value.is_object(),
+            "array" => value.is_array(),
+            "string" => value.is_string(),
+            "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+            "number" => value.is_number(),
+            "boolean" => value.is_boolean(),
+            "null" => value.is_null(),
+            _ => true,
+        };
+        if !valid {
+            return Err(format!("expected JSON type {expected}"));
+        }
+    }
+    if let Some(enum_values) = schema.get("enum").and_then(serde_json::Value::as_array) {
+        if !enum_values.iter().any(|candidate| candidate == value) {
+            return Err("value is not in the allowed enum".into());
+        }
+    }
+    if let Some(object) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+            for key in required.iter().filter_map(serde_json::Value::as_str) {
+                if !object.contains_key(key) {
+                    return Err(format!("missing required property {key}"));
+                }
+            }
+        }
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (key, child_schema) in properties {
+                if let Some(child) = object.get(key) {
+                    validate_json_schema(child_schema, child)
+                        .map_err(|reason| format!("property {key}: {reason}"))?;
+                }
+            }
+        }
+    }
+    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+        for (index, item) in values.iter().enumerate() {
+            validate_json_schema(items, item)
+                .map_err(|reason| format!("array item {index}: {reason}"))?;
+        }
+    }
+    Ok(())
 }
 
 // ─── Broker errors ────────────────────────────────────────────────
@@ -533,7 +743,12 @@ mod tests {
             permission_mode: None,
             timeout_ms: None,
             submission_key: None,
-            caller_authorized: true,
+            authority: BrokerAuthority::Verified {
+                authority_ref: "test".into(),
+                policy_revision: None,
+            },
+            cancellation: None,
+            deadline: None,
         }
     }
 

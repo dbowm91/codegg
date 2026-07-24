@@ -170,6 +170,45 @@ impl JobSubmissionService {
                 }
                 idempotency.remove(key_ref);
             }
+
+            // Rebuild the retry index after a daemon restart from the
+            // durable Tool Program payload. The in-memory map is only a
+            // fast path; it must not be the source of invocation identity.
+            if matches!(spec.kind, JobKind::ToolProgram) {
+                let summaries = self
+                    .store
+                    .list_jobs(codegg_core::jobs::JobStoreQuery {
+                        workspace_id: Some(spec.workspace_id.clone()),
+                        kinds: vec![JobKind::ToolProgram],
+                        limit: Some(256),
+                        ..Default::default()
+                    })
+                    .await?;
+                for summary in summaries {
+                    let Some(existing_job) = self.store.get_job(&summary.job_id).await? else {
+                        continue;
+                    };
+                    let same_key = match &existing_job.payload {
+                        JobPayload::ToolProgram { submission_key, .. } => {
+                            submission_key == key_ref.as_str()
+                        }
+                        _ => false,
+                    };
+                    if same_key {
+                        if fingerprint_record(&existing_job) != fingerprint {
+                            return Err(JobSubmissionError::SubmissionKeyConflict);
+                        }
+                        idempotency.insert(
+                            key_ref.clone(),
+                            IdempotentSubmission {
+                                fingerprint: fingerprint.clone(),
+                                job_id: summary.job_id.clone(),
+                            },
+                        );
+                        return Ok(to_submitted(&existing_job));
+                    }
+                }
+            }
         }
 
         let job = self.store.create_job(spec).await?;
@@ -261,12 +300,26 @@ fn apply_resource_policy(spec: &mut NewJob) {
 fn fingerprint(spec: &NewJob) -> String {
     let payload = serde_json::to_string(&spec.payload).unwrap_or_else(|_| "<invalid>".into());
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{:?}",
         spec.workspace_id,
         spec.kind.as_str(),
         spec.session_id.as_deref().unwrap_or_default(),
         spec.priority.as_str(),
-        payload
+        payload,
+        spec.timeout
+    )
+}
+
+fn fingerprint_record(job: &codegg_core::jobs::JobRecord) -> String {
+    let payload = serde_json::to_string(&job.payload).unwrap_or_else(|_| "<invalid>".into());
+    format!(
+        "{}|{}|{}|{}|{}|{:?}",
+        job.workspace_id,
+        job.kind.as_str(),
+        job.session_id.as_deref().unwrap_or_default(),
+        job.priority.as_str(),
+        payload,
+        job.timeout
     )
 }
 

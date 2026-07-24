@@ -15,7 +15,7 @@ use codegg_core::tool_program::{
 
 use crate::scheduler::executor::{
     ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, ExecutorValidationError,
-    JobExecutionContext, JobExecutor,
+    JobExecutionContext, JobExecutor, JobProgressSink,
 };
 use crate::tool::broker::{BrokerInvocationContext, ToolBroker};
 use crate::tool::ToolRegistry;
@@ -118,6 +118,8 @@ pub struct ToolProgramExecutor {
     broker: Arc<ToolBroker>,
     registry: Arc<ToolRegistry>,
     submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
+    notification_service:
+        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
 impl ToolProgramExecutor {
@@ -126,6 +128,7 @@ impl ToolProgramExecutor {
             broker,
             registry,
             submission: None,
+            notification_service: None,
         }
     }
 
@@ -134,6 +137,14 @@ impl ToolProgramExecutor {
         submission: Arc<crate::scheduler::submission::JobSubmissionService>,
     ) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_notification_service(
+        mut self,
+        service: Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>,
+    ) -> Self {
+        self.notification_service = Some(service);
         self
     }
 }
@@ -147,6 +158,7 @@ impl Default for ToolProgramExecutor {
             broker,
             registry,
             submission: None,
+            notification_service: None,
         }
     }
 }
@@ -161,6 +173,16 @@ pub struct BrokerAdapter {
     workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     allowed_tools: Option<std::collections::HashSet<String>>,
     cwd: std::path::PathBuf,
+    ledger: Option<crate::tool::tool_program_ledger::ToolProgramLedger>,
+    cancellation: Option<tokio_util::sync::CancellationToken>,
+    progress: Option<Arc<dyn JobProgressSink>>,
+    job_id: Option<codegg_core::jobs::JobId>,
+    session_id: Option<String>,
+    turn_id: Option<String>,
+    agent_id: Option<String>,
+    attempt_id: Option<String>,
+    authority_digest: Option<String>,
+    deadline: Option<tokio::time::Instant>,
 }
 
 impl BrokerAdapter {
@@ -173,6 +195,16 @@ impl BrokerAdapter {
             workspace_id: None,
             allowed_tools: None,
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            ledger: None,
+            cancellation: None,
+            progress: None,
+            job_id: None,
+            session_id: None,
+            turn_id: None,
+            agent_id: None,
+            attempt_id: None,
+            authority_digest: None,
+            deadline: None,
         }
     }
 
@@ -198,6 +230,50 @@ impl BrokerAdapter {
         self.allowed_tools = Some(tools.into_iter().collect());
         self
     }
+
+    pub fn with_ledger(
+        mut self,
+        ledger: crate::tool::tool_program_ledger::ToolProgramLedger,
+    ) -> Self {
+        self.ledger = Some(ledger);
+        self
+    }
+
+    pub fn with_cancellation(mut self, cancellation: tokio_util::sync::CancellationToken) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
+    pub fn with_progress(
+        mut self,
+        progress: Arc<dyn JobProgressSink>,
+        job_id: codegg_core::jobs::JobId,
+    ) -> Self {
+        self.progress = Some(progress);
+        self.job_id = Some(job_id);
+        self
+    }
+
+    pub fn with_context(
+        mut self,
+        session_id: Option<String>,
+        turn_id: Option<String>,
+        agent_id: Option<String>,
+        attempt_id: Option<String>,
+        authority_digest: Option<String>,
+    ) -> Self {
+        self.session_id = session_id;
+        self.turn_id = turn_id;
+        self.agent_id = agent_id;
+        self.attempt_id = attempt_id;
+        self.authority_digest = authority_digest;
+        self
+    }
+
+    pub fn with_deadline(mut self, deadline: Option<tokio::time::Instant>) -> Self {
+        self.deadline = deadline;
+        self
+    }
 }
 
 #[async_trait]
@@ -211,22 +287,48 @@ impl BrokerCallback for BrokerAdapter {
                 )));
             }
         }
+        let remaining_ms = self.deadline.map(|deadline| {
+            deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_millis()
+                .min(u64::MAX as u128) as u64
+        });
         let ctx = BrokerInvocationContext {
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),
             },
             cwd: self.cwd.clone(),
-            session_id: None,
+            session_id: self.session_id.clone(),
             workspace_id: self.workspace_id.as_ref().map(|w| w.to_string()),
-            agent_id: None,
-            turn_id: None,
-            job_id: None,
-            attempt_id: None,
+            agent_id: self.agent_id.clone(),
+            turn_id: self.turn_id.clone(),
+            job_id: self.job_id.as_ref().map(ToString::to_string),
+            attempt_id: self.attempt_id.clone(),
             permission_mode: None,
-            timeout_ms: Some(30_000),
+            timeout_ms: Some(remaining_ms.unwrap_or(30_000).min(30_000)),
             submission_key: None,
-            caller_authorized: true,
+            authority: match &self.authority_digest {
+                Some(authority_ref) => crate::tool::broker::BrokerAuthority::Verified {
+                    authority_ref: authority_ref.clone(),
+                    policy_revision: None,
+                },
+                None => crate::tool::broker::BrokerAuthority::Unverified,
+            },
+            cancellation: self.cancellation.clone(),
+            deadline: remaining_ms.map(|millis| {
+                chrono::Utc::now()
+                    + chrono::Duration::from_std(std::time::Duration::from_millis(millis))
+                        .unwrap_or_else(|_| chrono::Duration::zero())
+            }),
         };
+
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+        {
+            return Err(InterpreterError::Cancelled);
+        }
 
         match self
             .broker
@@ -349,17 +451,27 @@ impl BrokerCallback for BrokerAdapter {
             hasher.update(format!("{:?}", request.config).as_bytes());
             format!("{:x}", hasher.finalize())
         };
-        let submission_key =
-            SubmissionKey::new(format!("child-job:{}:{}", self.program_id, config_hash)).map_err(
-                |e| InterpreterError::BrokerError(format!("invalid submission key: {}", e)),
-            )?;
+        let submission_key = SubmissionKey::new(format!(
+            "child-job:{}:{}:{}",
+            self.program_id, request.sequence, config_hash
+        ))
+        .map_err(|e| InterpreterError::BrokerError(format!("invalid submission key: {}", e)))?;
 
+        let requested_child_timeout =
+            timeout.unwrap_or_else(|| std::time::Duration::from_secs(300));
+        let requested_child_deadline = tokio::time::Instant::now() + requested_child_timeout;
+        let effective_deadline = self
+            .deadline
+            .map(|parent| parent.min(requested_child_deadline))
+            .unwrap_or(requested_child_deadline);
+        let effective_timeout =
+            effective_deadline.saturating_duration_since(tokio::time::Instant::now());
         let new_job = codegg_core::jobs::NewJob {
             workspace_id: workspace_id.clone(),
-            session_id: None,
-            turn_id: None,
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
             kind,
-            source: codegg_core::jobs::JobSource::Interactive,
+            source: codegg_core::jobs::JobSource::AgentDelegated,
             priority: codegg_core::jobs::JobPriority::Normal,
             payload,
             resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
@@ -367,7 +479,11 @@ impl BrokerCallback for BrokerAdapter {
             retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
             idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
             not_before: None,
-            deadline: None,
+            deadline: Some(
+                chrono::Utc::now()
+                    + chrono::Duration::from_std(effective_timeout)
+                        .unwrap_or_else(|_| chrono::Duration::zero()),
+            ),
             schedule_id: None,
             depends_on: vec![],
         };
@@ -380,15 +496,48 @@ impl BrokerCallback for BrokerAdapter {
                 InterpreterError::BrokerError(format!("child job submission failed: {}", e))
             })?;
 
-        let wait_timeout = timeout
-            .map(|d| d + std::time::Duration::from_secs(30))
-            .unwrap_or_else(|| std::time::Duration::from_secs(300));
+        let mut wait_timeout = effective_timeout + std::time::Duration::from_secs(30);
 
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, wait_timeout)
-            .await
-            .map_err(|e| InterpreterError::BrokerError(format!("child job wait failed: {}", e)))?;
+        let completion = loop {
+            if self
+                .cancellation
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+            {
+                let _ = submission
+                    .scheduler()
+                    .request_cancel(&submitted.job_id, "parent_tool_program_cancelled")
+                    .await;
+                return Err(InterpreterError::Cancelled);
+            }
+            match submission
+                .scheduler()
+                .wait_for_completion(&submitted.job_id, std::time::Duration::from_millis(100))
+                .await
+            {
+                Ok(completion) => break completion,
+                Err(error) if wait_timeout > std::time::Duration::ZERO => {
+                    wait_timeout =
+                        wait_timeout.saturating_sub(std::time::Duration::from_millis(100));
+                    if wait_timeout.is_zero() {
+                        let _ = submission
+                            .scheduler()
+                            .request_cancel(&submitted.job_id, "child_job_wait_timeout")
+                            .await;
+                        return Err(InterpreterError::BrokerError(format!(
+                            "child job wait failed: {}",
+                            error
+                        )));
+                    }
+                }
+                Err(error) => {
+                    return Err(InterpreterError::BrokerError(format!(
+                        "child job wait failed: {}",
+                        error
+                    )))
+                }
+            }
+        };
 
         // Map ExecutorStatus to ChildJobResult
         let success = matches!(
@@ -523,7 +672,56 @@ impl BrokerCallback for BrokerAdapter {
         })
     }
 
-    async fn heartbeat(&self, _budget: &BudgetSnapshot) {}
+    async fn heartbeat(&self, budget: &BudgetSnapshot) {
+        if let (Some(progress), Some(job_id)) = (&self.progress, &self.job_id) {
+            let _ = progress
+                .progress(
+                    job_id,
+                    &format!(
+                        "tool_program heartbeat steps={} calls={} iterations={}",
+                        budget.steps, budget.calls, budget.iterations
+                    ),
+                )
+                .await;
+        }
+    }
+
+    async fn call_reserved(
+        &self,
+        sequence: u32,
+        request: &CallRequest,
+    ) -> Result<(), InterpreterError> {
+        if let Some(ledger) = &self.ledger {
+            ledger
+                .reserve_call(&self.program_id, sequence, request)
+                .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn call_completed(
+        &self,
+        completed: &codegg_core::tool_program::CompletedCall,
+    ) -> Result<(), InterpreterError> {
+        if let Some(ledger) = &self.ledger {
+            ledger
+                .persist_call_completion(&self.program_id, completed)
+                .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn checkpoint(
+        &self,
+        checkpoint: &codegg_core::tool_program::InterpreterCheckpoint,
+    ) -> Result<(), InterpreterError> {
+        if let Some(ledger) = &self.ledger {
+            ledger
+                .persist_checkpoint(&self.program_id, checkpoint)
+                .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -540,14 +738,22 @@ impl JobExecutor for ToolProgramExecutor {
         match &job.payload {
             JobPayload::ToolProgram {
                 program_id,
+                invocation_key,
                 source_digest,
                 authority_digest,
+                execution_context_json,
                 source_ref,
                 source_length,
+                allowed_tools,
                 ..
             } => {
                 if program_id.is_empty() {
                     return Err(ExecutorValidationError::MissingField("program_id".into()));
+                }
+                if invocation_key.is_empty() {
+                    return Err(ExecutorValidationError::MissingField(
+                        "invocation_key".into(),
+                    ));
                 }
                 if source_digest.is_empty() {
                     return Err(ExecutorValidationError::MissingField(
@@ -559,10 +765,30 @@ impl JobExecutor for ToolProgramExecutor {
                         "authority_digest".into(),
                     ));
                 }
+                if execution_context_json.is_none() {
+                    return Err(ExecutorValidationError::MissingField(
+                        "execution_context_json".into(),
+                    ));
+                }
                 if source_ref.is_none() || source_length.is_none() {
                     return Err(ExecutorValidationError::MissingField(
                         "source_ref/source_length".into(),
                     ));
+                }
+                let manifest =
+                    crate::tool::program_manifest::resolve_manifest(&self.broker, allowed_tools);
+                if !crate::tool::program_manifest::manifest_is_valid(&manifest) {
+                    return Err(ExecutorValidationError::InvalidPayload(format!(
+                        "tool-program manifest rejected: {}",
+                        manifest
+                            .rejected
+                            .iter()
+                            .map(|rejection| {
+                                format!("{} ({})", rejection.tool_name, rejection.reason)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )));
                 }
                 Ok(())
             }
@@ -585,30 +811,39 @@ impl JobExecutor for ToolProgramExecutor {
         // Extract payload
         let (
             program_id,
+            invocation_key,
             source_digest,
             ir_digest,
             authority_digest,
+            execution_context_json,
             source_ref,
             source_length,
             allowed_tools,
+            execution_mode,
         ) = match &ctx.job.payload {
             JobPayload::ToolProgram {
                 program_id,
+                invocation_key,
                 source_digest,
                 ir_digest,
                 authority_digest,
+                execution_context_json,
                 source_ref,
                 source_length,
                 allowed_tools,
+                execution_mode,
                 ..
             } => (
                 program_id.clone(),
+                invocation_key.clone(),
                 source_digest.clone(),
                 ir_digest.clone(),
                 authority_digest.clone(),
+                execution_context_json.clone(),
                 source_ref.clone(),
                 *source_length,
                 allowed_tools.clone(),
+                execution_mode.clone(),
             ),
             _ => {
                 return ExecutorCompletion {
@@ -629,10 +864,49 @@ impl JobExecutor for ToolProgramExecutor {
             .progress(ctx.job_id(), "tool_program: validating")
             .await;
 
-        // The authority digest is persisted for audit correlation. The
-        // source and manifest are independently verified below before any
-        // interpreter instruction is admitted.
-        let _ = authority_digest;
+        let execution_context = match execution_context_json.as_deref().and_then(|json| {
+            serde_json::from_str::<codegg_core::jobs::ToolProgramExecutionContext>(json).ok()
+        }) {
+            Some(context) if context.validate().is_ok() => context,
+            _ => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: "tool-program execution context is missing or invalid".into(),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        let expected_authority = crate::tool::tool_program_context::authority_digest(
+            &execution_context,
+            &allowed_tools,
+            &source_digest,
+        );
+        if expected_authority != authority_digest {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "tool-program authority context digest mismatch".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
+        if invocation_key.is_empty() {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "tool-program invocation key is empty".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
 
         // Emit progress: loading IR
         let _ = ctx
@@ -775,12 +1049,26 @@ impl JobExecutor for ToolProgramExecutor {
                 }
             });
 
-        // Create interpreter
+        // Create interpreter and restore durable completed calls before the
+        // first instruction. Replay then returns the stored typed result
+        // without invoking the broker again.
+        let ledger = crate::tool::tool_program_ledger::ToolProgramLedger::new(&ctx.workspace_root);
         let mut interpreter = MeteredInterpreter::new(compilation.ir, limits);
+        if let Ok(completed_calls) = ledger.load_completed_calls(&program_id) {
+            interpreter.load_completed_calls(completed_calls);
+        }
+
+        // Bind the immutable contract snapshot to this workspace's durable
+        // artifact store for the lifetime of the attempt.
+        let workspace_broker =
+            self.broker
+                .for_workspace_artifacts(Arc::new(crate::context::FileArtifactStore::new(
+                    &ctx.workspace_root,
+                )));
 
         // Create real broker adapter
         let mut broker_adapter = BrokerAdapter::new(
-            self.broker.clone(),
+            Arc::new(workspace_broker),
             self.registry.clone(),
             program_id.clone(),
         );
@@ -790,6 +1078,18 @@ impl JobExecutor for ToolProgramExecutor {
         broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
         broker_adapter = broker_adapter.with_cwd(ctx.workspace_root.clone());
         broker_adapter = broker_adapter.with_allowed_tools(allowed_tools);
+        broker_adapter = broker_adapter
+            .with_ledger(ledger.clone())
+            .with_cancellation(ctx.cancellation.clone())
+            .with_progress(ctx.progress.clone(), ctx.job.job_id.clone())
+            .with_context(
+                execution_context.session_id.clone(),
+                execution_context.turn_id.clone(),
+                execution_context.agent_id.clone(),
+                Some(ctx.attempt_id.to_string()),
+                Some(authority_digest.clone()),
+            )
+            .with_deadline(wall_deadline);
 
         // Build run configuration
         let run_config = RunConfig {
@@ -802,6 +1102,56 @@ impl JobExecutor for ToolProgramExecutor {
         let result = interpreter
             .run_with_config(&broker_adapter, Some(&ctx.cancellation), &run_config)
             .await;
+
+        // The public result must not become terminal before the redacted
+        // completion ledger has been durably updated.
+        if let Err(error) =
+            ledger.persist_completed_calls(&program_id, interpreter.completed_calls())
+        {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: format!("call ledger persistence failed: {error}"),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    cpu_time_ms: None,
+                    peak_memory_mb: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+            };
+        }
+
+        let selected_backend = if execution_context.backend_policy == "native_only" {
+            "native"
+        } else {
+            // Hosted selection is explicit in the persisted context. The
+            // native executor remains the safe fallback only for preferred
+            // policy; required policy fails closed until a Responses
+            // transport is attached to the daemon provider.
+            "native_fallback"
+        };
+
+        let result_record = match crate::tool::tool_program_result::ToolProgramResultStore::new(
+            &ctx.workspace_root,
+        )
+        .persist(
+            &program_id,
+            ctx.attempt_id.as_str(),
+            selected_backend,
+            result.clone(),
+        ) {
+            Ok(record) => Some(record),
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("typed result persistence failed: {error}"),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
 
         // Emit progress: completed
         let _ = ctx
@@ -840,20 +1190,19 @@ impl JobExecutor for ToolProgramExecutor {
             summary.push_str(&format!("\nfailure_class: {}", class));
         }
 
-        if let Err(error) =
-            crate::tool::tool_program_ledger::ToolProgramLedger::new(&ctx.workspace_root)
-                .persist_completed_calls(&program_id, interpreter.completed_calls())
-        {
-            return ExecutorCompletion {
-                status: ExecutorStatus::Failed,
-                summary: format!("call ledger persistence failed: {error}"),
-                run_id: None,
-                metrics: ExecutorMetrics {
-                    cpu_time_ms: None,
-                    peak_memory_mb: None,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                },
-            };
+        if execution_mode == "background" {
+            if let (Some(service), Some(record)) = (&self.notification_service, result_record) {
+                service
+                    .record_terminal_result(
+                        &program_id,
+                        ctx.job_id().as_str(),
+                        execution_context.session_id.as_deref(),
+                        execution_context.agent_id.as_deref(),
+                        execution_context.turn_id.as_deref(),
+                        &record,
+                    )
+                    .await;
+            }
         }
 
         ExecutorCompletion {
@@ -882,6 +1231,13 @@ mod tests {
 
     fn sample_tool_program_job(program_id: &str, source_digest: &str) -> JobRecord {
         let now = chrono::Utc::now();
+        let execution_context =
+            codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-1", "test");
+        let authority_digest = crate::tool::tool_program_context::authority_digest(
+            &execution_context,
+            &[],
+            source_digest,
+        );
         JobRecord {
             job_id: JobId::new_unchecked("j-tp"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
@@ -892,10 +1248,13 @@ mod tests {
             priority: JobPriority::Normal,
             payload: JobPayload::ToolProgram {
                 program_id: program_id.to_string(),
+                invocation_key: "test-invocation".to_string(),
                 source_digest: source_digest.to_string(),
                 ir_digest: None,
-                authority_digest: "auth_digest_abc".to_string(),
+                authority_digest,
+                execution_context_json: Some(serde_json::to_string(&execution_context).unwrap()),
                 submission_key: "key_123".to_string(),
+                execution_mode: "foreground".to_string(),
                 source_ref: Some(format!("{}.py", source_digest)),
                 source_length: Some(0),
                 allowed_tools: Vec::new(),

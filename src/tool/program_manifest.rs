@@ -33,6 +33,8 @@ pub enum RejectionReason {
     DirectOnly,
     /// Tool has no output schema defined.
     NoOutputSchema,
+    /// Tool has an effect class that is not read-only or read-validate.
+    NotReadOnly,
     /// Tool contract validation failed.
     InvalidContract(String),
 }
@@ -43,6 +45,7 @@ impl std::fmt::Display for RejectionReason {
             Self::NotFound => write!(f, "tool not found in catalog"),
             Self::DirectOnly => write!(f, "tool is direct-only, not callable by programs"),
             Self::NoOutputSchema => write!(f, "tool has no output schema"),
+            Self::NotReadOnly => write!(f, "tool is not read-only"),
             Self::InvalidContract(msg) => write!(f, "invalid contract: {}", msg),
         }
     }
@@ -87,6 +90,18 @@ pub fn resolve_manifest(broker: &ToolBroker, requested_tools: &[String]) -> Reso
             rejected.push(ManifestRejection {
                 tool_name: tool_name.clone(),
                 reason: RejectionReason::NoOutputSchema,
+            });
+            continue;
+        }
+
+        if !matches!(
+            contract.effect_class,
+            crate::tool::contract::ToolEffectClass::ReadOnly
+                | crate::tool::contract::ToolEffectClass::ReadValidate
+        ) {
+            rejected.push(ManifestRejection {
+                tool_name: tool_name.clone(),
+                reason: RejectionReason::NotReadOnly,
             });
             continue;
         }

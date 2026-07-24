@@ -749,9 +749,21 @@ impl JobScheduler {
             workspace_id: job.workspace_id.clone(),
             workspace_root: lease.path_policy().canonical_root.clone(),
             cancellation: cancellation.clone(),
-            progress: Arc::new(NoopSink),
+            progress: Arc::new(DurableProgressSink {
+                store: self.store.clone(),
+                attempt_id: attempt.attempt_id.clone(),
+            }),
             resources: permit,
         };
+
+        let execution_timeout = job
+            .deadline
+            .map(|deadline| {
+                (deadline - Utc::now())
+                    .to_std()
+                    .unwrap_or_else(|_| Duration::ZERO)
+            })
+            .or(job.timeout);
 
         self.store
             .set_attempt_executor(&attempt.attempt_id, exec.kind().as_str())
@@ -829,7 +841,22 @@ impl JobScheduler {
                         metrics: Default::default(),
                     }
                 } else {
-                    executor.execute(ctx).await
+                    let execution = executor.execute(ctx);
+                    match execution_timeout {
+                        Some(timeout) => match tokio::time::timeout(timeout, execution).await {
+                            Ok(completion) => completion,
+                            Err(_) => {
+                                cancel_token.cancel();
+                                ExecutorCompletion {
+                                    status: ExecutorStatus::TimedOut,
+                                    summary: "scheduler execution deadline exceeded".into(),
+                                    run_id: None,
+                                    metrics: Default::default(),
+                                }
+                            }
+                        },
+                        None => execution.await,
+                    }
                 };
                 {
                     let mut completions_guard = completions.lock().await;
@@ -1190,9 +1217,23 @@ async fn persist_completion(
     store.finish_attempt(ac).await.map(|_| ())
 }
 
-struct NoopSink;
+struct DurableProgressSink {
+    store: Arc<dyn JobStore>,
+    attempt_id: AttemptId,
+}
+
 #[async_trait::async_trait]
-impl JobProgressSink for NoopSink {}
+impl JobProgressSink for DurableProgressSink {
+    async fn progress(&self, _job_id: &JobId, _message: &str) {
+        if let Err(error) = self
+            .store
+            .record_heartbeat(&self.attempt_id, Utc::now())
+            .await
+        {
+            tracing::debug!(%error, attempt_id = %self.attempt_id, "failed to persist executor heartbeat");
+        }
+    }
+}
 
 // `ExecutorHealth` and `ExecutorMetrics` are referenced by the
 // snapshot builders; the type-level re-exports keep them alive.

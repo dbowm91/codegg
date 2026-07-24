@@ -14,7 +14,7 @@ pub mod volatile_tail;
 
 pub use artifact::{
     compute_content_hash, estimate_tokens, stable_hash_hex, ArtifactKind, ContextArtifact,
-    ContextArtifactStore, InMemoryArtifactStore,
+    ContextArtifactStore, FileArtifactStore, InMemoryArtifactStore,
 };
 pub use block::{CacheClass, ContextBlock, ContextBlockId, ContextBlockKind, Lossiness};
 pub use cache_stats::{CacheStatsEntry, ContextCacheStats};

@@ -57,7 +57,9 @@ pub mod terminal;
 pub mod test;
 pub mod todo;
 pub mod tool_program;
+pub mod tool_program_context;
 pub mod tool_program_ledger;
+pub mod tool_program_result;
 pub mod tool_program_source;
 pub mod tool_search;
 pub mod util;
@@ -83,7 +85,8 @@ pub use backend::{
 
 // Re-export broker types for convenience.
 pub use broker::{
-    BrokerError, BrokerInvocationContext, BrokerResult, ToolBroker, ToolBrokerConfig,
+    BrokerAuthority, BrokerError, BrokerInvocationContext, BrokerResult, ToolBroker,
+    ToolBrokerConfig,
 };
 
 // Re-export contract types for convenience.

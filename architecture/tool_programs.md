@@ -649,10 +649,11 @@ The `program_artifacts` field in the result schema is an array of
 - `artifact_handle`: ctx:// URI for full content expansion
 - `preview`: truncated display preview (~200 chars)
 
-The executor currently returns `program_artifacts: []` because
-intermediate call records are inside the `ProgramResult` which is
-serialized to the summary string. Full wiring of call records to
-`ProgramCallArtifact` remains a future improvement.
+The executor keeps intermediate call bodies out of the parent transcript.
+Typed call reservations/completions are retained in the private replay
+journal and the public ledger exposes only bounded redacted summaries and
+artifact handles. Foreground and background consumers read the same typed
+terminal result record rather than reparsing the executor summary.
 
 ### Execution Flow
 
@@ -1507,3 +1508,23 @@ Closure requires:
 - Security review and static guard output
 - Eggpool exact-model evidence or explicit operational blocker
 - Known limitations and severity-ranked findings
+
+### M011 ownership closure
+
+M011 adds the durable execution context, explicit retry invocation identity,
+structured broker authority, scheduler-owned deadlines/heartbeats, child-job
+lineage and cancellation, atomic reservation/completion/checkpoint journaling,
+typed result records, and terminal notification persistence. The exact
+runtime contract is:
+
+```text
+model -> JobSubmissionService -> JobScheduler -> ToolProgramExecutor
+      -> MeteredInterpreter -> ToolBroker -> registered read-only tool
+```
+
+Each boundary carries the same workspace/session/turn/correlation identity.
+The scheduler owns admission and the outer deadline; the executor owns the
+interpreter; the broker owns tool-call policy and timeout enforcement; the
+ledger/result stores own durable call/result state. Hosted backend policy is
+explicit and fail-closed for `hosted_required`; preferred hosted requests are
+observable native fallbacks until a provider transport is attached.

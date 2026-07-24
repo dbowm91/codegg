@@ -380,6 +380,10 @@ async fn behavior_background_returns_immediately() {
         state: NotificationState::Pending,
         created_at: now,
         updated_at: now,
+        claim_owner: None,
+        claim_lease_until: None,
+        delivered_at: None,
+        retry_count: 0,
     };
     svc.record_notification(notification).await;
 

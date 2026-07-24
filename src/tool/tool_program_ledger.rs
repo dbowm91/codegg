@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use codegg_core::tool_program::{CompletedCall, ProgramValue};
+use codegg_core::tool_program::{CallRequest, CompletedCall, InterpreterCheckpoint, ProgramValue};
 use codegg_protocol::projection::dto::{ToolProgramCallPage, ToolProgramCallSummary};
 use codegg_protocol::projection::limits::{
     MAX_PROJECTION_CALL_PAGE_SIZE, MAX_PROJECTION_TOOL_PROGRAM_CALLS,
@@ -39,6 +39,26 @@ struct LedgerFile {
     calls: Vec<ToolProgramCallSummary>,
 }
 
+const MAX_JOURNAL_BYTES: u64 = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct JournalFile {
+    version: u16,
+    program_id: String,
+    reservations: Vec<JournalReservation>,
+    completed: Vec<CompletedCall>,
+    checkpoint: Option<InterpreterCheckpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JournalReservation {
+    sequence: u32,
+    request: CallRequest,
+    state: String,
+    reserved_at: i64,
+}
+
+#[derive(Clone)]
 pub struct ToolProgramLedger {
     base_dir: PathBuf,
 }
@@ -138,8 +158,163 @@ impl ToolProgramLedger {
         })
     }
 
+    /// Persist a call reservation before dispatch. A conflicting durable
+    /// identity fails closed instead of executing an ambiguous replay.
+    pub fn reserve_call(
+        &self,
+        program_id: &str,
+        sequence: u32,
+        request: &CallRequest,
+    ) -> Result<(), ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        let mut journal = self.read_journal(program_id)?;
+        if let Some(completed) = journal.completed.iter().find(|c| c.sequence == sequence) {
+            if completed.request.tool_name != request.tool_name
+                || completed.request.input != request.input
+            {
+                return Err(ToolProgramLedgerError::InvalidLedger(
+                    "completed call diverges from requested replay".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if let Some(existing) = journal
+            .reservations
+            .iter()
+            .find(|reservation| reservation.sequence == sequence)
+        {
+            if existing.request.tool_name != request.tool_name
+                || existing.request.input != request.input
+            {
+                return Err(ToolProgramLedgerError::InvalidLedger(
+                    "reserved call diverges from requested replay".into(),
+                ));
+            }
+            return Ok(());
+        }
+        journal.reservations.push(JournalReservation {
+            sequence,
+            request: request.clone(),
+            state: "reserved".into(),
+            reserved_at: Utc::now().timestamp_millis(),
+        });
+        self.write_journal(program_id, &journal)
+    }
+
+    /// Persist a typed completion before the interpreter advances.
+    pub fn persist_call_completion(
+        &self,
+        program_id: &str,
+        completed: &CompletedCall,
+    ) -> Result<(), ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        let mut journal = self.read_journal(program_id)?;
+        if let Some(existing) = journal
+            .completed
+            .iter()
+            .find(|call| call.sequence == completed.sequence)
+        {
+            if existing.request.tool_name != completed.request.tool_name
+                || existing.request.input != completed.request.input
+            {
+                return Err(ToolProgramLedgerError::InvalidLedger(
+                    "completed call identity conflict".into(),
+                ));
+            }
+            return Ok(());
+        }
+        journal
+            .reservations
+            .retain(|r| r.sequence != completed.sequence);
+        journal.completed.push(completed.clone());
+        journal.completed.sort_by_key(|call| call.sequence);
+        self.write_journal(program_id, &journal)
+    }
+
+    /// Persist the latest interpreter checkpoint after a durable call
+    /// completion or explicit checkpoint instruction.
+    pub fn persist_checkpoint(
+        &self,
+        program_id: &str,
+        checkpoint: &InterpreterCheckpoint,
+    ) -> Result<(), ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        let mut journal = self.read_journal(program_id)?;
+        journal.checkpoint = Some(checkpoint.clone());
+        self.write_journal(program_id, &journal)
+    }
+
+    /// Load completed calls for restart replay. The public redacted ledger is
+    /// intentionally not used for this operation.
+    pub fn load_completed_calls(
+        &self,
+        program_id: &str,
+    ) -> Result<HashMap<u32, CompletedCall>, ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        Ok(self
+            .read_journal(program_id)?
+            .completed
+            .into_iter()
+            .map(|call| (call.sequence, call))
+            .collect())
+    }
+
     fn path(&self, program_id: &str) -> PathBuf {
         self.base_dir.join(format!("{program_id}.json"))
+    }
+
+    fn journal_path(&self, program_id: &str) -> PathBuf {
+        self.base_dir.join(format!("{program_id}.journal.json"))
+    }
+
+    fn read_journal(&self, program_id: &str) -> Result<JournalFile, ToolProgramLedgerError> {
+        let path = self.journal_path(program_id);
+        if !path.exists() {
+            return Ok(JournalFile {
+                version: 1,
+                program_id: program_id.to_string(),
+                ..JournalFile::default()
+            });
+        }
+        let metadata = path.symlink_metadata()?;
+        if metadata.file_type().is_symlink() || metadata.len() > MAX_JOURNAL_BYTES {
+            return Err(ToolProgramLedgerError::InvalidLedger(
+                "journal path is invalid or oversized".into(),
+            ));
+        }
+        let bytes = std::fs::read(path)?;
+        let journal: JournalFile = serde_json::from_slice(&bytes)
+            .map_err(|error| ToolProgramLedgerError::InvalidLedger(error.to_string()))?;
+        if journal.program_id != program_id || journal.version != 1 {
+            return Err(ToolProgramLedgerError::InvalidLedger(
+                "journal identity or version mismatch".into(),
+            ));
+        }
+        Ok(journal)
+    }
+
+    fn write_journal(
+        &self,
+        program_id: &str,
+        journal: &JournalFile,
+    ) -> Result<(), ToolProgramLedgerError> {
+        let bytes = serde_json::to_vec(journal)
+            .map_err(|error| ToolProgramLedgerError::InvalidLedger(error.to_string()))?;
+        if bytes.len() as u64 > MAX_JOURNAL_BYTES {
+            return Err(ToolProgramLedgerError::Oversized);
+        }
+        std::fs::create_dir_all(&self.base_dir)?;
+        let target = self.journal_path(program_id);
+        let temporary = self.base_dir.join(format!(
+            ".{program_id}.{}.journal.tmp",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&temporary, bytes)?;
+        if let Err(error) = std::fs::rename(&temporary, &target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     fn write_file(&self, file: &LedgerFile) -> Result<(), ToolProgramLedgerError> {

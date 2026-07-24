@@ -121,6 +121,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 33 {
         migrate_and_record(pool, 33).await?;
     }
+    if current_version < 34 {
+        migrate_and_record(pool, 34).await?;
+    }
 
     Ok(())
 }
@@ -166,6 +169,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             31 => migrate_v31(pool).await?,
             32 => migrate_v32(pool).await?,
             33 => migrate_v33(pool).await?,
+            34 => migrate_v34(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -198,6 +202,38 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             Err(e)
         }
     }
+}
+
+/// M011: durable Tool Program terminal notifications and delivery claims.
+async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS tool_program_notification (
+            notification_id TEXT PRIMARY KEY,
+            program_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            agent_id TEXT,
+            turn_id TEXT,
+            state TEXT NOT NULL,
+            record_json TEXT NOT NULL,
+            claim_owner TEXT,
+            claim_lease_until INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            delivered_at INTEGER,
+            UNIQUE(program_id, notification_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_notification_session ON tool_program_notification(session_id, state, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_tool_program_notification_program ON tool_program_notification(program_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Tool Programs M003: durable program domain, source/IR references,

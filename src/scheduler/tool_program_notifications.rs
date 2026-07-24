@@ -16,9 +16,14 @@
 //!   the job store's terminal state.
 
 use std::collections::HashMap;
+use std::path::Path;
 
+use crate::tool::tool_program_result::ProgramResultRecord;
+use codegg_core::jobs::JobPayload;
 use codegg_protocol::projection::dto::NotificationClassification;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+use sqlx::SqlitePool;
 use tokio::sync::RwLock;
 
 /// Configuration for notification queue bounds and backpressure.
@@ -101,6 +106,16 @@ pub struct ToolProgramNotification {
     pub created_at: i64,
     /// Last state transition timestamp.
     pub updated_at: i64,
+    /// Delivery claimant and bounded lease, persisted across restart.
+    #[serde(default)]
+    pub claim_owner: Option<String>,
+    #[serde(default)]
+    pub claim_lease_until: Option<i64>,
+    /// Durable acknowledgement timestamp.
+    #[serde(default)]
+    pub delivered_at: Option<i64>,
+    #[serde(default)]
+    pub retry_count: u32,
 }
 
 /// Compact handle returned to the parent when a background program is
@@ -150,6 +165,7 @@ pub struct ToolProgramNotificationService {
     pub session_index: RwLock<HashMap<String, Vec<String>>>,
     /// Policy configuration for bounds and backpressure.
     pub policy: NotificationPolicy,
+    pool: Option<SqlitePool>,
 }
 
 impl ToolProgramNotificationService {
@@ -158,6 +174,7 @@ impl ToolProgramNotificationService {
             notifications: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
             policy: NotificationPolicy::default(),
+            pool: None,
         }
     }
 
@@ -167,6 +184,18 @@ impl ToolProgramNotificationService {
             notifications: RwLock::new(HashMap::new()),
             session_index: RwLock::new(HashMap::new()),
             policy,
+            pool: None,
+        }
+    }
+
+    /// Production constructor. Notification state is cached for low-latency
+    /// reads but every transition is also written to the daemon catalog.
+    pub fn with_pool(pool: SqlitePool) -> Self {
+        Self {
+            notifications: RwLock::new(HashMap::new()),
+            session_index: RwLock::new(HashMap::new()),
+            policy: NotificationPolicy::default(),
+            pool: Some(pool),
         }
     }
 
@@ -179,6 +208,26 @@ impl ToolProgramNotificationService {
         &self,
         notification: ToolProgramNotification,
     ) -> ToolProgramNotification {
+        if notification.session_id.is_empty() {
+            tracing::warn!(
+                notification_id = %notification.notification_id,
+                "refusing to persist Tool Program notification without parent session"
+            );
+            return notification;
+        }
+        if let Some(pool) = &self.pool {
+            if let Ok(Some(json)) = sqlx::query_scalar::<_, String>(
+                "SELECT record_json FROM tool_program_notification WHERE notification_id = ?",
+            )
+            .bind(&notification.notification_id)
+            .fetch_optional(pool)
+            .await
+            {
+                if let Ok(existing) = serde_json::from_str::<ToolProgramNotification>(&json) {
+                    return existing;
+                }
+            }
+        }
         let mut notifications = self.notifications.write().await;
         if let Some(existing) = notifications.get(&notification.notification_id) {
             return existing.clone();
@@ -190,7 +239,153 @@ impl ToolProgramNotificationService {
 
         let mut index = self.session_index.write().await;
         index.entry(session_id).or_default().push(nid);
+        drop(index);
+        self.persist_record(&notification).await;
         notification
+    }
+
+    /// Create the one terminal notification for a completed background
+    /// invocation. Submission itself never creates an actionable record.
+    pub async fn record_terminal_result(
+        &self,
+        program_id: &str,
+        job_id: &str,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        turn_id: Option<&str>,
+        record: &ProgramResultRecord,
+    ) {
+        let Some(session_id) = session_id.filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let status = serde_json::to_value(record.result.status)
+            .ok()
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .unwrap_or_else(|| "failed".into());
+        let failure_class = record.result.failure_class.as_ref().and_then(|class| {
+            serde_json::to_value(class)
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        });
+        let success = matches!(
+            record.result.status,
+            codegg_core::tool_program::ProgramStatus::Completed
+        );
+        let summary = record
+            .result
+            .error_message
+            .clone()
+            .unwrap_or_else(|| format!("Tool Program {} {}", program_id, status));
+        let bounded_summary = summary.chars().take(1024).collect::<String>();
+        let classification = classify_terminal(&status, failure_class.as_deref(), success);
+        let payload = format!("{program_id}|{status}|{}|{success}", record.result_digest);
+        let notification = ToolProgramNotification {
+            notification_id: program_id.to_string(),
+            program_id: program_id.to_string(),
+            job_id: job_id.to_string(),
+            session_id: session_id.to_string(),
+            agent_id: agent_id.map(ToOwned::to_owned),
+            turn_id: turn_id.map(ToOwned::to_owned),
+            status,
+            summary: bounded_summary,
+            failure_class,
+            success,
+            classification,
+            payload_digest: format!("{:x}", md5::compute(payload.as_bytes())),
+            program_handle: ProgramHandle {
+                program_id: program_id.to_string(),
+                job_id: job_id.to_string(),
+                status: "terminal".into(),
+                submitted_at: record.recorded_at,
+                timeout_ms: 120_000,
+                inspect_ref: program_id.to_string(),
+                cancel_ref: job_id.to_string(),
+            },
+            state: NotificationState::Pending,
+            created_at: record.recorded_at,
+            updated_at: record.recorded_at,
+            claim_owner: None,
+            claim_lease_until: None,
+            delivered_at: None,
+            retry_count: 0,
+        };
+        let session_id = notification.session_id.clone();
+        self.record_notification(notification).await;
+        let _ = self
+            .enforce_session_bound(&session_id, self.policy.max_pending_per_session)
+            .await;
+    }
+
+    /// Reconcile terminal background programs from the durable job catalog.
+    /// This is safe to call at every turn boundary: notification identity is
+    /// the program identity and delivered records are never recreated.
+    pub async fn recover_from_pool(&self) -> usize {
+        let Some(pool) = &self.pool else { return 0 };
+        let rows = sqlx::query(
+            "SELECT j.id, j.session_id, j.turn_id, j.state, j.payload_json, j.time_created, w.canonical_root FROM job j LEFT JOIN workspace w ON w.id = j.workspace_id WHERE j.kind = 'tool_program' AND j.state IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted') AND j.session_id IS NOT NULL ORDER BY j.time_created ASC LIMIT 256",
+        )
+        .fetch_all(pool)
+        .await;
+        let Ok(rows) = rows else { return 0 };
+        let mut recovered = 0;
+        for row in rows {
+            let job_id: String = row.get("id");
+            let session_id: Option<String> = row.get("session_id");
+            let turn_id: Option<String> = row.get("turn_id");
+            let state: String = row.get("state");
+            let payload_json: String = row.get("payload_json");
+            let created_at: i64 = row.get("time_created");
+            let workspace_root: Option<String> = row.get("canonical_root");
+            let Ok(JobPayload::ToolProgram {
+                program_id,
+                execution_mode,
+                execution_context_json,
+                ..
+            }) = serde_json::from_str(&payload_json)
+            else {
+                continue;
+            };
+            if execution_mode != "background" {
+                continue;
+            }
+            let context = execution_context_json.as_deref().and_then(|json| {
+                serde_json::from_str::<codegg_core::jobs::ToolProgramExecutionContext>(json).ok()
+            });
+            let Some(root) = workspace_root else { continue };
+            let loaded =
+                crate::tool::tool_program_result::ToolProgramResultStore::new(Path::new(&root))
+                    .load(&program_id)
+                    .ok()
+                    .flatten();
+            if let Some(record) = loaded {
+                self.record_terminal_result(
+                    &program_id,
+                    &job_id,
+                    session_id.as_deref(),
+                    context.as_ref().and_then(|value| value.agent_id.as_deref()),
+                    turn_id
+                        .as_deref()
+                        .or_else(|| context.as_ref().and_then(|value| value.turn_id.as_deref())),
+                    &record,
+                )
+                .await;
+                recovered += 1;
+            } else {
+                recovered += self
+                    .recover_from_terminal_jobs(vec![RecoveredTerminalJob {
+                        program_id,
+                        job_id,
+                        session_id,
+                        status: state.clone(),
+                        summary: format!("Tool Program terminal state: {state}"),
+                        failure_class: None,
+                        success: state == "completed",
+                        created_at,
+                    }])
+                    .await;
+            }
+        }
+        recovered
     }
 
     /// Claim a notification for processing. Uses compare-and-set:
@@ -199,15 +394,21 @@ impl ToolProgramNotificationService {
     /// Returns `true` if the claim succeeded, `false` if the
     /// notification was already claimed or in a non-pending state.
     pub async fn claim(&self, notification_id: &str) -> bool {
-        let mut notifications = self.notifications.write().await;
-        if let Some(n) = notifications.get_mut(notification_id) {
-            if n.state == NotificationState::Pending {
-                n.state = NotificationState::Claimed;
-                n.updated_at = chrono::Utc::now().timestamp_millis();
-                return true;
-            }
-        }
-        false
+        self.claim_as(notification_id, "tool-program-delivery")
+            .await
+    }
+
+    /// Claim a notification with an explicit delivery owner.
+    pub async fn claim_as(&self, notification_id: &str, owner: &str) -> bool {
+        self.load_one_from_pool(notification_id).await;
+        self.recover_expired().await;
+        self.transition_with_owner(
+            notification_id,
+            NotificationState::Pending,
+            NotificationState::Claimed,
+            Some(owner.to_string()),
+        )
+        .await
     }
 
     /// Acknowledge consumption of a claimed notification.
@@ -215,33 +416,43 @@ impl ToolProgramNotificationService {
     /// Transitions from Claimed to Delivered. Returns `false` if the
     /// notification is not in the Claimed state.
     pub async fn acknowledge(&self, notification_id: &str) -> bool {
-        let mut notifications = self.notifications.write().await;
-        if let Some(n) = notifications.get_mut(notification_id) {
-            if n.state == NotificationState::Claimed {
-                n.state = NotificationState::Delivered;
-                n.updated_at = chrono::Utc::now().timestamp_millis();
-                return true;
-            }
-        }
-        false
+        self.load_one_from_pool(notification_id).await;
+        self.transition_with_owner(
+            notification_id,
+            NotificationState::Claimed,
+            NotificationState::Delivered,
+            None,
+        )
+        .await
     }
 
     /// Suppress a notification (e.g. parent session archived).
     pub async fn suppress(&self, notification_id: &str) -> bool {
-        let mut notifications = self.notifications.write().await;
-        if let Some(n) = notifications.get_mut(notification_id) {
-            if n.state == NotificationState::Pending || n.state == NotificationState::Claimed {
-                n.state = NotificationState::Suppressed;
-                n.updated_at = chrono::Utc::now().timestamp_millis();
-                return true;
-            }
+        self.load_one_from_pool(notification_id).await;
+        if self
+            .transition(
+                notification_id,
+                NotificationState::Pending,
+                NotificationState::Suppressed,
+            )
+            .await
+        {
+            return true;
         }
-        false
+        self.transition(
+            notification_id,
+            NotificationState::Claimed,
+            NotificationState::Suppressed,
+        )
+        .await
     }
 
     /// Get all pending notifications for a session, in deterministic
     /// (creation-time) order.
     pub async fn pending_for_session(&self, session_id: &str) -> Vec<ToolProgramNotification> {
+        if self.pool.is_some() {
+            self.load_session_from_pool(session_id).await;
+        }
         let index = self.session_index.read().await;
         let notifications = self.notifications.read().await;
         if let Some(nids) = index.get(session_id) {
@@ -258,6 +469,12 @@ impl ToolProgramNotificationService {
     /// Get a notification by ID.
     pub async fn get(&self, notification_id: &str) -> Option<ToolProgramNotification> {
         let notifications = self.notifications.read().await;
+        if let Some(notification) = notifications.get(notification_id).cloned() {
+            return Some(notification);
+        }
+        drop(notifications);
+        self.load_one_from_pool(notification_id).await;
+        let notifications = self.notifications.read().await;
         notifications.get(notification_id).cloned()
     }
 
@@ -270,14 +487,26 @@ impl ToolProgramNotificationService {
     /// Returns IDs of expired notifications.
     pub async fn expire_stale(&self, max_age_ms: i64) -> Vec<String> {
         let now = chrono::Utc::now().timestamp_millis();
-        let mut expired = vec![];
-        let mut notifications = self.notifications.write().await;
-        for (id, n) in notifications.iter_mut() {
-            if n.state == NotificationState::Claimed && (now - n.updated_at) > max_age_ms {
-                n.state = NotificationState::Expired;
-                n.updated_at = now;
-                expired.push(id.clone());
-            }
+        let expired: Vec<String> = {
+            let notifications = self.notifications.read().await;
+            notifications
+                .iter()
+                .filter(|(_, n)| {
+                    n.state == NotificationState::Claimed && (now - n.updated_at) > max_age_ms
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        for id in &expired {
+            let _ = self
+                .transition_to(
+                    id,
+                    NotificationState::Claimed,
+                    NotificationState::Expired,
+                    now,
+                    None,
+                )
+                .await;
         }
         expired
     }
@@ -296,31 +525,28 @@ impl ToolProgramNotificationService {
     /// Returns IDs of notifications that were suppressed to enforce
     /// the bound.
     pub async fn enforce_session_bound(&self, session_id: &str, max_pending: usize) -> Vec<String> {
-        let mut suppressed = vec![];
-        let index = self.session_index.read().await;
-        if let Some(nids) = index.get(session_id) {
-            let pending: Vec<String> = {
-                let notifications = self.notifications.read().await;
-                nids.iter()
-                    .filter(|nid| {
-                        notifications
-                            .get(nid.as_str())
-                            .map(|n| n.state == NotificationState::Pending)
-                            .unwrap_or(false)
-                    })
-                    .cloned()
-                    .collect()
+        let pending: Vec<String> = {
+            let index = self.session_index.read().await;
+            let Some(nids) = index.get(session_id) else {
+                return vec![];
             };
-            if pending.len() > max_pending {
-                // Suppress oldest (first in list = earliest created)
-                let to_suppress = &pending[..pending.len() - max_pending];
-                let mut notifications = self.notifications.write().await;
-                for nid in to_suppress {
-                    if let Some(n) = notifications.get_mut(nid.as_str()) {
-                        n.state = NotificationState::Suppressed;
-                        n.updated_at = chrono::Utc::now().timestamp_millis();
-                        suppressed.push(nid.clone());
-                    }
+            let notifications = self.notifications.read().await;
+            nids.iter()
+                .filter(|nid| {
+                    notifications
+                        .get(nid.as_str())
+                        .map(|n| n.state == NotificationState::Pending)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        };
+        let mut suppressed = vec![];
+        if pending.len() > max_pending {
+            // Suppress oldest (first in list = earliest created).
+            for nid in &pending[..pending.len() - max_pending] {
+                if self.suppress(nid).await {
+                    suppressed.push(nid.clone());
                 }
             }
         }
@@ -371,6 +597,10 @@ impl ToolProgramNotificationService {
                 state: NotificationState::Pending,
                 created_at: job.created_at,
                 updated_at: job.created_at,
+                claim_owner: None,
+                claim_lease_until: None,
+                delivered_at: None,
+                retry_count: 0,
             };
             let existing = self.get(&job.program_id).await;
             if existing.is_none() {
@@ -379,6 +609,182 @@ impl ToolProgramNotificationService {
             }
         }
         recovered
+    }
+
+    async fn persist_record(&self, notification: &ToolProgramNotification) {
+        let Some(pool) = &self.pool else { return };
+        let Ok(record_json) = serde_json::to_string(notification) else {
+            return;
+        };
+        let result = sqlx::query(
+            "INSERT INTO tool_program_notification (notification_id, program_id, job_id, session_id, agent_id, turn_id, state, record_json, claim_owner, claim_lease_until, created_at, updated_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(notification_id) DO UPDATE SET state = excluded.state, record_json = excluded.record_json, claim_owner = excluded.claim_owner, claim_lease_until = excluded.claim_lease_until, updated_at = excluded.updated_at, delivered_at = excluded.delivered_at",
+        )
+        .bind(&notification.notification_id)
+        .bind(&notification.program_id)
+        .bind(&notification.job_id)
+        .bind(&notification.session_id)
+        .bind(&notification.agent_id)
+        .bind(&notification.turn_id)
+        .bind(serde_json::to_string(&notification.state).unwrap_or_else(|_| "\"pending\"".into()))
+        .bind(record_json)
+        .bind(&notification.claim_owner)
+        .bind(notification.claim_lease_until)
+        .bind(notification.created_at)
+        .bind(notification.updated_at)
+        .bind((notification.state == NotificationState::Delivered).then_some(notification.updated_at))
+        .execute(pool)
+        .await;
+        if let Err(error) = result {
+            tracing::warn!(%error, notification_id = %notification.notification_id, "failed to persist Tool Program notification");
+        }
+    }
+
+    async fn transition(
+        &self,
+        notification_id: &str,
+        from: NotificationState,
+        to: NotificationState,
+    ) -> bool {
+        self.transition_with_owner(notification_id, from, to, None)
+            .await
+    }
+
+    async fn transition_with_owner(
+        &self,
+        notification_id: &str,
+        from: NotificationState,
+        to: NotificationState,
+        owner: Option<String>,
+    ) -> bool {
+        self.transition_to(
+            notification_id,
+            from,
+            to,
+            chrono::Utc::now().timestamp_millis(),
+            owner,
+        )
+        .await
+    }
+
+    async fn transition_to(
+        &self,
+        notification_id: &str,
+        from: NotificationState,
+        to: NotificationState,
+        now: i64,
+        owner: Option<String>,
+    ) -> bool {
+        let updated = {
+            let mut notifications = self.notifications.write().await;
+            let Some(notification) = notifications.get_mut(notification_id) else {
+                return false;
+            };
+            if notification.state != from {
+                return false;
+            }
+            notification.state = to;
+            notification.updated_at = now;
+            match to {
+                NotificationState::Claimed => {
+                    notification.claim_owner = owner.or_else(|| notification.claim_owner.clone());
+                    notification.claim_lease_until =
+                        Some(now.saturating_add(self.policy.claim_lease_ms));
+                    notification.retry_count = notification.retry_count.saturating_add(1);
+                }
+                NotificationState::Delivered => {
+                    notification.claim_owner = None;
+                    notification.claim_lease_until = None;
+                    notification.delivered_at = Some(now);
+                }
+                NotificationState::Pending | NotificationState::Expired => {
+                    notification.claim_owner = None;
+                    notification.claim_lease_until = None;
+                }
+                NotificationState::Suppressed | NotificationState::Failed => {}
+            }
+            notification.clone()
+        };
+        self.persist_record(&updated).await;
+        true
+    }
+
+    async fn load_session_from_pool(&self, session_id: &str) {
+        let Some(pool) = &self.pool else { return };
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT record_json FROM tool_program_notification WHERE session_id = ? ORDER BY created_at ASC LIMIT 64",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await;
+        let Ok(rows) = rows else { return };
+        let mut notifications = self.notifications.write().await;
+        let mut index = self.session_index.write().await;
+        for json in rows {
+            if let Ok(notification) = serde_json::from_str::<ToolProgramNotification>(&json) {
+                index
+                    .entry(notification.session_id.clone())
+                    .or_default()
+                    .retain(|id| id != &notification.notification_id);
+                index
+                    .entry(notification.session_id.clone())
+                    .or_default()
+                    .push(notification.notification_id.clone());
+                notifications.insert(notification.notification_id.clone(), notification);
+            }
+        }
+    }
+
+    async fn load_one_from_pool(&self, notification_id: &str) {
+        let Some(pool) = &self.pool else { return };
+        let Ok(Some(json)) = sqlx::query_scalar::<_, String>(
+            "SELECT record_json FROM tool_program_notification WHERE notification_id = ?",
+        )
+        .bind(notification_id)
+        .fetch_optional(pool)
+        .await
+        else {
+            return;
+        };
+        let Ok(notification) = serde_json::from_str::<ToolProgramNotification>(&json) else {
+            return;
+        };
+        let mut notifications = self.notifications.write().await;
+        let mut index = self.session_index.write().await;
+        index
+            .entry(notification.session_id.clone())
+            .or_default()
+            .retain(|id| id != notification_id);
+        index
+            .entry(notification.session_id.clone())
+            .or_default()
+            .push(notification_id.to_string());
+        notifications.insert(notification_id.to_string(), notification);
+    }
+
+    async fn recover_expired(&self) {
+        let now = chrono::Utc::now().timestamp_millis();
+        let ids: Vec<String> = {
+            let notifications = self.notifications.read().await;
+            notifications
+                .values()
+                .filter(|notification| {
+                    notification.state == NotificationState::Claimed
+                        && now.saturating_sub(notification.updated_at) > self.policy.claim_lease_ms
+                })
+                .map(|notification| notification.notification_id.clone())
+                .collect()
+        };
+        for id in ids {
+            let _ = self
+                .transition_to(
+                    &id,
+                    NotificationState::Claimed,
+                    NotificationState::Pending,
+                    now,
+                    None,
+                )
+                .await;
+        }
     }
 }
 
@@ -461,6 +867,10 @@ mod tests {
             state: NotificationState::Pending,
             created_at: now,
             updated_at: now,
+            claim_owner: None,
+            claim_lease_until: None,
+            delivered_at: None,
+            retry_count: 0,
         }
     }
 

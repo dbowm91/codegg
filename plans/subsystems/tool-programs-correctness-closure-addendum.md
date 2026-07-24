@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 011 ready for implementation
+Status: active — Milestone 011 implementation in progress
 
 Canonical subsystem roadmap:
 
@@ -117,7 +117,7 @@ The eventual closure record must be created at:
 | 008 | historical closed; revalidated by M011 | Durable terminal notification and parent-session delivery require correction |
 | 009 | historical closed; revalidated by M011 | Provider infrastructure retained; production runtime selection requires correction |
 | 010 | conditionally closed, historical | Native harness retained; strict closure findings transfer to M011 |
-| 011 | ready | Production correctness and ownership closure |
+| 011 | active | Production correctness and ownership closure |
 
 ## 7. Completion definition
 

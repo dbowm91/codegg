@@ -697,6 +697,15 @@ async fn authority_digest_validated_at_admission() {
         use codegg_core::workspace::WorkspaceId;
         let now = chrono::Utc::now();
         let source_digest = ProgramStore::digest_source(source);
+        let execution_context = codegg_core::jobs::ToolProgramExecutionContext::for_workspace(
+            "ws-1",
+            "test-correlation",
+        );
+        let authority_digest = codegg::tool::tool_program_context::authority_digest(
+            &execution_context,
+            &[],
+            &source_digest,
+        );
         let source_ref = codegg::tool::tool_program_source::ToolProgramSourceStore::new(
             &std::env::current_dir().unwrap(),
         )
@@ -712,10 +721,13 @@ async fn authority_digest_validated_at_admission() {
             priority: JobPriority::Normal,
             payload: JobPayload::ToolProgram {
                 program_id: program_id.to_string(),
+                invocation_key: "test-invocation".to_string(),
                 source_digest,
                 ir_digest: None,
-                authority_digest: "auth_test".to_string(),
+                authority_digest,
+                execution_context_json: Some(serde_json::to_string(&execution_context).unwrap()),
                 submission_key: "sub_test".to_string(),
+                execution_mode: "foreground".to_string(),
                 source_ref: Some(source_ref.relative_path),
                 source_length: Some(source_ref.length),
                 allowed_tools: Vec::new(),

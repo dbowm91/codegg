@@ -297,9 +297,14 @@ impl CoreDaemon {
         // but before the scheduler loop is spawned, so production execution
         // cannot fall back to an executor with no child-job authority.
         if scheduler_config.enabled {
+            let notification_service = Arc::new(match deps.pool.clone() {
+                Some(pool) => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(pool),
+                None => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::new(),
+            });
             if let Err(error) = scheduler.register_executor_sync(Arc::new(
                 crate::scheduler::tool_program_executor::ToolProgramExecutor::default()
-                    .with_submission(submission),
+                    .with_submission(submission)
+                    .with_notification_service(notification_service),
             )) {
                 tracing::debug!(
                     ?error,

@@ -909,6 +909,15 @@ impl AgentLoop {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             permission_mode: None,
             timeout_ms,
+            invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
+            turn_id: None,
+            agent_id: None,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            provider_name: Some(self.provider.name().to_string()),
+            backend_policy: Some("native_only".into()),
+            cancellation: None,
+            deadline: None,
         }
     }
 
@@ -1618,7 +1627,10 @@ impl AgentLoop {
 
         // Build the canonical tool broker from the configured registry.
         // The broker does not own the registry; it holds a pre-built catalog.
-        let tool_broker = Arc::new(crate::tool::ToolBroker::new(&tool_registry));
+        let tool_broker = Arc::new(
+            crate::tool::ToolBroker::new(&tool_registry)
+                .with_artifact_store(artifact_store.clone()),
+        );
 
         Self {
             agents: map,
@@ -4499,6 +4511,7 @@ impl AgentLoop {
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         let event_store = self.event_store.clone();
         let tool_broker = Arc::clone(&self.tool_broker);
+        let authority_ref = format!("agent:{}", self.session_id);
         for (orig_idx, tc) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -4514,6 +4527,7 @@ impl AgentLoop {
             let hook_registry = hook_registry.clone();
             let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
+            let authority_ref = authority_ref.clone();
             let idx_for_results = orig_idx;
             let event_store = event_store.clone();
             let tool_broker = Arc::clone(&tool_broker);
@@ -4680,6 +4694,7 @@ impl AgentLoop {
                             let exec_args = effective_args.clone();
                             let tool_name_clone = tc_inner.name.clone();
                             let broker_for_exec = Arc::clone(&tool_broker);
+                            let authority_ref = authority_ref.clone();
                             let exec_fut = async move {
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
                                     caller: crate::tool::contract::ToolCaller::Agent,
@@ -4693,7 +4708,12 @@ impl AgentLoop {
                                     permission_mode: exec_ctx.permission_mode.clone(),
                                     timeout_ms: exec_ctx.timeout_ms,
                                     submission_key: None,
-                                    caller_authorized: true,
+                                    authority: crate::tool::broker::BrokerAuthority::Verified {
+                                        authority_ref,
+                                        policy_revision: None,
+                                    },
+                                    cancellation: exec_ctx.cancellation.clone(),
+                                    deadline: exec_ctx.deadline,
                                 };
                                 let broker_result = broker_for_exec
                                     .execute(registry, &tool_name_clone, exec_args, broker_ctx)

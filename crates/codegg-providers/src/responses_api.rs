@@ -555,6 +555,28 @@ pub enum HostedBackendPolicy {
 }
 
 impl HostedBackendPolicy {
+    /// Parse the stable policy spelling used by tool-program execution
+    /// contexts and configuration.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "native_only" | "native-only" => Some(Self::NativeOnly),
+            "hosted_preferred" | "hosted-preferred" => Some(Self::HostedPreferred),
+            "hosted_required" | "hosted-required" => Some(Self::HostedRequired),
+            "native_preferred" | "native-preferred" => Some(Self::NativePreferred),
+            _ => None,
+        }
+    }
+
+    /// Stable serialization used in durable execution context records.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NativeOnly => "native_only",
+            Self::HostedPreferred => "hosted_preferred",
+            Self::HostedRequired => "hosted_required",
+            Self::NativePreferred => "native_preferred",
+        }
+    }
+
     /// Whether hosted execution is allowed.
     pub fn allows_hosted(&self) -> bool {
         matches!(

@@ -194,6 +194,12 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_pin,
         } = input;
 
+        let notification_service = Arc::new(match pool.clone() {
+            Some(pool) => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(pool),
+            None => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::new(),
+        });
+        let _ = notification_service.recover_from_pool().await;
+
         // ── Provider resolution ──────────────────────────────────────
         let mut registry = crate::provider::ProviderRegistry::new();
         crate::provider::register_builtin_with_config(&mut registry, &config);
@@ -228,6 +234,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             Arc::clone(&execution),
             crate::tool::factory::SessionToolContext {
                 submission: submission.clone(),
+                notification_service: Some(notification_service.clone()),
                 runtime_assets: crate::tool::factory::RuntimeAssetContext {
                     snapshot: asset_snapshot.clone(),
                     pin: asset_pin.clone(),
@@ -348,7 +355,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             artifact_store,
             submission,
             workspace_root: execution.workspace_root.clone(),
-            notification_service: None,
+            notification_service: Some(notification_service),
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);

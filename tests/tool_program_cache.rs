@@ -81,7 +81,12 @@ fn program_ctx() -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        caller_authorized: true,
+        authority: codegg::tool::BrokerAuthority::Verified {
+            authority_ref: "test".into(),
+            policy_revision: None,
+        },
+        cancellation: None,
+        deadline: None,
     }
 }
 
