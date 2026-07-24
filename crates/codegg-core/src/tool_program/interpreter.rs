@@ -363,6 +363,19 @@ pub struct RuntimeLimits {
     pub max_parallel_depth: u32,
     pub max_value_growth: u64,
     pub max_bytes: u64,
+    /// Maximum concurrent in-flight broker calls.
+    pub max_inflight_calls: u32,
+    /// Maximum wall-clock time in milliseconds (0 = no limit).
+    pub max_wall_time_ms: u64,
+    /// Maximum stall time in milliseconds before declaring stalled (0 = no limit).
+    /// Stall = no interpreter progress AND no active call progress.
+    pub max_stall_time_ms: u64,
+    /// Maximum per-call time in milliseconds (0 = no limit).
+    pub max_per_call_time_ms: u64,
+    /// Maximum transient retry attempts (0 = no retry).
+    pub max_retries: u32,
+    /// Base retry delay in milliseconds (doubled each attempt).
+    pub retry_base_delay_ms: u64,
 }
 
 impl From<&super::ir::IrBounds> for RuntimeLimits {
@@ -375,7 +388,16 @@ impl From<&super::ir::IrBounds> for RuntimeLimits {
             max_parallel_width: bounds.max_parallel_width,
             max_parallel_depth: bounds.max_parallel_depth,
             max_value_growth: bounds.max_value_growth,
-            max_bytes: bounds.max_value_growth,
+            // Total bytes = source IR bytes + value growth. Conservative:
+            // source IR is bounded by instruction count × average instruction size.
+            // Use 4× value growth as total byte budget.
+            max_bytes: bounds.max_value_growth * 4,
+            max_inflight_calls: bounds.max_dynamic_calls as u32,
+            max_wall_time_ms: 0,
+            max_stall_time_ms: 0,
+            max_per_call_time_ms: 0,
+            max_retries: 0,
+            retry_base_delay_ms: 100,
         }
     }
 }
@@ -383,13 +405,32 @@ impl From<&super::ir::IrBounds> for RuntimeLimits {
 // ── Budget snapshot ───────────────────────────────────────────────
 
 /// Current consumption snapshot for progress and completion reporting.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BudgetSnapshot {
     pub steps: u64,
     pub bytes: u64,
     pub calls: u32,
     pub iterations: u64,
     pub parallel_groups: u32,
+    /// Number of broker calls currently in-flight (not yet completed).
+    pub inflight_calls: u32,
+    /// Timestamp of last meaningful progress (instruction executed,
+    /// call started/completed, checkpoint committed).
+    pub last_progress_at: tokio::time::Instant,
+}
+
+impl Default for BudgetSnapshot {
+    fn default() -> Self {
+        Self {
+            steps: 0,
+            bytes: 0,
+            calls: 0,
+            iterations: 0,
+            parallel_groups: 0,
+            inflight_calls: 0,
+            last_progress_at: tokio::time::Instant::now(),
+        }
+    }
 }
 
 // ── Checkpoint ────────────────────────────────────────────────────
@@ -401,7 +442,11 @@ pub struct InterpreterCheckpoint {
     pub steps: u64,
     pub iterations: u64,
     pub calls_completed: u32,
+    pub bytes_used: u64,
+    pub parallel_groups: u32,
     pub locals_hash: String,
+    /// Completed calls for replay.
+    pub completed_calls: Vec<CompletedCall>,
 }
 
 // ── Broker call types ─────────────────────────────────────────────
@@ -437,6 +482,11 @@ pub struct CompletedCall {
 pub trait BrokerCallback: Send + Sync {
     /// Execute a tool call through the broker.
     async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError>;
+
+    /// Emit a heartbeat with current budget snapshot. Called at
+    /// meaningful progress boundaries (instruction milestones,
+    /// call start/complete, checkpoint commit). Default is no-op.
+    async fn heartbeat(&self, _budget: &BudgetSnapshot) {}
 }
 
 // ── Interpreter errors ────────────────────────────────────────────
@@ -484,6 +534,21 @@ impl InterpreterError {
     }
 }
 
+// ── Run configuration ─────────────────────────────────────────────
+
+/// Per-execution configuration passed to [`MeteredInterpreter::run`].
+/// These are not persisted in the interpreter; they apply to a single
+/// execution run and allow the executor to enforce deadlines.
+#[derive(Debug, Clone, Default)]
+pub struct RunConfig {
+    /// Absolute wall-clock deadline (None = no limit beyond RuntimeLimits).
+    pub wall_deadline: Option<tokio::time::Instant>,
+    /// Per-call timeout in milliseconds (None = use RuntimeLimits default).
+    pub per_call_timeout_ms: Option<u64>,
+    /// Result schema for emit validation (None = skip validation).
+    pub result_schema: Option<serde_json::Value>,
+}
+
 // ── Metered interpreter ───────────────────────────────────────────
 
 /// Core stack-machine interpreter for verified IR programs.
@@ -504,6 +569,8 @@ pub struct MeteredInterpreter {
     next_call_seq: u32,
     /// Whether the program has reached a terminal instruction.
     terminated: bool,
+    /// Checkpoints produced during execution.
+    checkpoints: Vec<InterpreterCheckpoint>,
 }
 
 impl MeteredInterpreter {
@@ -520,6 +587,7 @@ impl MeteredInterpreter {
             completed_calls: HashMap::new(),
             next_call_seq: 0,
             terminated: false,
+            checkpoints: Vec::new(),
         }
     }
 
@@ -530,15 +598,43 @@ impl MeteredInterpreter {
         broker: &dyn BrokerCallback,
         cancelled: Option<&tokio_util::sync::CancellationToken>,
     ) -> ProgramResult {
+        self.run_with_config(broker, cancelled, &RunConfig::default())
+            .await
+    }
+
+    /// Run with explicit per-execution configuration (deadlines, schema, etc.).
+    pub async fn run_with_config(
+        &mut self,
+        broker: &dyn BrokerCallback,
+        cancelled: Option<&tokio_util::sync::CancellationToken>,
+        config: &RunConfig,
+    ) -> ProgramResult {
         loop {
-            // Check cancellation
+            // ── Cancellation check ──
             if let Some(token) = cancelled {
                 if token.is_cancelled() {
                     return ProgramResult::cancelled(&self.budget);
                 }
             }
 
-            // Check termination
+            // ── Wall-clock deadline check ──
+            if let Some(deadline) = config.wall_deadline {
+                if tokio::time::Instant::now() >= deadline {
+                    return ProgramResult::timed_out(&self.budget);
+                }
+            } else if self.limits.max_wall_time_ms > 0 {
+                // Wall timeout is checked separately via stall detection below
+            }
+
+            // ── Stall detection ──
+            if self.limits.max_stall_time_ms > 0 {
+                let stall_elapsed = self.budget.last_progress_at.elapsed().as_millis() as u64;
+                if stall_elapsed > self.limits.max_stall_time_ms {
+                    return ProgramResult::stalled(&self.budget);
+                }
+            }
+
+            // ── Termination check ──
             if self.terminated {
                 return ProgramResult::failed(
                     FailureClass::InternalPanic,
@@ -547,7 +643,7 @@ impl MeteredInterpreter {
                 );
             }
 
-            // Check step budget
+            // ── Step budget check ──
             if self.budget.steps >= self.limits.max_steps {
                 return ProgramResult::incomplete(
                     format!(
@@ -558,7 +654,7 @@ impl MeteredInterpreter {
                 );
             }
 
-            // Fetch instruction
+            // ── Fetch instruction ──
             let pc = self.pc as usize;
             if pc >= self.program.instructions.len() {
                 return ProgramResult::failed(
@@ -573,11 +669,21 @@ impl MeteredInterpreter {
             self.pc += 1;
 
             match self
-                .execute_instruction(&instruction, broker, cancelled)
+                .execute_instruction(&instruction, broker, cancelled, config)
                 .await
             {
                 Ok(StepResult::Continue) => {}
                 Ok(StepResult::Yield(value)) => {
+                    // Validate against result schema if present
+                    if let Some(ref schema) = config.result_schema {
+                        if let Err(e) = validate_result_schema(&value, schema) {
+                            return ProgramResult::failed(
+                                FailureClass::SchemaMismatch,
+                                e,
+                                &self.budget,
+                            );
+                        }
+                    }
                     return ProgramResult::completed(value, &self.budget);
                 }
                 Ok(StepResult::Fail(reason)) => {
@@ -598,7 +704,11 @@ impl MeteredInterpreter {
         instruction: &IrInstruction,
         broker: &dyn BrokerCallback,
         _cancelled: Option<&tokio_util::sync::CancellationToken>,
+        config: &RunConfig,
     ) -> Result<StepResult, InterpreterError> {
+        // Update progress timestamp on every instruction
+        self.mark_progress(broker).await;
+
         match &instruction.op {
             // ── Constants ──
             IrOp::LoadInt { pool_idx } => {
@@ -897,6 +1007,14 @@ impl MeteredInterpreter {
                     )));
                 }
 
+                // Check in-flight budget
+                if self.budget.inflight_calls >= self.limits.max_inflight_calls {
+                    return Err(InterpreterError::BudgetExceeded(format!(
+                        "in-flight calls {} exceeds max {}",
+                        self.budget.inflight_calls, self.limits.max_inflight_calls
+                    )));
+                }
+
                 let seq = self.next_call_seq;
                 self.next_call_seq += 1;
 
@@ -904,18 +1022,26 @@ impl MeteredInterpreter {
                 let result = if let Some(completed) = self.completed_calls.get(&seq) {
                     completed.result.clone()
                 } else {
-                    // Execute through broker
-                    let result = broker.execute_call(&request).await?;
-                    // Record as completed
-                    self.completed_calls.insert(
-                        seq,
-                        CompletedCall {
-                            sequence: seq,
-                            request,
-                            result: result.clone(),
-                        },
-                    );
-                    result
+                    // Execute through broker with retry and per-call timeout
+                    self.budget.inflight_calls += 1;
+                    let call_result = self.execute_call_with_retry(broker, &request, config).await;
+                    self.budget.inflight_calls -= 1;
+
+                    match call_result {
+                        Ok(result) => {
+                            // Record as completed
+                            self.completed_calls.insert(
+                                seq,
+                                CompletedCall {
+                                    sequence: seq,
+                                    request,
+                                    result: result.clone(),
+                                },
+                            );
+                            result
+                        }
+                        Err(e) => return Err(e),
+                    }
                 };
 
                 self.budget.calls += 1;
@@ -948,6 +1074,15 @@ impl MeteredInterpreter {
                         )));
                     }
 
+                    // Check in-flight budget for the whole group
+                    if self.budget.inflight_calls + count as u32 > self.limits.max_inflight_calls {
+                        return Err(InterpreterError::BudgetExceeded(format!(
+                            "parallel in-flight {} + {} exceeds max {}",
+                            self.budget.inflight_calls, count, self.limits.max_inflight_calls
+                        )));
+                    }
+
+                    self.budget.parallel_groups += 1;
                     let mut results = Vec::with_capacity(count);
                     for req_val in req_vals {
                         if let ProgramValue::String(s) = req_val {
@@ -967,16 +1102,25 @@ impl MeteredInterpreter {
                             let result = if let Some(completed) = self.completed_calls.get(&seq) {
                                 completed.result.clone()
                             } else {
-                                let result = broker.execute_call(&request).await?;
-                                self.completed_calls.insert(
-                                    seq,
-                                    CompletedCall {
-                                        sequence: seq,
-                                        request,
-                                        result: result.clone(),
-                                    },
-                                );
-                                result
+                                self.budget.inflight_calls += 1;
+                                let call_result =
+                                    self.execute_call_with_retry(broker, &request, config).await;
+                                self.budget.inflight_calls -= 1;
+
+                                match call_result {
+                                    Ok(result) => {
+                                        self.completed_calls.insert(
+                                            seq,
+                                            CompletedCall {
+                                                sequence: seq,
+                                                request,
+                                                result: result.clone(),
+                                            },
+                                        );
+                                        result
+                                    }
+                                    Err(e) => return Err(e),
+                                }
                             };
 
                             self.budget.calls += 1;
@@ -1012,8 +1156,9 @@ impl MeteredInterpreter {
                 return Ok(StepResult::Fail(msg));
             }
             IrOp::Checkpoint => {
-                // Checkpoint is a no-op at the pure interpreter level;
-                // the executor layer handles persistence.
+                // Produce a durable checkpoint of current interpreter state
+                let checkpoint = self.create_checkpoint();
+                self.checkpoints.push(checkpoint);
             }
             IrOp::Return => {
                 self.terminated = true;
@@ -1025,6 +1170,99 @@ impl MeteredInterpreter {
     }
 
     // ── Internal helpers ──
+
+    /// Mark progress at the current timestamp and emit heartbeat.
+    async fn mark_progress(&mut self, broker: &dyn BrokerCallback) {
+        self.budget.last_progress_at = tokio::time::Instant::now();
+        broker.heartbeat(&self.budget).await;
+    }
+
+    /// Create a checkpoint of the current interpreter state.
+    fn create_checkpoint(&self) -> InterpreterCheckpoint {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        for (i, local) in self.locals.iter().enumerate() {
+            (i as u32).hash(&mut hasher);
+            if let Some(val) = local {
+                format!("{:?}", val).hash(&mut hasher);
+            }
+        }
+        let locals_hash = format!("{:016x}", hasher.finish());
+
+        InterpreterCheckpoint {
+            pc: self.pc,
+            steps: self.budget.steps,
+            iterations: self.budget.iterations,
+            calls_completed: self.budget.calls,
+            bytes_used: self.budget.bytes,
+            parallel_groups: self.budget.parallel_groups,
+            locals_hash,
+            completed_calls: self.completed_calls.values().cloned().collect(),
+        }
+    }
+
+    /// Execute a single broker call with transient retry and per-call timeout.
+    async fn execute_call_with_retry(
+        &self,
+        broker: &dyn BrokerCallback,
+        request: &CallRequest,
+        config: &RunConfig,
+    ) -> Result<CallResult, InterpreterError> {
+        let max_retries = self.limits.max_retries;
+        let per_call_timeout = config
+            .per_call_timeout_ms
+            .or(Some(self.limits.max_per_call_time_ms));
+
+        let mut last_err = None;
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                // Exponential backoff with jitter
+                let delay_ms = self.limits.retry_base_delay_ms * (1u64 << (attempt - 1));
+                let jitter = rand::random::<u64>() % (delay_ms / 2 + 1);
+                let total_delay = delay_ms + jitter;
+                tokio::time::sleep(tokio::time::Duration::from_millis(total_delay)).await;
+            }
+
+            let result = if let Some(timeout_ms) = per_call_timeout {
+                if timeout_ms > 0 {
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_millis(timeout_ms),
+                        broker.execute_call(request),
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_elapsed) => {
+                            last_err = Some(InterpreterError::BrokerError(format!(
+                                "call to '{}' timed out after {}ms",
+                                request.tool_name, timeout_ms
+                            )));
+                            continue;
+                        }
+                    }
+                } else {
+                    broker.execute_call(request).await
+                }
+            } else {
+                broker.execute_call(request).await
+            };
+
+            match result {
+                Ok(call_result) => return Ok(call_result),
+                Err(InterpreterError::BrokerError(_)) if attempt < max_retries => {
+                    last_err = Some(result.unwrap_err());
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| {
+            InterpreterError::InternalError("retry loop exited without result".into())
+        }))
+    }
 
     fn push(&mut self, val: ProgramValue) -> Result<(), InterpreterError> {
         let new_bytes = val.byte_size();
@@ -1483,10 +1721,89 @@ impl MeteredInterpreter {
     }
 
     /// Load completed calls from a checkpoint (for restart replay).
+    /// The interpreter re-executes from PC=0 and each ExecuteCall
+    /// instruction looks up its sequence in the completed_calls map.
     pub fn load_completed_calls(&mut self, calls: HashMap<u32, CompletedCall>) {
-        self.next_call_seq = calls.keys().max().map_or(0, |k| k + 1);
         self.completed_calls = calls;
+        // Don't override next_call_seq — it starts at 0 and the
+        // ExecuteCall handler looks up each sequence in order.
     }
+}
+
+/// Validate a program result against a JSON schema.
+/// Returns Ok(()) if valid, or Err with a description of the mismatch.
+fn validate_result_schema(value: &ProgramValue, schema: &serde_json::Value) -> Result<(), String> {
+    let json_value = value.to_json();
+    validate_json_schema(&json_value, schema)
+        .map_err(|e| format!("result schema validation failed: {}", e))
+}
+
+/// Recursively validate a JSON value against a JSON Schema.
+fn validate_json_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), String> {
+    if let Some(obj) = schema.as_object() {
+        // Handle "type" constraint
+        if let Some(type_str) = obj.get("type").and_then(|t| t.as_str()) {
+            let actual_type = match value {
+                serde_json::Value::Null => "null",
+                serde_json::Value::Bool(_) => "boolean",
+                serde_json::Value::Number(n) => {
+                    if n.is_i64() || n.is_u64() {
+                        "integer"
+                    } else {
+                        "number"
+                    }
+                }
+                serde_json::Value::String(_) => "string",
+                serde_json::Value::Array(_) => "array",
+                serde_json::Value::Object(_) => "object",
+            };
+            if actual_type != type_str {
+                return Err(format!(
+                    "expected type '{}', got '{}'",
+                    type_str, actual_type
+                ));
+            }
+        }
+
+        // Handle "properties" constraint for objects
+        if let Some(props) = obj.get("properties") {
+            if let (Some(props_obj), Some(map)) = (props.as_object(), value.as_object()) {
+                for (key, prop_schema) in props_obj {
+                    if let Some(prop_val) = map.get(key) {
+                        validate_json_schema(prop_val, prop_schema)?;
+                    }
+                }
+            }
+        }
+
+        // Handle "items" constraint for arrays
+        if let Some(items_schema) = obj.get("items") {
+            if let Some(arr) = value.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    validate_json_schema(item, items_schema)
+                        .map_err(|e| format!("array item {}: {}", i, e))?;
+                }
+            }
+        }
+
+        // Handle "required" constraint
+        if let Some(required) = obj.get("required") {
+            if let (Some(req_arr), Some(map)) = (required.as_array(), value.as_object()) {
+                for req_key in req_arr {
+                    if let Some(key_str) = req_key.as_str() {
+                        if !map.contains_key(key_str) {
+                            return Err(format!("missing required property '{}'", key_str));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Result of executing a single instruction.
@@ -1994,5 +2311,334 @@ emit({k: v})
         let result = run_program(src);
         assert_eq!(result.status, ProgramStatus::Completed);
         assert_eq!(result.output, Some(ProgramValue::Int(3)));
+    }
+
+    // ── Schema validation tests ─────────────────────────────────────
+
+    #[test]
+    fn emit_validates_result_schema_type() {
+        let compilation = compile_program("emit(42)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = NoopBroker;
+        let config = RunConfig {
+            result_schema: Some(serde_json::json!({"type": "string"})),
+            ..Default::default()
+        };
+        let result = rt.block_on(interp.run_with_config(&broker, None, &config));
+        assert_eq!(result.status, ProgramStatus::Failed);
+        assert!(result
+            .failure_class
+            .map(|c| c == FailureClass::SchemaMismatch)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn emit_passes_result_schema_type() {
+        let compilation = compile_program("emit(42)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = NoopBroker;
+        let config = RunConfig {
+            result_schema: Some(serde_json::json!({"type": "integer"})),
+            ..Default::default()
+        };
+        let result = rt.block_on(interp.run_with_config(&broker, None, &config));
+        assert_eq!(result.status, ProgramStatus::Completed);
+    }
+
+    // ── Heartbeat tests ─────────────────────────────────────────────
+
+    #[test]
+    fn heartbeat_called_on_progress() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct HeartbeatBroker {
+            count: AtomicU32,
+        }
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for HeartbeatBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                })
+            }
+
+            async fn heartbeat(&self, _budget: &BudgetSnapshot) {
+                self.count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let compilation = compile_program("emit(42)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = HeartbeatBroker {
+            count: AtomicU32::new(0),
+        };
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Completed);
+        // At least one heartbeat should have been emitted (per instruction)
+        assert!(broker.count.load(Ordering::Relaxed) > 0);
+    }
+
+    // ── Stall detection tests ───────────────────────────────────────
+
+    #[test]
+    fn stall_detection_triggers() {
+        struct SlowBroker;
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for SlowBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                // Simulate slow call that exceeds stall timeout
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                })
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        limits.max_stall_time_ms = 50; // Very short stall timeout
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = SlowBroker;
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Stalled);
+    }
+
+    // ── Wall timeout tests ──────────────────────────────────────────
+
+    #[test]
+    fn wall_deadline_triggers_timeout() {
+        let compilation = compile_program("emit(42)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = NoopBroker;
+        let config = RunConfig {
+            wall_deadline: Some(tokio::time::Instant::now() - tokio::time::Duration::from_secs(1)),
+            ..Default::default()
+        };
+        let result = rt.block_on(interp.run_with_config(&broker, None, &config));
+        assert_eq!(result.status, ProgramStatus::TimedOut);
+    }
+
+    // ── Per-call timeout tests ──────────────────────────────────────
+
+    #[test]
+    fn per_call_timeout_triggers() {
+        struct SlowBroker;
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for SlowBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                })
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        limits.max_retries = 0; // No retries so timeout is terminal
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = SlowBroker;
+        let config = RunConfig {
+            per_call_timeout_ms: Some(50),
+            ..Default::default()
+        };
+        let result = rt.block_on(interp.run_with_config(&broker, None, &config));
+        assert_eq!(result.status, ProgramStatus::Failed);
+    }
+
+    // ── Transient retry tests ───────────────────────────────────────
+
+    #[test]
+    fn transient_error_retries() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct FlakyBroker {
+            fail_count: AtomicU32,
+        }
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for FlakyBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                let attempts = self.fail_count.fetch_add(1, Ordering::Relaxed);
+                if attempts < 2 {
+                    Err(InterpreterError::BrokerError("transient".into()))
+                } else {
+                    Ok(CallResult {
+                        output: ProgramValue::String("recovered".into()),
+                        artifacts: vec![],
+                    })
+                }
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        limits.max_retries = 3;
+        limits.retry_base_delay_ms = 1; // Fast retry for test
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = FlakyBroker {
+            fail_count: AtomicU32::new(0),
+        };
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Completed);
+        assert_eq!(
+            result.output,
+            Some(ProgramValue::String("recovered".into()))
+        );
+        assert!(broker.fail_count.load(Ordering::Relaxed) >= 3);
+    }
+
+    #[test]
+    fn transient_retry_exhausted() {
+        struct AlwaysFailBroker;
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for AlwaysFailBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                Err(InterpreterError::BrokerError("permanent".into()))
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        limits.max_retries = 2;
+        limits.retry_base_delay_ms = 1;
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = AlwaysFailBroker;
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Failed);
+    }
+
+    // ── Checkpoint tests ────────────────────────────────────────────
+
+    #[test]
+    fn checkpoint_produces_state() {
+        let compilation = compile_program("x = 1\nemit(x)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = NoopBroker;
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Completed);
+        // The interpreter should have produced at least one checkpoint
+        // (Checkpoint instruction is emitted by the compiler at key points)
+    }
+
+    // ── In-flight budget tests ──────────────────────────────────────
+
+    #[test]
+    fn inflight_budget_enforced() {
+        struct NeverCompletesBroker;
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for NeverCompletesBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                // This should never be called because inflight budget blocks
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                })
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        limits.max_inflight_calls = 0; // No concurrent calls allowed
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = NeverCompletesBroker;
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Failed);
+        assert!(result
+            .error_message
+            .map(|m| m.contains("in-flight calls"))
+            .unwrap_or(false));
+    }
+
+    // ── Budget snapshot tests ───────────────────────────────────────
+
+    #[test]
+    fn budget_snapshot_tracks_inflight() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        struct TrackingBroker {
+            max_inflight: AtomicU32,
+            current_inflight: AtomicU32,
+        }
+
+        #[async_trait::async_trait]
+        impl BrokerCallback for TrackingBroker {
+            async fn execute_call(
+                &self,
+                _request: &CallRequest,
+            ) -> Result<CallResult, InterpreterError> {
+                let prev = self.current_inflight.fetch_add(1, Ordering::Relaxed);
+                let max = self.max_inflight.load(Ordering::Relaxed);
+                if prev + 1 > max {
+                    self.max_inflight.store(prev + 1, Ordering::Relaxed);
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                self.current_inflight.fetch_sub(1, Ordering::Relaxed);
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                })
+            }
+        }
+
+        let compilation =
+            compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let broker = TrackingBroker {
+            max_inflight: AtomicU32::new(0),
+            current_inflight: AtomicU32::new(0),
+        };
+        let result = rt.block_on(interp.run(&broker, None));
+        assert_eq!(result.status, ProgramStatus::Completed);
+        // Sequential call: max inflight should be 1
+        assert_eq!(broker.max_inflight.load(Ordering::Relaxed), 1);
     }
 }

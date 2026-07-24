@@ -281,3 +281,196 @@ async fn task_count_convergence() {
         );
     }
 }
+
+// ── Security tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn oversized_broker_output_respects_value_budget() {
+    struct LargeOutputBroker;
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for LargeOutputBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            // Return a very large string
+            let large = "x".repeat(1_000_000);
+            Ok(CallResult {
+                output: ProgramValue::String(large),
+                artifacts: vec![],
+            })
+        }
+    }
+
+    let source = r#"
+result = call({"tool": "large_tool", "input": "data"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_value_growth = 1000; // Very small budget
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = LargeOutputBroker;
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(
+        result.status,
+        ProgramStatus::Failed,
+        "should fail on oversized output"
+    );
+}
+
+#[tokio::test]
+async fn non_retryable_errors_not_retried() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    struct ValidationErrorBroker {
+        call_count: AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for ValidationErrorBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            self.call_count.fetch_add(1, Ordering::Relaxed);
+            // Return a type error (non-retryable)
+            Err(InterpreterError::TypeError("invalid input".into()))
+        }
+    }
+
+    let source = r#"
+result = call({"tool": "test", "input": "data"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_retries = 5; // Should not matter for non-retryable errors
+    limits.retry_base_delay_ms = 1;
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = ValidationErrorBroker {
+        call_count: AtomicU32::new(0),
+    };
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(result.status, ProgramStatus::Failed);
+    // Should only be called once (no retry for type errors)
+    assert_eq!(broker.call_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn step_budget_enforced() {
+    let source = r#"
+x = 1
+y = 2
+z = x + y
+emit(z)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_steps = 2; // Very tight step budget
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = FaultBroker::new("none");
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(
+        result.status,
+        ProgramStatus::Incomplete,
+        "should be incomplete when step budget exhausted"
+    );
+}
+
+#[tokio::test]
+async fn call_budget_enforced() {
+    let source = r#"
+r1 = call({"tool": "t1", "input": "a"})
+r2 = call({"tool": "t2", "input": "b"})
+emit(r1)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_dynamic_calls = 1; // Only allow 1 call
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = FaultBroker::new("none");
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(
+        result.status,
+        ProgramStatus::Failed,
+        "should fail when call budget exceeded"
+    );
+}
+
+#[tokio::test]
+async fn iteration_budget_enforced() {
+    let source = r#"
+total = 0
+for i in range(1000):
+    total = total + 1
+emit(total)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_loop_iterations = 5; // Very small loop budget
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = FaultBroker::new("none");
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(
+        result.status,
+        ProgramStatus::Failed,
+        "should fail when loop iteration budget exceeded"
+    );
+}
+
+#[tokio::test]
+async fn stall_timeout_triggers() {
+    struct DelayBroker;
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for DelayBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            Ok(CallResult {
+                output: ProgramValue::ToolResult(serde_json::json!("ok")),
+                artifacts: vec![],
+            })
+        }
+    }
+
+    let source = r#"
+result = call({"tool": "delay_tool", "input": "data"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_stall_time_ms = 50; // Very short stall timeout
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = DelayBroker;
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(result.status, ProgramStatus::Stalled);
+}
+
+#[tokio::test]
+async fn wall_deadline_enforced() {
+    use codegg_core::tool_program::RunConfig;
+
+    let compilation = compile_program("emit(42)\n").unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = FaultBroker::new("none");
+
+    let config = RunConfig {
+        wall_deadline: Some(tokio::time::Instant::now() - tokio::time::Duration::from_secs(1)),
+        ..Default::default()
+    };
+
+    let result = interp.run_with_config(&broker, None, &config).await;
+    assert_eq!(result.status, ProgramStatus::TimedOut);
+}

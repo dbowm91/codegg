@@ -157,6 +157,7 @@ pub fn compile_with_hashes(
         strings: compiler.strings,
         integers: compiler.integers,
         floats: compiler.floats,
+        result_schema: None,
     };
 
     // Compute deterministic digest

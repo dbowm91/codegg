@@ -11,8 +11,9 @@ use codegg_core::jobs::{
     JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
 };
 use codegg_core::tool_program::{
-    compile_program, BrokerCallback, CallRequest, CallResult, CompletedCall, InterpreterError,
-    MeteredInterpreter, ProgramResult, ProgramStatus, ProgramValue, RuntimeLimits,
+    compile_program, BrokerCallback, BudgetSnapshot, CallRequest, CallResult, CompletedCall,
+    InterpreterError, MeteredInterpreter, ProgramResult, ProgramStatus, ProgramValue,
+    RuntimeLimits,
 };
 use codegg_core::workspace::WorkspaceId;
 
@@ -196,4 +197,183 @@ async fn concurrent_programs_independent_results() {
     assert_eq!(r2.status, ProgramStatus::Completed);
     assert_eq!(r1.output, Some(ProgramValue::Int(1)));
     assert_eq!(r2.output, Some(ProgramValue::Int(2)));
+}
+
+// ── Heartbeat emission tests ──────────────────────────────────────
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+struct HeartbeatCountingBroker {
+    call_count: AtomicU32,
+    heartbeat_count: AtomicU32,
+}
+
+impl HeartbeatCountingBroker {
+    fn new() -> Self {
+        Self {
+            call_count: AtomicU32::new(0),
+            heartbeat_count: AtomicU32::new(0),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl BrokerCallback for HeartbeatCountingBroker {
+    async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError> {
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+        Ok(CallResult {
+            output: ProgramValue::ToolResult(serde_json::json!({
+                "tool": request.tool_name,
+                "result": "ok"
+            })),
+            artifacts: vec![],
+        })
+    }
+
+    async fn heartbeat(&self, _budget: &BudgetSnapshot) {
+        self.heartbeat_count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn heartbeat_emitted_on_progress() {
+    let source = r#"
+result = call({"tool": "test_tool", "input": "value"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = HeartbeatCountingBroker::new();
+
+    let result = interp.run(&broker, None).await;
+    assert_eq!(result.status, ProgramStatus::Completed);
+    // Heartbeats should be emitted at instruction boundaries
+    assert!(
+        broker.heartbeat_count.load(Ordering::Relaxed) > 0,
+        "expected at least one heartbeat"
+    );
+}
+
+// ── Cancellation during execution ─────────────────────────────────
+
+#[tokio::test]
+async fn cancellation_during_call() {
+    struct SlowBroker;
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for SlowBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            Ok(CallResult {
+                output: ProgramValue::ToolResult(serde_json::json!("ok")),
+                artifacts: vec![],
+            })
+        }
+    }
+
+    let source = r#"
+result = call({"tool": "slow_tool", "input": "data"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    let broker = SlowBroker;
+    let token = tokio_util::sync::CancellationToken::new();
+
+    // Spawn interpreter in a task
+    let token_clone = token.clone();
+    let handle = tokio::spawn(async move { interp.run(&broker, Some(&token_clone)).await });
+
+    // Cancel after a short delay
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    token.cancel();
+
+    let result = handle.await.unwrap();
+    assert_eq!(result.status, ProgramStatus::Cancelled);
+}
+
+// ── Replay divergence detection ───────────────────────────────────
+
+#[tokio::test]
+async fn completed_calls_not_repeated_with_replay() {
+    struct CallCountingBroker {
+        count: AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl BrokerCallback for CallCountingBroker {
+        async fn execute_call(
+            &self,
+            _request: &CallRequest,
+        ) -> Result<CallResult, InterpreterError> {
+            self.count.fetch_add(1, Ordering::Relaxed);
+            Ok(CallResult {
+                output: ProgramValue::ToolResult(serde_json::json!("result")),
+                artifacts: vec![],
+            })
+        }
+    }
+
+    let source = r#"
+result = call({"tool": "test_tool", "input": "value"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+    limits.max_retries = 0;
+
+    // First run: complete the call
+    let mut interp1 = MeteredInterpreter::new(compilation.ir.clone(), limits.clone());
+    let broker1 = CallCountingBroker {
+        count: AtomicU32::new(0),
+    };
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(result1.status, ProgramStatus::Completed);
+    assert_eq!(broker1.count.load(Ordering::Relaxed), 1);
+
+    // Get completed calls from first run
+    let completed = interp1.completed_calls().clone();
+
+    // Second run: load completed calls (replay) and verify no new broker call
+    let mut interp2 = MeteredInterpreter::new(compilation.ir, limits);
+    interp2.load_completed_calls(completed);
+    let broker2 = CallCountingBroker {
+        count: AtomicU32::new(0),
+    };
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(result2.status, ProgramStatus::Completed);
+    assert_eq!(
+        broker2.count.load(Ordering::Relaxed),
+        0,
+        "completed call should be replayed, not re-executed"
+    );
+}
+
+// ── Budget tracking across restart ────────────────────────────────
+
+#[tokio::test]
+async fn budget_preserved_across_replay() {
+    let source = r#"
+x = 1
+y = 2
+result = call({"tool": "test_tool", "input": "value"})
+emit(result)
+"#;
+    let compilation = compile_program(source).unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+
+    // Run to completion
+    let mut interp = MeteredInterpreter::new(compilation.ir.clone(), limits.clone());
+    let broker = CountingBroker::new();
+    let result = interp.run(&broker, None).await;
+    assert_eq!(result.status, ProgramStatus::Completed);
+
+    // Budget should be non-zero
+    assert!(result.steps_used > 0);
+    assert!(result.bytes_used > 0);
 }

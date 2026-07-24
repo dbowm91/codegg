@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use codegg_core::jobs::{JobKind, JobPayload, JobRecord};
 use codegg_core::tool_program::{
     BrokerCallback, CallRequest, CallResult, InterpreterError, MeteredInterpreter, ProgramResult,
-    ProgramStatus, ProgramValue, RuntimeLimits,
+    ProgramStatus, ProgramValue, RunConfig, RuntimeLimits,
 };
 
 use crate::scheduler::executor::{
@@ -37,6 +37,10 @@ impl BrokerCallback for FixtureBroker {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
         })
+    }
+
+    async fn heartbeat(&self, _budget: &codegg_core::tool_program::BudgetSnapshot) {
+        // Fixture broker heartbeat is a no-op
     }
 }
 
@@ -205,7 +209,41 @@ impl JobExecutor for ToolProgramExecutor {
             .await;
 
         // Create runtime limits from IR bounds
-        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
+        // Set sensible defaults for M005
+        limits.max_stall_time_ms = 60_000; // 60s stall timeout
+        limits.max_per_call_time_ms = 30_000; // 30s per-call timeout
+        limits.max_retries = 2; // Up to 2 retries for transient errors
+
+        // Save per-call timeout before moving limits
+        let per_call_timeout_ms = limits.max_per_call_time_ms;
+
+        // Compute wall deadline from job timeout or program limits
+        let wall_deadline = ctx
+            .job
+            .deadline
+            .map(|d| {
+                let dur = d.signed_duration_since(chrono::Utc::now());
+                if dur.num_milliseconds() > 0 {
+                    Some(
+                        tokio::time::Instant::now()
+                            + tokio::time::Duration::from_millis(dur.num_milliseconds() as u64),
+                    )
+                } else {
+                    None
+                }
+            })
+            .flatten()
+            .or_else(|| {
+                if limits.max_wall_time_ms > 0 {
+                    Some(
+                        tokio::time::Instant::now()
+                            + tokio::time::Duration::from_millis(limits.max_wall_time_ms),
+                    )
+                } else {
+                    None
+                }
+            });
 
         // Create interpreter
         let mut interpreter = MeteredInterpreter::new(compilation.ir, limits);
@@ -213,8 +251,17 @@ impl JobExecutor for ToolProgramExecutor {
         // Create fixture broker
         let broker = FixtureBroker;
 
-        // Run the interpreter with cancellation support
-        let result = interpreter.run(&broker, Some(&ctx.cancellation)).await;
+        // Build run configuration
+        let run_config = RunConfig {
+            wall_deadline,
+            per_call_timeout_ms: Some(per_call_timeout_ms),
+            result_schema: None, // No schema for M005 fixture programs
+        };
+
+        // Run the interpreter with cancellation support and config
+        let result = interpreter
+            .run_with_config(&broker, Some(&ctx.cancellation), &run_config)
+            .await;
 
         // Emit progress: completed
         let _ = ctx

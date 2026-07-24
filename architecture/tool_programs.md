@@ -121,8 +121,9 @@ and `gc`.
   `ir_digest`, `authority_digest`, and `submission_key`.
 - Submission service verifies referenced records and hashes before
   creating the job.
-- No production executor exists until M005; scheduler transitions
-  to `Blocked` rather than dispatching elsewhere.
+- `ToolProgramExecutor` (`src/scheduler/tool_program_executor.rs`)
+  loads verified IR, creates a `MeteredInterpreter`, and runs it
+  through the scheduler's admission-controlled execution path.
 
 ## Call Ledger
 
@@ -147,18 +148,78 @@ All DTOs derive `Serialize`/`Deserialize` for protocol transport.
 Visibility/redaction classification is explicit: `labels` must not
 contain source, manifest bodies, credentials, or unbounded output.
 
-### Future protocol events (M005+)
+## Interpreter Runtime (M005)
 
-When a program executor exists, the following `CoreEvent` variants
-will be added:
+The `MeteredInterpreter` (`crates/codegg-core/src/tool_program/interpreter.rs`)
+is a stack-machine evaluating verified IR with bounded budgets.
+
+### Runtime Limits
+
+| Limit | Source | Description |
+|-------|--------|-------------|
+| `max_steps` | Static bounds | Total IR instruction count |
+| `max_loop_iterations` | Static bounds | Per-loop iteration cap |
+| `max_total_iterations` | Static bounds | Aggregate iteration cap |
+| `max_dynamic_calls` | Static bounds | Total broker calls |
+| `max_parallel_width` | Static bounds | Concurrent parallel calls |
+| `max_parallel_depth` | Static bounds | Nested parallel groups |
+| `max_value_growth` | Static bounds | Aggregate value byte size |
+| `max_bytes` | Derived (4× value growth) | Total byte budget |
+| `max_inflight_calls` | Derived (= max_dynamic_calls) | Concurrent in-flight calls |
+| `max_wall_time_ms` | Executor config | Wall-clock deadline (0=unlimited) |
+| `max_stall_time_ms` | Executor config | Stall detection threshold |
+| `max_per_call_time_ms` | Executor config | Per-call timeout (0=unlimited) |
+| `max_retries` | Executor config | Transient retry attempts |
+| `retry_base_delay_ms` | Executor config | Base retry delay (exponential) |
+
+### Checkpointing
+
+The `Checkpoint` IR instruction produces an `InterpreterCheckpoint`
+containing: PC, steps, iterations, calls completed, bytes used,
+parallel groups, locals hash, and completed calls for replay.
+
+### Restart Replay
+
+On restart, the interpreter loads completed calls via
+`load_completed_calls()` and re-executes from PC=0. Each
+`ExecuteCall` instruction looks up its sequence in the completed
+calls map; matched calls are replayed without broker invocation.
+
+### Watchdog and Stall Detection
+
+- Heartbeat emitted via `BrokerCallback::heartbeat()` at each
+  instruction milestone, call start/complete, and checkpoint commit.
+- Stall detection checks `last_progress_at` against `max_stall_time_ms`.
+  If no progress (instruction or call activity) within the threshold,
+  the program is marked `Stalled`.
+
+### Transient Retry
+
+`TransientBackend` failures are retried with exponential backoff
+(base delay × 2^attempt + random jitter). Non-retryable failure
+classes (validation, schema, budget, execution, etc.) fail immediately.
+
+### Result-Schema Validation
+
+When a `result_schema` is provided via `RunConfig`, the `Emit`
+instruction validates the output against the JSON Schema before
+returning `Completed`. Schema mismatches produce `FailureClass::SchemaMismatch`.
+
+### Protocol events (M005)
+
+The following `CoreEvent` variants are available when a program
+executor is active:
 
 - `ToolProgramStarted` — program transitions to Running
-- `ToolProgramProgress` — heartbeat with budget usage
+- `ToolProgramProgress` — heartbeat with budget usage (emitted at
+  instruction milestones, call start/complete, checkpoint commit)
 - `ToolProgramCallStarted` — call dispatched to tool
 - `ToolProgramCallCompleted` — call result recorded
 - `ToolProgramCompleted` — terminal state reached
 
-These are not implemented in M003 because no executor exists.
+Heartbeat emission is handled by the `BrokerCallback::heartbeat`
+method, called at each meaningful progress boundary in the
+interpreter.
 
 ## Storage Migration
 

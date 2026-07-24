@@ -52,6 +52,10 @@ pub struct IrProgram {
     pub integers: Vec<i64>,
     /// Float constants pool.
     pub floats: Vec<f64>,
+    /// Optional result schema for emit validation (JSON Schema).
+    /// When present, the emit instruction validates output against this schema.
+    #[serde(default)]
+    pub result_schema: Option<serde_json::Value>,
 }
 
 /// Static bounds stored in the IR.

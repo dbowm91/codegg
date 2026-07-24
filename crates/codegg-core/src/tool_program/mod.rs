@@ -36,7 +36,7 @@ pub use guards::{cpython_execution_is_forbidden, ToolProgramCompilerIsParseOnly}
 pub use interpreter::{
     BrokerCallback, BudgetSnapshot, CallRequest, CallResult, CompletedCall, FailureClass,
     InterpreterCheckpoint, InterpreterError, MeteredInterpreter, ProgramResult, ProgramStatus,
-    ProgramValue, RuntimeLimits,
+    ProgramValue, RunConfig, RuntimeLimits,
 };
 pub use ir::{IrProgram, IrVersion, COMPILER_VERSION, LANGUAGE_VERSION, PARSER_VERSION};
 pub use ir_verifier::verify_ir;

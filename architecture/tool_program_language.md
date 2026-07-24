@@ -281,3 +281,27 @@ Parser: `rustpython-parser` 0.4.0
 | Source spans | Yes — `TextRange` and `SourceRange` on all nodes |
 | Fuzz posture | Upstream fuzz corpus exists; Codegg adds adversarial corpus |
 | Dependency weight | ~15 transitive crates; no network/filesystem/async deps |
+
+## 13. Runtime Limits (M005)
+
+The compiler computes static bounds (`IrBounds`) that constrain
+runtime execution. The interpreter enforces these via `RuntimeLimits`:
+
+| Budget | Source | Description |
+|--------|--------|-------------|
+| Steps | `max_steps` | Total IR instructions executed |
+| Loop iterations | `max_loop_iterations` | Per-loop cap |
+| Total iterations | `max_total_iterations` | Aggregate across all loops |
+| Dynamic calls | `max_dynamic_calls` | `call()` invocations |
+| Parallel width | `max_parallel_width` | Concurrent `parallel()` calls |
+| Parallel depth | `max_parallel_depth` | Nested parallel groups |
+| Value growth | `max_value_growth` | Aggregate byte size of all live values |
+| In-flight calls | `max_inflight_calls` | Concurrent broker calls |
+| Wall time | `max_wall_time_ms` | Total execution time (0 = unlimited) |
+| Stall time | `max_stall_time_ms` | No-progress timeout (0 = unlimited) |
+| Per-call time | `max_per_call_time_ms` | Individual call timeout (0 = unlimited) |
+| Retries | `max_retries` | Transient error retry count |
+| Retry delay | `retry_base_delay_ms` | Base delay for exponential backoff |
+
+Bounds are computed conservatively at compile time. Runtime limits
+add executor-configured timeouts on top of static bounds.
