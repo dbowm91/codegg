@@ -1278,6 +1278,131 @@ continuation state is persisted for restart recovery.
 - Provider item IDs are compatibility values, not CodeGG durable identities.
 - Auth headers, tokens, and fingerprints are redacted in logs.
 
+### Configuration
+
+The Responses API adapter is configured through `ProviderCapabilities`
+(in `provider_core.rs`) and `HostedBackendPolicy`.
+
+**Provider capabilities** (per-provider, set in `for_provider()`):
+
+| Field | OpenAI | Default |
+|-------|--------|---------|
+| `supports_responses_api` | true | false |
+| `supports_hosted_programs` | true | false |
+| `supports_client_owned_nested_calls` | true | false |
+| `supports_hosted_continuation` | true | false |
+| `supports_output_schema` | true | false |
+| `requires_fingerprint` | false | false |
+| `hosted_languages` | ["python"] | [] |
+| `max_response_items` | 100 | None |
+| `max_nested_calls` | 50 | None |
+| `max_result_size` | 1 MB | None |
+| `max_tool_calls_per_program` | 50 | None |
+
+**Backend selection** (per-program, set by caller):
+
+| Policy | When to use |
+|--------|-------------|
+| `NativeOnly` | Never use hosted execution |
+| `HostedPreferred` | Try hosted first, fall back to native before execution |
+| `HostedRequired` | Must use hosted; fail if provider doesn't support it |
+| `NativePreferred` | Always use native; hosted only if native unavailable |
+
+**Transport configuration** (`ResponsesTransportConfig`):
+
+- `request_timeout`: per-request HTTP timeout (default: 120s)
+- `stream_idle_timeout`: max time between SSE events (default: 60s)
+- `max_sse_buffer_size`: SSE parser buffer limit (default: 4 MB)
+
+### Troubleshooting
+
+- **"provider does not support client-owned nested calls"**: The provider
+  capabilities don't have `supports_client_owned_nested_calls = true`.
+  Check that you're using an OpenAI-compatible provider with Responses
+  API support.
+
+- **"tool is denied for hosted execution"**: The tool is in the adapter's
+  denied tools list. Hosted programs cannot call DirectOnly or mutating
+  tools. Use native execution for those.
+
+- **"nested call count N exceeds maximum M"**: The program has too many
+  nested calls. Reduce the number of client-owned function calls or
+  increase `max_nested_calls` in capabilities.
+
+- **"result payload N bytes exceeds maximum M bytes"**: A nested call
+  returned a result that's too large. Reduce the result size or increase
+  `max_result_size` in capabilities.
+
+- **"stream idle timeout"**: The provider stopped sending SSE events.
+  This may indicate a provider-side stall. The caller should retry or
+  fall back to native execution.
+
+- **"SSE buffer exceeded maximum size"**: The SSE stream produced too
+  much data without a complete event. This may indicate a malformed
+  stream. Check the provider's SSE output.
+
+### Privacy and Data Flow
+
+**What enters the provider**:
+- Tool definitions (name, description, parameters schema)
+- Program source code (if using hosted execution)
+- Nested call arguments (as JSON strings)
+- System instructions / prompts
+
+**What does NOT enter the provider**:
+- File system artifacts (unless explicitly selected by a call)
+- Auth headers, API keys, bearer tokens
+- Call ledger entries, scheduler state, job metadata
+- Other programs' data or results
+- Internal CodeGG identities (ProgramCallId, RunId, etc.)
+
+**Body minimization**: `minimize_input_items()` truncates large
+`FunctionCallOutput` items before sending to the provider on
+continuation. Items exceeding a per-item threshold are replaced
+with a `{truncated: true, original_size: N}` placeholder.
+
+**Artifact filtering**: `filter_artifacts_for_provider()` only
+includes artifacts explicitly marked `selected_by_call`. Provider-owned
+artifacts are never sent back.
+
+**Redaction**: `redact_for_log()` and `redact_fingerprint()` mask
+sensitive values before they enter log events or diagnostics. Auth
+headers are never logged by the adapter.
+
+**Result bounds**: `validate_result_size()` enforces maximum payload
+sizes for nested call results. `validate_call_count()` enforces
+maximum nested call counts. `validate_arguments()` enforces maximum
+argument sizes and validates JSON structure.
+
+### Native/Hosted Fallback Policy
+
+The fallback policy governs when execution can switch between hosted
+and native backends:
+
+1. **Pre-execution fallback only**: Fallback is permitted only before
+   any hosted nested call has been executed. Once a provider-owned
+   call exists, native replay is semantically ambiguous and fallback
+   is prohibited.
+
+2. **Policy enforcement**: `HostedBackendPolicy::resolve()` checks
+   provider capabilities and returns `ResolvedBackend::Native`,
+   `ResolvedBackend::Hosted`, or `ResolvedBackend::Failed`.
+
+3. **Capability gating**: Hosted execution requires both
+   `supports_responses_api` and `supports_hosted_programs` to be true.
+   Full hosted support additionally requires
+   `supports_client_owned_nested_calls` and `supports_hosted_continuation`.
+
+4. **Non-hosted providers**: Providers without Responses API support
+   (Anthropic, Google, etc.) always resolve to native execution.
+   The adapter is completely bypassed.
+
+5. **Mid-program fallback prohibited**: If a program has already
+   received hosted state (provider IDs, fingerprints, continuation
+   tokens), switching to native execution is not supported in this
+   milestone. This would require checkpoint conversion which is
+   outside M009 scope.
+
 ### Fixtures
 
 `fixture_function_call()`, `fixture_function_call_output()`,

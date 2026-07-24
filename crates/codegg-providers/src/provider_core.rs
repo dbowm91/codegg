@@ -111,6 +111,14 @@ pub struct ProviderCapabilities {
     pub max_response_items: Option<usize>,
     /// Maximum number of nested function calls per response.
     pub max_nested_calls: Option<usize>,
+    /// Whether the provider requires a fingerprint for continuation.
+    pub requires_fingerprint: bool,
+    /// Whether the provider supports output-schema / strict-function behavior.
+    pub supports_output_schema: bool,
+    /// Maximum result payload size in bytes for a single nested call result.
+    pub max_result_size: Option<usize>,
+    /// Maximum number of tool calls per hosted program execution.
+    pub max_tool_calls_per_program: Option<usize>,
 }
 
 impl ProviderCapabilities {
@@ -137,6 +145,10 @@ impl ProviderCapabilities {
                 hosted_languages: vec!["python".to_string()],
                 max_response_items: Some(100),
                 max_nested_calls: Some(50),
+                requires_fingerprint: false,
+                supports_output_schema: true,
+                max_result_size: Some(1024 * 1024), // 1 MB
+                max_tool_calls_per_program: Some(50),
             },
             _ => Self::default(),
         }
