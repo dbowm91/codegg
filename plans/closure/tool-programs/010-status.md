@@ -16,7 +16,7 @@ Repository baseline reviewed: `64c6d5ac`; implementation commit:
 Implementation commits or pull requests:
 
 - Implementation commit: `2f5e3d3dc9c057f925d59625b50a6b1eaae3a3dd`
-- Closure/reconciliation commit: recorded at the closure commit below
+- Closure/reconciliation commit: `b62686e35abca3b8eafdf8344a881341d338dbcd`
 
 ## 1. Executive finding
 
