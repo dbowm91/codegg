@@ -31,19 +31,17 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 008 closed | — |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-roadmap.md` | Milestone 010 conditionally closed | Live Eggpool, ACP, and CI evidence outstanding |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | ready | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | M009 soft dependency; local Eggpool access is operational input |
 
 ## Active closure work
 
-| Subsystem | Milestone | Closure record | Status |
-|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | closed |
+No registered closure work remains active. M010 is recorded below as
+conditionally closed with operational evidence follow-up.
 
 ## Blocked work
 
@@ -64,6 +62,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | `plans/closure/tool-programs/010-status.md` | implementation and closure commits | Conditionally closed; live Eggpool, ACP, and CI evidence remain operational follow-up |
 | Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | `plans/closure/tool-programs/009-status.md` | HEAD implementation | M010 unblocked (soft dependency satisfied) |
 | Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | M009 and M010 unblocked |
 | Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | `plans/closure/tool-programs/007-status.md` | HEAD implementation | M008 unblocked |

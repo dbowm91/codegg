@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: active — Milestone 008 closed
+Status: active/closing — Milestone 010 conditionally closed; live Eggpool, ACP, and CI evidence outstanding
 
 Long-term references:
 
@@ -509,4 +509,4 @@ This subsystem is closed only when:
 | 007 | closed | `plans/implementation/tool-programs/007-build-test-child-job-composition.md` | `plans/closure/tool-programs/007-status.md` | — |
 | 008 | closed | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | `plans/closure/tool-programs/008-status.md` | — |
 | 009 | closed | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | `plans/closure/tool-programs/009-status.md` | — |
-| 010 | ready | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | — | M009 soft; local Eggpool operational input |
+| 010 | conditionally closed | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | `plans/closure/tool-programs/010-status.md` | Native/deterministic evidence complete; live Eggpool, ACP, and CI evidence outstanding |

@@ -1,8 +1,8 @@
 # Tool Programs Milestone 010 — Harness, Eggpool, Chaos, Performance, and Closure
 
-Status: blocked pending Milestone 008 closure; Milestone 009 is a soft dependency for hosted/native equivalence
+Status: implemented — conditionally closed; see `plans/closure/tool-programs/010-status.md`
 
-Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
+Repository baseline: `64c6d5ac` (`main`); closure target is the implementation commit for this plan
 
 Source roadmap:
 
