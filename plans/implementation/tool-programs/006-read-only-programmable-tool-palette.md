@@ -1,6 +1,6 @@
 # Tool Programs Milestone 006 — Read-Only Programmable Tool Palette
 
-Status: blocked pending Milestone 005 closure
+Status: closing
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 

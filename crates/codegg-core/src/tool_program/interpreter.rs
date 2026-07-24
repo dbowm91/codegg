@@ -417,10 +417,13 @@ pub struct BudgetSnapshot {
     /// Timestamp of last meaningful progress (instruction executed,
     /// call started/completed, checkpoint committed).
     pub last_progress_at: tokio::time::Instant,
+    /// Timestamp when the interpreter started execution.
+    pub started_at: tokio::time::Instant,
 }
 
 impl Default for BudgetSnapshot {
     fn default() -> Self {
+        let now = tokio::time::Instant::now();
         Self {
             steps: 0,
             bytes: 0,
@@ -428,7 +431,8 @@ impl Default for BudgetSnapshot {
             iterations: 0,
             parallel_groups: 0,
             inflight_calls: 0,
-            last_progress_at: tokio::time::Instant::now(),
+            last_progress_at: now,
+            started_at: now,
         }
     }
 }
@@ -623,7 +627,10 @@ impl MeteredInterpreter {
                     return ProgramResult::timed_out(&self.budget);
                 }
             } else if self.limits.max_wall_time_ms > 0 {
-                // Wall timeout is checked separately via stall detection below
+                let elapsed_ms = self.budget.started_at.elapsed().as_millis() as u64;
+                if elapsed_ms > self.limits.max_wall_time_ms {
+                    return ProgramResult::timed_out(&self.budget);
+                }
             }
 
             // ── Stall detection ──

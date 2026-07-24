@@ -37,6 +37,8 @@ pub(crate) mod lsp_security;
 pub mod multiedit;
 pub mod patch_util;
 pub mod plan;
+pub mod program_cache;
+pub mod program_manifest;
 pub mod question;
 pub mod read;
 pub mod replace;
@@ -54,6 +56,7 @@ pub mod task;
 pub mod terminal;
 pub mod test;
 pub mod todo;
+pub mod tool_program;
 pub mod tool_search;
 pub mod util;
 pub mod webfetch;
@@ -412,6 +415,12 @@ impl ToolRegistry {
             crate::python_script::tool::PythonScriptTool::new()
         };
         registry.register(python_tool);
+        let tool_program_tool = if let Some(submission) = options.submission.clone() {
+            crate::tool::tool_program::ToolProgramTool::new().with_submission(submission)
+        } else {
+            crate::tool::tool_program::ToolProgramTool::new()
+        };
+        registry.register(tool_program_tool);
         let git_tool = if let Some(ref store) = options.run_store {
             crate::tool::git::GitTool::default().with_run_store(store.clone())
         } else {

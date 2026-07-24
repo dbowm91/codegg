@@ -288,10 +288,14 @@ fn compile_stmt(stmt: &Stmt, compiler: &mut Compiler) -> Result<(), ToolProgramE
             kwargs,
             span,
         } => {
+            // Checkpoint before nested call reservation
+            compiler.push(IrOp::Checkpoint, *span);
             // Build call request
             compile_tool_call_descriptor(descriptor, kwargs, compiler)?;
             compiler.push(IrOp::ConstructCall, *span);
             compiler.push(IrOp::ExecuteCall, *span);
+            // Checkpoint after call completion is durable
+            compiler.push(IrOp::Checkpoint, *span);
             let slot = compiler.lookup_local(&target.name).ok_or_else(|| {
                 ToolProgramError::Compile(Diagnostic::new(
                     DiagnosticCode::InternalError,
@@ -310,8 +314,12 @@ fn compile_stmt(stmt: &Stmt, compiler: &mut Compiler) -> Result<(), ToolProgramE
             for desc in descriptors {
                 compile_expr(desc, compiler)?;
             }
+            // Checkpoint before parallel group reservation
+            compiler.push(IrOp::Checkpoint, *span);
             compiler.push(IrOp::ParallelStart { count }, *span);
             compiler.push(IrOp::ParallelExecute, *span);
+            // Checkpoint after parallel group convergence
+            compiler.push(IrOp::Checkpoint, *span);
             let slot = compiler.lookup_local(&target.name).ok_or_else(|| {
                 ToolProgramError::Compile(Diagnostic::new(
                     DiagnosticCode::InternalError,
@@ -323,6 +331,8 @@ fn compile_stmt(stmt: &Stmt, compiler: &mut Compiler) -> Result<(), ToolProgramE
         }
         Stmt::Emit { value, span } => {
             compile_expr(value, compiler)?;
+            // Checkpoint before terminal result publication
+            compiler.push(IrOp::Checkpoint, *span);
             compiler.push(IrOp::Emit, *span);
         }
         Stmt::Fail { reason, span } => {
@@ -331,6 +341,8 @@ fn compile_stmt(stmt: &Stmt, compiler: &mut Compiler) -> Result<(), ToolProgramE
             } else {
                 compiler.push(IrOp::LoadNone, *span);
             }
+            // Checkpoint before terminal failure publication
+            compiler.push(IrOp::Checkpoint, *span);
             compiler.push(IrOp::Fail, *span);
         }
         Stmt::Pass { span } => {
@@ -439,7 +451,7 @@ fn compile_for(
 
     let loop_start = compiler.current_pc();
     let body_start = loop_start + 1; // after ForLoopStart
-    let loop_end = compiler.current_pc() + 2; // placeholder
+    let loop_end = compiler.current_pc() + 3; // placeholder (ForLoopStart + ForLoopIter + StoreLocal + Checkpoint)
 
     compiler.push(
         IrOp::ForLoopStart {
@@ -455,6 +467,9 @@ fn compile_for(
 
     // Compile body
     compile_stmts(body, compiler)?;
+
+    // Checkpoint at bounded loop interval (before loop continuation)
+    compiler.push(IrOp::Checkpoint, span);
 
     // Jump back to loop start
     compiler.push(

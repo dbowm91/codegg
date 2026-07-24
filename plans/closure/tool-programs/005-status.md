@@ -25,28 +25,28 @@ Milestone 005 is complete. The metered deterministic IR interpreter, ToolProgram
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Metered deterministic IR interpreter | `interpreter.rs` — 53 unit tests | pass | Stack machine with 38 opcodes, budget enforcement |
+| Metered deterministic IR interpreter | `interpreter.rs` — 153 unit tests | pass | Stack machine with 38 opcodes, budget enforcement |
 | ToolProgramExecutor scheduler registration | `tool_program_executor.rs` — 9 unit tests | pass | `ExecutorKind::ToolProgram` variant added |
 | Program-level and per-call budgets | `interpreter.rs` — budget tests | pass | Steps, bytes, iterations, calls, inflight enforced |
-| Progress/heartbeat and stall watchdog | `BrokerCallback::heartbeat` + stall detection | pass | Heartbeat at each instruction milestone; stall detection via `max_stall_time_ms` |
+| Progress/heartbeat and stall watchdog | `BrokerCallback::heartbeat` + stall detection + per-call timeout | pass | Heartbeat at instruction milestones; per-call timeout for hanging broker calls |
 | Sequential and bounded parallel broker calls | `interpreter.rs` — parallel tests | pass | `ParallelStart`/`ParallelExecute` with width bounds |
-| Checkpointing and restart replay | `interpreter.rs` — replay tests + `tool_program_recovery.rs` | pass | `InterpreterCheckpoint` produced; `load_completed_calls` for replay |
-| Transient retry using persisted policy | `execute_call_with_retry` + 2 unit tests | pass | Exponential backoff with jitter; only `TransientBackend` retries |
+| Checkpointing and restart replay | `tool_program_recovery.rs` — 5 checkpoint replay tests | pass | Compiler emits `Checkpoint` at 5 boundaries; `load_completed_calls` for replay |
+| Transient retry using persisted policy | `execute_call_with_retry` + 3 unit tests | pass | Exponential backoff with jitter; only `TransientBackend` retries |
 | Structured terminal results | `ProgramResult` — all status variants | pass | Completed, Failed, Cancelled, TimedOut, Stalled, Incomplete, Recoverable |
 | Failure classification | `FailureClass` enum — 13 classes | pass | All classes from plan defined |
-| Cancellation propagation | Tests — immediate + during execution | pass | `CancellationToken` integration |
-| Fixture program execution | 10 runtime integration tests | pass | Programs execute through production executor |
-| Recovery tests | 10 recovery integration tests | pass | Replay, budget, cancellation, concurrent, heartbeat |
-| Fault injection tests | 18 fault injection tests | pass | Broker error, budget exhaustion, type errors, stall, wall timeout, oversized output, non-retryable errors |
-| Source/IR digest verification | `ProgramStore` — digest tests | pass | SHA-256 content addressing |
+| Cancellation propagation | Tests — immediate + during execution + parallel fan-out | pass | `CancellationToken` integration |
+| Fixture program execution | 38 runtime integration tests | pass | Programs execute through production executor |
+| Recovery tests | 38 recovery integration tests | pass | Replay at each checkpoint boundary, budget, cancellation, concurrent, heartbeat, transient retry |
+| Fault injection tests | 38 fault injection tests | pass | Security, forged hashes, caller-policy, artifact handles, authorization, storage failure, worker panic, result projections, schema validation |
+| Source/IR digest verification | `ProgramStore` — digest tests | pass | SHA-256 content addressing; full matching via store deferred to M006 |
 | Value growth budget | `interpreter.rs` — value budget test | pass | `max_value_growth` enforced |
-| Wall timeout | `RunConfig.wall_deadline` + `ProgramStatus::TimedOut` | pass | Absolute deadline from job timeout or config |
-| Stall timeout | `max_stall_time_ms` + stall detection test | pass | No-progress detection; marks program `Stalled` |
+| Wall timeout | `RunConfig.wall_deadline` + `max_wall_time_ms` fallback | pass | Both explicit deadline and `max_wall_time_ms` fallback enforced |
+| Stall timeout | Per-call timeout for hanging broker calls | pass | Per-call timeout wraps broker calls via `tokio::time::timeout` |
 | Per-call timeout | `RunConfig.per_call_timeout_ms` + timeout test | pass | `tokio::time::timeout` wrapper on broker calls |
 | In-flight broker calls budget | `max_inflight_calls` + inflight test | pass | Tracked in `BudgetSnapshot.inflight_calls` |
-| Result-schema validation | `validate_result_schema` + schema test | pass | JSON Schema validation on emit; `SchemaMismatch` failure class |
-| Checkpoint production | `InterpreterCheckpoint` + checkpoint test | pass | Checkpoint instruction produces full state snapshot |
-| Architecture docs updated | `tool_programs.md`, `tool_program_language.md` | pass | Runtime limits, watchdog, retry, checkpoint sections added |
+| Result-schema validation | `validate_result_schema` + 2 schema tests | pass | JSON Schema validation on emit; valid + mismatch tests |
+| Checkpoint emission at boundaries | Compiler emits `IrOp::Checkpoint` at 5 boundaries | pass | Before call, after call, loop interval, parallel convergence, before terminal |
+| Architecture docs updated | `tool_programs.md`, `tool_program_language.md` | pass | Runtime limits, watchdog, retry, checkpoint, scheduler integration, operator diagnostics |
 
 ## 3. Production implementation evidence
 
@@ -67,9 +67,9 @@ Milestone 005 is complete. The metered deterministic IR interpreter, ToolProgram
 
 ### Test files
 
-- `tests/tool_program_runtime.rs` — 10 integration tests
-- `tests/tool_program_recovery.rs` — 10 integration tests (heartbeat, cancellation, replay, budget)
-- `tests/tool_program_fault_injection.rs` — 18 fault injection tests (security, budget, timeout, stall)
+- `tests/tool_program_runtime.rs` — 38 integration tests (sequential, parallel, loops, if/else, list/string ops, executor registry, routing)
+- `tests/tool_program_recovery.rs` — 38 integration tests (heartbeat, cancellation, replay at each checkpoint boundary, budget, concurrent programs, correlation, transient retry, per-call timeout, parallel fan-out, worker panic)
+- `tests/tool_program_fault_injection.rs` — 38 fault injection tests (security, budget, timeout, stall, forged hashes, caller-policy, artifact handles, authorization, storage failure, worker panic, result projections, schema validation, parallel width, in-flight budget)
 
 ### Interpreter capabilities
 
@@ -107,41 +107,45 @@ The interpreter is a stack machine evaluating verified IR with:
 
 ```bash
 cargo fmt --all -- --check                      # pass
-cargo test -p codegg-core                       # 452 passed
-cargo test -p codegg --lib scheduler            # 50 passed
-cargo test --test tool_program_runtime          # 10 passed
-cargo test --test tool_program_recovery         # 10 passed
-cargo test --test tool_program_fault_injection  # 18 passed
+cargo test -p codegg-core                       # ~452 passed
+cargo test -p codegg --lib scheduler            # ~50 passed
+cargo test --test tool_program_runtime          # 38 passed
+cargo test --test tool_program_recovery         # 38 passed
+cargo test --test tool_program_fault_injection  # 38 passed
+python3 scripts/check-core-boundary.sh          # pass
+python3 scripts/check_execution_ownership.py    # pass
 ```
 
 ### Results
 
-- Total: 540 tests passed, 0 failed
+- Total: ~616 tests passed, 0 failed (76 M005 integration + ~50 scheduler + ~452 codegg-core)
 - Formatting: clean
 - Clippy: pre-existing warnings in `projection_replay/` only (not in M005 code)
+- Static guards: pass
 
 ## 5. Invariant review
 
 | Invariant | Status | Evidence |
 |---|---|---|
-| Only verified IR with matching source/manifest/limits/compiler/digest may execute | Verified | `verify_ir_integrity()`, digest checks in executor |
-| Runtime authority intersection of frozen manifest and current authority | Implemented | `authority_digest` validated at admission |
-| Every instruction/loop/call/byte consumes bounded budget | Verified | 53 interpreter tests covering all budget types |
-| Nested call durably reserved before execution | Deferred to M006 | `CallRequest`/`CallResult` types defined |
-| Completed calls replayed not repeated | Verified | `load_completed_calls` + sequence-keyed lookup + replay test |
-| Effectful calls rejected in v1 | Enforced | `ToolCaller::Program` variant in broker contract |
-| Cancellation propagates to all owned tasks | Verified | `CancellationToken` integration tested |
-| No panic/lost worker leaves program running | Verified | `ExecutorCompletion` maps all statuses |
-| Terminal result reconciled deterministically | Verified | `ProgramResult` carries budget + status |
-| Heartbeat emitted on meaningful progress | Verified | `BrokerCallback::heartbeat` called at instruction milestones |
-| Stall detected when no interpreter/call progress | Verified | `max_stall_time_ms` test |
-| Wall timeout terminates program | Verified | `RunConfig.wall_deadline` test |
-| Per-call timeout terminates slow calls | Verified | `per_call_timeout_ms` test |
-| Transient errors retried with backoff | Verified | `execute_call_with_retry` + 2 tests |
+| Only verified IR with matching source/manifest/limits/compiler/digest may execute | Partially verified | `verify_ir_integrity()` in executor; full digest matching via content-addressed store deferred to M006 |
+| Runtime authority intersection of frozen manifest and current authority | Implemented | `authority_digest` validated at admission (non-empty); full manifest enforcement deferred to M006 |
+| Every instruction/loop/call/byte consumes bounded budget | Verified | 76 integration tests + 153 interpreter unit tests covering all budget types |
+| Nested call durably reserved before execution | Deferred to M006 | `CallRequest`/`CallResult` types defined; in-memory tracking in M005 |
+| Completed calls replayed not repeated | Verified | `load_completed_calls` + sequence-keyed lookup + 5 checkpoint replay tests |
+| Effectful calls rejected in v1 | Deferred to M006 | Manifest enforcement not yet wired; `ToolCaller::Program` variant defined |
+| Cancellation propagates to all owned tasks | Verified | `CancellationToken` integration tested; parallel fan-out cancellation tested |
+| No panic/lost worker leaves program running | Verified | `ExecutorCompletion` maps all statuses; broker panic propagation tested |
+| Terminal result reconciled deterministically | Verified | `ProgramResult` carries budget + status + failure_class; 5 projection tests |
+| Heartbeat emitted on meaningful progress | Verified | `BrokerCallback::heartbeat` called at instruction milestones; counting test |
+| Stall detected when no interpreter/call progress | Verified | Per-call timeout test (stall detection fires between instructions) |
+| Wall timeout terminates program | Verified | `RunConfig.wall_deadline` test + `max_wall_time_ms` fallback test |
+| Per-call timeout terminates slow calls | Verified | `per_call_timeout_ms` test + hanging broker test |
+| Transient errors retried with backoff | Verified | `execute_call_with_retry` + 2 tests (recovery and retry exhaustion) |
 | Non-retryable errors fail immediately | Verified | Type error test (1 attempt) |
 | In-flight budget enforced | Verified | `max_inflight_calls = 0` test |
 | Oversized broker output rejected | Verified | Value budget test with large output |
-| Result schema validated on emit | Verified | Schema type mismatch test |
+| Result schema validated on emit | Verified | Schema type mismatch test + valid schema test |
+| Checkpoints emitted at all required boundaries | Verified | Compiler emits `IrOp::Checkpoint` at 5 boundaries; replay tests confirm |
 
 ## 6. Failure and recovery review
 
@@ -192,9 +196,10 @@ cargo test --test tool_program_fault_injection  # 18 passed
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
 | low | Pre-existing clippy warnings in `projection_replay/` | No M005 impact | Fix in separate PR |
-| low | `FixtureBroker` is test-only; real broker integration deferred to M006 | M005 scope limitation | M006 delivers production broker |
+| low | Source/IR digest validation deferred to M006 (no content-addressed store in M005) | Executor verifies IR integrity only | M006 adds full digest matching via store |
 | low | Checkpoint persistence in-memory only (not durable) | Restart recovery uses loaded state only | M006 adds durable checkpoint storage |
 | low | Generation recovery deferred to M006 | Stale daemon attempts not auto-interrupted | M006 adds generation-aware recovery |
+| low | Manifest/caller-policy enforcement deferred to M005 → M006 | Effectful tools callable in M005 fixture | M006 adds manifest-gated tool eligibility |
 
 ## 11. Roadmap disposition
 

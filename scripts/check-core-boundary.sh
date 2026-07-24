@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-bad_imports=$(rg -n "crate::(agent|tool|permission|mcp|plugin|tui|server|client|auth|crypto|search|search_backend|research|theme|tts|upgrade)" crates/codegg-core/src || true)
+bad_imports=$(rg -n "crate::(agent|tool[^_]|permission|mcp|plugin|tui|server|client|auth|crypto|search|search_backend|research|theme|tts|upgrade)" crates/codegg-core/src || true)
 if [[ -n "$bad_imports" ]]; then
   echo "codegg-core has forbidden root-domain imports:"
   echo "$bad_imports"

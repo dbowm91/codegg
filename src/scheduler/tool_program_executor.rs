@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use codegg_core::jobs::{JobKind, JobPayload, JobRecord};
 use codegg_core::tool_program::{
-    BrokerCallback, CallRequest, CallResult, InterpreterError, MeteredInterpreter, ProgramResult,
+    BrokerCallback, BudgetSnapshot, CallRequest, CallResult, InterpreterError, MeteredInterpreter,
     ProgramStatus, ProgramValue, RunConfig, RuntimeLimits,
 };
 
@@ -17,13 +17,40 @@ use crate::scheduler::executor::{
     ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, ExecutorValidationError,
     JobExecutionContext, JobExecutor,
 };
+use crate::tool::broker::{BrokerInvocationContext, ToolBroker};
+use crate::tool::ToolRegistry;
 
-/// In-process fixture broker for M005 testing.
+/// In-process fixture broker — retained for backward-compat tests only.
 ///
-/// Returns a deterministic `ToolResult` for any tool call. Real broker
-/// integration through [`codegg::tool::broker::ToolBroker`] begins in M006.
-pub struct FixtureBroker;
+/// Returns a deterministic `ToolResult` for any tool call. Production
+/// code should use [`BrokerAdapter`] with the real [`ToolBroker`].
+#[cfg(test)]
+pub struct FixtureBroker {
+    heartbeat_count: std::sync::atomic::AtomicU32,
+}
 
+#[cfg(test)]
+impl FixtureBroker {
+    pub fn new() -> Self {
+        Self {
+            heartbeat_count: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    pub fn heartbeat_count(&self) -> u32 {
+        self.heartbeat_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+impl Default for FixtureBroker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 #[async_trait]
 impl BrokerCallback for FixtureBroker {
     async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError> {
@@ -39,8 +66,9 @@ impl BrokerCallback for FixtureBroker {
         })
     }
 
-    async fn heartbeat(&self, _budget: &codegg_core::tool_program::BudgetSnapshot) {
-        // Fixture broker heartbeat is a no-op
+    async fn heartbeat(&self, _budget: &BudgetSnapshot) {
+        self.heartbeat_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -48,18 +76,96 @@ impl BrokerCallback for FixtureBroker {
 ///
 /// Validates the program payload, loads and verifies IR, creates a
 /// [`MeteredInterpreter`], and runs it with cancellation support.
-pub struct ToolProgramExecutor;
+pub struct ToolProgramExecutor {
+    broker: Arc<ToolBroker>,
+    registry: Arc<ToolRegistry>,
+}
 
 impl ToolProgramExecutor {
-    pub fn new() -> Self {
-        Self
+    pub fn new(broker: Arc<ToolBroker>, registry: Arc<ToolRegistry>) -> Self {
+        Self { broker, registry }
     }
 }
 
 impl Default for ToolProgramExecutor {
     fn default() -> Self {
-        Self::new()
+        // Default creates with a minimal setup - only used in tests
+        let registry = Arc::new(ToolRegistry::with_defaults());
+        let broker = Arc::new(ToolBroker::new(&registry));
+        Self { broker, registry }
     }
+}
+
+/// Adapter that bridges the interpreter's `BrokerCallback` to the
+/// real `ToolBroker` pipeline for programmatic tool calls.
+pub struct BrokerAdapter {
+    broker: Arc<ToolBroker>,
+    registry: Arc<ToolRegistry>,
+    program_id: String,
+}
+
+impl BrokerAdapter {
+    pub fn new(broker: Arc<ToolBroker>, registry: Arc<ToolRegistry>, program_id: String) -> Self {
+        Self {
+            broker,
+            registry,
+            program_id,
+        }
+    }
+}
+
+#[async_trait]
+impl BrokerCallback for BrokerAdapter {
+    async fn execute_call(&self, request: &CallRequest) -> Result<CallResult, InterpreterError> {
+        let ctx = BrokerInvocationContext {
+            caller: crate::tool::contract::ToolCaller::Program {
+                program_id: self.program_id.clone(),
+            },
+            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            session_id: None,
+            workspace_id: None,
+            agent_id: None,
+            turn_id: None,
+            job_id: None,
+            attempt_id: None,
+            permission_mode: None,
+            timeout_ms: Some(30_000),
+            submission_key: None,
+            caller_authorized: true,
+        };
+
+        match self
+            .broker
+            .execute(
+                &self.registry,
+                &request.tool_name,
+                request.input.clone(),
+                ctx,
+            )
+            .await
+        {
+            Ok(result) => {
+                let program_value = match result.value.value {
+                    Some(v) => ProgramValue::ToolResult(v),
+                    None => ProgramValue::ToolResult(
+                        serde_json::json!({"display": result.value.display}),
+                    ),
+                };
+                Ok(CallResult {
+                    output: program_value,
+                    artifacts: result
+                        .value
+                        .artifacts
+                        .into_iter()
+                        .map(|a| a.artifact_id)
+                        .collect(),
+                })
+            }
+            Err(e) => Err(InterpreterError::BrokerError(e.to_string())),
+        }
+    }
+
+    async fn heartbeat(&self, _budget: &BudgetSnapshot) {}
 }
 
 #[async_trait]
@@ -194,11 +300,15 @@ impl JobExecutor for ToolProgramExecutor {
             };
         }
 
-        // Verify source digest matches
-        // NOTE: In M005, the executor compiles a fixture program, so we
-        // skip source/IR digest validation. In M006+, the IR would be
-        // loaded from the content-addressed store and these checks would
-        // be performed against the stored IR.
+        // Source/IR digest validation against the content-addressed store
+        // is deferred to M006 when ProgramStore integration is available.
+        // For M005, we verify IR integrity (digest matches instructions)
+        // and non-empty digests at admission time (validate() above).
+        //
+        // In production (M006+), the executor would:
+        // 1. Load source from ContentAddressedStore by source_digest
+        // 2. Recompile and verify ir_digest matches
+        // 3. Load manifest and verify authority_digest
         let _ = &source_digest;
         let _ = &ir_digest;
 
@@ -248,8 +358,12 @@ impl JobExecutor for ToolProgramExecutor {
         // Create interpreter
         let mut interpreter = MeteredInterpreter::new(compilation.ir, limits);
 
-        // Create fixture broker
-        let broker = FixtureBroker;
+        // Create real broker adapter
+        let broker_adapter = BrokerAdapter::new(
+            self.broker.clone(),
+            self.registry.clone(),
+            program_id.clone(),
+        );
 
         // Build run configuration
         let run_config = RunConfig {
@@ -260,7 +374,7 @@ impl JobExecutor for ToolProgramExecutor {
 
         // Run the interpreter with cancellation support and config
         let result = interpreter
-            .run_with_config(&broker, Some(&ctx.cancellation), &run_config)
+            .run_with_config(&broker_adapter, Some(&ctx.cancellation), &run_config)
             .await;
 
         // Emit progress: completed
@@ -321,6 +435,7 @@ mod tests {
     };
     use codegg_core::workspace::WorkspaceId;
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     fn sample_tool_program_job(program_id: &str, source_digest: &str) -> JobRecord {
         let now = chrono::Utc::now();
@@ -361,13 +476,13 @@ mod tests {
 
     #[test]
     fn executor_kind_is_tool_program() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         assert_eq!(exec.kind(), ExecutorKind::ToolProgram);
     }
 
     #[test]
     fn supports_tool_program_kind() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         assert!(exec.supports(JobKind::ToolProgram));
         assert!(!exec.supports(JobKind::Python));
         assert!(!exec.supports(JobKind::Test));
@@ -375,21 +490,21 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_program_id() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let job = sample_tool_program_job("", "digest");
         assert!(exec.validate(&job).is_err());
     }
 
     #[test]
     fn validate_rejects_empty_source_digest() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let job = sample_tool_program_job("prog_1", "");
         assert!(exec.validate(&job).is_err());
     }
 
     #[test]
     fn validate_rejects_empty_authority_digest() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let mut job = sample_tool_program_job("prog_1", "digest");
         if let JobPayload::ToolProgram {
             ref mut authority_digest,
@@ -403,14 +518,14 @@ mod tests {
 
     #[test]
     fn validate_accepts_valid_job() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let job = sample_tool_program_job("prog_1", "digest_abc");
         assert!(exec.validate(&job).is_ok());
     }
 
     #[test]
     fn validate_rejects_wrong_payload() {
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let now = chrono::Utc::now();
         let job = JobRecord {
             job_id: JobId::new_unchecked("j-test"),
@@ -454,7 +569,7 @@ mod tests {
         use codegg_core::jobs::AttemptId;
         use codegg_core::workspace::WorkspaceId;
 
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let source = codegg_core::tool_program::ProgramStore::digest_source(
             "emit({\"status\": \"ok\", \"program_id\": \"test_prog\"})\n",
         );
@@ -483,7 +598,7 @@ mod tests {
         use codegg_core::jobs::AttemptId;
         use codegg_core::workspace::WorkspaceId;
 
-        let exec = ToolProgramExecutor::new();
+        let exec = ToolProgramExecutor::default();
         let source = codegg_core::tool_program::ProgramStore::digest_source(
             "emit({\"status\": \"ok\", \"program_id\": \"test_prog\"})\n",
         );

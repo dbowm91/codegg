@@ -41,6 +41,14 @@ impl Tool for ReadTool {
     fn category(&self) -> ToolCategory {
         ToolCategory::ReadOnly
     }
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+        ToolContract {
+            name: tool_name.to_string(),
+            caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: ToolEffectClass::ReadOnly,
+            ..ToolContract::legacy(tool_name, input_schema)
+        }
+    }
 }
 
 /// A tool that returns a very large output.
@@ -215,10 +223,11 @@ async fn broker_not_found_returns_no_contract() {
 async fn broker_caller_policy_blocks_programmatic_on_direct_only() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
+    // "large_output" has no contract override — defaults to DirectOnly
     let err = broker
         .execute(
             &registry,
-            "read",
+            "large_output",
             json!({}),
             make_ctx(ToolCaller::Program {
                 program_id: "test-program".to_string(),
@@ -353,7 +362,8 @@ async fn broker_timeout_context_propagated() {
 async fn broker_legacy_tools_get_conservative_defaults() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
-    let contract = broker.catalog().get("read").unwrap();
+    // "large_output" has no contract override — gets legacy defaults
+    let contract = broker.catalog().get("large_output").unwrap();
 
     assert_eq!(contract.caller_policy, ToolCallerPolicy::DirectOnly);
     assert_eq!(contract.effect_class, ToolEffectClass::NonIdempotent);
@@ -505,10 +515,11 @@ async fn broker_no_unbounded_task_growth() {
 async fn broker_subagent_caller_denied_on_direct_only() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
+    // "large_output" has no contract override — defaults to DirectOnly
     let err = broker
         .execute(
             &registry,
-            "read",
+            "large_output",
             json!({}),
             make_ctx(ToolCaller::Subagent {
                 parent_agent_id: "parent-agent".to_string(),
@@ -524,10 +535,11 @@ async fn broker_subagent_caller_denied_on_direct_only() {
 async fn broker_api_caller_denied_on_direct_only() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
+    // "large_output" has no contract override — defaults to DirectOnly
     let err = broker
         .execute(
             &registry,
-            "read",
+            "large_output",
             json!({}),
             make_ctx(ToolCaller::Api {
                 client_id: "api-client".to_string(),
@@ -645,7 +657,8 @@ async fn broker_validate_pre_execution_input_size() {
 async fn broker_validate_pre_execution_caller_policy() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
-    let contract = broker.lookup_contract("read").unwrap();
+    // "large_output" has no contract override — defaults to DirectOnly
+    let contract = broker.lookup_contract("large_output").unwrap();
     let ctx = BrokerInvocationContext {
         caller: ToolCaller::Program {
             program_id: "test".to_string(),
@@ -692,28 +705,37 @@ async fn broker_legacy_string_output_preserved() {
 }
 
 #[tokio::test]
-async fn broker_contract_compatibility_with_legacy_defaults() {
+async fn broker_contract_read_only_palette_programmatic() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
 
-    // Default tools (not custom ones we registered) should have conservative contracts
-    let default_tools = ["grep", "glob", "read"]; // read is our custom ReadTool with default contract
-    for name in default_tools {
+    // M006: read, grep, glob are now DirectOrProgrammatic with ReadOnly effect
+    let programmable_tools = ["grep", "glob", "read"];
+    for name in programmable_tools {
+        if let Some(contract) = broker.catalog().get(name) {
+            assert_eq!(
+                contract.caller_policy,
+                ToolCallerPolicy::DirectOrProgrammatic,
+                "tool {} should be DirectOrProgrammatic",
+                name
+            );
+            assert_eq!(
+                contract.effect_class,
+                ToolEffectClass::ReadOnly,
+                "tool {} should be ReadOnly",
+                name
+            );
+        }
+    }
+
+    // Mutating tools should remain DirectOnly
+    let direct_only_tools = ["write", "edit"];
+    for name in direct_only_tools {
         if let Some(contract) = broker.catalog().get(name) {
             assert_eq!(
                 contract.caller_policy,
                 ToolCallerPolicy::DirectOnly,
                 "tool {} should be DirectOnly",
-                name
-            );
-            assert!(
-                !contract.cache_policy.enabled,
-                "tool {} should not be cacheable",
-                name
-            );
-            assert_eq!(
-                contract.retry_policy.max_retries, 0,
-                "tool {} should have no retry",
                 name
             );
         }

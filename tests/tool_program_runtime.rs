@@ -75,7 +75,7 @@ fn make_ctx(job: JobRecord, cancelled: bool) -> JobExecutionContext {
 
 #[tokio::test]
 async fn emit_constant_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = "emit({\"ok\": true})\n";
     let job = sample_job("prog_emit", source);
     let ctx = make_ctx(job, false);
@@ -86,7 +86,7 @@ async fn emit_constant_completes() {
 
 #[tokio::test]
 async fn for_loop_program_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = r#"
 total = 0
 for i in range(5):
@@ -101,7 +101,7 @@ emit({"total": total})
 
 #[tokio::test]
 async fn if_else_program_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = r#"
 x = 10
 if x > 5:
@@ -120,7 +120,7 @@ emit({"result": result})
 async fn failed_program_returns_failed() {
     // In M005, the executor runs a fixture program. To test the
     // cancellation/failed path, we cancel the job before execution.
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = "emit({\"ok\": true})\n";
     let job = sample_job("prog_fail", source);
     let ctx = make_ctx(job, true);
@@ -130,7 +130,7 @@ async fn failed_program_returns_failed() {
 
 #[tokio::test]
 async fn cancelled_program_returns_cancelled() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = "emit({\"ok\": true})\n";
     let job = sample_job("prog_cancel", source);
     let ctx = make_ctx(job, true); // cancelled = true
@@ -140,7 +140,7 @@ async fn cancelled_program_returns_cancelled() {
 
 #[tokio::test]
 async fn nested_loop_program_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = r#"
 total = 0
 for i in range(3):
@@ -156,7 +156,7 @@ emit({"total": total})
 
 #[tokio::test]
 async fn list_operations_program_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = r#"
 items = [3, 1, 4, 1, 5]
 first = items[0]
@@ -171,7 +171,7 @@ emit({"first": first, "last": last})
 
 #[tokio::test]
 async fn string_operations_program_completes() {
-    let exec = ToolProgramExecutor::new();
+    let exec = ToolProgramExecutor::default();
     let source = r#"
 greeting = "hello" + " " + "world"
 length = len(greeting)
@@ -187,7 +187,7 @@ emit({"greeting": greeting, "length": length})
 fn executor_registry_includes_tool_program() {
     let mut registry = codegg::scheduler::executor::ExecutorRegistry::new();
     registry
-        .register(Arc::new(ToolProgramExecutor::new()))
+        .register(Arc::new(ToolProgramExecutor::default()))
         .unwrap();
     assert!(registry.get(ExecutorKind::ToolProgram).is_some());
 }

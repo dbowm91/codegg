@@ -376,7 +376,7 @@ impl ToolBroker {
 
         ToolValue {
             display: result.output,
-            value: None,
+            value: result.value,
             artifacts: Vec::new(),
             provenance,
             terminal_status,

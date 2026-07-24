@@ -192,6 +192,10 @@ cargo test -p codegg --lib command_routing
 cargo test -p codegg --lib python_script
 cargo test -p codegg --lib tool::bash
 
+# Tool programs
+cargo test -p codegg --test tool_program_read_palette
+cargo test -p codegg --test tool_contract_guards
+
 # Adversarial tests
 cargo test --test command_routing_adversarial
 cargo test --test python_sandbox_adversarial
@@ -463,7 +467,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~38 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools.
+- **~39 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools plus the `tool_program` foreground model tool.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
@@ -471,6 +475,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
 - **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** — not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
 - **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
+- **Tool Programs (M006)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
 
 ### Agent Runtime
 
@@ -549,6 +554,12 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 - Context policy is **disabled by default** (`observe` mode). Config via `[context_policy]`.
 - Volatile-tail compaction is **disabled by default** (`observe` mode).
 
+### Tool Programs (M006)
+
+- **BrokerAdapter bridges interpreter to real broker**: `FixtureBroker` is test-only. Production uses `BrokerAdapter` in `src/scheduler/tool_program_executor.rs`.
+- **Manifest resolution gates submission**: Tools without `DirectOrProgrammatic` policy or output schemas are rejected before job creation.
+- **ToolProgramTool is DirectOnly**: Only the agent loop can submit programs. Programs themselves can only call `DirectOrProgrammatic` tools.
+
 ## Architecture Docs
 
 `architecture/` has 67 docs covering every module. See `architecture/overview.md` for the full module map and navigation index. Key ones:
@@ -570,6 +581,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
+| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache` |
 | `architecture/command.md` | 108 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

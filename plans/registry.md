@@ -31,17 +31,19 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 006 ready | — |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 006 closing | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | ready | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | M005 closed |
+| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | closing | `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` | M005 closed |
 
 ## Active closure work
 
-None — no registered closure review is active.
+| Subsystem | Milestone | Closure record | Status |
+|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | `plans/closure/tool-programs/006-status.md` | closing |
 
 ## Blocked work
 

@@ -156,6 +156,8 @@ pub struct StructuredToolResult {
     pub output: String,
     /// Whether the call succeeded.
     pub success: bool,
+    /// Optional structured value returned by the tool.
+    pub value: Option<serde_json::Value>,
     /// Provenance. `None` for tools that don't supply structured
     /// metadata (e.g. legacy tools that only override `execute()`).
     pub provenance: Option<ToolProvenance>,
@@ -169,6 +171,7 @@ impl StructuredToolResult {
         Self {
             output,
             success: true,
+            value: None,
             provenance: Some(ToolProvenance::legacy(tool_name)),
         }
     }
@@ -178,7 +181,24 @@ impl StructuredToolResult {
         Self {
             output,
             success,
+            value: None,
             provenance: Some(provenance),
+        }
+    }
+
+    /// Build a structured result with a JSON value, success flag, and
+    /// optional provenance.
+    pub fn with_value(
+        output: String,
+        value: serde_json::Value,
+        success: bool,
+        provenance: Option<ToolProvenance>,
+    ) -> Self {
+        Self {
+            output,
+            value: Some(value),
+            success,
+            provenance,
         }
     }
 

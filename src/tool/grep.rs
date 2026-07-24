@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use crate::error::ToolError;
+use crate::tool::contract::{
+    IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
+};
 use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::{Tool, ToolCategory};
 
@@ -78,6 +81,39 @@ impl Tool for GrepTool {
 
     fn category(&self) -> ToolCategory {
         ToolCategory::ReadOnly
+    }
+
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+        ToolContract {
+            name: tool_name.to_string(),
+            caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: ToolEffectClass::ReadOnly,
+            idempotency: IdempotencyClass::Idempotent,
+            cache_policy: ToolCachePolicy {
+                enabled: true,
+                ttl_secs: 60,
+                max_entries: 50,
+            },
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "matches": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "line": {"type": "integer"},
+                            "content": {"type": "string"}
+                        }
+                    }},
+                    "total_matches": {"type": "integer"},
+                    "files_searched": {"type": "integer"},
+                    "truncated": {"type": "boolean"}
+                },
+                "required": ["matches"]
+            })),
+            ..ToolContract::legacy(tool_name, input_schema)
+        }
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

@@ -3,6 +3,9 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
+use crate::tool::contract::{
+    IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
+};
 use crate::tool::util::{canonicalize_path, validate_path};
 use crate::tool::{Tool, ToolCategory};
 
@@ -198,6 +201,32 @@ impl Tool for ReadTool {
 
     fn category(&self) -> ToolCategory {
         ToolCategory::ReadOnly
+    }
+
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+        ToolContract {
+            name: tool_name.to_string(),
+            caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: ToolEffectClass::ReadOnly,
+            idempotency: IdempotencyClass::Idempotent,
+            cache_policy: ToolCachePolicy {
+                enabled: true,
+                ttl_secs: 300,
+                max_entries: 100,
+            },
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "line_count": {"type": "integer"},
+                    "byte_count": {"type": "integer"},
+                    "truncated": {"type": "boolean"}
+                },
+                "required": ["path", "content"]
+            })),
+            ..ToolContract::legacy(tool_name, input_schema)
+        }
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

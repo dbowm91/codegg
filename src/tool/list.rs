@@ -1,4 +1,7 @@
 use crate::error::ToolError;
+use crate::tool::contract::{
+    IdempotencyClass, ToolCachePolicy, ToolCallerPolicy, ToolContract, ToolEffectClass,
+};
 use crate::tool::util::validate_path;
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
@@ -72,6 +75,31 @@ impl Tool for ListTool {
 
     fn category(&self) -> ToolCategory {
         ToolCategory::ReadOnly
+    }
+
+    fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
+        ToolContract {
+            name: tool_name.to_string(),
+            caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: ToolEffectClass::ReadOnly,
+            idempotency: IdempotencyClass::Idempotent,
+            cache_policy: ToolCachePolicy {
+                enabled: true,
+                ttl_secs: 30,
+                max_entries: 50,
+            },
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "entries": {"type": "array", "items": {"type": "string"}},
+                    "count": {"type": "integer"},
+                    "truncated": {"type": "boolean"}
+                },
+                "required": ["entries"]
+            })),
+            ..ToolContract::legacy(tool_name, input_schema)
+        }
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {

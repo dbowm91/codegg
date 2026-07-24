@@ -221,6 +221,112 @@ Heartbeat emission is handled by the `BrokerCallback::heartbeat`
 method, called at each meaningful progress boundary in the
 interpreter.
 
+## Scheduler Integration (M005)
+
+### Executor Registration
+
+`ToolProgramExecutor` (`src/scheduler/tool_program_executor.rs`)
+implements `JobExecutor` for `JobKind::ToolProgram`. The executor:
+
+1. Validates `JobPayload::ToolProgram` fields (program_id,
+   source_digest, authority_digest non-empty).
+2. Compiles the submitted source to IR (fixture in M005;
+   content-addressed store in M006).
+3. Verifies IR integrity via `verify_ir_integrity()`.
+4. Creates `MeteredInterpreter` with `RuntimeLimits` derived from
+   IR bounds plus executor-configured timeouts.
+5. Creates `BrokerAdapter` bridging interpreter to real `ToolBroker`.
+6. Runs with `CancellationToken` support and typed terminal mapping.
+
+### Timeout Configuration
+
+| Parameter | Default | Source |
+|-----------|---------|--------|
+| Stall timeout | 60s | `max_stall_time_ms` on `RuntimeLimits` |
+| Per-call timeout | 30s | `max_per_call_time_ms` on `RuntimeLimits` |
+| Wall deadline | job deadline or `max_wall_time_ms` | `RunConfig.wall_deadline` |
+| Retries | 2 | `max_retries` on `RuntimeLimits` |
+
+### Checkpoint Emission
+
+The compiler emits `IrOp::Checkpoint` at five boundaries:
+
+1. **Before nested call reservation** — before `ConstructCall`/`ExecuteCall`
+2. **After call completion** — after `ExecuteCall` stores result
+3. **At bounded loop intervals** — before `ForLoopNext` in loop body
+4. **After parallel convergence** — after `ParallelExecute`
+5. **Before terminal publication** — before `Emit` and `Fail`
+
+Checkpoints produce `InterpreterCheckpoint` with: PC, steps,
+iterations, calls completed, bytes used, parallel groups, locals
+hash, and completed calls for replay.
+
+### Recovery and Restart
+
+On restart, the interpreter:
+
+1. Loads completed calls from the checkpoint via
+   `load_completed_calls()`.
+2. Re-executes from PC=0.
+3. Each `ExecuteCall` looks up its sequence number in the completed
+   calls map; matched calls are replayed without broker invocation.
+4. Unmatched calls are executed through the broker.
+
+This guarantees completed calls are never re-executed.
+
+## Operator Diagnostics
+
+### Terminal State Classification
+
+| ProgramStatus | Meaning | Operator action |
+|---------------|---------|-----------------|
+| `Completed` | Program emitted a result | None — inspect output |
+| `Failed` | Execution error or validation failure | Check `failure_class` and `error_message` |
+| `Cancelled` | User or parent cancelled | None — expected |
+| `TimedOut` | Wall-clock or per-call deadline exceeded | Increase timeout or simplify program |
+| `Stalled` | No progress within stall threshold | Check broker responsiveness or increase timeout |
+| `Incomplete` | Budget exhausted (steps/bytes/iterations/calls) | Increase relevant budget or simplify program |
+| `Recoverable` | Transient error, retry-eligible | Daemon will retry automatically |
+
+### Failure Classes
+
+| Class | Retryable | Typical cause |
+|-------|-----------|---------------|
+| `Validation` | No | Source/IR/manifest validation error |
+| `ManifestDrift` | No | Tool manifest changed after submission |
+| `AuthorityNarrowed` | No | Authority reduced after submission |
+| `SchemaMismatch` | No | Output doesn't match result schema |
+| `TransientBackend` | Yes | Temporary provider/backend error |
+| `Timeout` | No | Wall-clock or per-call deadline |
+| `Stall` | No | No progress detected |
+| `Cancelled` | No | Explicit cancellation |
+| `Storage` | No | Persistence failure |
+| `ReplayDivergence` | No | Checkpoint replay mismatch |
+| `BudgetExhausted` | No | Step/byte/iteration/call budget |
+| `Execution` | No | Type, index, division error |
+| `InternalPanic` | No | Interpreter invariant violation |
+
+### Restart Recovery
+
+When a daemon restarts mid-execution:
+
+- Completed calls are preserved in the checkpoint and replayed.
+- In-flight calls (not yet completed) are lost and must be
+  re-executed from scratch.
+- Generation recovery marks stale attempts as `Interrupted` and
+  requeues if the `RecoveryPolicy` permits.
+- Durable checkpoint persistence is implemented in M006 via
+  `ContentAddressedStore` integration.
+
+### Incomplete Program Handling
+
+Budget-exhausted programs return `Incomplete` with:
+
+- Partial output value (if any)
+- Budget snapshot (steps, bytes, iterations, calls used)
+- Error message describing which budget was exhausted
+- Recommended narrower continuation parameters
+
 ## Storage Migration
 
 ### Additive migration v33
@@ -294,16 +400,11 @@ and checked on every database open.
 
 - Active programs retain source, IR, calls, and artifacts.
 - Terminal programs may be garbage-collected after a configurable
-  retention window (not yet implemented in M003).
+  retention window (not yet implemented).
 - Source/IR content-store GC removes only unreferenced digests via
   `ContentAddressedStore::gc()`.
 - The `tool_program` table cascades deletes to `tool_program_call`
   via foreign key.
-
-- Active programs retain source, IR, calls, and artifacts.
-- Terminal programs may be garbage-collected after a configurable
-  retention window (not yet implemented).
-- Source/IR/content-store GC removes only unreferenced digests.
 
 ## M004: Restricted-Python Frontend and Static Bounds
 
@@ -419,6 +520,128 @@ Located in `crates/codegg-core/fuzz/fuzz_targets/`:
 
 Run with: `cargo fuzz run <target> -- -max_total_time=300`
 
+## M006: Read-Only Programmable Tool Palette (Implemented)
+
+M006 delivers the model-facing `tool_program` foreground tool, a
+read-only palette of four tools callable from restricted-Python
+programs, manifest-based tool eligibility gating, and a content/policy
+aware read-only call cache.
+
+### `tool_program` Foreground Model Tool
+
+`src/tool/tool_program.rs` — the model submits a restricted-Python
+program via the `tool_program` tool. The tool:
+
+1. Validates `source` (non-empty) and `tools` array (non-empty).
+2. Compiles source to IR via `tool_program::compile_program()`.
+3. Verifies IR integrity via `verify_ir_integrity()`.
+4. Submits the job to the scheduler via `JobSubmissionService`.
+5. Returns the `program_id` and submission status.
+
+The tool itself is `DirectOnly` — only the agent loop can call it.
+Programs it produces may only call `DirectOrProgrammatic` tools.
+
+### Read-Only Tool Palette
+
+Four tools are eligible for programmatic invocation:
+
+| Tool | Caller Policy | Effect Class | Output Schema | Cache |
+|------|--------------|--------------|---------------|-------|
+| `read` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `content`, `line_count`, `byte_count`, `truncated` | 300s TTL |
+| `glob` | `DirectOrProgrammatic` | `ReadOnly` | `pattern`, `files`, `count`, `truncated` | 60s TTL |
+| `grep` | `DirectOrProgrammatic` | `ReadOnly` | `pattern`, `matches` (path/line/content), `total_matches`, `files_searched`, `truncated` | 60s TTL |
+| `list` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `entries`, `count`, `truncated` | 30s TTL |
+
+Tools must satisfy all of the following to be callable from programs:
+
+- `caller_policy == DirectOrProgrammatic`
+- `effect_class == ReadOnly`
+- `output_schema` is `Some(...)`
+- Contract passes `validate()` (name non-empty, schema consistent)
+
+### Manifest Resolution
+
+`src/tool/program_manifest.rs` — validates a program's requested
+tools against the broker catalog before job creation.
+
+```
+resolve_manifest(broker, requested_tools) → ResolvedManifest
+```
+
+Rejection reasons:
+- `NotFound` — tool not in broker catalog
+- `DirectOnly` — tool is `DirectOnly`, not callable by programs
+- `NoOutputSchema` — tool has no output schema defined
+- `InvalidContract` — contract validation failed
+
+`manifest_is_valid()` returns `true` only when there are zero
+rejections. Programs must only use tools in the `allowed_tools` list.
+
+### Tool Contract Guards
+
+At execution time, the `BrokerAdapter` carries a `ToolCaller::Program`
+variant into the broker invocation context. The broker enforces:
+
+- Caller policy check: only `DirectOrProgrammatic` tools may be
+  called from a program context.
+- Effect class check: only `ReadOnly` tools may be called.
+- Schema validation: output must conform to the tool's output schema.
+
+### Read-Only Call Cache
+
+`src/tool/program_cache.rs` — caches typed results from read-only
+tool calls within a program run.
+
+- **Cache key**: `CacheKey { tool_name, input_hash, workspace_id }`
+  incorporates tool identity, serialized arguments, and workspace.
+- **TTL per tool**: read=300s, glob=60s, grep=60s, list=30s.
+- **Max entries**: 100 per tool, 1000 total.
+- **Eviction**: LRU-style — oldest entries evicted when limits reached.
+- **Thread-safe**: `RwLock<HashMap<...>>`.
+
+The cache is per-execution and does not persist across daemon restarts.
+
+### Execution Flow
+
+```
+Model submits tool_program(source, tools, ...)
+    │
+    ▼
+ToolProgramTool::execute_impl()
+    │ 1. Validate source + tools non-empty
+    │ 2. compile_program(source) → Compilation { ir, manifest }
+    │ 3. verify_ir_integrity(ir)
+    │ 4. Submit via JobSubmissionService
+    │
+    ▼
+Scheduler admits job (JobKind::ToolProgram)
+    │
+    ▼
+ToolProgramExecutor::execute()
+    │ 1. Validate payload (program_id, source_digest, authority_digest)
+    │ 2. Load/compile IR, verify integrity
+    │ 3. Create MeteredInterpreter with RuntimeLimits
+    │ 4. Create BrokerAdapter (bridges BrokerCallback → real ToolBroker)
+    │ 5. Interpreter.run_with_config(broker_adapter, cancellation, run_config)
+    │
+    ▼
+BrokerAdapter::execute_call(request)
+    │ 1. Build BrokerInvocationContext (caller=Program, workspace, cwd)
+    │ 2. broker.execute(registry, tool_name, input, ctx)
+    │ 3. Map StructuredToolResult → CallResult (ProgramValue::ToolResult)
+    │
+    ▼
+MeteredInterpreter steps through IR
+    │  - ExecuteCall → BrokerAdapter → ToolBroker → real tool
+    │  - CheckCache → ProgramCallCache (skip broker on hit)
+    │  - Emit → ProgramResult (terminal)
+    │
+    ▼
+ExecutorCompletion returned to scheduler
+    │  - Status: Completed | Failed | Cancelled | TimedOut | ...
+    │  - Result projected to model via StructuredToolResult
+```
+
 ### Content-Addressed IR Store
 
 `ProgramStore` (`store.rs`) provides:
@@ -431,3 +654,13 @@ Run with: `cargo fuzz run <target> -- -max_total_time=300`
 - `verify_ir_integrity(ir)` — digest consistency after deserialization
 
 Thread-safe via `Arc<Mutex<...>>`. Concurrent access tested.
+
+## Source Files (M006)
+
+| File | Purpose |
+|------|---------|
+| `crates/codegg-core/src/tool_program/` | Domain types, store, interpreter, IR, compiler, verifier |
+| `src/tool/tool_program.rs` | Foreground model-facing `tool_program` tool |
+| `src/tool/program_manifest.rs` | Manifest resolution — tool eligibility gating |
+| `src/tool/program_cache.rs` | Read-only call cache with content/policy-aware keys |
+| `src/scheduler/tool_program_executor.rs` | Scheduler executor with `BrokerAdapter` for real pipeline |
