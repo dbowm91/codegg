@@ -283,6 +283,9 @@ pub struct ToolRegistryOptions {
     pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
     /// Shared path-free audit identity for recording skill activations.
     pub asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    /// Optional notification service for background tool program completions.
+    pub notification_service:
+        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
 impl ToolRegistry {
@@ -416,7 +419,12 @@ impl ToolRegistry {
         };
         registry.register(python_tool);
         let tool_program_tool = if let Some(submission) = options.submission.clone() {
-            crate::tool::tool_program::ToolProgramTool::new().with_submission(submission)
+            let mut tool =
+                crate::tool::tool_program::ToolProgramTool::new().with_submission(submission);
+            if let Some(ref svc) = options.notification_service {
+                tool = tool.with_notification_service(svc.clone());
+            }
+            tool
         } else {
             crate::tool::tool_program::ToolProgramTool::new()
         };
@@ -728,6 +736,7 @@ impl ToolRegistry {
             workspace_root: None,
             asset_snapshot: None,
             asset_pin: None,
+            notification_service: None,
         })
     }
 
@@ -766,6 +775,7 @@ impl ToolRegistry {
             workspace_root: None,
             asset_snapshot: None,
             asset_pin: None,
+            notification_service: None,
         })
     }
 

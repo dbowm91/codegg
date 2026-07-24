@@ -1009,6 +1009,43 @@ impl ProjectionReducer {
                 snapshot.push_diagnostic(diag);
                 ApplyOutcome::Reconciled
             }
+            ProjectionEvent::ToolProgramSubmitted {
+                program_id,
+                job_id,
+                submitted_at,
+            } => {
+                // Tool program submission is a lifecycle event.
+                // Record as a diagnostic for traceability.
+                let mut diag = ProjectionDiagnostic::new(
+                    "tool_program_submitted",
+                    format!("program={program_id} job={job_id}"),
+                    *submitted_at,
+                );
+                diag.session_id = input.session_id.clone();
+                snapshot.push_diagnostic(diag);
+                snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::ToolProgramTerminal {
+                program_id,
+                job_id,
+                status,
+                summary,
+                completed_at,
+            } => {
+                let mut diag = ProjectionDiagnostic::new(
+                    "tool_program_terminal",
+                    format!(
+                        "program={program_id} job={job_id} status={status} summary={}",
+                        clip_str(summary, 128)
+                    ),
+                    *completed_at,
+                );
+                diag.session_id = input.session_id.clone();
+                snapshot.push_diagnostic(diag);
+                snapshot.primary_session.time_updated_at = Some(input.timestamp_ms);
+                ApplyOutcome::Applied
+            }
         }
     }
 

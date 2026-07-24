@@ -252,6 +252,8 @@ pub(crate) fn core_event_metadata(
         | CoreEvent::SubagentCompleted { session_id, .. }
         | CoreEvent::SubagentFailed { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::PluginUiEffect { envelope } => (envelope.session_id.clone(), None),
+        CoreEvent::ToolProgramCompleted { session_id, .. }
+        | CoreEvent::ToolProgramFailed { session_id, .. } => (session_id.clone(), None),
         _ => (None, None),
     }
 }
@@ -350,6 +352,8 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::SubagentStarted { .. } => "subagent_started",
         CoreEvent::SubagentCompleted { .. } => "subagent_completed",
         CoreEvent::SubagentFailed { .. } => "subagent_failed",
+        CoreEvent::ToolProgramCompleted { .. } => "tool_program_completed",
+        CoreEvent::ToolProgramFailed { .. } => "tool_program_failed",
         CoreEvent::Error { .. } => "error",
         _ => "other",
     }

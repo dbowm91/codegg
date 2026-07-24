@@ -232,6 +232,20 @@ pub enum ProjectionEvent {
     JobUpserted { job: JobProjection },
     /// A job was removed from the projection surface.
     JobRemoved { job_id: String },
+    /// A background tool program was submitted.
+    ToolProgramSubmitted {
+        program_id: String,
+        job_id: String,
+        submitted_at: i64,
+    },
+    /// A background tool program reached a terminal state.
+    ToolProgramTerminal {
+        program_id: String,
+        job_id: String,
+        status: String,
+        summary: String,
+        completed_at: i64,
+    },
     /// Token usage changed.
     TokenUsageUpdated {
         input_tokens: Option<usize>,
@@ -291,6 +305,8 @@ impl ProjectionEvent {
             ProjectionEvent::RunDenied { .. } => false,
             ProjectionEvent::JobUpserted { .. } => false,
             ProjectionEvent::JobRemoved { .. } => false,
+            ProjectionEvent::ToolProgramSubmitted { .. } => false,
+            ProjectionEvent::ToolProgramTerminal { .. } => false,
             ProjectionEvent::TokenUsageUpdated { .. } => false,
             ProjectionEvent::ModelSelected { .. } => false,
             ProjectionEvent::AgentSelected { .. } => false,
@@ -314,6 +330,8 @@ impl ProjectionEvent {
             ProjectionEvent::SubagentFailed { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::JobUpserted { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::JobRemoved { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::ToolProgramSubmitted { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::ToolProgramTerminal { .. } => VisibilityClass::Public,
             _ => VisibilityClass::Public,
         }
     }

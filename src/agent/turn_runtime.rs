@@ -348,6 +348,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             artifact_store,
             submission,
             workspace_root: execution.workspace_root.clone(),
+            notification_service: None,
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);

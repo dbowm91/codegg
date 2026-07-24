@@ -69,6 +69,8 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::RunRerunLinked { .. } => SafePublicationClass::Safe,
         CoreEvent::RunProjectionReady { .. } => SafePublicationClass::Safe,
         CoreEvent::ProjectionStreamEvent { .. } => SafePublicationClass::Internal,
+        CoreEvent::ToolProgramCompleted { .. } => SafePublicationClass::Safe,
+        CoreEvent::ToolProgramFailed { .. } => SafePublicationClass::Safe,
         CoreEvent::QuestionPending { .. } => SafePublicationClass::Safe,
     }
 }
@@ -110,6 +112,8 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::SessionUpdated { session_id, .. } => !session_id.is_empty(),
         CoreEvent::FileChanged { .. } => true,
         CoreEvent::JobCreated { session_id, .. } => session_id.is_some(),
+        CoreEvent::ToolProgramCompleted { session_id, .. } => session_id.is_some(),
+        CoreEvent::ToolProgramFailed { session_id, .. } => session_id.is_some(),
         _ => false,
     }
 }
@@ -480,6 +484,22 @@ mod tests {
                 run_id: "r".into(),
                 projector: "p".into(),
                 exactness: "exact".into(),
+            },
+            CoreEvent::ToolProgramCompleted {
+                session_id: Some("s".into()),
+                program_id: "tp-1".into(),
+                job_id: "j".into(),
+                status: "completed".into(),
+                summary: "ok".into(),
+                calls_completed: 1,
+            },
+            CoreEvent::ToolProgramFailed {
+                session_id: Some("s".into()),
+                program_id: "tp-1".into(),
+                job_id: "j".into(),
+                status: "failed".into(),
+                error: "err".into(),
+                failure_class: None,
             },
             CoreEvent::ProjectionStreamEvent {
                 subscription_id: codegg_protocol::projection::replay::ProjectionSubscriptionId(

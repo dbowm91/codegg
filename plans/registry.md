@@ -31,26 +31,25 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 007 closed | — |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-roadmap.md` | Milestone 008 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | ready | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | M007 closed |
+| Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | ready | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | stable provider capability interface |
+| Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | ready | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | M009 soft dependency; local Eggpool access is operational input |
 
 ## Active closure work
 
 | Subsystem | Milestone | Closure record | Status |
 |---|---|---|---|
-| Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | `plans/closure/tool-programs/007-status.md` | closed |
+| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | closed |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | blocked | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | M008 closure and stable provider capability interface |
-| Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | blocked | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | M008 closure; M009 soft dependency; local Eggpool access is operational input |
 
 ## Deferred unregistered product work
 
@@ -66,6 +65,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | M009 and M010 unblocked |
 | Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | `plans/closure/tool-programs/007-status.md` | HEAD implementation | M008 unblocked |
 | Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | `plans/closure/tool-programs/006-status.md` | HEAD implementation | M007 unblocked |
 | Programmatic tool execution and Tool Programs | 005 — durable interpreter, watchdog, and recovery | `plans/closure/tool-programs/005-status.md` | `75f3c5ae` implementation | M006 unblocked |

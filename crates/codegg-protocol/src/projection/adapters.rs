@@ -644,6 +644,36 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             };
             events.push(ProjectionEvent::JobUpserted { job });
         }
+        CoreEvent::ToolProgramCompleted {
+            program_id,
+            job_id,
+            status,
+            summary,
+            ..
+        } => {
+            events.push(ProjectionEvent::ToolProgramTerminal {
+                program_id: program_id.clone(),
+                job_id: job_id.clone(),
+                status: status.clone(),
+                summary: truncate_str(summary, MAX_PROJECTION_RUN_SUMMARY_BYTES).to_string(),
+                completed_at: env.timestamp_ms,
+            });
+        }
+        CoreEvent::ToolProgramFailed {
+            program_id,
+            job_id,
+            status,
+            error,
+            ..
+        } => {
+            events.push(ProjectionEvent::ToolProgramTerminal {
+                program_id: program_id.clone(),
+                job_id: job_id.clone(),
+                status: status.clone(),
+                summary: truncate_str(error, MAX_PROJECTION_RUN_SUMMARY_BYTES).to_string(),
+                completed_at: env.timestamp_ms,
+            });
+        }
         _ => {
             events.push(ProjectionEvent::Unknown {
                 variant_name: core_event_kind(&env.payload),

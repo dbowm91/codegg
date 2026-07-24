@@ -29,6 +29,9 @@ pub fn build_agent_loop(
     artifact_store: Arc<dyn ContextArtifactStore>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     workspace_root: std::path::PathBuf,
+    notification_service: Option<
+        Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>,
+    >,
 ) -> crate::agent::r#loop::AgentLoop {
     let permission_checker =
         crate::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
@@ -52,5 +55,8 @@ pub fn build_agent_loop(
     }
     agent_loop.set_workspace_root(workspace_root);
     agent_loop.set_task_state_policy(task_state_policy);
+    if let Some(svc) = notification_service {
+        agent_loop.set_notification_service(svc);
+    }
     agent_loop
 }

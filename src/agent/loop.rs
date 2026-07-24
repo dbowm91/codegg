@@ -1445,6 +1445,9 @@ pub struct AgentLoop {
     /// Canonical tool broker for executing production tool calls.
     /// Built from `tool_registry` at construction time.
     tool_broker: Arc<crate::tool::ToolBroker>,
+    /// Optional notification service for background tool program completions.
+    notification_service:
+        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
 impl AgentLoop {
@@ -1694,6 +1697,7 @@ impl AgentLoop {
             context_policy_runtime: ContextPolicyRuntimeState::default(),
             runtime_asset_pin: None,
             tool_broker,
+            notification_service: None,
         }
     }
 
@@ -1710,6 +1714,50 @@ impl AgentLoop {
         &self,
     ) -> Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>> {
         self.runtime_asset_pin.as_ref().map(Arc::clone)
+    }
+
+    /// Set the notification service for background tool program completions.
+    pub fn set_notification_service(
+        &mut self,
+        service: Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>,
+    ) {
+        self.notification_service = Some(service);
+    }
+
+    /// Check for pending background tool program notifications and
+    /// inject them as system messages. Called at safe turn boundaries
+    /// (start of each run).
+    async fn inject_pending_notifications(&self, messages: &mut Vec<Message>) {
+        let Some(ref svc) = self.notification_service else {
+            return;
+        };
+        let pending = svc.pending_for_session(&self.session_id).await;
+        if pending.is_empty() {
+            return;
+        }
+        // Claim each notification in deterministic order
+        for notification in &pending {
+            if svc.claim(&notification.notification_id).await {
+                let text = if notification.success {
+                    format!(
+                        "Background program {} completed successfully: {}",
+                        notification.program_id, notification.summary
+                    )
+                } else {
+                    format!(
+                        "Background program {} failed ({}): {}",
+                        notification.program_id,
+                        notification.failure_class.as_deref().unwrap_or("unknown"),
+                        notification.summary
+                    )
+                };
+                messages.push(Message::System {
+                    content: std::sync::Arc::new(text),
+                });
+                // Acknowledge delivery
+                svc.acknowledge(&notification.notification_id).await;
+            }
+        }
     }
 
     /// Build a `ProjectionConfig` from the loaded `[context]` config section.
@@ -3174,6 +3222,12 @@ impl AgentLoop {
                 }
             }
         }
+
+        // Inject pending background tool program notifications before
+        // the main turn loop. Each pending notification becomes a
+        // system message that the model can observe and act on.
+        self.inject_pending_notifications(&mut request.messages)
+            .await;
 
         loop {
             if let Some(reason) = self.check_limits() {

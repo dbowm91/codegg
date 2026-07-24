@@ -22,6 +22,8 @@ pub struct AgentLoopBuildInput {
     pub artifact_store: Arc<dyn ContextArtifactStore>,
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     pub workspace_root: std::path::PathBuf,
+    pub notification_service:
+        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
 /// Transitional build-only factory used internally by `DefaultTurnRuntime`.
@@ -51,6 +53,7 @@ impl AgentLoopFactory for DefaultAgentLoopFactory {
             input.artifact_store,
             input.submission,
             input.workspace_root,
+            input.notification_service,
         )
     }
 }

@@ -940,3 +940,94 @@ Child job results include artifact handles for detailed output:
 The `artifacts` field contains handles that can be resolved to
 full output in the RunStore. Failed test names and concise failure
 evidence are included in the structured details for quick diagnosis.
+
+## Background Programs, Projections, and Parent Notification (M008)
+
+### Overview
+
+Background mode lets the parent agent submit a tool program and
+continue immediately. When the program reaches a terminal state,
+exactly one notification is delivered to the parent session's
+notification inbox.
+
+### Execution Modes
+
+The `tool_program` tool accepts an `execution_mode` parameter:
+
+- **`foreground`** (default): Blocks until completion and returns
+  the result synchronously.
+- **`background`**: Returns a compact `ProgramHandle` immediately.
+  The parent continues; a terminal notification is delivered when
+  the program finishes.
+
+### Program Handle
+
+When `execution_mode: "background"`, the tool returns:
+
+```json
+{
+  "status": "submitted",
+  "program_id": "tp-abc123...",
+  "handle": {
+    "program_id": "tp-abc123...",
+    "job_id": "j-xyz789...",
+    "status": "submitted",
+    "submitted_at": 1234567890,
+    "timeout_ms": 120000,
+    "inspect_ref": "tp-abc123...",
+    "cancel_ref": "j-xyz789..."
+  }
+}
+```
+
+### Notification Service
+
+`ToolProgramNotificationService` (`src/scheduler/tool_program_notifications.rs`)
+manages durable notification records with claim/ack semantics:
+
+- **Record**: Created when a background program is submitted.
+- **Claim**: Compare-and-set from Pending to Claimed.
+- **Acknowledge**: Transition from Claimed to Delivered.
+- **Suppress**: For archived sessions.
+- **Expire**: Stale claimed notifications (lease timeout).
+- **Session bound**: Enforce max pending per session.
+
+### Projection Events
+
+New projection events for frontend-neutral visibility:
+
+- `ToolProgramSubmitted { program_id, job_id, submitted_at }`
+- `ToolProgramTerminal { program_id, job_id, status, summary, completed_at }`
+
+These are mapped from `CoreEvent::ToolProgramCompleted` and
+`CoreEvent::ToolProgramFailed` through the projection adapter.
+
+### AgentLoop Integration
+
+At the start of each turn, the AgentLoop checks for pending
+background program notifications and injects them as system
+messages:
+
+```
+Background program tp-abc123 completed successfully: status=Completed steps=5000 calls=3
+```
+
+The notification is claimed before injection and acknowledged
+after, ensuring exactly-once delivery.
+
+### Invariants
+
+1. Foreground and background modes share one submission, execution,
+   storage, recovery, and policy implementation.
+2. Background submission returns only after durable program and job
+   identity exists.
+3. Every background program produces at most one actionable terminal
+   notification for its parent session.
+4. Notification delivery is durable, idempotent, bounded, and
+   replayable.
+5. Duplicate terminal events produce the same notification identity.
+6. Progress events never enqueue model follow-ups.
+7. A failed notification delivery does not leave the program
+   logically running or cause repeated model turns.
+8. Frontend renders projections and never owns program state or
+   terminal-delivery truth.

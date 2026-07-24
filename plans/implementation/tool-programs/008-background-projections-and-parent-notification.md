@@ -1,6 +1,6 @@
 # Tool Programs Milestone 008 — Background Programs, Projections, and Parent Notification
 
-Status: blocked pending Milestone 007 closure
+Status: implemented
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 

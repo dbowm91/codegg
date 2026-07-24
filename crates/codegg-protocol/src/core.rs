@@ -1324,6 +1324,24 @@ pub enum CoreEvent {
         stream_id: crate::projection::replay::ProjectionStreamId,
         envelope: crate::projection::event::ProjectionEnvelope,
     },
+    /// A background tool program completed successfully.
+    ToolProgramCompleted {
+        session_id: Option<String>,
+        program_id: String,
+        job_id: String,
+        status: String,
+        summary: String,
+        calls_completed: u32,
+    },
+    /// A background tool program failed, timed out, or was cancelled.
+    ToolProgramFailed {
+        session_id: Option<String>,
+        program_id: String,
+        job_id: String,
+        status: String,
+        error: String,
+        failure_class: Option<String>,
+    },
     Error {
         code: String,
         message: String,

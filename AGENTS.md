@@ -197,6 +197,9 @@ cargo test -p codegg --test tool_program_read_palette
 cargo test -p codegg --test tool_program_child_jobs
 cargo test -p codegg --test tool_program_build_test_matrix
 cargo test -p codegg --test tool_program_child_recovery
+cargo test -p codegg --test tool_program_background
+cargo test -p codegg --test tool_program_notifications
+cargo test -p codegg --test tool_program_projection
 cargo test -p codegg --test tool_contract_guards
 
 # Adversarial tests
@@ -584,7 +587,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
-| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache`. M007: child-job composition (`submit_job()` language construct, `ExecuteChildJob` IR opcode, `ChildJobOp`/`ChildJobRequest`/`ChildJobResult` types, `BrokerCallback::submit_child_job` trait method, scheduler submission via `JobSubmissionService`, authority/workspace/deadline inheritance) |
+| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache`. M007: child-job composition (`submit_job()` language construct, `ExecuteChildJob` IR opcode, `ChildJobOp`/`ChildJobRequest`/`ChildJobResult` types, `BrokerCallback::submit_child_job` trait method, scheduler submission via `JobSubmissionService`, authority/workspace/deadline inheritance). M008: background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection |
 | `architecture/command.md` | 108 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |

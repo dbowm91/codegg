@@ -1,9 +1,10 @@
-//! Foreground model-facing `tool_program` tool.
+//! Model-facing `tool_program` tool.
 //!
 //! Allows the model to submit a restricted-Python program that
 //! calls read-only tools through the ToolBroker pipeline. The
 //! program is compiled, validated, submitted to the scheduler,
-//! and the result is returned synchronously.
+//! and the result is returned synchronously (foreground) or
+//! asynchronously with a durable handle (background).
 //!
 //! # Artifact isolation
 //!
@@ -15,6 +16,14 @@
 //! are opaque handles — the full content is stored in the program's
 //! own artifact store and must be expanded via `context_read` if
 //! needed.
+//!
+//! # Background mode
+//!
+//! When `execution_mode` is `"background"`, the tool returns a
+//! compact [`ProgramHandle`] immediately and the parent agent
+//! continues. When the program reaches a terminal state, exactly
+//! one notification is delivered to the parent session's inbox
+//! via the [`ToolProgramNotificationService`].
 
 use std::sync::Arc;
 
@@ -23,6 +32,9 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::scheduler::submission::{JobSubmissionService, SubmissionKey};
+use crate::scheduler::tool_program_notifications::{
+    ProgramHandle, ToolProgramNotification, ToolProgramNotificationService,
+};
 use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProvenance, ToolTrust};
 use crate::tool::contract::{ToolCallerPolicy, ToolContract, ToolEffectClass};
 use crate::tool::{Tool, ToolCategory};
@@ -60,17 +72,33 @@ pub struct ProgramCallArtifact {
 /// result to the parent transcript. Intermediate tool call outputs
 /// stay in the program's artifact ledger (see [`ProgramCallArtifact`])
 /// and do NOT enter the transcript by default.
+///
+/// When `execution_mode` is `"background"`, the tool returns a
+/// compact handle immediately and the parent continues. Terminal
+/// notifications are delivered via the notification service.
 pub struct ToolProgramTool {
     submission: Option<Arc<JobSubmissionService>>,
+    notification_service: Option<Arc<ToolProgramNotificationService>>,
 }
 
 impl ToolProgramTool {
     pub fn new() -> Self {
-        Self { submission: None }
+        Self {
+            submission: None,
+            notification_service: None,
+        }
     }
 
     pub fn with_submission(mut self, submission: Arc<JobSubmissionService>) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_notification_service(
+        mut self,
+        service: Arc<ToolProgramNotificationService>,
+    ) -> Self {
+        self.notification_service = Some(service);
         self
     }
 }
@@ -78,6 +106,24 @@ impl ToolProgramTool {
 impl Default for ToolProgramTool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Execution mode for tool programs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Block until completion and return the result (default).
+    Foreground,
+    /// Return a handle immediately; notification on completion.
+    Background,
+}
+
+impl ExecutionMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "background" | "bg" => Self::Background,
+            _ => Self::Foreground,
+        }
     }
 }
 
@@ -119,6 +165,14 @@ impl Tool for ToolProgramTool {
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Optional timeout in milliseconds (default: 120000)."
+                },
+                "execution_mode": {
+                    "type": "string",
+                    "enum": ["foreground", "background"],
+                    "description": "Execution mode. 'foreground' (default) blocks until \
+                        completion and returns the result. 'background' returns a \
+                        program handle immediately and the parent continues; a \
+                        terminal notification is delivered when the program finishes."
                 }
             },
             "required": ["source", "tools"]
@@ -138,7 +192,7 @@ impl Tool for ToolProgramTool {
             output_schema: Some(json!({
                 "type": "object",
                 "properties": {
-                    "status": { "type": "string", "enum": ["completed", "failed", "cancelled", "timed_out", "interrupted"] },
+                    "status": { "type": "string", "enum": ["completed", "failed", "cancelled", "timed_out", "interrupted", "submitted"] },
                     "output": {},
                     "steps_used": { "type": "integer" },
                     "calls_completed": { "type": "integer" },
@@ -155,6 +209,19 @@ impl Tool for ToolProgramTool {
                                 "artifact_handle": { "type": "string" },
                                 "preview": { "type": "string" }
                             }
+                        }
+                    },
+                    "handle": {
+                        "type": "object",
+                        "description": "Program handle (background mode only).",
+                        "properties": {
+                            "program_id": { "type": "string" },
+                            "job_id": { "type": "string" },
+                            "status": { "type": "string" },
+                            "submitted_at": { "type": "integer" },
+                            "timeout_ms": { "type": "integer" },
+                            "inspect_ref": { "type": "string" },
+                            "cancel_ref": { "type": "string" }
                         }
                     }
                 },
@@ -223,6 +290,12 @@ impl ToolProgramTool {
             .and_then(|t| t.as_u64())
             .unwrap_or(120_000);
 
+        let execution_mode = input
+            .get("execution_mode")
+            .and_then(|s| s.as_str())
+            .map(ExecutionMode::from_str)
+            .unwrap_or(ExecutionMode::Foreground);
+
         if source.is_empty() {
             return Err(ToolError::Format("source must not be empty".into()));
         }
@@ -238,14 +311,7 @@ impl ToolProgramTool {
         tool_program::verify_ir_integrity(&compilation.ir)
             .map_err(|e| ToolError::Format(format!("IR verification failed: {}", e)))?;
 
-        // Step 3: Resolve manifest — validate tool availability
-        // Full manifest resolution requires ToolBroker access, which is
-        // available through the submission service. For this milestone,
-        // we validate that all requested tools are non-empty and the
-        // program compiles. Full broker-based manifest resolution is
-        // performed at execution time in the ToolProgramExecutor.
-
-        // Step 4: Submit to scheduler
+        // Step 3: Submit to scheduler
         let submission = self.submission.as_ref().ok_or_else(|| {
             ToolError::Disabled("tool_program requires scheduler submission service".into())
         })?;
@@ -292,7 +358,89 @@ impl ToolProgramTool {
             .await
             .map_err(|e| ToolError::Execution(format!("submission failed: {}", e)))?;
 
-        // Step 5: Wait for completion
+        match execution_mode {
+            ExecutionMode::Background => {
+                self.handle_background(submitted, program_id, timeout_ms)
+                    .await
+            }
+            ExecutionMode::Foreground => {
+                self.handle_foreground(submitted, program_id, timeout_ms)
+                    .await
+            }
+        }
+    }
+
+    /// Handle background submission: return a compact handle immediately
+    /// and register a notification record for terminal delivery.
+    async fn handle_background(
+        &self,
+        submitted: crate::scheduler::submission::SubmittedJob,
+        program_id: String,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value, ToolError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let job_id = submitted.job_id.as_str().to_string();
+
+        let handle = ProgramHandle {
+            program_id: program_id.clone(),
+            job_id: job_id.clone(),
+            status: "submitted".to_string(),
+            submitted_at: now,
+            timeout_ms,
+            inspect_ref: program_id.clone(),
+            cancel_ref: job_id.clone(),
+        };
+
+        // Register a pending notification record if the notification
+        // service is available. The executor will update this when the
+        // program reaches a terminal state.
+        if let Some(ref svc) = self.notification_service {
+            let notification = ToolProgramNotification {
+                notification_id: program_id.clone(),
+                program_id: program_id.clone(),
+                job_id: job_id.clone(),
+                session_id: String::new(), // set by caller when available
+                agent_id: None,
+                turn_id: None,
+                status: "submitted".to_string(),
+                summary: String::new(),
+                failure_class: None,
+                success: false,
+                program_handle: handle.clone(),
+                state: crate::scheduler::tool_program_notifications::NotificationState::Pending,
+                created_at: now,
+                updated_at: now,
+            };
+            svc.record_notification(notification).await;
+        }
+
+        Ok(json!({
+            "status": "submitted",
+            "program_id": program_id,
+            "handle": {
+                "program_id": handle.program_id,
+                "job_id": handle.job_id,
+                "status": handle.status,
+                "submitted_at": handle.submitted_at,
+                "timeout_ms": handle.timeout_ms,
+                "inspect_ref": handle.inspect_ref,
+                "cancel_ref": handle.cancel_ref,
+            }
+        }))
+    }
+
+    /// Handle foreground submission: wait for completion and return the result.
+    async fn handle_foreground(
+        &self,
+        submitted: crate::scheduler::submission::SubmittedJob,
+        program_id: String,
+        timeout_ms: u64,
+    ) -> Result<serde_json::Value, ToolError> {
+        let submission = self.submission.as_ref().ok_or_else(|| {
+            ToolError::Disabled("tool_program requires scheduler submission service".into())
+        })?;
+
+        // Wait for completion
         let wait_duration = std::time::Duration::from_millis(timeout_ms + 30_000); // extra buffer for scheduling
         let completion = submission
             .scheduler()
@@ -300,7 +448,7 @@ impl ToolProgramTool {
             .await
             .map_err(|e| ToolError::Execution(format!("wait failed: {}", e)))?;
 
-        // Step 6: Map result
+        // Map result
         let status = match completion.status {
             crate::scheduler::executor::ExecutorStatus::Completed => "completed",
             crate::scheduler::executor::ExecutorStatus::Failed => "failed",

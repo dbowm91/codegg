@@ -111,6 +111,7 @@ pub fn build_session_tool_registry(
         workspace_root: Some(execution.workspace_root.clone()),
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
+        notification_service: None,
     });
 
     // Register the task/subagent tool when a runtime is available.

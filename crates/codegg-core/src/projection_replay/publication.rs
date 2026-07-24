@@ -365,6 +365,40 @@ pub fn projection_events_from_core(
             };
             Some((String::new(), None, event))
         }
+        CoreEvent::ToolProgramCompleted {
+            program_id,
+            job_id,
+            status,
+            summary,
+            session_id,
+            ..
+        } => {
+            let event = ProjectionEvent::ToolProgramTerminal {
+                program_id: program_id.clone(),
+                job_id: job_id.clone(),
+                status: status.clone(),
+                summary: summary.clone(),
+                completed_at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone().unwrap_or_default(), None, event))
+        }
+        CoreEvent::ToolProgramFailed {
+            program_id,
+            job_id,
+            status,
+            error,
+            session_id,
+            ..
+        } => {
+            let event = ProjectionEvent::ToolProgramTerminal {
+                program_id: program_id.clone(),
+                job_id: job_id.clone(),
+                status: status.clone(),
+                summary: error.clone(),
+                completed_at: envelope.timestamp_ms,
+            };
+            Some((session_id.clone().unwrap_or_default(), None, event))
+        }
         _ => None,
     };
 
