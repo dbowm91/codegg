@@ -10,6 +10,10 @@ native restricted-Python production path. The implementation was reviewed at
 
 `feat(tool-programs): close production ownership boundaries`
 
+The closure/governance reconciliation was committed at `705ae2cd`:
+
+`docs(plans): close Tool Programs M011`
+
 The authoritative documents are:
 
 - implementation plan: `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md`;

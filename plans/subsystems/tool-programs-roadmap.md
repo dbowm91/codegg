@@ -510,3 +510,4 @@ This subsystem is closed only when:
 | 008 | closed | `plans/implementation/tool-programs/008-background-projections-and-parent-notification.md` | `plans/closure/tool-programs/008-status.md` | — |
 | 009 | closed | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | `plans/closure/tool-programs/009-status.md` | — |
 | 010 | conditionally closed | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | `plans/closure/tool-programs/010-status.md` | Native/deterministic evidence complete; live Eggpool, ACP, and CI evidence outstanding |
+| 011 | closed | `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md` | `plans/closure/tool-programs/011-status.md` | Strict native closure accepted; live hosted-provider transport remains operational evidence |
