@@ -55,6 +55,10 @@ fn make_notification(
         state: NotificationState::Pending,
         created_at: now,
         updated_at: now,
+        claim_owner: None,
+        claim_lease_until: None,
+        delivered_at: None,
+        retry_count: 0,
     }
 }
 

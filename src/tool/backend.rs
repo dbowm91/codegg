@@ -69,6 +69,18 @@ pub struct ToolExecutionContext {
     pub cwd: PathBuf,
     pub permission_mode: Option<String>,
     pub timeout_ms: Option<u64>,
+    /// Stable model tool-call identity used for transport retry deduplication.
+    pub invocation_key: Option<String>,
+    pub turn_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub parent_job_id: Option<String>,
+    pub parent_attempt_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub backend_policy: Option<String>,
+    /// Cancellation propagated from the owning scheduler attempt.
+    pub cancellation: Option<tokio_util::sync::CancellationToken>,
+    /// Absolute parent deadline, when the caller is scheduler-owned.
+    pub deadline: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl ToolExecutionContext {
@@ -81,6 +93,15 @@ impl ToolExecutionContext {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             permission_mode: None,
             timeout_ms: None,
+            invocation_key: None,
+            turn_id: None,
+            agent_id: None,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            provider_name: None,
+            backend_policy: None,
+            cancellation: None,
+            deadline: None,
         }
     }
 }

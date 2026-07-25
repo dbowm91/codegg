@@ -333,6 +333,22 @@ and `RetryPolicy::no_retry()`. The broker adapter waits for completion and
 returns a `ChildJobResult` with per-op typed details. See
 `architecture/tool_programs.md` §M007 for the full contract.
 
+### Tool Program ownership closure (M011)
+
+Tool Program jobs are admitted only through `JobSubmissionService` and are
+validated before attempt creation. Their durable payload includes the
+generated program identity, explicit retry invocation key, authority digest,
+frozen tool manifest, and serialized execution context. The scheduler supplies
+the outer deadline and a durable heartbeat sink. A child job uses the parent
+program/sequence in its submission key, inherits parent session and turn
+identity, and receives the narrower of its requested and parent deadlines.
+
+The Tool Program executor persists per-call reservations, completions, and
+interpreter checkpoints before advancing. A typed result record is written
+before the scheduler completion is projected, and terminal background
+notifications are derived from that record. Missing or divergent context,
+source, authority, or call identity fails closed.
+
 ## Testing Strategy
 
 | Category | Coverage |

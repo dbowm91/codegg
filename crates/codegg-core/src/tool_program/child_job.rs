@@ -137,6 +137,10 @@ pub enum ChildJobConfig {
 /// the `JobSubmissionService`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChildJobRequest {
+    /// Deterministic instruction sequence within the parent program attempt.
+    /// This separates deliberate repeated operations from replay of one call.
+    #[serde(default)]
+    pub sequence: u32,
     /// The operation kind.
     pub op: ChildJobOp,
     /// Operation-specific configuration.
@@ -258,6 +262,7 @@ mod tests {
     #[test]
     fn child_job_request_serializes() {
         let req = ChildJobRequest {
+            sequence: 7,
             op: ChildJobOp::Test,
             config: ChildJobConfig::Test(TestJobConfig {
                 scope: Some("workspace".into()),

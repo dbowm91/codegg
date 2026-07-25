@@ -505,6 +505,32 @@ pub trait BrokerCallback: Send + Sync {
     /// meaningful progress boundaries (instruction milestones,
     /// call start/complete, checkpoint commit). Default is no-op.
     async fn heartbeat(&self, _budget: &BudgetSnapshot) {}
+
+    /// Durable crash-boundary hook. Implementations persist the reservation
+    /// before dispatching an external call. The default keeps existing
+    /// in-memory fixtures source-compatible.
+    async fn call_reserved(
+        &self,
+        _sequence: u32,
+        _request: &CallRequest,
+    ) -> Result<(), InterpreterError> {
+        Ok(())
+    }
+
+    /// Durable completion hook. The interpreter does not advance beyond a
+    /// call until this record has been accepted.
+    async fn call_completed(&self, _completed: &CompletedCall) -> Result<(), InterpreterError> {
+        Ok(())
+    }
+
+    /// Durable checkpoint hook. Checkpoints are emitted after completed-call
+    /// records and explicit checkpoint instructions.
+    async fn checkpoint(
+        &self,
+        _checkpoint: &InterpreterCheckpoint,
+    ) -> Result<(), InterpreterError> {
+        Ok(())
+    }
 }
 
 // ── Interpreter errors ────────────────────────────────────────────
@@ -517,6 +543,7 @@ pub enum InterpreterError {
     KeyError(String),
     DivisionByZero,
     BrokerError(String),
+    ReplayDivergence(String),
     Cancelled,
     InternalError(String),
 }
@@ -530,6 +557,7 @@ impl fmt::Display for InterpreterError {
             Self::KeyError(msg) => write!(f, "key error: {}", msg),
             Self::DivisionByZero => write!(f, "division by zero"),
             Self::BrokerError(msg) => write!(f, "broker error: {}", msg),
+            Self::ReplayDivergence(msg) => write!(f, "replay divergence: {}", msg),
             Self::Cancelled => write!(f, "cancelled"),
             Self::InternalError(msg) => write!(f, "internal error: {}", msg),
         }
@@ -546,6 +574,7 @@ impl InterpreterError {
                 FailureClass::Execution
             }
             Self::BrokerError(_) => FailureClass::TransientBackend,
+            Self::ReplayDivergence(_) => FailureClass::Execution,
             Self::Cancelled => FailureClass::Cancelled,
             Self::InternalError(_) => FailureClass::InternalPanic,
         }
@@ -1010,7 +1039,7 @@ impl MeteredInterpreter {
             }
             IrOp::ExecuteCall => {
                 let req_val = self.pop()?;
-                let request: CallRequest = match &req_val {
+                let mut request: CallRequest = match &req_val {
                     ProgramValue::String(s) => serde_json::from_str(s)
                         .map_err(|e| InterpreterError::InternalError(e.to_string()))?,
                     _ => {
@@ -1038,11 +1067,22 @@ impl MeteredInterpreter {
 
                 let seq = self.next_call_seq;
                 self.next_call_seq += 1;
+                if request.call_id.is_none() {
+                    request.call_id = Some(format!("pc:{seq}"));
+                }
 
                 // Check for replay from completed calls
                 let result = if let Some(completed) = self.completed_calls.get(&seq) {
+                    if completed.request.tool_name != request.tool_name
+                        || completed.request.input != request.input
+                    {
+                        return Err(InterpreterError::ReplayDivergence(
+                            "replayed call request differs from the durable reservation".into(),
+                        ));
+                    }
                     completed.result.clone()
                 } else {
+                    broker.call_reserved(seq, &request).await?;
                     // Execute through broker with retry and per-call timeout
                     self.budget.inflight_calls += 1;
                     let call_result = self.execute_call_with_retry(broker, &request, config).await;
@@ -1051,14 +1091,14 @@ impl MeteredInterpreter {
                     match call_result {
                         Ok(result) => {
                             // Record as completed
-                            self.completed_calls.insert(
-                                seq,
-                                CompletedCall {
-                                    sequence: seq,
-                                    request,
-                                    result: result.clone(),
-                                },
-                            );
+                            let completed = CompletedCall {
+                                sequence: seq,
+                                request: request.clone(),
+                                result: result.clone(),
+                            };
+                            broker.call_completed(&completed).await?;
+                            self.completed_calls.insert(seq, completed);
+                            self.commit_checkpoint(broker).await?;
                             result
                         }
                         Err(e) => return Err(e),
@@ -1107,7 +1147,7 @@ impl MeteredInterpreter {
                     let mut results = Vec::with_capacity(count);
                     for req_val in req_vals {
                         if let ProgramValue::String(s) = req_val {
-                            let request: CallRequest = serde_json::from_str(s)
+                            let mut request: CallRequest = serde_json::from_str(s)
                                 .map_err(|e| InterpreterError::InternalError(e.to_string()))?;
 
                             if self.budget.calls as u64 >= self.limits.max_dynamic_calls {
@@ -1119,10 +1159,21 @@ impl MeteredInterpreter {
 
                             let seq = self.next_call_seq;
                             self.next_call_seq += 1;
+                            if request.call_id.is_none() {
+                                request.call_id = Some(format!("pc:{seq}"));
+                            }
 
                             let result = if let Some(completed) = self.completed_calls.get(&seq) {
+                                if completed.request.tool_name != request.tool_name
+                                    || completed.request.input != request.input
+                                {
+                                    return Err(InterpreterError::ReplayDivergence(
+                                        "replayed parallel call request differs from the durable reservation".into(),
+                                    ));
+                                }
                                 completed.result.clone()
                             } else {
+                                broker.call_reserved(seq, &request).await?;
                                 self.budget.inflight_calls += 1;
                                 let call_result =
                                     self.execute_call_with_retry(broker, &request, config).await;
@@ -1130,14 +1181,14 @@ impl MeteredInterpreter {
 
                                 match call_result {
                                     Ok(result) => {
-                                        self.completed_calls.insert(
-                                            seq,
-                                            CompletedCall {
-                                                sequence: seq,
-                                                request,
-                                                result: result.clone(),
-                                            },
-                                        );
+                                        let completed = CompletedCall {
+                                            sequence: seq,
+                                            request: request.clone(),
+                                            result: result.clone(),
+                                        };
+                                        broker.call_completed(&completed).await?;
+                                        self.completed_calls.insert(seq, completed);
+                                        self.commit_checkpoint(broker).await?;
                                         result
                                     }
                                     Err(e) => return Err(e),
@@ -1233,7 +1284,13 @@ impl MeteredInterpreter {
                     }
                 };
 
-                let request = ChildJobRequest { op, config };
+                let seq = self.next_call_seq;
+                self.next_call_seq += 1;
+                let request = ChildJobRequest {
+                    sequence: seq,
+                    op,
+                    config,
+                };
 
                 // Check call budget (child jobs count as a call)
                 if self.budget.calls as u64 >= self.limits.max_dynamic_calls {
@@ -1244,13 +1301,25 @@ impl MeteredInterpreter {
                 }
 
                 // Execute through broker's child-job submission
-                let seq = self.next_call_seq;
-                self.next_call_seq += 1;
-
                 let result = if let Some(completed) = self.completed_calls.get(&seq) {
+                    if completed.request.tool_name != format!("submit_job:{}", request.op)
+                        || completed.request.input
+                            != serde_json::to_value(&request).unwrap_or_default()
+                    {
+                        return Err(InterpreterError::ReplayDivergence(
+                            "replayed child-job request differs from the durable reservation"
+                                .into(),
+                        ));
+                    }
                     // Replay: reconstruct the result from completed call
                     completed.result.clone()
                 } else {
+                    let call_request = CallRequest {
+                        tool_name: format!("submit_job:{}", request.op),
+                        input: serde_json::to_value(&request).unwrap_or_default(),
+                        call_id: Some(format!("pc:{seq}")),
+                    };
+                    broker.call_reserved(seq, &call_request).await?;
                     self.budget.inflight_calls += 1;
                     let call_result = broker.submit_child_job(&request).await;
                     self.budget.inflight_calls -= 1;
@@ -1265,18 +1334,14 @@ impl MeteredInterpreter {
                                 artifacts: child_result.artifacts,
                             };
                             // Record as completed for replay
-                            self.completed_calls.insert(
-                                seq,
-                                CompletedCall {
-                                    sequence: seq,
-                                    request: CallRequest {
-                                        tool_name: format!("submit_job:{}", request.op),
-                                        input: serde_json::to_value(&request).unwrap_or_default(),
-                                        call_id: None,
-                                    },
-                                    result: call_result.clone(),
-                                },
-                            );
+                            let completed = CompletedCall {
+                                sequence: seq,
+                                request: call_request,
+                                result: call_result.clone(),
+                            };
+                            broker.call_completed(&completed).await?;
+                            self.completed_calls.insert(seq, completed);
+                            self.commit_checkpoint(broker).await?;
                             call_result
                         }
                         Err(e) => return Err(e),
@@ -1305,8 +1370,7 @@ impl MeteredInterpreter {
             }
             IrOp::Checkpoint => {
                 // Produce a durable checkpoint of current interpreter state
-                let checkpoint = self.create_checkpoint();
-                self.checkpoints.push(checkpoint);
+                self.commit_checkpoint(broker).await?;
             }
             IrOp::Return => {
                 self.terminated = true;
@@ -1325,6 +1389,16 @@ impl MeteredInterpreter {
         broker.heartbeat(&self.budget).await;
     }
 
+    async fn commit_checkpoint(
+        &mut self,
+        broker: &dyn BrokerCallback,
+    ) -> Result<(), InterpreterError> {
+        let checkpoint = self.create_checkpoint();
+        broker.checkpoint(&checkpoint).await?;
+        self.checkpoints.push(checkpoint);
+        Ok(())
+    }
+
     /// Create a checkpoint of the current interpreter state.
     fn create_checkpoint(&self) -> InterpreterCheckpoint {
         use std::collections::hash_map::DefaultHasher;
@@ -1339,6 +1413,8 @@ impl MeteredInterpreter {
         }
         let locals_hash = format!("{:016x}", hasher.finish());
 
+        let mut completed_calls: Vec<_> = self.completed_calls.values().cloned().collect();
+        completed_calls.sort_by_key(|call| call.sequence);
         InterpreterCheckpoint {
             pc: self.pc,
             steps: self.budget.steps,
@@ -1347,7 +1423,7 @@ impl MeteredInterpreter {
             bytes_used: self.budget.bytes,
             parallel_groups: self.budget.parallel_groups,
             locals_hash,
-            completed_calls: self.completed_calls.values().cloned().collect(),
+            completed_calls,
         }
     }
 

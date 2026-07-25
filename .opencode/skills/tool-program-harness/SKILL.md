@@ -1,3 +1,10 @@
+---
+name: tool-program-harness
+description: Reusable harness for evaluating, testing, and validating Tool Programs across deterministic, live-model, and ACP transport modes
+version: 1.0.0
+process: any
+---
+
 # Skill: Tool Program Harness
 
 Reusable harness for evaluating, testing, and validating Tool Programs across deterministic, live-model, and ACP transport modes.

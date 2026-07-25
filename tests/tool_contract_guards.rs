@@ -124,7 +124,12 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        caller_authorized: true,
+        authority: codegg::tool::BrokerAuthority::Verified {
+            authority_ref: "test".into(),
+            policy_revision: None,
+        },
+        cancellation: None,
+        deadline: None,
     }
 }
 
@@ -220,7 +225,9 @@ async fn programmatic_unauthorized_caller_rejected() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        caller_authorized: false, // NOT authorized
+        authority: codegg::tool::BrokerAuthority::Unverified,
+        cancellation: None,
+        deadline: None,
     };
     let err = broker
         .execute(&registry, "valid_read", json!({}), ctx)
@@ -289,6 +296,7 @@ fn tool_program_rejects_mutation_tools() {
                 RejectionReason::NotFound
                     | RejectionReason::DirectOnly
                     | RejectionReason::NoOutputSchema
+                    | RejectionReason::NotReadOnly
             ),
             "unexpected rejection reason for '{}': {:?}",
             rejection.tool_name,

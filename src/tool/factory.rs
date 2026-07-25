@@ -3,7 +3,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 
 use crate::config::schema::Config;
-use crate::context::{ContextArtifactStore, InMemoryArtifactStore};
+use crate::context::{ContextArtifactStore, FileArtifactStore};
 use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::integrated_config;
 use crate::tool::{ToolRegistry, ToolRegistryOptions};
@@ -25,6 +25,8 @@ pub struct RuntimeAssetContext {
 pub struct SessionToolContext {
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     pub runtime_assets: RuntimeAssetContext,
+    pub notification_service:
+        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -58,6 +60,7 @@ pub fn build_session_tool_registry(
     let SessionToolContext {
         submission,
         runtime_assets: asset_context,
+        notification_service,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -69,7 +72,8 @@ pub fn build_session_tool_registry(
         .unwrap_or(true);
     let context_read_enabled = artifact_store_enabled;
 
-    let artifact_store: Arc<dyn ContextArtifactStore> = Arc::new(InMemoryArtifactStore::new());
+    let artifact_store: Arc<dyn ContextArtifactStore> =
+        Arc::new(FileArtifactStore::new(&execution.workspace_root));
 
     let integrated = integrated_config::resolve_integrated_config(config);
 
@@ -111,7 +115,7 @@ pub fn build_session_tool_registry(
         workspace_root: Some(execution.workspace_root.clone()),
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
-        notification_service: None,
+        notification_service,
     });
 
     // Register the task/subagent tool when a runtime is available.

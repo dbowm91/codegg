@@ -173,7 +173,12 @@ fn make_ctx(caller: ToolCaller) -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        caller_authorized: true,
+        authority: codegg::tool::BrokerAuthority::Verified {
+            authority_ref: "test".into(),
+            policy_revision: None,
+        },
+        cancellation: None,
+        deadline: None,
     }
 }
 
@@ -569,7 +574,9 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        caller_authorized: false,
+        authority: codegg::tool::BrokerAuthority::Unverified,
+        cancellation: None,
+        deadline: None,
     };
     let err = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -598,7 +605,12 @@ async fn broker_authorized_programmatic_caller_accepted() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        caller_authorized: true,
+        authority: codegg::tool::BrokerAuthority::Verified {
+            authority_ref: "test".into(),
+            policy_revision: None,
+        },
+        cancellation: None,
+        deadline: None,
     };
     let result = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -673,7 +685,12 @@ async fn broker_validate_pre_execution_caller_policy() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        caller_authorized: true,
+        authority: codegg::tool::BrokerAuthority::Verified {
+            authority_ref: "test".into(),
+            policy_revision: None,
+        },
+        cancellation: None,
+        deadline: None,
     };
 
     let err = broker

@@ -31,22 +31,24 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 011 ready | M001–M010 implementation is present; post-closure production correctness and ownership findings are owned by M011 |
+| Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 011 closed | Strict native production correctness and ownership closure accepted; live hosted-provider transport remains operational evidence |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | ready | `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md` | M001–M010 implementation present; no external hard dependency for native correctness |
+| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | closed | `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md` | Closure record accepted; no unresolved high/medium finding |
 
 ## Active closure work
 
-None — M011 is dependency-ready for implementation. Closure work begins only after its production changes land.
+None — no active Tool Programs closure work remains.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
+
+No registered downstream plan was blocked on M011, so no future plan required a `blocked` → `ready` transition.
 
 ## Deferred unregistered product work
 
@@ -62,6 +64,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` closure/reconciliation | Strict native closure accepted; live hosted-provider transport remains operational evidence |
 | Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | `plans/closure/tool-programs/010-status.md` | `2f5e3d3` implementation; `b62686e` closure/reconciliation | Historical conditional closure; M011 owns strict production correctness, ownership, and final closure |
 | Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | `plans/closure/tool-programs/009-status.md` | HEAD implementation | Historical capability closure; M011 must prove normal production runtime selection and shared ownership semantics |
 | Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | Historical closure; M011 owns durable parent-session notification, acknowledgement, and restart correctness |

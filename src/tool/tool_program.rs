@@ -32,9 +32,7 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::scheduler::submission::{JobSubmissionService, SubmissionKey};
-use crate::scheduler::tool_program_notifications::{
-    ProgramHandle, ToolProgramNotification, ToolProgramNotificationService,
-};
+use crate::scheduler::tool_program_notifications::{ProgramHandle, ToolProgramNotificationService};
 use crate::tool::backend::{StructuredToolResult, ToolExecutionContext, ToolProvenance, ToolTrust};
 use crate::tool::contract::{ToolCallerPolicy, ToolContract, ToolEffectClass};
 use crate::tool::{Tool, ToolCategory};
@@ -43,6 +41,8 @@ use codegg_core::jobs::{
     ResourceRequest, RetryPolicy,
 };
 use codegg_core::tool_program::{self, ProgramStore};
+
+const MAX_MODEL_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 
 /// Metadata for one intermediate tool call inside a program.
 ///
@@ -191,6 +191,11 @@ impl Tool for ToolProgramTool {
                         completion and returns the result. 'background' returns a \
                         program handle immediately and the parent continues; a \
                         terminal notification is delivered when the program finishes."
+                },
+                "backend_policy": {
+                    "type": "string",
+                    "enum": ["native_only", "native_preferred", "hosted_preferred", "hosted_required"],
+                    "description": "Execution backend policy. Hosted-required fails closed when no hosted transport is attached."
                 }
             },
             "required": ["source", "tools"]
@@ -259,17 +264,17 @@ impl Tool for ToolProgramTool {
         input: serde_json::Value,
         ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
-        let workspace_root = ctx.map(|context| context.cwd);
-        let value = self.execute_impl(input.clone(), workspace_root).await?;
+        let value = self.execute_impl(input.clone(), ctx).await?;
         let display = value
             .get("status")
             .and_then(|s| s.as_str())
             .unwrap_or("unknown")
             .to_string();
+        let success = matches!(display.as_str(), "completed" | "submitted");
         Ok(StructuredToolResult {
             output: format!("program status: {}", display),
             value: Some(value),
-            success: true,
+            success,
             provenance: Some(ToolProvenance {
                 backend: "native".to_string(),
                 implementation: "codegg/tool_program".to_string(),
@@ -286,7 +291,7 @@ impl ToolProgramTool {
     async fn execute_impl(
         &self,
         input: serde_json::Value,
-        workspace_root: Option<std::path::PathBuf>,
+        execution_context: Option<ToolExecutionContext>,
     ) -> Result<serde_json::Value, ToolError> {
         let source = input
             .get("source")
@@ -312,12 +317,61 @@ impl ToolProgramTool {
             .get("timeout_ms")
             .and_then(|t| t.as_u64())
             .unwrap_or(120_000);
+        if timeout_ms == 0 {
+            return Err(ToolError::Format(
+                "timeout_ms must be a finite positive duration".into(),
+            ));
+        }
+        if timeout_ms > MAX_MODEL_TIMEOUT_MS {
+            return Err(ToolError::Format(format!(
+                "timeout_ms exceeds the {}ms Tool Program limit",
+                MAX_MODEL_TIMEOUT_MS
+            )));
+        }
 
         let execution_mode = input
             .get("execution_mode")
             .and_then(|s| s.as_str())
             .map(ExecutionMode::from_str)
             .unwrap_or(ExecutionMode::Foreground);
+
+        let backend_policy = input
+            .get("backend_policy")
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                execution_context
+                    .as_ref()
+                    .and_then(|context| context.backend_policy.as_deref())
+            })
+            .unwrap_or("native_only");
+        let backend_policy = codegg_providers::HostedBackendPolicy::parse(backend_policy)
+            .ok_or_else(|| ToolError::Format("backend_policy is not recognized".into()))?;
+        let provider_name = execution_context
+            .as_ref()
+            .and_then(|context| context.provider_name.as_deref())
+            .unwrap_or("unknown");
+        let capabilities = codegg_providers::ProviderCapabilities::for_provider(provider_name);
+        match backend_policy.resolve(&capabilities) {
+            codegg_providers::ResolvedBackend::Failed { reason } => {
+                return Err(ToolError::Disabled(reason));
+            }
+            codegg_providers::ResolvedBackend::Hosted => {
+                if matches!(
+                    backend_policy,
+                    codegg_providers::HostedBackendPolicy::HostedRequired
+                ) {
+                    return Err(ToolError::Disabled(
+                        "hosted backend selected but no hosted transport is attached".into(),
+                    ));
+                }
+                tracing::info!(
+                    provider = %provider_name,
+                    policy = backend_policy.as_str(),
+                    "falling back to native Tool Program executor"
+                );
+            }
+            codegg_providers::ResolvedBackend::Native => {}
+        }
 
         if source.is_empty() {
             return Err(ToolError::Format("source must not be empty".into()));
@@ -344,12 +398,24 @@ impl ToolProgramTool {
             ToolError::Disabled("tool_program requires scheduler submission service".into())
         })?;
 
-        let source_digest = ProgramStore::digest_source(source);
-        let program_id = format!("tp-{}", &source_digest[..16.min(source_digest.len())]);
+        if execution_mode == ExecutionMode::Background
+            && execution_context
+                .as_ref()
+                .and_then(|context| context.session_id.as_ref())
+                .is_none()
+        {
+            return Err(ToolError::Format(
+                "background Tool Programs require a parent session context".into(),
+            ));
+        }
 
-        let workspace_root = workspace_root.unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-        });
+        let source_digest = ProgramStore::digest_source(source);
+        let workspace_root = execution_context
+            .as_ref()
+            .map(|context| context.cwd.clone())
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
         let source_ref =
             crate::tool::tool_program_source::ToolProgramSourceStore::new(&workspace_root)
                 .persist(source)
@@ -359,22 +425,63 @@ impl ToolProgramTool {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
-        let submission_key = SubmissionKey::new(format!("tp-submit:{}", source_digest))
-            .map_err(|e| ToolError::Execution(format!("invalid submission key: {}", e)))?;
+        let invocation_key = execution_context
+            .as_ref()
+            .and_then(|context| context.invocation_key.clone())
+            .unwrap_or_else(|| format!("tool-program:{}", uuid::Uuid::new_v4()));
+        // The durable program identity is generated from the explicit
+        // transport invocation key, never from source content. This keeps
+        // retry deduplication stable while two distinct model calls with
+        // identical source still receive distinct program identities.
+        let invocation_digest = crate::tool::tool_program_context::stable_digest(&invocation_key);
+        let program_id = format!("tp-{}", &invocation_digest[..32]);
+        let submission_key = SubmissionKey::new(format!(
+            "tp-submit:{}",
+            crate::tool::tool_program_context::stable_digest(&invocation_key)
+        ))
+        .map_err(|e| ToolError::Execution(format!("invalid submission key: {}", e)))?;
+
+        let mut context_record = crate::tool::tool_program_context::to_core_context(
+            execution_context.as_ref(),
+            workspace_id.as_str(),
+            &program_id,
+        );
+        context_record.backend_policy = backend_policy.as_str().to_string();
+        let requested_deadline = chrono::Utc::now()
+            + chrono::Duration::from_std(std::time::Duration::from_millis(timeout_ms))
+                .map_err(|_| ToolError::Format("timeout_ms is too large".into()))?;
+        let effective_deadline = execution_context
+            .as_ref()
+            .and_then(|context| context.deadline)
+            .map(|parent| parent.min(requested_deadline))
+            .unwrap_or(requested_deadline);
+        let execution_context_json = serde_json::to_string(&context_record)
+            .map_err(|e| ToolError::Execution(format!("context serialization failed: {}", e)))?;
+        let authority_digest = crate::tool::tool_program_context::authority_digest(
+            &context_record,
+            &tools,
+            &source_digest,
+        );
 
         let new_job = NewJob {
             workspace_id,
-            session_id: None,
-            turn_id: None,
+            session_id: context_record.session_id.clone(),
+            turn_id: context_record.turn_id.clone(),
             kind: JobKind::ToolProgram,
             source: JobSource::Interactive,
             priority: JobPriority::Interactive,
             payload: JobPayload::ToolProgram {
                 program_id: program_id.clone(),
+                invocation_key,
                 source_digest: source_digest.clone(),
                 ir_digest: Some(compilation.ir.digest.clone()),
-                authority_digest: source_digest.clone(),
-                submission_key: format!("tp-submit:{}", source_digest),
+                authority_digest,
+                execution_context_json: Some(execution_context_json),
+                submission_key: submission_key.as_str().to_string(),
+                execution_mode: match execution_mode {
+                    ExecutionMode::Foreground => "foreground".into(),
+                    ExecutionMode::Background => "background".into(),
+                },
                 source_ref: Some(source_ref.relative_path),
                 source_length: Some(source_ref.length),
                 allowed_tools: tools,
@@ -384,7 +491,7 @@ impl ToolProgramTool {
             retry_policy: RetryPolicy::no_retry(),
             idempotency: JobsIdempotencyClass::SafeRepeat,
             not_before: None,
-            deadline: None,
+            deadline: Some(effective_deadline),
             schedule_id: None,
             depends_on: vec![],
         };
@@ -400,7 +507,7 @@ impl ToolProgramTool {
                     .await
             }
             ExecutionMode::Foreground => {
-                self.handle_foreground(submitted, program_id, timeout_ms)
+                self.handle_foreground(submitted, program_id, timeout_ms, &workspace_root)
                     .await
             }
         }
@@ -427,34 +534,6 @@ impl ToolProgramTool {
             cancel_ref: job_id.clone(),
         };
 
-        // Register a pending notification record if the notification
-        // service is available. The executor will update this when the
-        // program reaches a terminal state.
-        if let Some(ref svc) = self.notification_service {
-            use codegg_protocol::projection::dto::NotificationClassification;
-            let payload = format!("{}|submitted||false", program_id);
-            let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
-            let notification = ToolProgramNotification {
-                notification_id: program_id.clone(),
-                program_id: program_id.clone(),
-                job_id: job_id.clone(),
-                session_id: String::new(), // set by caller when available
-                agent_id: None,
-                turn_id: None,
-                status: "submitted".to_string(),
-                summary: String::new(),
-                failure_class: None,
-                success: false,
-                classification: NotificationClassification::IncompleteRecoverable,
-                payload_digest,
-                program_handle: handle.clone(),
-                state: crate::scheduler::tool_program_notifications::NotificationState::Pending,
-                created_at: now,
-                updated_at: now,
-            };
-            svc.record_notification(notification).await;
-        }
-
         Ok(json!({
             "status": "submitted",
             "program_id": program_id,
@@ -476,6 +555,7 @@ impl ToolProgramTool {
         submitted: crate::scheduler::submission::SubmittedJob,
         program_id: String,
         timeout_ms: u64,
+        workspace_root: &std::path::Path,
     ) -> Result<serde_json::Value, ToolError> {
         let submission = self.submission.as_ref().ok_or_else(|| {
             ToolError::Disabled("tool_program requires scheduler submission service".into())
@@ -489,7 +569,16 @@ impl ToolProgramTool {
             .await
             .map_err(|e| ToolError::Execution(format!("wait failed: {}", e)))?;
 
-        // Map result
+        if let Ok(Some(record)) =
+            crate::tool::tool_program_result::ToolProgramResultStore::new(workspace_root)
+                .load(&program_id)
+        {
+            return Ok(crate::tool::tool_program_result::result_to_json(&record));
+        }
+
+        // Compatibility fallback for terminal jobs written before the typed
+        // result record existed. It intentionally exposes only the terminal
+        // summary; semantic counters are not reconstructed from text.
         let status = match completion.status {
             crate::scheduler::executor::ExecutorStatus::Completed => "completed",
             crate::scheduler::executor::ExecutorStatus::Failed => "failed",
@@ -498,21 +587,12 @@ impl ToolProgramTool {
             crate::scheduler::executor::ExecutorStatus::Interrupted => "interrupted",
         };
 
-        // Parse calls_completed from summary: "status=X steps=N ... calls=N"
-        let calls_completed = completion
-            .summary
-            .split_whitespace()
-            .find(|s| s.starts_with("calls="))
-            .and_then(|s| s.strip_prefix("calls="))
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-
         let mut result = json!({
             "status": status,
             "program_id": program_id,
-            "steps_used": completion.metrics.elapsed_ms,
-            "calls_completed": calls_completed,
-            "program_artifacts": [],  // intermediate calls stay in program artifact ledger, not transcript
+            "steps_used": 0,
+            "calls_completed": 0,
+            "program_artifacts": [],
         });
 
         if !completion.summary.is_empty() {

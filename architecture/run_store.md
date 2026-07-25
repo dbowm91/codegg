@@ -166,6 +166,12 @@ The `JobPayload::ToolProgram` carries references/hashes (`program_id`, `source_d
 
 See `architecture/tool_programs.md` for the full Tool Program domain model.
 
+M011 adds a separate bounded Tool Program result/journal surface under the
+workspace `.codegg` directory. It is intentionally not a second RunStore
+authority: the call journal owns replay safety, and the typed result record
+owns Tool Program terminal counters/status/backend selection. RunStore remains
+the authority for process artifacts and `JobAttempt.run_id` linkage.
+
 ## Not Yet Integrated
 
 | Gap | Details |

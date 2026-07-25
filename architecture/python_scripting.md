@@ -406,6 +406,11 @@ Legacy `JobPayload::Python` entries with only `script_path` (no inline `source`)
 
 When the scheduler is disabled, `PythonScriptTool` and `BashTool` return `ToolError::Disabled("Python execution requires scheduler admission; scheduler is disabled")`. This is fail-closed behavior — no direct execution fallback exists.
 
+Tool Programs are a separate restricted-language surface: they never invoke
+general Python and use the Tool Broker/read-only manifest. Their scheduler
+deadline, cancellation, source integrity, and typed result records are owned
+by the Tool Program executor described in `architecture/tool_programs.md`.
+
 ### Source Orphan Cleanup
 
 The scheduler periodically cleans up orphaned source files from `.codegg/python_sources/`. Files are retained only while referenced by active/queued/running Python jobs. Cleanup runs during the reconcile loop.

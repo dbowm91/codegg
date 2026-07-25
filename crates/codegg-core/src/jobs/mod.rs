@@ -55,6 +55,72 @@ pub use store::{
     validate_state_transition, InMemoryJobStore, JobStoreQuery, JobSummary, SqliteJobStore,
 };
 
+/// Immutable, auth-free lineage captured when a Tool Program invocation is
+/// accepted.  The root application resolves the referenced authority and
+/// path policy; the durable job layer only stores bounded, non-secret
+/// identifiers and digests.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolProgramExecutionContext {
+    #[serde(default = "default_tool_program_context_version")]
+    pub schema_version: u16,
+    pub workspace_path_policy_id: String,
+    pub session_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub parent_job_id: Option<String>,
+    pub parent_attempt_id: Option<String>,
+    pub parent_call_id: Option<String>,
+    pub principal_ref: Option<String>,
+    pub authority_ref: Option<String>,
+    pub permission_mode: Option<String>,
+    pub policy_revision: Option<String>,
+    pub provider_connection_id: Option<String>,
+    pub provider_model: Option<String>,
+    pub backend_policy: String,
+    pub correlation_id: String,
+}
+
+fn default_tool_program_context_version() -> u16 {
+    1
+}
+
+impl ToolProgramExecutionContext {
+    /// Construct a minimal valid context for adapters and deterministic
+    /// executor fixtures. Production callers should populate the richer
+    /// lineage fields before serializing the context.
+    pub fn for_workspace(
+        workspace_path_policy_id: impl Into<String>,
+        correlation_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            workspace_path_policy_id: workspace_path_policy_id.into(),
+            backend_policy: "native_only".into(),
+            correlation_id: correlation_id.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version == 0 {
+            return Err("tool-program execution context has no schema version".into());
+        }
+        if self.workspace_path_policy_id.is_empty() {
+            return Err("tool-program execution context has no path policy identity".into());
+        }
+        if self.correlation_id.is_empty() {
+            return Err("tool-program execution context has no correlation identity".into());
+        }
+        if self.backend_policy.is_empty() {
+            return Err("tool-program execution context has no backend policy".into());
+        }
+        if self.session_id.is_none() && self.parent_job_id.is_some() {
+            return Err("parented tool-program context has no session identity".into());
+        }
+        Ok(())
+    }
+}
+
 /// Opaque, stable identifier for a durable job.
 ///
 /// Created at submit time by the daemon and never re-derived. Equality
@@ -727,6 +793,11 @@ pub enum JobPayload {
     ToolProgram {
         /// The Tool Program domain ID.
         program_id: String,
+        /// Explicit logical-invocation retry identity. This is never derived
+        /// from source content, so identical source can be deliberately run
+        /// more than once.
+        #[serde(default)]
+        invocation_key: String,
         /// SHA-256 digest of the frozen source content.
         source_digest: String,
         /// SHA-256 digest of the compiled IR (set after compilation).
@@ -734,8 +805,16 @@ pub enum JobPayload {
         ir_digest: Option<String>,
         /// Authority digest at submission time.
         authority_digest: String,
+        /// Serialized immutable execution context. Old payloads decode as
+        /// `None` and fail closed at executor admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution_context_json: Option<String>,
         /// Submission key for idempotency.
         submission_key: String,
+        /// Whether the parent waits for the terminal result or receives a
+        /// durable terminal notification.
+        #[serde(default = "default_tool_program_execution_mode")]
+        execution_mode: String,
         /// Workspace-local immutable source reference. The executor must
         /// verify this reference against `source_digest` before execution.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -751,6 +830,10 @@ pub enum JobPayload {
     Maintenance {
         task: String,
     },
+}
+
+fn default_tool_program_execution_mode() -> String {
+    "foreground".into()
 }
 
 /// Payload for a new job submission. Converted into a [`JobRecord`] by

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use hex;
@@ -86,6 +87,95 @@ impl ContextArtifactStore for InMemoryArtifactStore {
             .cloned()
             .collect();
         artifacts.sort_by_key(|b| std::cmp::Reverse(b.created_at_ms));
+        artifacts.truncate(limit);
+        Ok(artifacts)
+    }
+}
+
+/// Workspace-local artifact store used by production sessions. Artifacts are
+/// written as bounded JSON records under `.codegg/context_artifacts`, so a
+/// broker handle remains resolvable after the daemon restarts.
+pub struct FileArtifactStore {
+    base_dir: PathBuf,
+}
+
+impl FileArtifactStore {
+    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+        Self {
+            base_dir: workspace_root
+                .as_ref()
+                .join(".codegg")
+                .join("context_artifacts"),
+        }
+    }
+
+    fn path_for(&self, handle: &str) -> PathBuf {
+        self.base_dir
+            .join(format!("{}.json", stable_hash_hex(handle)))
+    }
+}
+
+#[async_trait]
+impl ContextArtifactStore for FileArtifactStore {
+    async fn put(&self, artifact: ContextArtifact) -> anyhow::Result<()> {
+        const MAX_ARTIFACT_BYTES: usize = 10 * 1024 * 1024;
+        let bytes = serde_json::to_vec(&artifact)?;
+        if bytes.len() > MAX_ARTIFACT_BYTES {
+            anyhow::bail!("context artifact exceeds bounded storage size");
+        }
+        std::fs::create_dir_all(&self.base_dir)?;
+        let target = self.path_for(&artifact.handle);
+        let temporary = self.base_dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+        std::fs::write(&temporary, bytes)?;
+        if let Err(error) = std::fs::rename(&temporary, &target) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    async fn get(&self, handle: &str) -> anyhow::Result<Option<ContextArtifact>> {
+        let path = self.path_for(handle);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let metadata = path.symlink_metadata()?;
+        if metadata.file_type().is_symlink() || metadata.len() > 10 * 1024 * 1024 {
+            anyhow::bail!("context artifact path is invalid or oversized");
+        }
+        let artifact: ContextArtifact = serde_json::from_slice(&std::fs::read(path)?)?;
+        if artifact.handle != handle {
+            anyhow::bail!("context artifact handle mismatch");
+        }
+        Ok(Some(artifact))
+    }
+
+    async fn list_recent(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<ContextArtifact>> {
+        let limit = limit.min(256);
+        let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+            return Ok(Vec::new());
+        };
+        let mut artifacts = Vec::new();
+        for entry in entries.take(512) {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = path.symlink_metadata()?;
+            if metadata.file_type().is_symlink() || metadata.len() > 10 * 1024 * 1024 {
+                continue;
+            }
+            let Ok(artifact) = serde_json::from_slice::<ContextArtifact>(&std::fs::read(path)?)
+            else {
+                continue;
+            };
+            if artifact.session_id == session_id {
+                artifacts.push(artifact);
+            }
+        }
+        artifacts.sort_by_key(|artifact| std::cmp::Reverse(artifact.created_at_ms));
         artifacts.truncate(limit);
         Ok(artifacts)
     }
