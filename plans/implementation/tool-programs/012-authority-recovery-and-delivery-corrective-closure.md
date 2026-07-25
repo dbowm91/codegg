@@ -1,6 +1,6 @@
 # Tool Programs Milestone 012 — Authority, Recovery, Delivery, and Child-Ownership Corrective Closure
 
-Status: ready for handoff
+Status: closing
 
 Repository baseline reviewed: `d71a5eee5b31876545981fdb0bd8e437aadee39c` (`main`)
 

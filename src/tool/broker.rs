@@ -28,7 +28,8 @@ use crate::error::ToolError;
 
 use super::backend::{StructuredToolResult, ToolExecutionContext, ToolProvenance};
 use super::contract::{
-    ToolCaller, ToolCallerPolicy, ToolContract, ToolContractCatalog, ToolTerminalStatus, ToolValue,
+    ToolCaller, ToolCallerPolicy, ToolContract, ToolContractCatalog, ToolEffectClass,
+    ToolTerminalStatus, ToolValue,
 };
 use super::ToolRegistry;
 
@@ -107,8 +108,7 @@ pub enum BrokerAuthority {
     Unverified,
     /// The caller was admitted by the owning authority and policy revision.
     Verified {
-        authority_ref: String,
-        policy_revision: Option<String>,
+        grant: codegg_core::jobs::ToolAuthorityGrant,
     },
 }
 
@@ -133,7 +133,46 @@ impl From<ToolExecutionContext> for BrokerInvocationContext {
     }
 }
 
+impl BrokerAuthority {
+    pub fn from_grant(grant: codegg_core::jobs::ToolAuthorityGrant) -> Self {
+        BrokerAuthority::Verified { grant }
+    }
+
+    pub fn is_verified(&self) -> bool {
+        matches!(self, BrokerAuthority::Verified { .. })
+    }
+
+    pub fn grant(&self) -> Option<&codegg_core::jobs::ToolAuthorityGrant> {
+        match self {
+            BrokerAuthority::Verified { grant } => Some(grant),
+            _ => None,
+        }
+    }
+
+    pub fn untrusted() -> Self {
+        BrokerAuthority::Unverified
+    }
+}
+
 // ─── Broker result ────────────────────────────────────────────────
+
+// ─── Programmatic outcome ────────────────────────────────────────
+
+/// Outcome classification for programmatic (Tool Program) consumers.
+///
+/// M012-F02: Direct AgentLoop callers may still receive a displayable
+/// error result, but programmatic callers must map denied, cancelled,
+/// timed-out, infrastructure-error, schema-error, and tool-error statuses
+/// to typed failures. Only Success may become a CompletedCall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgrammaticOutcome {
+    Success,
+    Denied,
+    Cancelled,
+    TimedOut,
+    SchemaMismatch,
+    InfrastructureError,
+}
 
 /// The result of a broker-mediated tool invocation.
 #[derive(Debug)]
@@ -146,6 +185,36 @@ pub struct BrokerResult {
     pub invocation_id: String,
     /// Wall-clock elapsed time in milliseconds.
     pub elapsed_ms: u64,
+}
+
+impl BrokerResult {
+    /// M012-F02: Classify the terminal status into a programmatic outcome.
+    pub fn programmatic_outcome(&self) -> Result<&ToolValue, ProgrammaticOutcome> {
+        match self.value.terminal_status {
+            ToolTerminalStatus::Success => Ok(&self.value),
+            ToolTerminalStatus::Error => Err(ProgrammaticOutcome::InfrastructureError),
+            ToolTerminalStatus::Denied => Err(ProgrammaticOutcome::Denied),
+            ToolTerminalStatus::Cancelled => Err(ProgrammaticOutcome::Cancelled),
+            ToolTerminalStatus::TimedOut => Err(ProgrammaticOutcome::TimedOut),
+            ToolTerminalStatus::InfrastructureError => {
+                Err(ProgrammaticOutcome::InfrastructureError)
+            }
+        }
+    }
+
+    /// M012-F02: Consume the result and classify the terminal status.
+    pub fn into_programmatic_outcome(self) -> Result<ToolValue, ProgrammaticOutcome> {
+        match self.value.terminal_status {
+            ToolTerminalStatus::Success => Ok(self.value),
+            ToolTerminalStatus::Error => Err(ProgrammaticOutcome::InfrastructureError),
+            ToolTerminalStatus::Denied => Err(ProgrammaticOutcome::Denied),
+            ToolTerminalStatus::Cancelled => Err(ProgrammaticOutcome::Cancelled),
+            ToolTerminalStatus::TimedOut => Err(ProgrammaticOutcome::TimedOut),
+            ToolTerminalStatus::InfrastructureError => {
+                Err(ProgrammaticOutcome::InfrastructureError)
+            }
+        }
+    }
 }
 
 // ─── ToolBroker ───────────────────────────────────────────────────
@@ -661,6 +730,10 @@ pub enum BrokerError {
     },
     /// Tool execution failed.
     Execution(String),
+    AuthorityError {
+        tool: String,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BrokerError {
@@ -683,6 +756,9 @@ impl std::fmt::Display for BrokerError {
                 tool, size, max
             ),
             Self::Execution(msg) => write!(f, "broker execution error: {}", msg),
+            Self::AuthorityError { tool, reason } => {
+                write!(f, "authority error for tool {}: {}", tool, reason)
+            }
         }
     }
 }
@@ -743,10 +819,25 @@ mod tests {
             permission_mode: None,
             timeout_ms: None,
             submission_key: None,
-            authority: BrokerAuthority::Verified {
-                authority_ref: "test".into(),
-                policy_revision: None,
-            },
+            authority: BrokerAuthority::from_grant(codegg_core::jobs::ToolAuthorityGrant {
+                schema_version: 1,
+                grant_id: "test-grant".into(),
+                principal_ref: "test".into(),
+                workspace_id: "ws-test".into(),
+                workspace_path_policy_id: "workspace:ws-test".into(),
+                session_id: None,
+                agent_id: None,
+                turn_id: None,
+                permission_mode: None,
+                policy_revision: "test-v1".into(),
+                allowed_caller_class: "agent".into(),
+                allowed_effect_class: "read_only".into(),
+                manifest_digest: "sha256:test".into(),
+                issued_at: chrono::Utc::now().timestamp_millis(),
+                expires_at: None,
+                revoked_at: None,
+                decision_digest: "sha256:decision:test".into(),
+            }),
             cancellation: None,
             deadline: None,
         }

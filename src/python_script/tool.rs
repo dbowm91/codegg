@@ -346,6 +346,11 @@ impl PythonScriptTool {
             deadline: None,
             schedule_id: None,
             depends_on: vec![],
+            parent_job_id: None,
+
+            parent_attempt_id: None,
+
+            parent_call_id: None,
         };
 
         // Derive a submission key from source hash for idempotency

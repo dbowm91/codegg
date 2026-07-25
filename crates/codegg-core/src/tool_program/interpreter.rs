@@ -740,6 +740,9 @@ impl MeteredInterpreter {
                     return ProgramResult::failed(FailureClass::Execution, reason, &self.budget);
                 }
                 Err(e) => {
+                    if matches!(e, InterpreterError::Cancelled) {
+                        return ProgramResult::cancelled(&self.budget);
+                    }
                     let class = e.failure_class();
                     return ProgramResult::failed(class, e.to_string(), &self.budget);
                 }

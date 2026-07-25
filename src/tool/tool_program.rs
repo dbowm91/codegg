@@ -194,8 +194,8 @@ impl Tool for ToolProgramTool {
                 },
                 "backend_policy": {
                     "type": "string",
-                    "enum": ["native_only", "native_preferred", "hosted_preferred", "hosted_required"],
-                    "description": "Execution backend policy. Hosted-required fails closed when no hosted transport is attached."
+                    "enum": ["native_only"],
+                    "description": "Execution backend policy. Only native execution is supported."
                 }
             },
             "required": ["source", "tools"]
@@ -494,6 +494,9 @@ impl ToolProgramTool {
             deadline: Some(effective_deadline),
             schedule_id: None,
             depends_on: vec![],
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         };
 
         let submitted = submission

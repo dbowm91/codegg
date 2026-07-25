@@ -68,6 +68,8 @@ fn make_notification(
         claim_lease_until: None,
         delivered_at: None,
         retry_count: 0,
+        injection_key: None,
+        injected_event_id: None,
     }
 }
 
@@ -131,7 +133,7 @@ async fn restart_after_terminal_after_claim_before_ack() {
     // Simulate: create and claim, then "crash" (service is in-memory)
     let n = make_notification("tp-1", "s1", "completed", true);
     svc.record_notification(n).await;
-    svc.claim("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
 
     // Verify it was claimed
     let n = svc.get("tp-1").await.unwrap();
@@ -164,8 +166,8 @@ async fn restart_after_ack_no_duplicate() {
     let svc = ToolProgramNotificationService::new();
     let n = make_notification("tp-1", "s1", "completed", true);
     svc.record_notification(n).await;
-    svc.claim("tp-1").await;
-    svc.acknowledge("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
+    svc.acknowledge("tp-1").await.unwrap();
 
     // After restart: the old service is gone, create new one
     let svc2 = ToolProgramNotificationService::new();
@@ -287,16 +289,16 @@ async fn many_programs_completing_simultaneously() {
 
     // Claim all — only first claim per program should succeed
     for i in 0..10 {
-        assert!(svc.claim(&format!("tp-{}", i)).await);
+        assert!(svc.claim(&format!("tp-{}", i)).await.unwrap());
         // Second claim should fail
-        assert!(!svc.claim(&format!("tp-{}", i)).await);
+        assert!(!svc.claim(&format!("tp-{}", i)).await.unwrap());
     }
 
     // Ack all
     for i in 0..10 {
-        assert!(svc.acknowledge(&format!("tp-{}", i)).await);
+        assert!(svc.acknowledge(&format!("tp-{}", i)).await.unwrap());
         // Double ack should fail
-        assert!(!svc.acknowledge(&format!("tp-{}", i)).await);
+        assert!(!svc.acknowledge(&format!("tp-{}", i)).await.unwrap());
     }
 }
 
@@ -388,7 +390,7 @@ async fn unrelated_sessions_receive_only_own_events() {
     assert_eq!(svc.pending_count("s3").await, 1);
 
     // Claim s1's notification
-    svc.claim("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
     assert_eq!(svc.pending_count("s1").await, 0);
     // s2 and s3 are unaffected
     assert_eq!(svc.pending_count("s2").await, 1);
@@ -426,12 +428,12 @@ async fn repeated_fake_terminal_events_cannot_trigger_multiple_model_turns() {
     assert_eq!(svc.pending_count("s1").await, 1);
 
     // Only one claim should succeed
-    assert!(svc.claim("tp-1").await);
-    assert!(!svc.claim("tp-1").await);
+    assert!(svc.claim("tp-1").await.unwrap());
+    assert!(!svc.claim("tp-1").await.unwrap());
 
     // Only one ack should succeed
-    assert!(svc.acknowledge("tp-1").await);
-    assert!(!svc.acknowledge("tp-1").await);
+    assert!(svc.acknowledge("tp-1").await.unwrap());
+    assert!(!svc.acknowledge("tp-1").await.unwrap());
 }
 
 #[tokio::test]
@@ -447,12 +449,12 @@ async fn notification_state_transitions_are_valid() {
         svc.get("tp-1").await.unwrap().state,
         NotificationState::Pending
     );
-    svc.claim("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
     assert_eq!(
         svc.get("tp-1").await.unwrap().state,
         NotificationState::Claimed
     );
-    svc.acknowledge("tp-1").await;
+    svc.acknowledge("tp-1").await.unwrap();
     assert_eq!(
         svc.get("tp-1").await.unwrap().state,
         NotificationState::Delivered
@@ -461,7 +463,7 @@ async fn notification_state_transitions_are_valid() {
     // Test Pending -> Suppressed
     svc.record_notification(make_notification("tp-2", "s1", "completed", true))
         .await;
-    svc.suppress("tp-2").await;
+    svc.suppress("tp-2").await.unwrap();
     assert_eq!(
         svc.get("tp-2").await.unwrap().state,
         NotificationState::Suppressed
@@ -470,7 +472,7 @@ async fn notification_state_transitions_are_valid() {
     // Test Claimed -> Expired (via expire_stale)
     svc.record_notification(make_notification("tp-3", "s1", "completed", true))
         .await;
-    svc.claim("tp-3").await;
+    svc.claim("tp-3").await.unwrap();
     // Set updated_at to the past
     {
         let mut notifications = svc.notifications.write().await;
@@ -493,16 +495,16 @@ async fn claim_only_from_pending_state() {
         .await;
 
     // Claim succeeds from Pending
-    assert!(svc.claim("tp-1").await);
+    assert!(svc.claim("tp-1").await.unwrap());
 
     // Claim fails from Claimed
-    assert!(!svc.claim("tp-1").await);
+    assert!(!svc.claim("tp-1").await.unwrap());
 
     // Acknowledge
-    svc.acknowledge("tp-1").await;
+    svc.acknowledge("tp-1").await.unwrap();
 
     // Claim fails from Delivered
-    assert!(!svc.claim("tp-1").await);
+    assert!(!svc.claim("tp-1").await.unwrap());
 }
 
 #[tokio::test]
@@ -513,16 +515,16 @@ async fn acknowledge_only_from_claimed_state() {
         .await;
 
     // Ack fails from Pending
-    assert!(!svc.acknowledge("tp-1").await);
+    assert!(!svc.acknowledge("tp-1").await.unwrap());
 
     // Claim
-    svc.claim("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
 
     // Ack succeeds from Claimed
-    assert!(svc.acknowledge("tp-1").await);
+    assert!(svc.acknowledge("tp-1").await.unwrap());
 
     // Ack fails from Delivered
-    assert!(!svc.acknowledge("tp-1").await);
+    assert!(!svc.acknowledge("tp-1").await.unwrap());
 }
 
 #[tokio::test]
@@ -533,16 +535,16 @@ async fn suppress_only_from_pending_or_claimed() {
     // Create, claim, ack -> Delivered
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
         .await;
-    svc.claim("tp-1").await;
-    svc.acknowledge("tp-1").await;
+    svc.claim("tp-1").await.unwrap();
+    svc.acknowledge("tp-1").await.unwrap();
 
     // Suppress fails from Delivered
-    assert!(!svc.suppress("tp-1").await);
+    assert!(!svc.suppress("tp-1").await.unwrap());
 
     // Create, claim, expire -> Expired
     svc.record_notification(make_notification("tp-2", "s1", "completed", true))
         .await;
-    svc.claim("tp-2").await;
+    svc.claim("tp-2").await.unwrap();
     {
         let mut notifications = svc.notifications.write().await;
         if let Some(n) = notifications.get_mut("tp-2") {
@@ -552,7 +554,7 @@ async fn suppress_only_from_pending_or_claimed() {
     svc.expire_stale(100).await;
 
     // Suppress fails from Expired
-    assert!(!svc.suppress("tp-2").await);
+    assert!(!svc.suppress("tp-2").await.unwrap());
 }
 
 #[tokio::test]
@@ -600,8 +602,8 @@ async fn concurrent_record_and_claim() {
                 true,
             );
             svc.record_notification(n).await;
-            svc.claim(&format!("tp-{}", i)).await;
-            svc.acknowledge(&format!("tp-{}", i)).await;
+            let _ = svc.claim(&format!("tp-{}", i)).await;
+            let _ = svc.acknowledge(&format!("tp-{}", i)).await;
         }));
     }
 

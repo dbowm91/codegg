@@ -34,6 +34,9 @@ fn test_spec(workspace_id: WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 
@@ -405,6 +408,9 @@ async fn payload_too_large_rejects_without_creating_job() {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let err = h

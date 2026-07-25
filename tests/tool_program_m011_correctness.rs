@@ -66,7 +66,15 @@ fn typed_result_projection_does_not_parse_executor_summary() {
         iterations_used: 1,
     };
     let record = ToolProgramResultStore::new(workspace.path())
-        .persist("tp-result", "attempt-1", "native", result)
+        .persist(
+            "tp-result",
+            "attempt-1",
+            "native",
+            result,
+            vec![],
+            vec![],
+            None,
+        )
         .unwrap();
     let projected = result_to_json(&record);
     assert_eq!(projected["steps_used"], 7);
@@ -90,7 +98,15 @@ async fn terminal_notification_is_created_once_from_typed_result() {
     };
     let workspace = TempDir::new().unwrap();
     let record = ToolProgramResultStore::new(workspace.path())
-        .persist("tp-notify", "attempt-1", "native", result)
+        .persist(
+            "tp-notify",
+            "attempt-1",
+            "native",
+            result,
+            vec![],
+            vec![],
+            None,
+        )
         .unwrap();
     service
         .record_terminal_result(
@@ -115,8 +131,8 @@ async fn terminal_notification_is_created_once_from_typed_result() {
     let pending = service.pending_for_session("session-1").await;
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].program_id, "tp-notify");
-    assert!(service.claim("tp-notify").await);
-    assert!(service.acknowledge("tp-notify").await);
+    assert!(service.claim("tp-notify").await.unwrap());
+    assert!(service.acknowledge("tp-notify").await.unwrap());
 }
 
 #[tokio::test(flavor = "current_thread")]

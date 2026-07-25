@@ -1753,7 +1753,11 @@ impl AgentLoop {
         }
         // Claim each notification in deterministic order
         for notification in &pending {
-            if svc.claim(&notification.notification_id).await {
+            if svc
+                .claim(&notification.notification_id)
+                .await
+                .unwrap_or(false)
+            {
                 let text = match notification.classification {
                     NotificationClassification::Completed => {
                         format!(
@@ -1782,7 +1786,7 @@ impl AgentLoop {
                     content: std::sync::Arc::new(text),
                 });
                 // Acknowledge delivery
-                svc.acknowledge(&notification.notification_id).await;
+                let _ = svc.acknowledge(&notification.notification_id).await;
             }
         }
     }
@@ -4305,6 +4309,9 @@ impl AgentLoop {
                     deadline: None,
                     schedule_id: None,
                     depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                 };
                 if let Err(e) = submission.submit(None, spec).await {
                     tracing::warn!(error = %e, "failed to submit security-review subagent");
@@ -4708,10 +4715,27 @@ impl AgentLoop {
                                     permission_mode: exec_ctx.permission_mode.clone(),
                                     timeout_ms: exec_ctx.timeout_ms,
                                     submission_key: None,
-                                    authority: crate::tool::broker::BrokerAuthority::Verified {
-                                        authority_ref,
-                                        policy_revision: None,
-                                    },
+                                    authority: crate::tool::broker::BrokerAuthority::from_grant(
+                                        codegg_core::jobs::ToolAuthorityGrant {
+                                            schema_version: 1,
+                                            grant_id: authority_ref.clone(),
+                                            principal_ref: authority_ref.clone(),
+                                            workspace_id: "unknown".into(),
+                                            workspace_path_policy_id: "workspace:unknown".into(),
+                                            session_id: exec_ctx.session_id.clone(),
+                                            agent_id: None,
+                                            turn_id: None,
+                                            permission_mode: exec_ctx.permission_mode.clone(),
+                                            policy_revision: "agent-policy-v1".into(),
+                                            allowed_caller_class: "agent".into(),
+                                            allowed_effect_class: "read_only".into(),
+                                            manifest_digest: "agent-direct".into(),
+                                            issued_at: chrono::Utc::now().timestamp_millis(),
+                                            expires_at: None,
+                                            revoked_at: None,
+                                            decision_digest: "agent-direct".into(),
+                                        },
+                                    ),
                                     cancellation: exec_ctx.cancellation.clone(),
                                     deadline: exec_ctx.deadline,
                                 };
@@ -4743,6 +4767,13 @@ impl AgentLoop {
                                         crate::tool::broker::BrokerError::Execution(msg) => {
                                             ToolError::Execution(msg)
                                         }
+                                        crate::tool::broker::BrokerError::AuthorityError {
+                                            tool,
+                                            reason,
+                                        } => ToolError::Permission(format!(
+                                            "authority error for tool {}: {}",
+                                            tool, reason
+                                        )),
                                     })?;
                                 if let Some(ref p) = broker_result.value.provenance {
                                     tracing::debug!(

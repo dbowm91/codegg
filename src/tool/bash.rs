@@ -637,6 +637,11 @@ impl BashTool {
                     deadline: None,
                     schedule_id: None,
                     depends_on: Vec::new(),
+                    parent_job_id: None,
+
+                    parent_attempt_id: None,
+
+                    parent_call_id: None,
                 },
             )
             .await
@@ -857,6 +862,9 @@ impl BashTool {
             idempotency,
             not_before: None,
             deadline: None,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
             schedule_id: None,
             depends_on: vec![],
         };
@@ -1187,6 +1195,9 @@ impl BashTool {
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
                     timeout: Some(timeout),
                     retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
                     not_before: None,
                     deadline: None,
@@ -1274,6 +1285,9 @@ impl BashTool {
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Shell,
                     ),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     timeout: Some(timeout),
                     retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
                     idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,

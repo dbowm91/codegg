@@ -749,6 +749,9 @@ async fn authority_digest_validated_at_admission() {
             cancel_reason: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         }
     }
 

@@ -68,6 +68,24 @@ pub enum NotificationState {
     Failed,
 }
 
+/// Error type for notification store operations.
+///
+/// M012-D: Database transition errors are returned to the caller and
+/// never reported as success.
+#[derive(Debug, thiserror::Error)]
+pub enum NotificationStoreError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("notification not found")]
+    NotFound,
+    #[error("conflict: notification already in target state")]
+    Conflict,
+    #[error("store unavailable")]
+    Unavailable,
+}
+
 /// A durable notification record for a background tool program
 /// completion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +134,10 @@ pub struct ToolProgramNotification {
     pub delivered_at: Option<i64>,
     #[serde(default)]
     pub retry_count: u32,
+    /// M012-D: Injection key for durable event injection.
+    pub injection_key: Option<String>,
+    /// M012-D: Injected event ID after durable injection.
+    pub injected_event_id: Option<String>,
 }
 
 /// Compact handle returned to the parent when a background program is
@@ -308,6 +330,8 @@ impl ToolProgramNotificationService {
             claim_lease_until: None,
             delivered_at: None,
             retry_count: 0,
+            injection_key: Some(format!("tp-inject:{}:{}", program_id, session_id)),
+            injected_event_id: None,
         };
         let session_id = notification.session_id.clone();
         self.record_notification(notification).await;
@@ -393,13 +417,17 @@ impl ToolProgramNotificationService {
     ///
     /// Returns `true` if the claim succeeded, `false` if the
     /// notification was already claimed or in a non-pending state.
-    pub async fn claim(&self, notification_id: &str) -> bool {
+    pub async fn claim(&self, notification_id: &str) -> Result<bool, NotificationStoreError> {
         self.claim_as(notification_id, "tool-program-delivery")
             .await
     }
 
     /// Claim a notification with an explicit delivery owner.
-    pub async fn claim_as(&self, notification_id: &str, owner: &str) -> bool {
+    pub async fn claim_as(
+        &self,
+        notification_id: &str,
+        owner: &str,
+    ) -> Result<bool, NotificationStoreError> {
         self.load_one_from_pool(notification_id).await;
         self.recover_expired().await;
         self.transition_with_owner(
@@ -415,7 +443,7 @@ impl ToolProgramNotificationService {
     ///
     /// Transitions from Claimed to Delivered. Returns `false` if the
     /// notification is not in the Claimed state.
-    pub async fn acknowledge(&self, notification_id: &str) -> bool {
+    pub async fn acknowledge(&self, notification_id: &str) -> Result<bool, NotificationStoreError> {
         self.load_one_from_pool(notification_id).await;
         self.transition_with_owner(
             notification_id,
@@ -427,7 +455,7 @@ impl ToolProgramNotificationService {
     }
 
     /// Suppress a notification (e.g. parent session archived).
-    pub async fn suppress(&self, notification_id: &str) -> bool {
+    pub async fn suppress(&self, notification_id: &str) -> Result<bool, NotificationStoreError> {
         self.load_one_from_pool(notification_id).await;
         if self
             .transition(
@@ -435,9 +463,9 @@ impl ToolProgramNotificationService {
                 NotificationState::Pending,
                 NotificationState::Suppressed,
             )
-            .await
+            .await?
         {
-            return true;
+            return Ok(true);
         }
         self.transition(
             notification_id,
@@ -545,7 +573,7 @@ impl ToolProgramNotificationService {
         if pending.len() > max_pending {
             // Suppress oldest (first in list = earliest created).
             for nid in &pending[..pending.len() - max_pending] {
-                if self.suppress(nid).await {
+                if self.suppress(nid).await.unwrap_or(false) {
                     suppressed.push(nid.clone());
                 }
             }
@@ -601,6 +629,12 @@ impl ToolProgramNotificationService {
                 claim_lease_until: None,
                 delivered_at: None,
                 retry_count: 0,
+                injection_key: Some(format!(
+                    "tp-inject:{}:{}",
+                    job.program_id,
+                    job.session_id.as_deref().unwrap_or("unknown")
+                )),
+                injected_event_id: None,
             };
             let existing = self.get(&job.program_id).await;
             if existing.is_none() {
@@ -644,7 +678,7 @@ impl ToolProgramNotificationService {
         notification_id: &str,
         from: NotificationState,
         to: NotificationState,
-    ) -> bool {
+    ) -> Result<bool, NotificationStoreError> {
         self.transition_with_owner(notification_id, from, to, None)
             .await
     }
@@ -655,7 +689,7 @@ impl ToolProgramNotificationService {
         from: NotificationState,
         to: NotificationState,
         owner: Option<String>,
-    ) -> bool {
+    ) -> Result<bool, NotificationStoreError> {
         self.transition_to(
             notification_id,
             from,
@@ -673,14 +707,83 @@ impl ToolProgramNotificationService {
         to: NotificationState,
         now: i64,
         owner: Option<String>,
-    ) -> bool {
+    ) -> Result<bool, NotificationStoreError> {
+        // M012-D: When a SQLite pool is available, use CAS as the authority.
+        if let Some(pool) = &self.pool {
+            let from_str = serde_json::to_string(&from).unwrap_or_else(|_| "\"pending\"".into());
+            let to_str = serde_json::to_string(&to).unwrap_or_else(|_| "\"claimed\"".into());
+            let owner_str = owner.as_deref();
+            let claim_lease_until = if to == NotificationState::Claimed {
+                Some(now.saturating_add(self.policy.claim_lease_ms))
+            } else {
+                None
+            };
+            let delivered_at = if to == NotificationState::Delivered {
+                Some(now)
+            } else {
+                None
+            };
+            let result = sqlx::query(
+                "UPDATE tool_program_notification
+                   SET state = ?2, updated_at = ?3,
+                       claim_owner = CASE WHEN ?2 = 'claimed' THEN ?4 ELSE NULL END,
+                       claim_lease_until = CASE WHEN ?2 = 'claimed' THEN ?5 ELSE NULL END,
+                       delivered_at = CASE WHEN ?2 = 'delivered' THEN ?6 ELSE delivered_at END
+                 WHERE notification_id = ?1 AND state = ?0",
+            )
+            .bind(&from_str)
+            .bind(notification_id)
+            .bind(&to_str)
+            .bind(now)
+            .bind(owner_str)
+            .bind(claim_lease_until)
+            .bind(delivered_at)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                NotificationStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("SQLite CAS failed: {}", e),
+                ))
+            })?;
+            let changed = result.rows_affected() > 0;
+            if changed {
+                // Update in-memory cache to match durable state
+                let mut notifications = self.notifications.write().await;
+                if let Some(notification) = notifications.get_mut(notification_id) {
+                    notification.state = to;
+                    notification.updated_at = now;
+                    match to {
+                        NotificationState::Claimed => {
+                            notification.claim_owner =
+                                owner.or_else(|| notification.claim_owner.clone());
+                            notification.claim_lease_until = claim_lease_until;
+                            notification.retry_count = notification.retry_count.saturating_add(1);
+                        }
+                        NotificationState::Delivered => {
+                            notification.claim_owner = None;
+                            notification.claim_lease_until = None;
+                            notification.delivered_at = Some(now);
+                        }
+                        NotificationState::Pending | NotificationState::Expired => {
+                            notification.claim_owner = None;
+                            notification.claim_lease_until = None;
+                        }
+                        NotificationState::Suppressed | NotificationState::Failed => {}
+                    }
+                }
+            }
+            return Ok(changed);
+        }
+
+        // Fallback: in-memory CAS when no pool is available.
         let updated = {
             let mut notifications = self.notifications.write().await;
             let Some(notification) = notifications.get_mut(notification_id) else {
-                return false;
+                return Ok(false);
             };
             if notification.state != from {
-                return false;
+                return Ok(false);
             }
             notification.state = to;
             notification.updated_at = now;
@@ -705,7 +808,7 @@ impl ToolProgramNotificationService {
             notification.clone()
         };
         self.persist_record(&updated).await;
-        true
+        Ok(true)
     }
 
     async fn load_session_from_pool(&self, session_id: &str) {
@@ -871,6 +974,8 @@ mod tests {
             claim_lease_until: None,
             delivered_at: None,
             retry_count: 0,
+            injection_key: None,
+            injected_event_id: None,
         }
     }
 
@@ -900,9 +1005,9 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         let n = test_notification("tp-1", "s1", "completed", true);
         svc.record_notification(n).await;
-        assert!(svc.claim("tp-1").await);
+        assert!(svc.claim("tp-1").await.unwrap());
         // Second claim fails
-        assert!(!svc.claim("tp-1").await);
+        assert!(!svc.claim("tp-1").await.unwrap());
     }
 
     #[tokio::test]
@@ -910,11 +1015,11 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         let n = test_notification("tp-1", "s1", "completed", true);
         svc.record_notification(n).await;
-        assert!(!svc.acknowledge("tp-1").await); // pending, not claimed
-        assert!(svc.claim("tp-1").await);
-        assert!(svc.acknowledge("tp-1").await);
+        assert!(!svc.acknowledge("tp-1").await.unwrap()); // pending, not claimed
+        assert!(svc.claim("tp-1").await.unwrap());
+        assert!(svc.acknowledge("tp-1").await.unwrap());
         // Double ack fails
-        assert!(!svc.acknowledge("tp-1").await);
+        assert!(!svc.acknowledge("tp-1").await.unwrap());
     }
 
     #[tokio::test]
@@ -938,7 +1043,7 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         svc.record_notification(test_notification("tp-1", "s1", "completed", true))
             .await;
-        svc.claim("tp-1").await;
+        svc.claim("tp-1").await.unwrap();
         let pending = svc.pending_for_session("s1").await;
         assert!(pending.is_empty());
     }
@@ -948,7 +1053,7 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         svc.record_notification(test_notification("tp-1", "s1", "completed", true))
             .await;
-        assert!(svc.suppress("tp-1").await);
+        assert!(svc.suppress("tp-1").await.unwrap());
         let pending = svc.pending_for_session("s1").await;
         assert!(pending.is_empty());
     }
@@ -958,7 +1063,7 @@ mod tests {
         let svc = ToolProgramNotificationService::new();
         svc.record_notification(test_notification("tp-1", "s1", "completed", true))
             .await;
-        svc.claim("tp-1").await;
+        svc.claim("tp-1").await.unwrap();
         // Set updated_at to the past so it's stale
         {
             let mut notifications = svc.notifications.write().await;

@@ -32,6 +32,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -82,6 +83,80 @@ pub struct ToolProgramExecutionContext {
 
 fn default_tool_program_context_version() -> u16 {
     1
+}
+
+/// Typed caller class for authority grant verification.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallerClass {
+    Agent,
+    Program,
+    Subagent,
+    Api,
+    Internal,
+}
+
+/// Scope-verifiable authority grant for Tool Program execution.
+///
+/// This is the durable, immutable record of the permission/path-policy
+/// decision that admitted a Tool Program. It is constructed from the real
+/// permission check result in the agent loop and persisted with the job
+/// payload. The Tool Broker re-verifies scope against this grant on every
+/// nested call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolAuthorityGrant {
+    pub schema_version: u16,
+    pub grant_id: String,
+    pub principal_ref: String,
+    pub workspace_id: String,
+    pub workspace_path_policy_id: String,
+    pub session_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub permission_mode: Option<String>,
+    pub policy_revision: String,
+    pub allowed_caller_class: String,
+    pub allowed_effect_class: String,
+    pub manifest_digest: String,
+    pub issued_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub decision_digest: String,
+}
+
+impl ToolAuthorityGrant {
+    /// Compute the SHA-256 digest over bounded grant fields.
+    pub fn compute_digest(&self) -> String {
+        let fields = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            self.principal_ref,
+            self.workspace_id,
+            self.workspace_path_policy_id,
+            self.policy_revision,
+            self.allowed_caller_class,
+            self.allowed_effect_class,
+            self.manifest_digest,
+            self.decision_digest,
+        );
+        format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
+    }
+
+    /// Validate the grant against the current time.
+    pub fn is_valid(&self, now: i64) -> bool {
+        if self.schema_version != 1 {
+            return false;
+        }
+        if let Some(expires_at) = self.expires_at {
+            if now > expires_at {
+                return false;
+            }
+        }
+        if let Some(revoked_at) = self.revoked_at {
+            if now >= revoked_at {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 impl ToolProgramExecutionContext {
@@ -855,6 +930,10 @@ pub struct NewJob {
     pub deadline: Option<DateTime<Utc>>,
     pub schedule_id: Option<ScheduleId>,
     pub depends_on: Vec<JobId>,
+    /// M012-E: Parent job correlation for descendant lineage.
+    pub parent_job_id: Option<JobId>,
+    pub parent_attempt_id: Option<AttemptId>,
+    pub parent_call_id: Option<String>,
 }
 
 impl NewJob {
@@ -898,6 +977,10 @@ pub struct JobRecord {
     pub cancel_requested_at: Option<DateTime<Utc>>,
     pub cancel_reason: Option<String>,
     pub depends_on: Vec<JobId>,
+    /// M012-E: Parent job correlation for descendant lineage.
+    pub parent_job_id: Option<JobId>,
+    pub parent_attempt_id: Option<AttemptId>,
+    pub parent_call_id: Option<String>,
     /// Free-form metadata persisted alongside the job (tool name, run
     /// identifier, etc.). Not used by the queue state machine.
     #[serde(default)]

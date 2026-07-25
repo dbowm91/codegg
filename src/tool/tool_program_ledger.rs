@@ -48,6 +48,12 @@ struct JournalFile {
     reservations: Vec<JournalReservation>,
     completed: Vec<CompletedCall>,
     checkpoint: Option<InterpreterCheckpoint>,
+    /// Original absolute deadline, persisted for restart authority (C-23).
+    deadline_millis: Option<i64>,
+    /// Divergence records: sequence -> observed output digest that differs
+    /// from the durable record (C-22).
+    #[serde(default)]
+    divergences: Vec<JournalDivergence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +62,13 @@ struct JournalReservation {
     request: CallRequest,
     state: String,
     reserved_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct JournalDivergence {
+    sequence: u32,
+    observed_output_digest: String,
+    diverged_at: i64,
 }
 
 #[derive(Clone)]
@@ -257,6 +270,90 @@ impl ToolProgramLedger {
             .into_iter()
             .map(|call| (call.sequence, call))
             .collect())
+    }
+
+    /// Check if a call has been durably completed (C-20).
+    pub fn is_call_completed(&self, program_id: &str, sequence: u32) -> bool {
+        self.load_completed_calls(program_id)
+            .map(|calls| calls.contains_key(&sequence))
+            .unwrap_or(false)
+    }
+
+    /// Record the original absolute deadline for restart authority (C-23).
+    pub fn record_program_deadline(
+        &self,
+        program_id: &str,
+        deadline_millis: i64,
+    ) -> Result<(), ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        let mut journal = self.read_journal(program_id)?;
+        journal.deadline_millis = Some(deadline_millis);
+        self.write_journal(program_id, &journal)
+    }
+
+    /// Retrieve the original absolute deadline (C-23).
+    pub fn get_program_deadline(&self, program_id: &str) -> Option<i64> {
+        self.read_journal(program_id)
+            .ok()
+            .and_then(|j| j.deadline_millis)
+    }
+
+    /// Record a replay divergence for inspection (C-22).
+    pub fn record_divergence(
+        &self,
+        program_id: &str,
+        sequence: u32,
+        observed_output_digest: &str,
+    ) -> Result<(), ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        let mut journal = self.read_journal(program_id)?;
+        journal.divergences.push(JournalDivergence {
+            sequence,
+            observed_output_digest: observed_output_digest.to_string(),
+            diverged_at: Utc::now().timestamp_millis(),
+        });
+        self.write_journal(program_id, &journal)
+    }
+
+    /// Check if a divergence has been recorded for a call (C-22).
+    pub fn has_divergence(&self, program_id: &str, sequence: u32) -> bool {
+        self.read_journal(program_id)
+            .map(|j| j.divergences.iter().any(|d| d.sequence == sequence))
+            .unwrap_or(false)
+    }
+
+    /// Get the input digest for a reserved/completed call (C-21).
+    pub fn get_call_input_digest(&self, program_id: &str, sequence: u32) -> Option<String> {
+        let journal = self.read_journal(program_id).ok()?;
+        let input_str = if let Some(reservation) =
+            journal.reservations.iter().find(|r| r.sequence == sequence)
+        {
+            serde_json::to_string(&reservation.request.input).ok()?
+        } else if let Some(completed) = journal.completed.iter().find(|c| c.sequence == sequence) {
+            serde_json::to_string(&completed.request.input).ok()?
+        } else {
+            return None;
+        };
+        Some(format!(
+            "sha256:{}",
+            format!("{:x}", md5::compute(input_str))
+        ))
+    }
+
+    /// Get the output digest for a completed call (C-21).
+    pub fn get_call_output_digest(&self, program_id: &str, sequence: u32) -> Option<String> {
+        let journal = self.read_journal(program_id).ok()?;
+        journal
+            .completed
+            .iter()
+            .find(|c| c.sequence == sequence)
+            .and_then(|call| {
+                let output_str = serde_json::to_string(&call.result.output).ok()?;
+                Some(format!(
+                    "sha256:{}",
+                    format!("{:x}", md5::compute(output_str))
+                ))
+            })
     }
 
     fn path(&self, program_id: &str) -> PathBuf {

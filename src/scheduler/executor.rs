@@ -399,6 +399,9 @@ mod tests {
             cancel_reason: None,
             depends_on: vec![],
             labels: HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         }
     }
 }

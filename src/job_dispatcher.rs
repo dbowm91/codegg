@@ -135,6 +135,11 @@ mod tests {
             cancel_reason: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
+            parent_job_id: None,
+
+            parent_attempt_id: None,
+
+            parent_call_id: None,
         };
 
         // NullJobDispatcher accepts anything
@@ -172,6 +177,9 @@ mod tests {
             terminal_at: None,
             cancel_requested_at: None,
             cancel_reason: None,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
         };

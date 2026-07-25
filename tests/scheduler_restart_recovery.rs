@@ -47,6 +47,9 @@ fn default_new_job(workspace_id: &WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 
@@ -381,6 +384,9 @@ async fn schedule_occurrence_uniqueness_across_restarts() {
                     deadline: None,
                     schedule_id: None,
                     depends_on: vec![],
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                 })
                 .await
                 .map_err(MaterializerError::JobStore)?;

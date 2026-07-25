@@ -31,17 +31,19 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 012 ready | M011 implementation is conditionally closed; M012 owns remaining authority, failure, delivery, descendant, replay, artifact, hosted-status, and process-level closure findings |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 012 closing | M011 implementation is conditionally closed; M012 owns remaining authority, failure, delivery, descendant, replay, artifact, hosted-status, and process-level closure findings |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective closure | ready | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | M001–M011 implementation present; no external provider required for native correctness; recommended hosted disposition is explicit native-only production status |
+| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective closure | closing | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | M001–M011 implementation present; no external provider required for native correctness; recommended hosted disposition is explicit native-only production status |
 
 ## Active closure work
 
-None — M012 is ready for implementation. Closure review begins only after production changes and mechanism-faithful tests land.
+| Subsystem | Milestone | Status | Closure record | Notes |
+|---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 012 | closing | `plans/closure/tool-programs/012-status.md` | Implementation landed; closure evidence being gathered |
 
 ## Blocked work
 

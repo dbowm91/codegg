@@ -41,6 +41,9 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 
@@ -64,6 +67,9 @@ fn build_build_spec(workspace_id: WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 

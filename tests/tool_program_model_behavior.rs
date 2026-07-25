@@ -384,6 +384,8 @@ async fn behavior_background_returns_immediately() {
         claim_lease_until: None,
         delivered_at: None,
         retry_count: 0,
+        injection_key: None,
+        injected_event_id: None,
     };
     svc.record_notification(notification).await;
 

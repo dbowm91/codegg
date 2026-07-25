@@ -102,6 +102,9 @@ impl TestHarness {
             deadline: None,
             schedule_id: None,
             depends_on: vec![],
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         };
 
         let key =
@@ -175,6 +178,9 @@ async fn disabled_scheduler_returns_typed_error() {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let result = submission.submit(None, spec).await;
@@ -217,6 +223,9 @@ async fn python_payload_validates_mode() {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let result = harness.submission.submit(None, spec).await;
@@ -267,6 +276,9 @@ async fn source_hash_mismatch_rejected_at_validation() {
         cancel_reason: None,
         depends_on: vec![],
         labels: std::collections::HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let result = executor.validate(&job);
@@ -319,6 +331,9 @@ async fn legacy_script_path_payload_rejected_without_source() {
         cancel_reason: None,
         depends_on: vec![],
         labels: std::collections::HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     // Validation passes (it only checks mode and hash)
@@ -466,6 +481,9 @@ async fn python_executor_cancelled_before_launch() {
         cancel_reason: None,
         depends_on: vec![],
         labels: std::collections::HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {
@@ -540,6 +558,9 @@ async fn python_executor_rejects_cwd_outside_workspace() {
         cancel_reason: None,
         depends_on: vec![],
         labels: std::collections::HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {

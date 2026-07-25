@@ -76,6 +76,9 @@ fn build_job(workspace: &WorkspaceId, kind: JobKind) -> JobRecord {
         cancel_reason: None,
         depends_on: vec![],
         labels: std::collections::HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 
@@ -293,6 +296,9 @@ fn build_spec(workspace_id: WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 

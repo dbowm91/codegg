@@ -188,6 +188,11 @@ impl TestTool {
                     deadline: None,
                     schedule_id: None,
                     depends_on: Vec::new(),
+                    parent_job_id: None,
+
+                    parent_attempt_id: None,
+
+                    parent_call_id: None,
                 },
             )
             .await

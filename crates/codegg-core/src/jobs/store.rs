@@ -248,6 +248,9 @@ impl JobStore for InMemoryJobStore {
             cancel_reason: None,
             depends_on: spec.depends_on,
             labels: HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         };
         guard.jobs.insert(job_id.clone(), record.clone());
         Ok(record)
@@ -325,6 +328,9 @@ impl JobStore for InMemoryJobStore {
         let updated = JobRecord {
             state: JobState::Queued,
             updated_at: now,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
             ..job
         };
         guard.jobs.insert(id.clone(), updated.clone());
@@ -382,6 +388,9 @@ impl JobStore for InMemoryJobStore {
             attempt_count: next_seq,
             current_attempt_id: Some(attempt_id.clone()),
             updated_at: now,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
             ..job
         };
         guard.attempts.insert(attempt_id.clone(), attempt.clone());
@@ -564,6 +573,9 @@ impl JobStore for InMemoryJobStore {
                     cancel_reason: Some(reason.reason.clone()),
                     terminal_at: Some(now),
                     updated_at: now,
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(id.clone(), updated);
@@ -578,6 +590,9 @@ impl JobStore for InMemoryJobStore {
                     cancel_requested_at: Some(now),
                     cancel_reason: Some(reason.reason.clone()),
                     updated_at: now,
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(id.clone(), updated);
@@ -669,6 +684,9 @@ impl JobStore for InMemoryJobStore {
         let updated = JobRecord {
             state: JobState::Blocked,
             updated_at: now,
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
             ..job
         };
         guard.jobs.insert(id.clone(), updated.clone());
@@ -729,6 +747,9 @@ impl JobStore for InMemoryJobStore {
                     cancel_requested_at: None,
                     cancel_reason: None,
                     updated_at: now,
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(job_id.clone(), updated);
@@ -739,6 +760,9 @@ impl JobStore for InMemoryJobStore {
                     current_attempt_id: None,
                     terminal_at: Some(now),
                     updated_at: now,
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(job_id.clone(), updated);
@@ -867,6 +891,9 @@ impl JobStore for SqliteJobStore {
             cancel_reason: None,
             depends_on: spec.depends_on,
             labels: HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         };
         Ok(record)
     }
@@ -1652,6 +1679,9 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
             .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
         cancel_reason,
         depends_on: Vec::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
         labels,
     })
 }

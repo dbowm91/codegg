@@ -74,6 +74,9 @@ fn sample_job(program_id: &str, source: &str) -> JobRecord {
         cancel_reason: None,
         depends_on: vec![],
         labels: Default::default(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 

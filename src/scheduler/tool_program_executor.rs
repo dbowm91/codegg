@@ -181,7 +181,7 @@ pub struct BrokerAdapter {
     turn_id: Option<String>,
     agent_id: Option<String>,
     attempt_id: Option<String>,
-    authority_digest: Option<String>,
+    grant: Option<codegg_core::jobs::ToolAuthorityGrant>,
     deadline: Option<tokio::time::Instant>,
 }
 
@@ -203,7 +203,7 @@ impl BrokerAdapter {
             turn_id: None,
             agent_id: None,
             attempt_id: None,
-            authority_digest: None,
+            grant: None,
             deadline: None,
         }
     }
@@ -254,19 +254,24 @@ impl BrokerAdapter {
         self
     }
 
+    pub fn with_grant(mut self, grant: codegg_core::jobs::ToolAuthorityGrant) -> Self {
+        self.grant = Some(grant);
+        self
+    }
+
     pub fn with_context(
         mut self,
         session_id: Option<String>,
         turn_id: Option<String>,
         agent_id: Option<String>,
         attempt_id: Option<String>,
-        authority_digest: Option<String>,
+        grant: Option<codegg_core::jobs::ToolAuthorityGrant>,
     ) -> Self {
         self.session_id = session_id;
         self.turn_id = turn_id;
         self.agent_id = agent_id;
         self.attempt_id = attempt_id;
-        self.authority_digest = authority_digest;
+        self.grant = grant;
         self
     }
 
@@ -307,11 +312,8 @@ impl BrokerCallback for BrokerAdapter {
             permission_mode: None,
             timeout_ms: Some(remaining_ms.unwrap_or(30_000).min(30_000)),
             submission_key: None,
-            authority: match &self.authority_digest {
-                Some(authority_ref) => crate::tool::broker::BrokerAuthority::Verified {
-                    authority_ref: authority_ref.clone(),
-                    policy_revision: None,
-                },
+            authority: match &self.grant {
+                Some(grant) => crate::tool::broker::BrokerAuthority::from_grant(grant.clone()),
                 None => crate::tool::broker::BrokerAuthority::Unverified,
             },
             cancellation: self.cancellation.clone(),
@@ -341,21 +343,26 @@ impl BrokerCallback for BrokerAdapter {
             .await
         {
             Ok(result) => {
-                let program_value = match result.value.value {
-                    Some(v) => ProgramValue::ToolResult(v),
-                    None => ProgramValue::ToolResult(
-                        serde_json::json!({"display": result.value.display}),
-                    ),
-                };
-                Ok(CallResult {
-                    output: program_value,
-                    artifacts: result
-                        .value
-                        .artifacts
-                        .into_iter()
-                        .map(|a| a.artifact_id)
-                        .collect(),
-                })
+                // M012-F02: Classify the terminal status for programmatic consumers.
+                // Only Success becomes a completed call; all other statuses are errors.
+                match result.into_programmatic_outcome() {
+                    Ok(value) => {
+                        let program_value = match value.value {
+                            Some(v) => ProgramValue::ToolResult(v),
+                            None => ProgramValue::ToolResult(
+                                serde_json::json!({"display": value.display}),
+                            ),
+                        };
+                        Ok(CallResult {
+                            output: program_value,
+                            artifacts: value.artifacts.into_iter().map(|a| a.artifact_id).collect(),
+                        })
+                    }
+                    Err(outcome) => {
+                        let msg = format!("tool '{}' failed: {:?}", request.tool_name, outcome);
+                        Err(InterpreterError::BrokerError(msg))
+                    }
+                }
             }
             Err(e) => Err(InterpreterError::BrokerError(e.to_string())),
         }
@@ -486,6 +493,12 @@ impl BrokerCallback for BrokerAdapter {
             ),
             schedule_id: None,
             depends_on: vec![],
+            parent_job_id: self.job_id.clone(),
+            parent_attempt_id: self
+                .attempt_id
+                .as_ref()
+                .map(|id| codegg_core::jobs::AttemptId::new_unchecked(id)),
+            parent_call_id: Some(format!("call:{}", request.op)),
         };
 
         // Submit and wait
@@ -808,6 +821,20 @@ impl JobExecutor for ToolProgramExecutor {
             .progress(ctx.job_id(), "tool_program: starting")
             .await;
 
+        // M012: Early cancellation check before validation.
+        if ctx.cancellation.is_cancelled() {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Cancelled,
+                summary: "cancelled before execution".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    cpu_time_ms: None,
+                    peak_memory_mb: None,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                },
+            };
+        }
+
         // Extract payload
         let (
             program_id,
@@ -886,6 +913,10 @@ impl JobExecutor for ToolProgramExecutor {
             &source_digest,
         );
         if expected_authority != authority_digest {
+            eprintln!(
+                "[M012 DEBUG] authority mismatch: expected={}, got={}, context={:?}",
+                expected_authority, authority_digest, execution_context
+            );
             return ExecutorCompletion {
                 status: ExecutorStatus::Failed,
                 summary: "tool-program authority context digest mismatch".into(),
@@ -922,7 +953,7 @@ impl JobExecutor for ToolProgramExecutor {
                     relative_path,
                 }
             }
-            _ => {
+            (rel, len) => {
                 return ExecutorCompletion {
                     status: ExecutorStatus::Failed,
                     summary: "missing durable tool-program source reference".into(),
@@ -1077,7 +1108,7 @@ impl JobExecutor for ToolProgramExecutor {
         }
         broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
         broker_adapter = broker_adapter.with_cwd(ctx.workspace_root.clone());
-        broker_adapter = broker_adapter.with_allowed_tools(allowed_tools);
+        broker_adapter = broker_adapter.with_allowed_tools(allowed_tools.clone());
         broker_adapter = broker_adapter
             .with_ledger(ledger.clone())
             .with_cancellation(ctx.cancellation.clone())
@@ -1087,8 +1118,15 @@ impl JobExecutor for ToolProgramExecutor {
                 execution_context.turn_id.clone(),
                 execution_context.agent_id.clone(),
                 Some(ctx.attempt_id.to_string()),
-                Some(authority_digest.clone()),
+                None,
             )
+            .with_grant(crate::tool::tool_program_context::build_authority_grant(
+                Some(&execution_context),
+                ctx.workspace_id.as_str(),
+                &program_id,
+                &allowed_tools,
+                &source_digest,
+            ))
             .with_deadline(wall_deadline);
 
         // Build run configuration
@@ -1123,12 +1161,35 @@ impl JobExecutor for ToolProgramExecutor {
         let selected_backend = if execution_context.backend_policy == "native_only" {
             "native"
         } else {
-            // Hosted selection is explicit in the persisted context. The
-            // native executor remains the safe fallback only for preferred
-            // policy; required policy fails closed until a Responses
-            // transport is attached to the daemon provider.
-            "native_fallback"
+            "native"
         };
+
+        // M012-G: Collect call artifacts from completed calls.
+        let call_artifacts: Vec<crate::tool::tool_program_result::ProgramArtifactHandle> =
+            interpreter
+                .completed_calls()
+                .iter()
+                .map(|(_, call)| {
+                    let preview = match &call.result.output {
+                        codegg_core::tool_program::ProgramValue::String(s) => {
+                            s.chars().take(200).collect::<String>()
+                        }
+                        codegg_core::tool_program::ProgramValue::ToolResult(v) => {
+                            let s = v.to_string();
+                            s.chars().take(200).collect::<String>()
+                        }
+                        other => format!("{:?}", other).chars().take(200).collect::<String>(),
+                    };
+                    let artifact_id = call.result.artifacts.first().cloned();
+                    crate::tool::tool_program_result::ProgramArtifactHandle {
+                        tool_name: Some(call.request.tool_name.clone()),
+                        preview,
+                        success: true,
+                        artifact_id,
+                        digest: None,
+                    }
+                })
+                .collect();
 
         let result_record = match crate::tool::tool_program_result::ToolProgramResultStore::new(
             &ctx.workspace_root,
@@ -1138,6 +1199,9 @@ impl JobExecutor for ToolProgramExecutor {
             ctx.attempt_id.as_str(),
             selected_backend,
             result.clone(),
+            call_artifacts,
+            vec![], // child_artifacts — populated below if child jobs complete
+            None,   // output_artifact
         ) {
             Ok(record) => Some(record),
             Err(error) => {
@@ -1276,6 +1340,9 @@ mod tests {
             cancel_reason: None,
             depends_on: vec![],
             labels: HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         }
     }
 
@@ -1363,6 +1430,9 @@ mod tests {
             cancel_reason: None,
             depends_on: vec![],
             labels: HashMap::new(),
+            parent_job_id: None,
+            parent_attempt_id: None,
+            parent_call_id: None,
         };
         assert!(exec.validate(&job).is_err());
     }

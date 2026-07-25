@@ -61,6 +61,9 @@ fn build_managed_process_spec(workspace: &WorkspaceId, argv: Vec<String>) -> New
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 
@@ -88,6 +91,9 @@ fn build_subagent_spec(workspace: &WorkspaceId) -> NewJob {
         deadline: None,
         schedule_id: None,
         depends_on: vec![],
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     }
 }
 

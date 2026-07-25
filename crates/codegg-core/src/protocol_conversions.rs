@@ -775,6 +775,9 @@ pub fn job_submit_from_dto(
         deadline,
         schedule_id,
         depends_on,
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
     })
 }
 

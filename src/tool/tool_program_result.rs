@@ -3,12 +3,17 @@
 //! The scheduler, foreground tool, background notification service, and
 //! inspection API all read the same bounded record. Human-readable executor
 //! summaries are presentation only and are never parsed for semantics.
+//!
+//! M012-F07: Result records now carry bounded artifact handles and verify
+//! their stored digest on every load. Corrupt or mismatched records fail
+//! closed and remain diagnostically inspectable.
 
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use codegg_core::tool_program::ProgramResult;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use thiserror::Error;
 
 const MAX_RESULT_BYTES: usize = 2 * 1024 * 1024;
@@ -26,6 +31,42 @@ pub enum ToolProgramResultError {
     Json(#[from] serde_json::Error),
     #[error("result identity mismatch")]
     IdentityMismatch,
+    #[error("result digest mismatch: stored={stored} computed={computed}")]
+    DigestMismatch { stored: String, computed: String },
+    #[error("result version mismatch")]
+    VersionMismatch,
+}
+
+/// Bounded artifact handle for a tool call or child job result.
+///
+/// M012-F07: Replaces the unconditional empty `program_artifacts` array.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgramArtifactHandle {
+    /// Tool name that produced this artifact (for call artifacts).
+    pub tool_name: Option<String>,
+    /// Bounded display preview (first ~200 chars).
+    pub preview: String,
+    /// Whether the call succeeded.
+    pub success: bool,
+    /// Artifact handle (ctx:// URI) for the full output content.
+    pub artifact_id: Option<String>,
+    /// Content digest for integrity verification.
+    pub digest: Option<String>,
+}
+
+/// Bounded child job artifact handle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChildArtifactHandle {
+    /// Child job ID.
+    pub job_id: String,
+    /// Child run ID, if available.
+    pub run_id: Option<String>,
+    /// Child terminal status.
+    pub status: String,
+    /// Artifact handle for the child's output.
+    pub artifact_id: Option<String>,
+    /// Content digest.
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +76,15 @@ pub struct ProgramResultRecord {
     pub attempt_id: String,
     pub selected_backend: String,
     pub result: ProgramResult,
+    /// Bounded call artifact handles (M012-F07).
+    #[serde(default)]
+    pub call_artifacts: Vec<ProgramArtifactHandle>,
+    /// Bounded child job artifact handles (M012-F07).
+    #[serde(default)]
+    pub child_artifacts: Vec<ChildArtifactHandle>,
+    /// Output artifact handle, if the output was spilled to an artifact.
+    #[serde(default)]
+    pub output_artifact: Option<String>,
     pub result_digest: String,
     pub recorded_at: i64,
 }
@@ -57,6 +107,9 @@ impl ToolProgramResultStore {
         attempt_id: &str,
         selected_backend: impl Into<String>,
         mut result: ProgramResult,
+        call_artifacts: Vec<ProgramArtifactHandle>,
+        child_artifacts: Vec<ChildArtifactHandle>,
+        output_artifact: Option<String>,
     ) -> Result<ProgramResultRecord, ToolProgramResultError> {
         validate_identity(program_id)?;
         if attempt_id.is_empty() || attempt_id.len() > MAX_PROGRAM_ID_BYTES {
@@ -66,16 +119,21 @@ impl ToolProgramResultStore {
             error.truncate(4096);
         }
         let mut record = ProgramResultRecord {
-            schema_version: 1,
+            schema_version: 2,
             program_id: program_id.to_string(),
             attempt_id: attempt_id.to_string(),
             selected_backend: selected_backend.into(),
             result,
+            call_artifacts,
+            child_artifacts,
+            output_artifact,
             result_digest: String::new(),
             recorded_at: Utc::now().timestamp_millis(),
         };
+        // M012-F07: Compute digest over canonical serialized content
+        // excluding the digest field itself.
         let digest_input = serde_json::to_vec(&record.result)?;
-        record.result_digest = format!("{:x}", sha2::Sha256::digest(&digest_input));
+        record.result_digest = format!("{:x}", Sha256::digest(&digest_input));
         let bytes = serde_json::to_vec(&record)?;
         if bytes.len() > MAX_RESULT_BYTES {
             return Err(ToolProgramResultError::Oversized);
@@ -110,6 +168,22 @@ impl ToolProgramResultStore {
         if record.program_id != program_id {
             return Err(ToolProgramResultError::IdentityMismatch);
         }
+        // M012-F07: Verify schema version.
+        if record.schema_version != 2 {
+            return Err(ToolProgramResultError::VersionMismatch);
+        }
+        // M012-F07: Recompute digest over canonical serialized content
+        // and reject mismatch.
+        let computed = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&record.result)?.as_slice())
+        );
+        if computed != record.result_digest {
+            return Err(ToolProgramResultError::DigestMismatch {
+                stored: record.result_digest.clone(),
+                computed,
+            });
+        }
         Ok(Some(record))
     }
 
@@ -125,6 +199,32 @@ pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
         .failure_class
         .as_ref()
         .and_then(|class| serde_json::to_value(class).ok());
+    let call_artifacts: Vec<serde_json::Value> = record
+        .call_artifacts
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "tool_name": a.tool_name,
+                "success": a.success,
+                "artifact_handle": a.artifact_id,
+                "preview": a.preview,
+                "digest": a.digest,
+            })
+        })
+        .collect();
+    let child_artifacts: Vec<serde_json::Value> = record
+        .child_artifacts
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "job_id": a.job_id,
+                "run_id": a.run_id,
+                "status": a.status,
+                "artifact_handle": a.artifact_id,
+                "digest": a.digest,
+            })
+        })
+        .collect();
     let mut value = serde_json::json!({
         "status": status,
         "program_id": record.program_id,
@@ -135,7 +235,9 @@ pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
         "bytes_used": record.result.bytes_used,
         "selected_backend": record.selected_backend,
         "result_digest": record.result_digest,
-        "program_artifacts": [],
+        "program_artifacts": call_artifacts,
+        "child_artifacts": child_artifacts,
+        "output_artifact": record.output_artifact,
     });
     if let Some(output) = &record.result.output {
         value["output"] = output.to_json();
@@ -165,7 +267,7 @@ fn validate_identity(identity: &str) -> Result<(), ToolProgramResultError> {
     Ok(())
 }
 
-use sha2::Digest;
+use sha2::Sha256;
 
 #[cfg(test)]
 mod tests {
@@ -183,12 +285,20 @@ mod tests {
             failure_class: None,
             steps_used: 7,
             bytes_used: 2,
-            calls_total: 3,
             calls_completed: 3,
+            calls_total: 3,
             iterations_used: 1,
         };
         let record = store
-            .persist("tp-test", "attempt-1", "native", result)
+            .persist(
+                "tp-test",
+                "attempt-1",
+                "native",
+                result,
+                vec![],
+                vec![],
+                None,
+            )
             .unwrap();
         let loaded = store.load("tp-test").unwrap().unwrap();
         assert_eq!(loaded.result.steps_used, 7);
