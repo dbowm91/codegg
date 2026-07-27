@@ -98,6 +98,7 @@ impl BrokerCallback for ResourceTrackingBroker {
                 "status": "ok",
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -140,6 +141,7 @@ impl BrokerCallback for FailingBroker {
                 "status": "ok",
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 

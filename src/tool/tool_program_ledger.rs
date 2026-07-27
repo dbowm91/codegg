@@ -528,6 +528,7 @@ mod tests {
             result: CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"secret": "hidden"})),
                 artifacts: vec!["artifact-1".into()],
+                success: true,
             },
             replay_fingerprint: None,
         };

@@ -150,6 +150,7 @@ impl BrokerCallback for DeterministicBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -185,6 +186,7 @@ impl BrokerCallback for FaultyBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -223,6 +225,7 @@ impl BrokerCallback for RateLimitedBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -255,6 +258,7 @@ impl BrokerCallback for PanickingBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -290,6 +294,7 @@ impl BrokerCallback for CountingBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 

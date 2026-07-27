@@ -37,6 +37,7 @@ fn journal_reservation_and_completion_are_request_bound() {
         result: CallResult {
             output: ProgramValue::String("ok".into()),
             artifacts: vec![],
+            success: true,
         },
         replay_fingerprint: None,
     };

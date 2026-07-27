@@ -27,6 +27,7 @@ fn make_completed_call(sequence: u32, tool_name: &str, input: &str) -> Completed
         result: codegg_core::tool_program::CallResult {
             output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
             artifacts: vec![],
+            success: true,
         },
         replay_fingerprint: None,
     }
@@ -51,6 +52,7 @@ async fn g3_input_digest_is_real_sha256() {
             result: codegg_core::tool_program::CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
                 artifacts: vec![],
+            success: true,
             },
             replay_fingerprint: None,
         })
@@ -94,6 +96,7 @@ async fn g3_output_digest_is_real_sha256() {
             result: codegg_core::tool_program::CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"key": "value"})),
                 artifacts: vec![],
+            success: true,
             },
             replay_fingerprint: None,
         })
@@ -137,6 +140,7 @@ async fn g3_input_digest_is_deterministic() {
             result: codegg_core::tool_program::CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
                 artifacts: vec![],
+            success: true,
             },
             replay_fingerprint: None,
         })
@@ -204,6 +208,7 @@ async fn g1_concurrent_reservations_do_not_lose_updates() {
                     result: codegg_core::tool_program::CallResult {
                         output: ProgramValue::ToolResult(serde_json::json!({"seq": seq})),
                         artifacts: vec![],
+            success: true,
                     },
                     replay_fingerprint: None,
                 },
@@ -255,6 +260,7 @@ async fn g1_concurrent_completions_do_not_overwrite() {
                         result: codegg_core::tool_program::CallResult {
                             output: ProgramValue::ToolResult(serde_json::json!({"seq": seq})),
                             artifacts: vec![],
+            success: true,
                         },
                         replay_fingerprint: None,
                     },
@@ -296,6 +302,7 @@ async fn g2_input_digest_no_raw_secret_leak() {
             result: codegg_core::tool_program::CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
                 artifacts: vec![],
+            success: true,
             },
             replay_fingerprint: None,
         })

@@ -41,6 +41,7 @@ impl BrokerCallback for FaultBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 }
@@ -62,6 +63,7 @@ impl BrokerCallback for PanicBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 }
@@ -302,6 +304,7 @@ async fn oversized_broker_output_respects_value_budget() {
             Ok(CallResult {
                 output: ProgramValue::String(large),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -442,6 +445,7 @@ async fn stall_timeout_triggers() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -578,6 +582,7 @@ async fn non_idempotent_call_rejected_by_policy() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("written")),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -616,6 +621,7 @@ async fn completed_call_tracks_artifacts() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("result")),
                 artifacts: vec!["artifact_1".to_string(), "artifact_2".to_string()],
+                success: true,
             })
         }
     }
@@ -658,6 +664,7 @@ async fn empty_artifacts_on_simple_call() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -817,6 +824,7 @@ async fn storage_failure_after_call_is_terminal() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -946,6 +954,7 @@ async fn stalled_result_has_stall_class() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+                success: true,
             })
         }
     }

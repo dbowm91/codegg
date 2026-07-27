@@ -50,6 +50,7 @@ impl BrokerCallback for MatrixBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::json!({"status": "ok"})),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -129,11 +130,11 @@ impl BrokerCallback for MatrixBroker {
         };
 
         Ok(ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 100,
             details,
             artifacts: vec![],
+            success: true,
             error: None,
         })
     }

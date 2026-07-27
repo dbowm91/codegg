@@ -65,6 +65,7 @@ impl BrokerCallback for CountingBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 }
@@ -81,6 +82,7 @@ impl BrokerCallback for PanicBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 }
@@ -100,6 +102,7 @@ impl BrokerCallback for FaultBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 }
@@ -282,6 +285,7 @@ impl BrokerCallback for HeartbeatCountingBroker {
                 "result": "ok"
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -326,6 +330,7 @@ async fn cancellation_during_call() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -370,6 +375,7 @@ async fn completed_calls_not_repeated_with_replay() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("result")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -600,6 +606,7 @@ async fn cancellation_during_parallel_fan_out() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -672,6 +679,7 @@ async fn lost_heartbeat_detected_by_stall() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
 
@@ -772,6 +780,7 @@ async fn call_sequence_numbering_monotonic() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -825,6 +834,7 @@ async fn call_request_tracks_tool_name_and_input() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -875,6 +885,7 @@ async fn transient_error_retried_with_backoff() {
                 Ok(CallResult {
                     output: ProgramValue::ToolResult(serde_json::json!("recovered")),
                     artifacts: vec![],
+            success: true,
                 })
             }
         }
@@ -1038,6 +1049,7 @@ async fn per_call_timeout_triggers() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!("ok")),
                 artifacts: vec![],
+            success: true,
             })
         }
     }

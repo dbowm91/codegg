@@ -38,6 +38,7 @@ impl BrokerCallback for FailOnNthCallBroker {
                 "call": n,
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -96,6 +97,7 @@ impl BrokerCallback for SeededChaosBroker {
                 "call": n,
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -137,6 +139,7 @@ impl BrokerCallback for MalformedOutputBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::Value::Null),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -166,6 +169,7 @@ impl BrokerCallback for StallBroker {
                 "tool": request.tool_name,
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 

@@ -51,6 +51,7 @@ impl BrokerCallback for ChildJobBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::json!({"status": "ok"})),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -86,6 +87,7 @@ impl BrokerCallback for NoopChildBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::json!({"status": "ok"})),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -531,6 +533,7 @@ fn child_job_config_passed_through_broker() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({})),
                 artifacts: vec![],
+                success: true,
             })
         }
 

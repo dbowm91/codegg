@@ -74,6 +74,7 @@ impl BrokerCallback for BehaviorTrackingBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -98,6 +99,7 @@ impl BrokerCallback for EmptyOutputBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::Value::Null),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -559,6 +561,7 @@ impl BrokerCallback for FailOnNthCallBroker {
                 "call": n,
             })),
             artifacts: vec![],
+            success: true,
         })
     }
 

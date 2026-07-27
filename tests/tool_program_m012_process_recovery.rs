@@ -279,6 +279,7 @@ async fn c29_recovery_path_through_durable_ledger() {
             Ok(codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("fresh".into()),
                 artifacts: vec![],
+            success: true,
             })
         }
     }
@@ -361,6 +362,7 @@ async fn c29_fingerprint_mismatch_blocks_replay() {
         result: codegg_core::tool_program::CallResult {
             output: codegg_core::tool_program::ProgramValue::String("cached".into()),
             artifacts: vec![],
+            success: true,
         },
         replay_fingerprint: Some(stored_fingerprint),
     };

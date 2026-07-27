@@ -63,6 +63,7 @@ impl BrokerCallback for FixtureBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(output),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -356,6 +357,7 @@ impl BrokerCallback for BrokerAdapter {
                         Ok(CallResult {
                             output: program_value,
                             artifacts: value.artifacts.into_iter().map(|a| a.artifact_id).collect(),
+                            success: true,
                         })
                     }
                     Err(outcome) => {

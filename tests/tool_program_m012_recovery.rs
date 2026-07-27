@@ -72,6 +72,7 @@ fn make_completed_call(sequence: u32, tool_name: &str, input: &str) -> Completed
                 serde_json::json!({"ok": true}),
             ),
             artifacts: vec![],
+            success: true,
         },
         replay_fingerprint: None,
     }
@@ -158,6 +159,7 @@ async fn c21_replay_fingerprint_matching_succeeds() {
             Ok(codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("ok".into()),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -178,6 +180,7 @@ async fn c21_replay_fingerprint_matching_succeeds() {
             result: codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("cached".into()),
                 artifacts: vec![],
+                success: true,
             },
             replay_fingerprint: Some(fingerprint.clone()),
         },
@@ -232,6 +235,7 @@ async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
             Ok(codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("ok".into()),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -252,6 +256,7 @@ async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
             result: codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("cached".into()),
                 artifacts: vec![],
+                success: true,
             },
             replay_fingerprint: Some(stored_fingerprint),
         },
@@ -301,6 +306,7 @@ async fn c21_legacy_call_without_fingerprint_is_accepted() {
             Ok(codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("ok".into()),
                 artifacts: vec![],
+                success: true,
             })
         }
     }
@@ -319,6 +325,7 @@ async fn c21_legacy_call_without_fingerprint_is_accepted() {
             result: codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("cached".into()),
                 artifacts: vec![],
+                success: true,
             },
             replay_fingerprint: None, // Legacy call
         },

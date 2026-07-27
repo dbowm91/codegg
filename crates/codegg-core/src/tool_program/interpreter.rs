@@ -466,9 +466,25 @@ pub struct CallRequest {
 
 /// Result of a broker tool call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CallResult {
     pub output: ProgramValue,
     pub artifacts: Vec<String>,
+    /// M013-F02: Tool call outcome status. `true` indicates a successful
+    /// tool call; `false` indicates the tool returned an error or produced
+    /// an invalid/unrecoverable result. Completed-calls with `success=false`
+    /// are NOT persisted to the journal.
+    pub success: bool,
+}
+
+impl Default for CallResult {
+    fn default() -> Self {
+        Self {
+            output: ProgramValue::None,
+            artifacts: Vec::new(),
+            success: true,
+        }
+    }
 }
 
 /// Fingerprint of the execution context at the time a call was made.
@@ -1149,12 +1165,16 @@ impl MeteredInterpreter {
 
                     match call_result {
                         Ok(result) => {
-                            // Record as completed
-                            let completed =
-                                self.make_completed_call(seq, request.clone(), result.clone());
-                            broker.call_completed(&completed).await?;
-                            self.completed_calls.insert(seq, completed);
-                            self.commit_checkpoint(broker).await?;
+                            // M013-F02: Only persist completed calls with
+                            // successful tool outcomes. Failed tool results
+                            // are NOT persisted to the journal.
+                            if result.success {
+                                let completed =
+                                    self.make_completed_call(seq, request.clone(), result.clone());
+                                broker.call_completed(&completed).await?;
+                                self.completed_calls.insert(seq, completed);
+                                self.commit_checkpoint(broker).await?;
+                            }
                             result
                         }
                         Err(e) => return Err(e),
@@ -1395,6 +1415,7 @@ impl MeteredInterpreter {
                             let call_result = CallResult {
                                 output: ProgramValue::ToolResult(result_json),
                                 artifacts: child_result.artifacts,
+                                success: true,
                             };
                             // Record as completed for replay
                             let completed =
@@ -2182,6 +2203,7 @@ mod tests {
             Ok(CallResult {
                 output: ProgramValue::String("mock_result".into()),
                 artifacts: vec![],
+                success: true,
             })
         }
 
@@ -2730,6 +2752,7 @@ emit({k: v})
                 Ok(CallResult {
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
+                    success: true,
                 })
             }
 
@@ -2777,6 +2800,7 @@ emit({k: v})
                 Ok(CallResult {
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
+                    success: true,
                 })
             }
 
@@ -2834,6 +2858,7 @@ emit({k: v})
                 Ok(CallResult {
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
+                    success: true,
                 })
             }
 
@@ -2882,10 +2907,11 @@ emit({k: v})
                 if attempts < 2 {
                     Err(InterpreterError::BrokerError("transient".into()))
                 } else {
-                    Ok(CallResult {
-                        output: ProgramValue::String("recovered".into()),
-                        artifacts: vec![],
-                    })
+                Ok(CallResult {
+                    output: ProgramValue::String("ok".into()),
+                    artifacts: vec![],
+                    success: true,
+                })
                 }
             }
 
@@ -2982,6 +3008,7 @@ emit({k: v})
                 Ok(CallResult {
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
+                    success: true,
                 })
             }
 
@@ -3045,6 +3072,7 @@ emit({k: v})
                 Ok(CallResult {
                     output: ProgramValue::String("ok".into()),
                     artifacts: vec![],
+                    success: true,
                 })
             }
 

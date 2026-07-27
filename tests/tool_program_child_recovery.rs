@@ -40,6 +40,7 @@ impl BrokerCallback for RecoveryBroker {
         Ok(CallResult {
             output: ProgramValue::ToolResult(serde_json::json!({"status": "ok"})),
             artifacts: vec![],
+            success: true,
         })
     }
 
@@ -97,23 +98,23 @@ emit({"r1": r1, "r2": r2})
 
     let broker = RecoveryBroker::new(vec![
         ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 100,
             details: ChildJobDetails::Test(
                 codegg_core::tool_program::child_job::TestJobResult::default(),
             ),
             artifacts: vec![],
+            success: true,
             error: None,
         },
         ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 200,
             details: ChildJobDetails::Build(
                 codegg_core::tool_program::child_job::BuildJobResult::default(),
             ),
             artifacts: vec![],
+            success: true,
             error: None,
         },
     ]);
@@ -219,6 +220,7 @@ async fn no_duplicate_execution_on_replay() {
             Ok(CallResult {
                 output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
                 artifacts: vec![],
+                success: true,
             })
         }
 
@@ -228,13 +230,13 @@ async fn no_duplicate_execution_on_replay() {
         ) -> Result<ChildJobResult, InterpreterError> {
             self.child_count.fetch_add(1, Ordering::Relaxed);
             Ok(ChildJobResult {
-                success: true,
                 exit_code: Some(0),
                 duration_ms: 50,
                 details: ChildJobDetails::Test(
                     codegg_core::tool_program::child_job::TestJobResult::default(),
                 ),
                 artifacts: vec![],
+                success: true,
                 error: None,
             })
         }
@@ -286,33 +288,33 @@ emit(r3)
 
     let broker = RecoveryBroker::new(vec![
         ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 50,
             details: ChildJobDetails::Test(
                 codegg_core::tool_program::child_job::TestJobResult::default(),
             ),
             artifacts: vec![],
+            success: true,
             error: None,
         },
         ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 50,
             details: ChildJobDetails::Build(
                 codegg_core::tool_program::child_job::BuildJobResult::default(),
             ),
             artifacts: vec![],
+            success: true,
             error: None,
         },
         ChildJobResult {
-            success: true,
             exit_code: Some(0),
             duration_ms: 50,
             details: ChildJobDetails::Lint(
                 codegg_core::tool_program::child_job::LintJobResult::default(),
             ),
             artifacts: vec![],
+            success: true,
             error: None,
         },
     ]);
@@ -348,7 +350,6 @@ emit(r)
     let limits = make_limits();
 
     let broker = RecoveryBroker::new(vec![ChildJobResult {
-        success: true,
         exit_code: Some(0),
         duration_ms: 1000,
         details: ChildJobDetails::Format(codegg_core::tool_program::child_job::FormatJobResult {
@@ -357,6 +358,7 @@ emit(r)
             would_change: false,
         }),
         artifacts: vec![],
+        success: true,
         error: None,
     }]);
 
