@@ -100,13 +100,18 @@ python3 scripts/check_project_catalog_invariants.py # project-catalog and discov
 python3 scripts/check_scheduler_bypass.py           # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py        # process-spawn site ownership manifest
 python3 scripts/check_git_forbidden_patterns.py     # git secret boundary + policy drift
+python3 scripts/check_identity_path_usage.py        # identity-path usage guard
+python3 scripts/check_tui_project_authority.py      # multi-project TUI authority guard (M4)
+python3 scripts/check_tool_broker_boundary.py       # tool broker boundary guard
 scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
 scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
 python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
 python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
+bash scripts/check_projection_publication_seam.sh    # projection publication-seam guard
 python3 scripts/check_projection_transport_isolation.py # raw projection transport isolation guard (M5)
+python3 scripts/check_projection_transport_lifecycle.py # projection transport lifecycle guard
 python3 scripts/check_websocket_bounds.py             # reject unbounded server WebSocket channels (M6)
 ```
 
@@ -419,7 +424,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 
 - **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
 - **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 32**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- **STORAGE_LAYOUT_VERSION = 33**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
 - **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
 - See `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
@@ -482,7 +487,10 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
 - **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** — not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
 - **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
-- **Tool Programs (M006)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
+- **Tool Programs (M006–M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
+  - **M007** child-job composition (`submit_job()`, `BrokerCallback::submit_child_job`, scheduler submission via `JobSubmissionService`).
+  - **M008** background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection.
+  - **M011/M012** authority, broker, notification, lineage, recovery, result, and hosted correctness closure (current active milestone; see `plans/subsystems/tool-programs-correctness-closure-addendum.md` and `architecture/tool_broker.md`).
 
 ### Agent Runtime
 
@@ -566,6 +574,7 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 - **BrokerAdapter bridges interpreter to real broker**: `FixtureBroker` is test-only. Production uses `BrokerAdapter` in `src/scheduler/tool_program_executor.rs`.
 - **Manifest resolution gates submission**: Tools without `DirectOrProgrammatic` policy or output schemas are rejected before job creation.
 - **ToolProgramTool is DirectOnly**: Only the agent loop can submit programs. Programs themselves can only call `DirectOrProgrammatic` tools.
+- **M012 active milestone**: Corrective closure is the current focus. Major subsystems live in `crates/codegg-core/src/tool_program/` (interpreter, IR, language), `src/scheduler/tool_program_*`, and `src/tool/tool_program_*`. Test suites are `tests/tool_program_m011_correctness.rs`, `tests/tool_program_m012_*.rs`, `hosted_tool_program_*.rs`. Re-run targeted M012 tests after touching any of these paths.
 
 ## Architecture Docs
 
@@ -588,13 +597,14 @@ CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`
 | `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
 | `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
 | `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
-| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache`. M007: child-job composition (`submit_job()` language construct, `ExecuteChildJob` IR opcode, `ChildJobOp`/`ChildJobRequest`/`ChildJobResult` types, `BrokerCallback::submit_child_job` trait method, scheduler submission via `JobSubmissionService`, authority/workspace/deadline inheritance). M008: background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection |
+| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache`. M007: child-job composition (`submit_job()` language construct, `ExecuteChildJob` IR opcode, `ChildJobOp`/`ChildJobRequest`/`ChildJobResult` types, `BrokerCallback::submit_child_job` trait method, scheduler submission via `JobSubmissionService`, authority/workspace/deadline inheritance). M008: background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection. M011/M012: correctness closure (authority, broker, notification, lineage, recovery, result, hosted). |
+| `architecture/tool_broker.md` | `ToolBroker` boundary contract, authority invariants, fixture vs production adapters, broker failure classification. Read before touching tool broker paths. |
 | `architecture/command.md` | 108 built-in slash commands |
 | `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
 | `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
 | `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |
 
-`.opencode/skills/*/SKILL.md` contain 45 module-specific skill guides loaded on-demand via `/skill:` (the legacy `.agents/skills` path now symlinks into `.opencode/skills`).
+`.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 
 ## Key Lessons
 
