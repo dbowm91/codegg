@@ -130,10 +130,13 @@ impl ToolProgramResultStore {
             result_digest: String::new(),
             recorded_at: Utc::now().timestamp_millis(),
         };
-        // M012-F07: Compute digest over canonical serialized content
-        // excluding the digest field itself.
-        let digest_input = serde_json::to_vec(&record.result)?;
-        record.result_digest = format!("{:x}", Sha256::digest(&digest_input));
+        // M013-H1: Compute digest over the complete semantic record
+        // excluding the digest field itself. Every field that consumers
+        // depend on (result, call_artifacts, child_artifacts,
+        // output_artifact, selected_backend, schema identity) is part
+        // of the signed payload so any tampering causes load-time
+        // DigestMismatch.
+        record.result_digest = compute_full_record_digest(&record)?;
         let bytes = serde_json::to_vec(&record)?;
         if bytes.len() > MAX_RESULT_BYTES {
             return Err(ToolProgramResultError::Oversized);
@@ -172,12 +175,12 @@ impl ToolProgramResultStore {
         if record.schema_version != 2 {
             return Err(ToolProgramResultError::VersionMismatch);
         }
-        // M012-F07: Recompute digest over canonical serialized content
-        // and reject mismatch.
-        let computed = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&record.result)?.as_slice())
-        );
+        // M013-H1: Recompute digest over the full semantic record and
+        // reject mismatch. The full-record digest covers every field a
+        // consumer reads (result, call_artifacts, child_artifacts,
+        // output_artifact, selected_backend, identities), so any tamper
+        // — including appending a forged artifact — fails closed.
+        let computed = compute_full_record_digest(&record)?;
         if computed != record.result_digest {
             return Err(ToolProgramResultError::DigestMismatch {
                 stored: record.result_digest.clone(),
@@ -265,6 +268,28 @@ fn validate_identity(identity: &str) -> Result<(), ToolProgramResultError> {
         return Err(ToolProgramResultError::InvalidIdentity);
     }
     Ok(())
+}
+
+/// M013-H1: Compute the SHA-256 digest over every semantic field of the
+/// result record (schema version, identities, backend, terminal result,
+/// call artifacts, child artifacts, output artifact). The digest field
+/// itself is excluded by serialising a canonical projection that
+/// contains only the security-relevant fields.
+fn compute_full_record_digest(
+    record: &ProgramResultRecord,
+) -> Result<String, ToolProgramResultError> {
+    let projection = serde_json::json!({
+        "schema_version": record.schema_version,
+        "program_id": record.program_id,
+        "attempt_id": record.attempt_id,
+        "selected_backend": record.selected_backend,
+        "result": record.result,
+        "call_artifacts": record.call_artifacts,
+        "child_artifacts": record.child_artifacts,
+        "output_artifact": record.output_artifact,
+    });
+    let bytes = serde_json::to_vec(&projection)?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
 use sha2::Sha256;
