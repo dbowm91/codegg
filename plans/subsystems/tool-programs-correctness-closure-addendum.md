@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 012 ready for implementation; Milestone 011 is historical conditionally closed
+Status: active — Milestone 013 ready for implementation; Milestones 011 and 012 are historical conditionally closed records
 
 Canonical subsystem roadmap:
 
@@ -8,16 +8,18 @@ Canonical subsystem roadmap:
 
 Current corrective implementation plan:
 
+- `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
+
+Historical predecessors:
+
 - `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md`
-
-Historical predecessor:
-
+- `plans/closure/tool-programs/012-status.md`
 - `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md`
 - `plans/closure/tool-programs/011-status.md`
 
-Post-M011 baseline reviewed:
+Post-M012 baseline reviewed:
 
-- `d71a5eee5b31876545981fdb0bd8e437aadee39c` (`main`)
+- `d056e4236e1ef10b4639b8bbf05557090dc6112c` (`main`)
 
 Applicable ADR:
 
@@ -25,59 +27,63 @@ Applicable ADR:
 
 ## 1. Purpose
 
-This addendum remains the active corrective control document for strict Tool Programs closure.
+This addendum is the active corrective control document for strict Tool Programs closure.
 
-M011 added substantial production-path mechanics, including distinct invocation identity, Broker routing, scheduler timeout/heartbeat plumbing, call journaling, typed results, child sequence identity, and SQLite-backed notifications. A post-closure review found that several ownership claims were stronger than the actual mechanisms and tests. M011 is therefore retained as a historical, conditionally closed implementation record rather than the current strict-closure authority.
+M011 and M012 added substantial production mechanics: distinct invocation identity, Broker routing, typed non-success handling, scheduler timeout plumbing, call journaling, typed results, native-only model-facing policy, notification state APIs, and initial child-lineage fields. Those milestones remain useful implementation and evidence records.
 
-M012 owns the remaining correctness work. It is a bounded corrective pass, not a subsystem redesign and not an expansion of the version-1 programmable palette.
+A post-M012 production-path review found that several closure claims still exceed the implemented mechanisms and tests. M012 is therefore retained as a historical, conditionally closed implementation record. M013 is the sole active strict-closure authority.
 
-## 2. Post-M011 trigger findings
+M013 is a bounded corrective pass. It does not redesign the restricted Python frontend, expand the version-1 programmable palette, or implement hosted Tool Programs.
 
-The review of `d71a5eee5b31876545981fdb0bd8e437aadee39c` found:
+## 2. Post-M012 trigger findings
 
-1. production Tool Program authority is synthesized from constants/digests rather than a scope-verifiable permission decision;
-2. the Broker can return an error-valued `Ok(BrokerResult)`, and the program adapter can persist that as a successful completed call;
-3. notification claim and acknowledgement are decided in process-local memory and later upserted, so concurrent service instances are not coordinated transactionally and storage failures can still report success;
-4. scheduler timeout can drop the parent executor before its child-wait loop cancels descendants, while child jobs lack a canonical scheduler-queryable parent relationship;
-5. checkpoints are persisted but not restored, and replay identity is not bound to the full authority/context/contract/manifest/workspace/control-flow fingerprint;
-6. child jobs cannot be durably reattached through parent call identity after restart and return no real artifact handles;
-7. typed result projections still emit empty program artifact lists and do not verify the stored result digest on load;
-8. hosted policies are model-facing and selectable even though normal production runtime construction cannot execute the hosted adapter;
-9. M011's dedicated tests are primarily component/store fixtures and do not establish process-level daemon restart, concurrent claim, child reattachment, or capacity-one convergence.
+The review of `d056e4236e1ef10b4639b8bbf05557090dc6112c` found:
 
-These findings include unresolved high and medium correctness, authorization, recovery, notification, child-ownership, resource, and evidence defects. They invalidate strict M011 closure but do not erase the implementation value or evidence recorded by M011.
+1. the authority grant is still synthesized from program/workspace/session/source/timestamp material inside the executor rather than created from and persisted as the real permission and workspace path-policy decision before admission;
+2. the Broker checks that authority is represented by the `Verified` enum variant but does not verify the grant's integrity, expiry, revocation, principal, workspace, path policy, caller class, effect class, manifest, contract version, or policy revision against the actual invocation;
+3. the SQLite notification transition query uses incorrect parameter/state handling, while closure tests exercise in-memory state or two references to one service instead of independent service instances sharing a real database;
+4. child lineage fields are populated on `NewJob` but discarded by the stores, have no complete SQLite migration/query mapping, and use an operation-derived parent call value rather than canonical call identity and sequence;
+5. scheduler timeout still drops the parent executor future before scheduler-owned recursive descendant cleanup, and there is no durable descendant enumeration, reattachment, lost-worker cleanup, or daemon-generation reconciliation based on lineage;
+6. restart reloads completed calls but does not restore the checkpoint or bind replay to authority, context, workspace/path policy, manifest, contract, source/IR, backend, deadline, call-order, call-ID, and child identity;
+7. the replay journal remains a concurrent whole-file read/modify/write store, retains more call data than its redaction comments imply, and emits MD5 values under a `sha256` label;
+8. child artifacts remain empty, call artifact digests may be absent, and the result digest covers only `ProgramResult` rather than the complete semantic result record;
+9. closure-bearing process tests do not start or kill a daemon, restart against the same database, use failpoints, coordinate independent SQLite services, reattach a child, or prove process-group and permit convergence;
+10. the M012 closure record contains an incorrect implementation SHA and marks criteria as passing while also admitting required mechanisms are absent.
 
-## 3. Corrective milestone
+These are unresolved high and medium authorization, delivery, descendant-ownership, recovery, integrity, resource, and evidence defects. They invalidate strict M012 closure but do not erase the implementation value recorded by M012.
 
-### Milestone 012 — Authority, recovery, delivery, and child-ownership corrective closure
+## 3. Current corrective milestone
 
-Class: invariant / correctness / authorization / recovery / scheduler ownership / final closure
+### Milestone 013 — Production authority, descendant, delivery, and recovery closure
 
-Objective: correct the remaining production ownership defects, prove the mechanisms through public process-level and concurrent-service tests, and reconcile hosted execution truthfully.
+Class: corrective implementation / authorization / durable ownership / scheduler convergence / recovery / evidence closure
+
+Objective: complete the missing production mechanisms, replace structural evidence with mechanism-faithful tests, and establish a reviewable strict-closure record.
 
 Dependencies:
 
-- M001–M010 implementation and historical records are present;
-- M011 implementation is present and conditionally closed;
-- scheduler, Tool Broker, restricted interpreter, job/session SQLite store, artifact store, RunStore, notification service, and provider adapter foundations are available;
-- no external provider is a hard dependency for native correctness;
-- the recommended hosted disposition is explicit native-only production status unless an existing narrow transport injection seam can satisfy the complete M012 hosted acceptance gate.
+- M001–M012 implementation and historical records are present;
+- scheduler, Tool Broker, restricted interpreter, job/session SQLite store, artifact store, RunStore, notification service, and native Tool Program runtime foundations are available;
+- no external provider is required;
+- production remains explicitly `native_only`.
 
 Exit conditions:
 
-- real permission/path-policy decisions produce versioned, scope-verifiable authority grants;
-- every direct and programmatic Broker call verifies the grant against caller, effect, tool/contract manifest, workspace/path policy, and policy revision;
-- denied, failed, cancelled, timed-out, and schema-invalid nested calls cannot become successful completed calls;
-- notification claim/reclaim/acknowledgement are SQLite compare-and-set transitions, persistence errors propagate, and append-before-ack restart produces one durable injection;
-- child jobs have durable parent program/job/attempt/call identity and scheduler-owned descendant cancellation independent of executor-future cleanup;
-- restart reattaches active children and never repeats a durably completed call;
-- replay verifies full authority/context/contract/manifest/source/IR/workspace/backend/call-order identity and stops recoverably on divergence;
-- the original absolute deadline remains authoritative across restart;
-- typed results verify integrity and contain real, resolvable call/child/output artifact handles;
-- production exposes only execution backends reachable through normal runtime construction;
-- process-level daemon kill/restart, concurrent SQLite claimant, capacity-one child, descendant process cleanup, and result-corruption tests pass;
-- no unresolved high or medium correctness, authorization, recovery, notification, child-ownership, resource, result-integrity, or evidence finding remains;
-- an independent reviewer accepts `plans/closure/tool-programs/012-status.md`.
+- the real permission/path-policy decision creates a versioned immutable grant before job admission;
+- the persisted grant survives restart and the executor never fabricates a substitute;
+- every nested Broker call verifies grant integrity and full invocation scope;
+- notification claim, injection, acknowledgement, suppression, failure, and lease recovery are transactional SQLite operations across independent services;
+- restart at every delivery boundary yields exactly one durable parent-session event;
+- child lineage is stored in SQLite and queryable by program, parent job, attempt, canonical call ID, and instruction sequence;
+- the scheduler recursively cancels and reconciles descendants independently of the parent executor future;
+- restart reattaches queued/running children and completed calls without duplicate physical execution;
+- checkpoint state is restored and replay validates the complete versioned execution fingerprint;
+- replay storage is concurrency-safe, bounded, correctly redacted, and uses correctly labeled SHA-256 integrity values;
+- one full-record integrity digest protects the typed result and its real call, child, and output artifacts;
+- normal production construction accepts only native execution and never silently falls back from hosted policy;
+- process-level daemon kill/restart, failpoint, independent SQLite claimant, capacity-one child, descendant cleanup, and corruption tests pass;
+- no unresolved high or medium finding remains;
+- an independent reviewer accepts `plans/closure/tool-programs/013-status.md`.
 
 ## 4. Dependency graph
 
@@ -89,64 +95,73 @@ M011 production ownership implementation
 (conditionally closed after post-closure review)
                          |
                          v
-M012 authority/recovery/delivery corrective closure
+M012 authority/recovery/delivery corrective implementation
+(conditionally closed after production-path review)
+                         |
+                         v
+M013 production authority/descendant/recovery closure
                          |
                          v
 Strict Tool Programs subsystem closure
 ```
 
-M012 supersedes M011's strict closure claims only where the post-M011 findings apply. Historical closure records remain traceability artifacts and must not be rewritten to conceal their original evidence.
+M013 supersedes M012's strict closure claims only where the post-M012 findings apply. Historical closure records remain traceability artifacts and must not be rewritten to conceal their original evidence.
 
 ## 5. Closure authority
 
-Until M012 closes:
+Until M013 closes:
 
 - the subsystem status is `active`;
-- M011 is `conditionally closed` and historical, not the current strict-closure authority;
-- M002, M005, M007, M008, M009, M010, and M011 remain useful implementation/evidence records but do not independently establish production-boundary closure;
+- M011 and M012 are `conditionally closed` and historical, not current strict-closure authorities;
+- M002, M005, M007, M008, M009, M010, M011, and M012 remain useful implementation/evidence records but do not independently establish production-boundary closure;
 - mutation-capable, destructive, approval-sensitive, shell, patch, Git mutation, commit, push, and subagent tools remain prohibited from the programmable palette;
-- documentation may not claim scope-verified program authority, transactionally exactly-once notification delivery, scheduler-owned descendant convergence, complete checkpoint/replay recovery, real child artifacts, or production hosted execution without M012 evidence.
+- production Tool Programs remain `native_only`;
+- documentation may not claim scope-verified program authority, transactionally exactly-once notification delivery, scheduler-owned descendant convergence, complete checkpoint/replay recovery, complete artifact integrity, or process-level closure without M013 evidence.
 
 The authoritative implementation and acceptance details are in:
 
-- `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md`
+- `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
 
 The eventual closure record must be created at:
 
-- `plans/closure/tool-programs/012-status.md`
+- `plans/closure/tool-programs/013-status.md`
+
+The implementation pass must not create or self-accept that closure record.
 
 ## 6. Milestone status
 
 | Milestone | Status | Disposition |
 |---|---|---|
 | 001 | historical closed | Scheduler-owned ordinary Python foundation retained |
-| 002 | historical closed; revalidated by M011/M012 | Canonical Broker foundation retained; M012 owns real grant verification and failure semantics |
-| 003 | historical closed | Durable domain/storage foundation retained and extended as needed |
+| 002 | historical closed; revalidated by M011–M013 | Canonical Broker foundation retained; M013 owns complete persisted grant verification |
+| 003 | historical closed; extended by M013 | Durable domain/storage foundation retained; M013 owns lineage and replay schema depth |
 | 004 | historical closed | Restricted-Python frontend and static bounds retained |
-| 005 | historical closed; revalidated by M011/M012 | M012 owns authoritative recovery cursor, replay binding, and process-level restart proof |
+| 005 | historical closed; revalidated by M011–M013 | M013 owns checkpoint restoration, full replay binding, and process-level restart proof |
 | 006 | historical closed | Read-only programmable palette retained; no authority expansion |
-| 007 | historical closed; revalidated by M011/M012 | M012 owns durable child lineage, reattachment, scheduler cancellation, permits, and artifacts |
-| 008 | historical closed; revalidated by M011/M012 | M012 owns transactional notification claim/injection/acknowledgement and restart proof |
-| 009 | historical closed; capability/library record | M012 must wire hosted production execution completely or classify it explicitly non-production |
-| 010 | conditionally closed, historical | Native harness retained; strict closure transferred through M011 to M012 |
-| 011 | conditionally closed, historical | Substantial production mechanics landed; post-closure high/medium findings are owned by M012 |
-| 012 | ready | Authority, failure semantics, transactional delivery, descendant ownership, replay, artifacts, hosted truthfulness, and process-level closure |
+| 007 | historical closed; revalidated by M011–M013 | M013 owns persisted lineage, reattachment, scheduler cancellation, permit convergence, and child artifacts |
+| 008 | historical closed; revalidated by M011–M013 | M013 owns transactional delivery and restart proof across independent services |
+| 009 | historical closed; capability/library record | Production remains native-only; hosted adapter is not a production Tool Program backend |
+| 010 | conditionally closed, historical | Native harness retained; strict closure transferred through M011/M012 to M013 |
+| 011 | conditionally closed, historical | Production mechanics retained; post-closure findings transferred to M012/M013 |
+| 012 | conditionally closed, historical | Broker failure mapping and native-only truthfulness improved; strict production closure transferred to M013 |
+| 013 | ready | Persisted authority, transactional delivery, durable descendants, complete recovery, artifacts, and process-level closure |
 
 ## 7. Completion definition
 
 The Tool Programs subsystem becomes strictly closed only when:
 
-1. M012 has an independently accepted closure record;
-2. the original roadmap invariants and M012 C-01 through C-32 are true in the production daemon path;
-3. authority is derived from and verified against real permission/path-policy decisions;
-4. non-success nested calls cannot be persisted or replayed as successful completions;
-5. process-level restart never repeats a durably completed call or child submission;
-6. session-addressed notification delivery is durable and exactly once across claim, injection, acknowledgement, concurrent service instances, and restart;
-7. scheduler terminalization cancels and reconciles descendants independently of executor cleanup;
+1. M013 has an independently accepted closure record;
+2. the original roadmap invariants and M013 C-01 through C-45 are true in the production daemon path;
+3. authority is derived from, persisted from, and verified against the real permission/path-policy decision;
+4. non-success or unauthorized nested calls invoke no underlying tool and cannot enter successful replay state;
+5. SQLite is authoritative for notification transitions and delivery identity across independent services and restart;
+6. scheduler terminalization cancels and reconciles descendants independently of executor cleanup;
+7. process restart restores checkpoint state, reattaches children, and never repeats a durably completed call;
 8. source, invocation, grant, attempt, call, child, run, result, artifact, and notification identities are distinct and correctly correlated;
-9. foreground, background, notification, and inspection consume one integrity-checked typed result;
-10. hosted production status is truthful and model-facing policy exposes no unreachable backend;
-11. full targeted tests, process-level fault tests, migrations, formatting, compilation, and repository-owned static guards pass;
-12. broader workspace failures are either fixed or documented with evidence that they are unrelated and cannot invalidate M012;
-13. live operational evidence is labeled truthfully;
-14. roadmap/addendum, implementation plan, closure record, architecture documentation, and registry agree.
+9. foreground, background, notification, and inspection consume one fully integrity-checked typed result;
+10. production exposes only runtime-reachable backends;
+11. closure-bearing tests exercise real daemon, scheduler, SQLite, artifact, process, and protocol boundaries;
+12. full targeted tests, process-level fault tests, migrations, formatting, compilation, and repository-owned static guards pass;
+13. broader workspace failures are fixed or documented with evidence that they are unrelated and cannot invalidate M013;
+14. live operational and CI evidence is labeled truthfully;
+15. roadmap/addendum, implementation plan, closure records, architecture documentation, commit SHAs, and registry agree.
