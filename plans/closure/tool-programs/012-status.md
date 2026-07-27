@@ -1,165 +1,110 @@
 # Tool Programs Milestone 012 — Closure Status
 
-Status: conditionally closed
+Status: historical conditionally closed — implementation record; strict closure transferred to M013
 
 Source implementation plan:
 
 - `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md`
 
-Source subsystem roadmap:
+Strict-closure successor:
+
+- `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
+
+Subsystem authority:
 
 - `plans/subsystems/tool-programs-correctness-closure-addendum.md`
 
-Repository baseline reviewed: `f26fb687857390431b5eaabc212583b4b20da30d`
+Original M012 planning baseline:
 
-Implementation commits:
+- `f26fb687857390431b5eaabc212583b4b20da30d`
 
-- `f26fb68` — fix(tool-programs): M012 authority, broker, notification, lineage, recovery, result, and hosted corrections
+Actual implementation commit:
 
-## 1. Executive finding
+- `d056e4236e1ef10b4639b8bbf05557090dc6112c` — `fix(tool-programs): M012 authority, broker, notification, lineage, recovery, result, and hosted corrections`
 
-M012 addresses 9 findings (F01–F09) from the M011 post-closure review. The following are now implemented:
+## 1. Disposition
 
-- **F01 (Authority)**: `build_authority_grant` now derives the grant from the real `ToolProgramExecutionContext` instead of constants. `principal_ref`, `authority_ref`, `policy_revision`, and `manifest_digest` are derived from workspace, session, and source identity. The executor passes `Some(&execution_context)` instead of `None`.
-- **F02 (Broker failures)**: `BrokerAdapter::execute_call` now calls `into_programmatic_outcome()` and maps non-Success terminal statuses to `InterpreterError::BrokerError`. Cancelled errors are mapped to `ProgramResult::cancelled()`.
-- **F03 (Notifications)**: `transition_to` uses SQLite CAS (compare-and-set UPDATE with expected state) when a pool is available. Errors are propagated as `Result<bool, NotificationStoreError>`. In-memory cache is updated only after durable CAS succeeds.
-- **F04 (Descendant lineage)**: `BrokerAdapter::submit_child_job` populates `parent_job_id`, `parent_attempt_id`, and `parent_call_id` in the child `NewJob`.
-- **F05 (Recovery)**: Ledger `divergences` field is `#[serde(default)]` for backward compatibility. Completed calls are restored from the ledger. The interpreter checks for cancellation at the top of the run loop.
-- **F06 (Child ownership)**: Parent fields are populated in child jobs. Child job identity is durably linked.
-- **F07 (Result artifacts)**: `call_artifacts` are populated from interpreter completed calls. `ProgramResultRecord` digest verification and `ProgramArtifactHandle`/`ChildArtifactHandle` types are used.
-- **F08 (Hosted)**: Schema description updated to "Only native execution is supported." The enum remains `["native_only"]`.
-- **F09 (Tests)**: 7 M012 test files exist with 56 tests covering C-01 through C-30. All pass.
+M012 remains a useful implementation record. It improved Broker terminal-outcome handling, introduced typed grant and artifact structures, added initial SQLite transition logic and child-lineage fields, restored completed-call data, added result-load checks, and made the model-facing backend policy explicitly `native_only`.
 
-**Conditionally closed** because:
-- Process-level restart tests (Work Package I full daemon restart at failpoints) are not implemented — they require a full daemon harness that exceeds the current test infrastructure.
-- Deterministic replay from instruction zero with full fingerprint binding (F05 complete scope) is partially implemented — completed calls are restored but the full replay identity verification (authority/manifest/workspace/control-flow fingerprint) is not yet enforced at replay time.
+A post-implementation production-path review found that the milestone does not establish strict closure. Several claimed invariants are incomplete in production or are supported only by structural tests. M013 is therefore the sole active strict-closure authority.
 
-## 2. Requirement-to-evidence matrix
+## 2. Corrected findings
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-01 | `tool_program_context.rs` — no constant `local-agent` in `build_authority_grant` | pass | Grant derived from execution context |
-| C-02 | `tool_program_context.rs:58` — `build_authority_grant` persists versioned grant | pass | schema_version=1, grant_id includes timestamp |
-| C-03 | `broker.rs:168` — `BrokerAuthority::from_grant` carries all fields | pass | `tool_program_m012_authority::c03` |
-| C-04 | `jobs/mod.rs:144` — `ToolAuthorityGrant::is_valid` checks expiry/revocation | pass | `tool_program_m012_authority::c04_*` |
-| C-05 | `broker.rs:192` — `programmatic_outcome()` maps non-Success to errors | pass | `tool_program_m012_authority::c05_*` |
-| C-06 | `broker.rs:207` — only Success maps to `Ok` | pass | `tool_program_m012_authority::c06` |
-| C-07 | `tool_program_notifications.rs:698` — SQLite CAS in `transition_to` | pass | `tool_program_m012_notifications::c07_*` |
-| C-08 | `tool_program_m012_notifications::c08` — concurrent claim test | pass | In-memory only (no SQLite pool in test) |
-| C-09 | `tool_program_notifications.rs` — `Result<bool, NotificationStoreError>` propagation | pass | `tool_program_m012_notifications::c09` |
-| C-10 | Notification injection key and recovery | pass | `tool_program_m012_notifications::c10_*` |
-| C-11 | Delivered notifications not recreated | pass | `tool_program_m012_notifications::c11` |
-| C-12 | `tool_program_executor.rs:506` — parent fields in child NewJob | pass | `tool_program_m012_child_ownership::c12` |
-| C-13 | Early cancellation check in executor | pass | `tool_program_m012_child_ownership::c13` |
-| C-14 | Ledger replay with completed calls | pass | `tool_program_m012_child_ownership::c14` |
-| C-15 | Distinct child sequences create distinct children | pass | `tool_program_m012_child_ownership::c15` |
-| C-16 | Child deadline bounded by parent | pass | `tool_program_m012_child_ownership::c16` |
-| C-17 | Capacity-one deadlock test | pass | `tool_program_m012_child_ownership::c17` |
-| C-18 | Resource convergence | pass | `tool_program_m012_child_ownership::c18` |
-| C-19 | Ledger persistence before interpreter advancement | pass | `tool_program_m012_recovery::c19` |
-| C-20 | Completed call replay | pass | `tool_program_m012_recovery::c20` |
-| C-21 | Replay fingerprint validation | partial | Tool name + input checked; full authority/manifest/workspace fingerprint not yet enforced |
-| C-22 | Replay divergence detection | pass | `tool_program_m012_recovery::c22` |
-| C-23 | Deadline preserved across restart | pass | `tool_program_m012_recovery::c23` |
-| C-24 | Same result read by all consumers | pass | `tool_program_m012_recovery::c24` |
-| C-25 | Digest verification on load | pass | `tool_program_m012_recovery::c25_*` |
-| C-26 | Artifact handles present | pass | `tool_program_m012_recovery::c26` |
-| C-27 | Schema only allows native_only | pass | `tool_program_m012_hosted_status::c27` |
-| C-28 | No native_fallback for unattempted hosted | pass | `tool_program_m012_hosted_status::c28` |
-| C-29 | Public production boundaries exercised | pass | `tool_program_m012_process_recovery::c29` |
-| C-30 | All M012 tests pass | pass | 56/56 pass |
-| C-31 | No unresolved high/medium finding | conditional | F05 full replay binding deferred |
-| C-32 | Registry and docs agree | pass | Plan status `closing`, registry updated |
+### High — authority is not yet a persisted permission decision
 
-## 3. Production implementation evidence
+The grant is still generated from execution-context and program data inside the executor rather than created from the actual accepted permission and workspace path-policy decision before job admission. The Broker does not verify the complete grant scope against each nested invocation.
 
-- **Authority grants**: `build_authority_grant` derives from `ToolProgramExecutionContext` fields. Constants removed from production code path.
-- **Broker failures**: `BrokerAdapter::execute_call` uses `into_programmatic_outcome()`. Cancelled errors map to `ProgramResult::cancelled()`.
-- **Notifications**: SQLite CAS is authority when pool available. `Result<bool, NotificationStoreError>` propagated.
-- **Child lineage**: Parent job/attempt/call fields populated in child `NewJob`.
-- **Results**: `call_artifacts` populated from interpreter completed calls.
-- **Hosted**: Schema description updated; enum unchanged.
-- **Ledger**: `divergences` field made optional for backward compatibility.
-- **Executor**: Early cancellation check before validation.
+M013 owner: Work Packages A and B.
 
-## 4. Verification executed
+### High — notification delivery is not yet proven transactionally
 
-### Commands run
+The SQLite transition path requires correction and tests currently do not use independent service instances sharing one database. Restart behavior across claim, durable session insertion, and acknowledgement is not established.
 
-```bash
-cargo fmt --all -- --check                    # PASS
-cargo check -p codegg --all-targets           # PASS (0 errors, warnings only)
-cargo test --test tool_program_m012_authority -- --test-threads=1          # 12 passed
-cargo test --test tool_program_m012_broker_failures -- --test-threads=1   # 7 passed
-cargo test --test tool_program_m012_notifications -- --test-threads=1     # 11 passed
-cargo test --test tool_program_m012_child_ownership -- --test-threads=1   # 8 passed
-cargo test --test tool_program_m012_recovery -- --test-threads=1          # 9 passed
-cargo test --test tool_program_m012_hosted_status -- --test-threads=1     # 4 passed
-cargo test --test tool_program_m012_process_recovery -- --test-threads=1  # 5 passed
-cargo test --test tool_program_runtime -- --test-threads=1                # 10 passed
-cargo test --test tool_program_notifications -- --test-threads=1          # 16 passed
-cargo test --test tool_program_context_artifacts -- --test-threads=1      # 9 passed
-cargo test --test tool_program_fault_injection -- --test-threads=1        # 38 passed
-cargo test --test tool_broker_integration -- --test-threads=1             # 25 passed
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14 --skip daemon_socket  # 4090 passed, 1 pre-existing failure
-```
+M013 owner: Work Package C.
 
-### Results
+### High — child lineage and descendant ownership are not durable
 
-- 4090 tests pass, 1 pre-existing failure (`active_mode_python_command_routes` — scheduler disabled in test), 1 skipped (`daemon_socket_integration_tests` — pre-existing stack overflow)
-- 56 M012-specific tests all pass
-- 0 formatting errors
-- 0 compilation errors
+Lineage values are populated at submission but are not fully stored and reconstructed by the job stores. The scheduler does not yet own recursive descendant cancellation and restart reattachment independently of the parent executor future.
 
-## 5. Invariant review
+M013 owner: Work Packages D and E.
 
-- **No constant authority construction**: `build_authority_grant` uses execution context fields, not constants.
-- **SQLite CAS authority**: `transition_to` uses SQL UPDATE with WHERE state comparison when pool available.
-- **Parent lineage populated**: Child `NewJob` includes parent job/attempt/call IDs.
-- **Early cancellation**: Executor checks cancellation before validation.
-- **Result digest verification**: `ToolProgramResultStore::load` recomputes and verifies digest.
+### High — checkpoint and replay closure are incomplete
 
-## 6. Failure and recovery review
+Completed calls are reloaded, but the checkpoint is not restored and replay is not bound to the complete authority, context, workspace, manifest, contract, source, IR, backend, deadline, call-order, and child identity.
 
-- **Duplicate delivery**: Notification identity is program_id; `record_notification` is idempotent.
-- **Cancellation races**: Early cancellation check in executor; interpreter checks token each iteration.
-- **Daemon restart**: Ledger loads completed calls for replay; `divergences` field backward compatible.
-- **Partial persistence**: `persist_record` errors logged; CAS errors propagated.
-- **Stale lease**: `recover_expired` reclaims expired claims.
+M013 owner: Work Packages F and G.
 
-## 7. Migration and compatibility review
+### Medium-high — result and artifact integrity are partial
 
-- `ToolProgramJournal::divergences` is `#[serde(default)]` — old files without this field deserialize correctly.
-- `parent_job_id`, `parent_attempt_id`, `parent_call_id` are `Option` in `NewJob`/`JobRecord` — existing code that doesn't set them compiles with `None`.
-- No schema migration required — all changes are additive.
+Child artifacts remain incomplete and the stored digest does not authenticate the full semantic result record.
 
-## 8. Security review
+M013 owner: Work Package H.
 
-- Authority grants are derived from real permission/path-policy context.
-- No secrets or credentials in grants.
-- `BrokerAuthority::Unverified` is rejected by the broker.
-- Notification CAS prevents concurrent claim by two instances.
+### High evidence gap — process-boundary recovery is not demonstrated
 
-## 9. Documentation and operations
+The M012-specific tests do not exercise a fresh daemon instance against the same durable state, independent SQLite services, active-child reattachment, or complete scheduler resource convergence.
 
-- Plan status updated to `closing`.
-- Registry updated to reflect M012 closing status.
-- Closure record created at `plans/closure/tool-programs/012-status.md`.
+M013 owner: Work Package J.
 
-## 10. Unresolved findings
+### Governance correction
 
-| Severity | Finding | Impact | Required action |
-|---|---|---|---|
-| medium | F05: Full replay identity binding (authority/manifest/workspace/control-flow fingerprint) not enforced at replay time | A replay with changed authority could proceed without detection | Implement full fingerprint verification in interpreter replay path |
-| low | Process-level daemon restart tests at failpoints not implemented | Cannot prove crash-window recovery through public daemon boundaries | Add daemon harness with failpoint injection |
+The earlier record identified `f26fb68` as the implementation commit. That commit registered M012; the implementation commit is `d056e4236e1ef10b4639b8bbf05557090dc6112c`.
 
-## 11. Roadmap disposition
+## 3. Corrected criteria disposition
 
-Milestone 012 is **conditionally closed**. The two remaining findings are medium/low severity and do not block the Tool Programs subsystem from functional use. The next dependency-ready plan (if any) may proceed with the understanding that full replay binding is deferred.
+| M012 area | Corrected result | M013 successor criteria |
+|---|---|---|
+| Authority construction and verification | not closed | C-01–C-08 |
+| Broker non-success terminal mapping | substantially implemented; retain regression coverage | C-07–C-08 |
+| Transactional notification delivery | not closed | C-09–C-14 |
+| Durable lineage and descendant ownership | not closed | C-15–C-22 |
+| Checkpoint, replay fingerprint, and deadline recovery | partially implemented; not closed | C-23–C-30 |
+| Typed result and artifact integrity | partially implemented; not closed | C-31–C-36 |
+| Production backend truthfulness | model-facing native-only policy retained; internal behavior requires final proof | C-37–C-38 |
+| Process-level evidence | not closed | C-39–C-42 |
+| No unresolved high or medium findings | failed | C-43 |
+| Documentation and evidence agreement | transferred to independent M013 review | C-44–C-45 |
 
-## 12. Registry updates
+## 4. Historical test evidence
 
-- Plan status: `ready` → `closing`
-- Registry active subsystem: milestone updated to `closing`
-- Active closure work: M012 closure record created
-- No downstream plans are blocked on M012
+The M012 implementation record reported formatting and compilation success, all M012-specific tests passing, and a broad workspace test run with one described pre-existing failure and one skipped suite.
+
+The post-M012 review did not independently rerun those commands and found no attached GitHub status checks for the implementation commit. The reported commands remain historical author-provided evidence, not independent strict-closure evidence.
+
+## 5. Operational claims pending M013
+
+Until M013 closes, documentation must not claim:
+
+- authority derived from and verified against a real permission decision;
+- transactionally exactly-once notification delivery across independent services and restart;
+- durable scheduler-queryable child lineage;
+- scheduler-owned recursive descendant convergence;
+- complete checkpoint restoration and replay fingerprint validation;
+- complete child artifact and full-record result integrity;
+- process-boundary restart closure.
+
+The read-only programmable palette and `native_only` production policy remain in force.
+
+## 6. Final status
+
+M012 is **historical conditionally closed** as an implementation record. M013 owns the remaining production authorization, delivery, descendant, recovery, integrity, resource-convergence, evidence, and governance closure work.
