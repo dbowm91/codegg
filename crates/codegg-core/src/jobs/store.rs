@@ -877,7 +877,7 @@ impl JobStore for SqliteJobStore {
                 cancel_requested_at, cancel_reason, labels_json,
                 parent_job_id, parent_attempt_id, parent_call_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, 0,
-                      ?, ?, ?, ?, ?, NULL, NULL, '{}', ?, ?, ?)
+                      ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?)
             "#,
         )
         .bind(job_id.as_str())
@@ -899,7 +899,6 @@ impl JobStore for SqliteJobStore {
         .bind(spec.parent_job_id.as_ref().map(|id| id.as_str()))
         .bind(spec.parent_attempt_id.as_ref().map(|id| id.as_str()))
         .bind(spec.parent_call_id.as_deref())
-        .bind(now.timestamp_millis())
         .execute(&mut *tx)
         .await
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
@@ -944,9 +943,9 @@ impl JobStore for SqliteJobStore {
             cancel_reason: None,
             depends_on: spec.depends_on,
             labels: HashMap::new(),
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
+            parent_job_id: spec.parent_job_id,
+            parent_attempt_id: spec.parent_attempt_id,
+            parent_call_id: spec.parent_call_id,
         };
         Ok(record)
     }
