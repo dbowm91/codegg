@@ -959,7 +959,8 @@ impl JobStore for SqliteJobStore {
                    idempotency, state, current_attempt_id, attempt_count,
                    not_before, deadline, schedule_id,
                    time_created, time_updated, time_terminal,
-                   cancel_requested_at, cancel_reason, labels_json
+                   cancel_requested_at, cancel_reason, labels_json,
+                   parent_job_id, parent_attempt_id, parent_call_id
             FROM job WHERE id = ?
             "#,
         )

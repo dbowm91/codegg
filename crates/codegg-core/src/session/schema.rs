@@ -1029,6 +1029,16 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
             .await;
     }
 
+    // M013-F04: Add indexes for lineage queries (parent job, parent attempt,
+    // parent call, and active descendant queries).
+    for idx in &[
+        "CREATE INDEX IF NOT EXISTS idx_job_parent_job ON job(parent_job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_job_parent_attempt ON job(parent_attempt_id)",
+        "CREATE INDEX IF NOT EXISTS idx_job_parent_call ON job(parent_call_id)",
+    ] {
+        let _ = sqlx::query(idx).execute(pool).await;
+    }
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS job_attempt (
