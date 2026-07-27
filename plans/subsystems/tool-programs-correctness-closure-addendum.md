@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: closing — Milestone 012 closing with independent review; Milestone 011 is historical conditionally closed
+Status: closing — Milestone 013 implementation landed, closure review pending; Milestone 012 is historical conditionally closed; Milestone 011 is historical conditionally closed
 
 Canonical subsystem roadmap:
 
@@ -8,7 +8,7 @@ Canonical subsystem roadmap:
 
 Current corrective implementation plan:
 
-- `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md`
+- `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
 
 Historical predecessor:
 

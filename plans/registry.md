@@ -31,26 +31,28 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 012 closed | — |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 013 closing | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective closure | closed | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | M001–M011 implementation present; no external provider required for native correctness; recommended hosted disposition is explicit native-only production status |
+| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, and recovery closure | closing | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | M012 closed; broker grant verification; notification SQLite CAS; durable lineage; replay fingerprint; journal integrity |
 
 ## Active closure work
 
 | Subsystem | Milestone | Status | Closure record | Notes |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 012 | closed | `plans/closure/tool-programs/012-status.md` | All 32 closure criteria pass; 66 tests; broker grant verification; AgentLoop authority derivation; notification injection tracking; descendant cancellation |
+| Programmatic tool execution and Tool Programs | 013 | closing | — | Implementation landed; closure review pending; authority grant integrity; SQLite notification CAS; durable lineage indexes; replay fingerprint v2; journal SHA-256; result digest; success-gated ledger |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 
-No registered downstream plan is blocked on M012. Strict Tool Programs subsystem closure is blocked by M012 itself.
+No registered downstream plan is blocked on M012 or M013. Strict Tool Programs subsystem closure is blocked by M013 closure review.
 
 ## Deferred unregistered product work
 

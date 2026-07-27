@@ -1,6 +1,6 @@
 # Tool Programs Milestone 013 — Production Authority, Descendant, Delivery, and Recovery Closure
 
-Status: ready for handoff
+Status: closing
 
 Class: corrective implementation / authorization / durable ownership / scheduler convergence / recovery / evidence closure
 
