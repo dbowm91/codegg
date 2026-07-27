@@ -68,6 +68,20 @@ pub enum NotificationState {
     Failed,
 }
 
+/// M013-C1: canonical textual representation of [`NotificationState`] for
+/// SQLite columns and CAS predicates. Avoids the JSON-quoted `"pending"`
+/// form produced by `serde_json::to_string` for unit-variant enums.
+pub fn notification_state_to_str(state: NotificationState) -> &'static str {
+    match state {
+        NotificationState::Pending => "pending",
+        NotificationState::Claimed => "claimed",
+        NotificationState::Delivered => "delivered",
+        NotificationState::Suppressed => "suppressed",
+        NotificationState::Expired => "expired",
+        NotificationState::Failed => "failed",
+    }
+}
+
 /// Error type for notification store operations.
 ///
 /// M012-D: Database transition errors are returned to the caller and
@@ -477,14 +491,14 @@ impl ToolProgramNotificationService {
         // notification has not been delivered, suppressed, or already
         // injected (prevents races where another instance may have
         // acknowledged the claim or already injected).
-        // Note: state column stores JSON-serialized strings ("claimed"
-        // with quotes), so terminal states are matched with that format.
+        // M013-C1: state column stores raw lowercase tokens (e.g.
+        // 'claimed'), so terminal states are matched with that form.
         if let (Some(pool), Some(json)) = (&self.pool, record_json) {
             sqlx::query(
                 "UPDATE tool_program_notification
                  SET record_json = ?
                  WHERE notification_id = ?
-                   AND state NOT IN ('\"delivered\"', '\"suppressed\"', '\"expired\"')
+                   AND state NOT IN ('delivered', 'suppressed', 'expired')
                    AND json_extract(record_json, '$.injected_event_id') IS NULL",
             )
             .bind(json)
@@ -717,7 +731,7 @@ impl ToolProgramNotificationService {
         .bind(&notification.session_id)
         .bind(&notification.agent_id)
         .bind(&notification.turn_id)
-        .bind(serde_json::to_string(&notification.state).unwrap_or_else(|_| "\"pending\"".into()))
+        .bind(notification_state_to_str(notification.state))
         .bind(record_json)
         .bind(&notification.claim_owner)
         .bind(notification.claim_lease_until)
@@ -768,8 +782,8 @@ impl ToolProgramNotificationService {
     ) -> Result<bool, NotificationStoreError> {
         // M012-D: When a SQLite pool is available, use CAS as the authority.
         if let Some(pool) = &self.pool {
-            let from_str = serde_json::to_string(&from).unwrap_or_else(|_| "\"pending\"".into());
-            let to_str = serde_json::to_string(&to).unwrap_or_else(|_| "\"claimed\"".into());
+            let from_str = notification_state_to_str(from);
+            let to_str = notification_state_to_str(to);
             let owner_str = owner.as_deref();
             let claim_lease_until = if to == NotificationState::Claimed {
                 Some(now.saturating_add(self.policy.claim_lease_ms))
@@ -797,12 +811,12 @@ impl ToolProgramNotificationService {
                  WHERE notification_id = ?1 AND state = ?7",
             )
             .bind(notification_id)
-            .bind(&to_str)
+            .bind(to_str)
             .bind(now)
             .bind(owner_str)
             .bind(claim_lease_until)
             .bind(delivered_at)
-            .bind(&from_str)
+            .bind(from_str)
             .execute(pool)
             .await
             .map_err(|e| {
