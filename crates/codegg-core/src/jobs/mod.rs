@@ -102,7 +102,7 @@ pub enum CallerClass {
 /// permission check result in the agent loop and persisted with the job
 /// payload. The Tool Broker re-verifies scope against this grant on every
 /// nested call.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolAuthorityGrant {
     pub schema_version: u16,
     pub grant_id: String,
@@ -116,7 +116,27 @@ pub struct ToolAuthorityGrant {
     pub policy_revision: String,
     pub allowed_caller_class: String,
     pub allowed_effect_class: String,
+    /// SHA-256 digest over the manifest of allowed tools bound to this
+    /// grant (allowed tool names + the source digest that produced them).
     pub manifest_digest: String,
+    /// SHA-256 digest of the source code that produced this grant.
+    /// Bound into the grant so a tamper between admission and replay
+    /// can be detected.
+    /// M013-A2.
+    #[serde(default)]
+    pub source_digest: String,
+    /// SHA-256 digest of the compiled IR for this program. Bound into
+    /// the grant so a tamper between admission and replay can be
+    /// detected.
+    /// M013-A2.
+    #[serde(default)]
+    pub ir_digest: String,
+    /// SHA-256 digest of the contract catalog/version at admission
+    /// time. Used to verify the broker has the same contract revision
+    /// bound to the grant on every call.
+    /// M013-A2.
+    #[serde(default)]
+    pub contract_digest: String,
     pub issued_at: i64,
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -124,18 +144,76 @@ pub struct ToolAuthorityGrant {
 }
 
 impl ToolAuthorityGrant {
-    /// Compute the SHA-256 digest over bounded grant fields.
+    /// Test/seed constructor that fills the new M013 fields with
+    /// empty defaults. Production code should use
+    /// `build_authority_grant` so the digest is computed correctly.
+    pub fn for_test_default(
+        schema_version: u16,
+        grant_id: impl Into<String>,
+        principal_ref: impl Into<String>,
+        workspace_id: impl Into<String>,
+        workspace_path_policy_id: impl Into<String>,
+        session_id: Option<String>,
+        agent_id: Option<String>,
+        turn_id: Option<String>,
+        permission_mode: Option<String>,
+        policy_revision: impl Into<String>,
+        allowed_caller_class: impl Into<String>,
+        allowed_effect_class: impl Into<String>,
+        manifest_digest: impl Into<String>,
+        issued_at: i64,
+        expires_at: Option<i64>,
+        revoked_at: Option<i64>,
+        decision_digest: impl Into<String>,
+    ) -> Self {
+        Self {
+            schema_version,
+            grant_id: grant_id.into(),
+            principal_ref: principal_ref.into(),
+            workspace_id: workspace_id.into(),
+            workspace_path_policy_id: workspace_path_policy_id.into(),
+            session_id,
+            agent_id,
+            turn_id,
+            permission_mode,
+            policy_revision: policy_revision.into(),
+            allowed_caller_class: allowed_caller_class.into(),
+            allowed_effect_class: allowed_effect_class.into(),
+            manifest_digest: manifest_digest.into(),
+            source_digest: String::new(),
+            ir_digest: String::new(),
+            contract_digest: String::new(),
+            issued_at,
+            expires_at,
+            revoked_at,
+            decision_digest: decision_digest.into(),
+        }
+    }
+
+    /// M013-A2 / C-04: Compute the SHA-256 digest over every
+    /// security-relevant field of the grant. Includes session/turn/agent
+    /// identity, validity timestamps, and the new source/IR/contract
+    /// digests so any tamper fails verification.
     pub fn compute_digest(&self) -> String {
         let fields = format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.schema_version,
+            self.grant_id,
             self.principal_ref,
             self.workspace_id,
             self.workspace_path_policy_id,
+            self.session_id.as_deref().unwrap_or(""),
+            self.agent_id.as_deref().unwrap_or(""),
+            self.turn_id.as_deref().unwrap_or(""),
+            self.permission_mode.as_deref().unwrap_or(""),
             self.policy_revision,
             self.allowed_caller_class,
             self.allowed_effect_class,
             self.manifest_digest,
-            self.decision_digest,
+            self.source_digest,
+            self.ir_digest,
+            self.contract_digest,
+            self.issued_at,
         );
         format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
     }
@@ -156,6 +234,13 @@ impl ToolAuthorityGrant {
             }
         }
         true
+    }
+
+    /// M013-C-04: Recompute the grant digest and compare against
+    /// `decision_digest`. Returns false if any field has been tampered
+    /// with since the original decision.
+    pub fn verify_integrity(&self) -> bool {
+        self.compute_digest() == self.decision_digest
     }
 }
 

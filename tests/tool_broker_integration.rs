@@ -17,7 +17,35 @@ use codegg::error::ToolError;
 use codegg::tool::broker::{BrokerError, BrokerInvocationContext, ToolBroker, ToolBrokerConfig};
 use codegg::tool::contract::{ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass};
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
+use codegg_core::jobs::ToolAuthorityGrant;
 use serde_json::json;
+
+fn make_test_grant(caller: &str, effect: &str) -> ToolAuthorityGrant {
+    let mut grant = ToolAuthorityGrant {
+        schema_version: 1,
+        grant_id: "test-grant".into(),
+        principal_ref: "test-principal".into(),
+        workspace_id: "test-ws".into(),
+        workspace_path_policy_id: "workspace:test-ws".into(),
+        session_id: None,
+        agent_id: None,
+        turn_id: None,
+        permission_mode: None,
+        policy_revision: "test-policy-v1".into(),
+        allowed_caller_class: caller.into(),
+        allowed_effect_class: effect.into(),
+        manifest_digest: "test-manifest".into(),
+        source_digest: String::new(),
+        ir_digest: String::new(),
+        contract_digest: String::new(),
+        issued_at: 0,
+        expires_at: None,
+        revoked_at: None,
+        decision_digest: String::new(),
+    };
+    grant.decision_digest = grant.compute_digest();
+    grant
+}
 
 // ── Test tools ────────────────────────────────────────────────────────────
 
@@ -189,27 +217,10 @@ fn make_ctx_with_grant(
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
-                schema_version: 1,
-                grant_id: "test-grant".into(),
-                principal_ref: "test-principal".into(),
-                workspace_id: "test-ws".into(),
-                workspace_path_policy_id: "workspace:test-ws".into(),
-                session_id: None,
-                agent_id: None,
-                turn_id: None,
-                permission_mode: None,
-                policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: allowed_caller_class.into(),
-                allowed_effect_class: allowed_effect_class.into(),
-                manifest_digest: "test-manifest".into(),
-                issued_at: 0,
-                expires_at: None,
-                revoked_at: None,
-                decision_digest: "test-decision".into(),
-            },
-        ),
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant(
+            allowed_caller_class,
+            allowed_effect_class,
+        )),
         cancellation: None,
         deadline: None,
     }
@@ -652,27 +663,10 @@ async fn broker_authorized_programmatic_caller_accepted() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
-                schema_version: 1,
-                grant_id: "test-grant".into(),
-                principal_ref: "test-principal".into(),
-                workspace_id: "test-ws".into(),
-                workspace_path_policy_id: "workspace:test-ws".into(),
-                session_id: None,
-                agent_id: None,
-                turn_id: None,
-                permission_mode: None,
-                policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "program".into(),
-                allowed_effect_class: "read_only".into(),
-                manifest_digest: "test-manifest".into(),
-                issued_at: 0,
-                expires_at: None,
-                revoked_at: None,
-                decision_digest: "test-decision".into(),
-            },
-        ),
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant(
+            "program",
+            "read_only",
+        )),
         cancellation: None,
         deadline: None,
     };
@@ -768,6 +762,7 @@ async fn broker_validate_pre_execution_caller_policy() {
                 expires_at: None,
                 revoked_at: None,
                 decision_digest: "test-decision".into(),
+                ..Default::default()
             },
         ),
         cancellation: None,

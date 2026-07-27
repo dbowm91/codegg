@@ -41,6 +41,7 @@ fn make_valid_grant() -> ToolAuthorityGrant {
         expires_at: None,
         revoked_at: None,
         decision_digest: "sha256:def456".into(),
+        ..Default::default()
     }
 }
 

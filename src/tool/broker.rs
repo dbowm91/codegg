@@ -179,6 +179,16 @@ impl BrokerAuthority {
             ));
         }
 
+        // M013-C-04: integrity — recompute the digest over every
+        // security-relevant field and reject tampered grants before
+        // any caller-class or effect-class check.
+        if !grant.verify_integrity() {
+            return Err(format!(
+                "grant {} integrity mismatch (decision_digest does not match recomputed digest)",
+                grant.grant_id
+            ));
+        }
+
         // Workspace match (if grant specifies one and context provides one)
         if let Some(ref ctx_ws) = ctx.workspace_id {
             if !ctx_ws.is_empty() && ctx_ws != &grant.workspace_id {
@@ -916,6 +926,9 @@ mod tests {
                 allowed_caller_class: "agent".into(),
                 allowed_effect_class: "non_idempotent".into(),
                 manifest_digest: "sha256:test".into(),
+                source_digest: String::new(),
+                ir_digest: String::new(),
+                contract_digest: String::new(),
                 issued_at: chrono::Utc::now().timestamp_millis(),
                 expires_at: None,
                 revoked_at: None,

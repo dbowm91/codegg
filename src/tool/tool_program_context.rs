@@ -60,17 +60,22 @@ pub fn authority_digest(
     stable_digest(&material.to_string())
 }
 
-/// M012-B: Build a real authority grant from the execution context.
+/// M012-B / M013-A: Build a real authority grant from the execution
+/// context, allowed tools, source, IR, and contract catalog.
 ///
 /// This function constructs a `ToolAuthorityGrant` from the durable
-/// execution context, allowed tools, and source digest. The grant is
-/// verified by the Tool Broker on every nested call.
+/// execution context, allowed tools, and source/IR/contract digests.
+/// The grant is verified by the Tool Broker on every nested call. The
+/// decision_digest covers every security-relevant field via
+/// `compute_digest()` so any tamper fails verification.
 pub fn build_authority_grant(
     exec_ctx: Option<&codegg_core::jobs::ToolProgramExecutionContext>,
     workspace_id: &str,
     program_id: &str,
     allowed_tools: &[String],
     source_digest: &str,
+    ir_digest: &str,
+    contract_digest: &str,
 ) -> codegg_core::jobs::ToolAuthorityGrant {
     let now = chrono::Utc::now().timestamp_millis();
     let manifest_digest = format!(
@@ -79,13 +84,11 @@ pub fn build_authority_grant(
             &serde_json::to_string(&serde_json::json!({
                 "allowed_tools": allowed_tools,
                 "source_digest": source_digest,
+                "ir_digest": ir_digest,
+                "contract_digest": contract_digest,
             }))
             .unwrap_or_default()
         )
-    );
-    let decision_digest = format!(
-        "sha256:grant:{}:{}:{}:{}",
-        workspace_id, program_id, source_digest, now
     );
 
     let (session_id, agent_id, turn_id, permission_mode, policy_revision) = match exec_ctx {
@@ -101,7 +104,7 @@ pub fn build_authority_grant(
         None => (None, None, None, None, "tool-program-v1".into()),
     };
 
-    codegg_core::jobs::ToolAuthorityGrant {
+    let grant = codegg_core::jobs::ToolAuthorityGrant {
         schema_version: 1,
         grant_id: format!("grant:{}:{}", program_id, now),
         principal_ref: exec_ctx
@@ -119,9 +122,19 @@ pub fn build_authority_grant(
         allowed_caller_class: "program".into(),
         allowed_effect_class: "read_only".into(),
         manifest_digest,
+        source_digest: source_digest.to_string(),
+        ir_digest: ir_digest.to_string(),
+        contract_digest: contract_digest.to_string(),
         issued_at: now,
         expires_at: None,
         revoked_at: None,
+        decision_digest: String::new(),
+    };
+    // M013-A2 / C-04: compute the digest over every security-relevant
+    // field so any later tamper fails `verify_integrity()`.
+    let decision_digest = grant.compute_digest();
+    codegg_core::jobs::ToolAuthorityGrant {
         decision_digest,
+        ..grant
     }
 }

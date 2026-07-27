@@ -143,6 +143,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
                 expires_at: None,
                 revoked_at: None,
                 decision_digest: "test-decision".into(),
+                ..Default::default()
             },
         ),
         cancellation: None,

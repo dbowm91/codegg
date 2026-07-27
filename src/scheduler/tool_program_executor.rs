@@ -1091,17 +1091,43 @@ impl JobExecutor for ToolProgramExecutor {
 
         // C-21: Set the replay fingerprint so every new CompletedCall carries
         // the execution context and loaded calls are verified against it.
+        // M013-A2: bind source/IR/contract digests into the grant.
+        let mut contract_summary: Vec<(String, String)> = self
+            .broker
+            .catalog()
+            .tool_names()
+            .map(|name| {
+                let contract = self.broker.catalog().get(name);
+                (
+                    name.to_string(),
+                    contract
+                        .map(|c| format!("{:?}", c.effect_class))
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+        contract_summary.sort();
+        let contract_digest = crate::tool::tool_program_context::stable_digest(
+            &serde_json::to_string(&serde_json::json!({
+                "contracts": contract_summary,
+            }))
+            .unwrap_or_default(),
+        );
         let grant = crate::tool::tool_program_context::build_authority_grant(
             Some(&execution_context),
             ctx.workspace_id.as_str(),
             &program_id,
             &allowed_tools,
             &source_digest,
+            &compilation.ir.digest,
+            &contract_digest,
         );
         let manifest_digest = crate::tool::tool_program_context::stable_digest(
             &serde_json::to_string(&serde_json::json!({
                 "allowed_tools": allowed_tools,
                 "source_digest": source_digest,
+                "ir_digest": compilation.ir.digest,
+                "contract_digest": contract_digest,
             }))
             .unwrap_or_default(),
         );

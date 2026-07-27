@@ -16,7 +16,35 @@ use codegg::tool::contract::{
 use codegg::tool::program_cache::{CacheKey, ProgramCallCache};
 use codegg::tool::program_manifest::{self, RejectionReason};
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
+use codegg_core::jobs::ToolAuthorityGrant;
 use serde_json::json;
+
+fn make_test_grant() -> ToolAuthorityGrant {
+    let mut grant = ToolAuthorityGrant {
+        schema_version: 1,
+        grant_id: "test-grant".into(),
+        principal_ref: "test-principal".into(),
+        workspace_id: "test-ws".into(),
+        workspace_path_policy_id: "workspace:test-ws".into(),
+        session_id: None,
+        agent_id: None,
+        turn_id: None,
+        permission_mode: None,
+        policy_revision: "test-policy-v1".into(),
+        allowed_caller_class: "program".into(),
+        allowed_effect_class: "read_only".into(),
+        manifest_digest: "test-manifest".into(),
+        source_digest: String::new(),
+        ir_digest: String::new(),
+        contract_digest: String::new(),
+        issued_at: 0,
+        expires_at: None,
+        revoked_at: None,
+        decision_digest: String::new(),
+    };
+    grant.decision_digest = grant.compute_digest();
+    grant
+}
 
 // ── Mock read-only tools for testing ──────────────────────────────────────
 
@@ -217,27 +245,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
-                schema_version: 1,
-                grant_id: "test-grant".into(),
-                principal_ref: "test-principal".into(),
-                workspace_id: "test-ws".into(),
-                workspace_path_policy_id: "workspace:test-ws".into(),
-                session_id: None,
-                agent_id: None,
-                turn_id: None,
-                permission_mode: None,
-                policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "program".into(),
-                allowed_effect_class: "read_only".into(),
-                manifest_digest: "test-manifest".into(),
-                issued_at: 0,
-                expires_at: None,
-                revoked_at: None,
-                decision_digest: "test-decision".into(),
-            },
-        ),
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant()),
         cancellation: None,
         deadline: None,
     }
@@ -256,27 +264,12 @@ fn agent_ctx() -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
-                schema_version: 1,
-                grant_id: "test-grant".into(),
-                principal_ref: "test-principal".into(),
-                workspace_id: "test-ws".into(),
-                workspace_path_policy_id: "workspace:test-ws".into(),
-                session_id: None,
-                agent_id: None,
-                turn_id: None,
-                permission_mode: None,
-                policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "agent".into(),
-                allowed_effect_class: "read_only".into(),
-                manifest_digest: "test-manifest".into(),
-                issued_at: 0,
-                expires_at: None,
-                revoked_at: None,
-                decision_digest: "test-decision".into(),
-            },
-        ),
+        authority: codegg::tool::BrokerAuthority::from_grant({
+            let mut g = make_test_grant();
+            g.allowed_caller_class = "agent".into();
+            g.decision_digest = g.compute_digest();
+            g
+        }),
         cancellation: None,
         deadline: None,
     }
