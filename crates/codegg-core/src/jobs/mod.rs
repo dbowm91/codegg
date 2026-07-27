@@ -261,6 +261,27 @@ impl ToolProgramExecutionContext {
         }
     }
 
+    /// M013-F1: Compute a SHA-256 digest over every field a replay
+    /// safety gate depends on. Used to populate the execution context
+    /// digest in the replay fingerprint.
+    pub fn compute_digest(&self) -> String {
+        let fields = format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            self.schema_version,
+            self.workspace_path_policy_id,
+            self.session_id.as_deref().unwrap_or(""),
+            self.turn_id.as_deref().unwrap_or(""),
+            self.agent_id.as_deref().unwrap_or(""),
+            self.parent_job_id.as_deref().unwrap_or(""),
+            self.correlation_id,
+            self.backend_policy,
+            self.permission_mode.as_deref().unwrap_or(""),
+            self.policy_revision.as_deref().unwrap_or(""),
+            self.principal_ref.as_deref().unwrap_or(""),
+        );
+        format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version == 0 {
             return Err("tool-program execution context has no schema version".into());

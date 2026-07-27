@@ -475,22 +475,47 @@ pub struct CallResult {
 ///
 /// Used during replay to verify that the current execution context matches
 /// the context in which the original call was executed (C-21).
+///
+/// M013-F1: Bind every field a replay safety gate depends on: program
+/// identity, authority grant digest, execution-context digest,
+/// workspace + path-policy revision, frozen tool manifest digest,
+/// contract catalog/version digest, source/IR identity, backend
+/// selection, original absolute deadline, and caller/agent/session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReplayFingerprint {
+    /// Schema version of the fingerprint format.
+    pub schema_version: u16,
+    /// Program identity this fingerprint was bound to.
+    pub program_id: String,
     /// Digest of the authority grant active when the call was made.
     pub authority_digest: String,
+    /// Digest of the ToolProgramExecutionContext (identity + lineage).
+    pub execution_context_digest: String,
     /// Digest of the source code.
     pub source_digest: String,
     /// Digest of the compiled IR.
     pub ir_digest: String,
+    /// Workspace identifier.
+    pub workspace_id: String,
     /// Workspace path policy identifier.
     pub workspace_path_policy_id: String,
+    /// Policy revision at admission time.
+    pub policy_revision: String,
     /// Session ID if available.
     pub session_id: Option<String>,
     /// Agent ID if available.
     pub agent_id: Option<String>,
-    /// Manifest digest (allowed tools + source).
+    /// Manifest digest (allowed tools + source + IR + contract).
     pub manifest_digest: String,
+    /// Contract catalog/version digest at admission.
+    #[serde(default)]
+    pub contract_digest: String,
+    /// Backend selection at admission (e.g. "native_only").
+    pub backend_selection: String,
+    /// Original absolute deadline (millis since epoch) — preserved
+    /// across restart so a recovered program cannot gain wall time.
+    #[serde(default)]
+    pub original_deadline_millis: Option<i64>,
 }
 
 /// Recorded state of a completed call for replay.
@@ -2021,12 +2046,33 @@ impl MeteredInterpreter {
         match (&self.replay_fingerprint, &loaded.replay_fingerprint) {
             (Some(current), Some(stored)) => {
                 if current != stored {
+                    // M013-F4: expose per-field divergence so the failure
+                    // is diagnostically inspectable. The full stored
+                    // fingerprint is included for cross-process inspection.
                     return Err(InterpreterError::ReplayDivergence(format!(
-                        "replay identity mismatch at {}: authority={} stored={} current={}",
+                        "replay identity mismatch at {} \
+                         (authority stored={} current={} \
+                          source stored={} current={} \
+                          ir stored={} current={} \
+                          workspace_path_policy stored={} current={} \
+                          manifest stored={} current={} \
+                          contract stored={} current={} \
+                          backend stored={} current={})",
                         context,
-                        stored.authority_digest != current.authority_digest,
                         stored.authority_digest,
                         current.authority_digest,
+                        stored.source_digest,
+                        current.source_digest,
+                        stored.ir_digest,
+                        current.ir_digest,
+                        stored.workspace_path_policy_id,
+                        current.workspace_path_policy_id,
+                        stored.manifest_digest,
+                        current.manifest_digest,
+                        stored.contract_digest,
+                        current.contract_digest,
+                        stored.backend_selection,
+                        current.backend_selection,
                     )));
                 }
                 Ok(())

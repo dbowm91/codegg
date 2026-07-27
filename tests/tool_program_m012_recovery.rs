@@ -30,6 +30,31 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+/// Helper to construct a ReplayFingerprint with all new M013-F1 fields.
+fn make_fingerprint(
+    authority_digest: &str,
+    source_digest: &str,
+    ir_digest: &str,
+) -> ReplayFingerprint {
+    ReplayFingerprint {
+        schema_version: 2,
+        program_id: "test-program".into(),
+        authority_digest: authority_digest.into(),
+        execution_context_digest: "ctx-digest-1".into(),
+        source_digest: source_digest.into(),
+        ir_digest: ir_digest.into(),
+        workspace_id: "ws-1".into(),
+        workspace_path_policy_id: "workspace:ws-1".into(),
+        policy_revision: "rev-1".into(),
+        session_id: Some("s1".into()),
+        agent_id: Some("agent-1".into()),
+        manifest_digest: "manifest-v1".into(),
+        contract_digest: "contract-v1".into(),
+        backend_selection: "native_only".into(),
+        original_deadline_millis: Some(now_millis() + 60_000),
+    }
+}
+
 fn make_call_request(tool_name: &str, input: &str) -> CallRequest {
     CallRequest {
         tool_name: tool_name.to_string(),
@@ -137,15 +162,7 @@ async fn c21_replay_fingerprint_matching_succeeds() {
         }
     }
 
-    let fingerprint = ReplayFingerprint {
-        authority_digest: "auth-v1".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: Some("agent-1".into()),
-        manifest_digest: "manifest-v1".into(),
-    };
+    let fingerprint = make_fingerprint("auth-v1", "src-abc", "ir-123");
 
     // Pre-populate a completed call with the same fingerprint
     let mut completed_calls = std::collections::HashMap::new();
@@ -220,15 +237,7 @@ async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
     }
 
     // The stored fingerprint has a different authority_digest
-    let stored_fingerprint = ReplayFingerprint {
-        authority_digest: "auth-v1-OLD".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: Some("agent-1".into()),
-        manifest_digest: "manifest-v1".into(),
-    };
+    let stored_fingerprint = make_fingerprint("auth-v1-OLD", "src-abc", "ir-123");
 
     let mut completed_calls = std::collections::HashMap::new();
     completed_calls.insert(
@@ -249,15 +258,7 @@ async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
     );
 
     // The current fingerprint has a different authority_digest
-    let current_fingerprint = ReplayFingerprint {
-        authority_digest: "auth-v2-NEW".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: Some("agent-1".into()),
-        manifest_digest: "manifest-v1".into(),
-    };
+    let current_fingerprint = make_fingerprint("auth-v2-NEW", "src-abc", "ir-123");
 
     let compilation = compile_program(
         "result = call({\"tool\": \"read_file\", \"path\": \"/test\"})\nemit(result)\n",
@@ -323,15 +324,7 @@ async fn c21_legacy_call_without_fingerprint_is_accepted() {
         },
     );
 
-    let current_fingerprint = ReplayFingerprint {
-        authority_digest: "auth-v2-NEW".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: Some("agent-1".into()),
-        manifest_digest: "manifest-v1".into(),
-    };
+    let current_fingerprint = make_fingerprint("auth-v2-NEW", "src-abc", "ir-123");
 
     let compilation = compile_program(
         "result = call({\"tool\": \"read_file\", \"path\": \"/test\"})\nemit(result)\n",

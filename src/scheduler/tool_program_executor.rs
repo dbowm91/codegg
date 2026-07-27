@@ -1132,13 +1132,21 @@ impl JobExecutor for ToolProgramExecutor {
             .unwrap_or_default(),
         );
         interpreter.set_replay_fingerprint(codegg_core::tool_program::ReplayFingerprint {
+            schema_version: 2,
+            program_id: program_id.clone(),
             authority_digest: grant.compute_digest(),
+            execution_context_digest: execution_context.compute_digest(),
             source_digest: source_digest.clone(),
             ir_digest: compilation.ir.digest.clone(),
+            workspace_id: ctx.workspace_id.to_string(),
             workspace_path_policy_id: execution_context.workspace_path_policy_id.clone(),
+            policy_revision: execution_context.policy_revision.clone().unwrap_or_default(),
             session_id: execution_context.session_id.clone(),
             agent_id: execution_context.agent_id.clone(),
             manifest_digest,
+            contract_digest: contract_digest.clone(),
+            backend_selection: "native_only".to_string(),
+            original_deadline_millis: None,
         });
 
         // Bind the immutable contract snapshot to this workspace's durable

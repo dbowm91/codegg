@@ -36,6 +36,37 @@ use codegg_core::tool_program::{ProgramResult, ProgramStatus};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Helper to construct a ReplayFingerprint with all new M013-F1 fields.
+fn make_fingerprint(
+    authority_digest: &str,
+    source_digest: &str,
+    ir_digest: &str,
+) -> codegg_core::tool_program::ReplayFingerprint {
+    codegg_core::tool_program::ReplayFingerprint {
+        schema_version: 2,
+        program_id: "test-program".into(),
+        authority_digest: authority_digest.into(),
+        execution_context_digest: "ctx-digest-1".into(),
+        source_digest: source_digest.into(),
+        ir_digest: ir_digest.into(),
+        workspace_id: "ws-1".into(),
+        workspace_path_policy_id: "workspace:ws-1".into(),
+        policy_revision: "rev-1".into(),
+        session_id: Some("s1".into()),
+        agent_id: Some("agent-1".into()),
+        manifest_digest: "manifest-v1".into(),
+        contract_digest: "contract-v1".into(),
+        backend_selection: "native_only".into(),
+        original_deadline_millis: Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + 60_000,
+        ),
+    }
+}
+
 fn make_notification(
     program_id: &str,
     session_id: &str,
@@ -257,15 +288,7 @@ async fn c29_recovery_path_through_durable_ledger() {
     let program_id = "tp-recovery-path";
 
     // Phase 1: Execute a program and persist to journal (simulating first run)
-    let fingerprint = ReplayFingerprint {
-        authority_digest: "auth-recovery-test".into(),
-        source_digest: "src-recovery".into(),
-        ir_digest: "ir-recovery".into(),
-        workspace_path_policy_id: "workspace:ws-test".into(),
-        session_id: Some("s1".into()),
-        agent_id: None,
-        manifest_digest: "manifest-recovery".into(),
-    };
+    let fingerprint = make_fingerprint("auth-recovery-test", "src-recovery", "ir-recovery");
 
     let compilation =
         compile_program("result = call({\"tool\": \"read\", \"path\": \"/f\"})\nemit(result)\n")
@@ -326,15 +349,7 @@ async fn c29_fingerprint_mismatch_blocks_replay() {
     let program_id = "tp-fp-mismatch";
 
     // Store a completed call with the original fingerprint in the journal
-    let stored_fingerprint = ReplayFingerprint {
-        authority_digest: "auth-ORIGINAL".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: None,
-        manifest_digest: "manifest-v1".into(),
-    };
+    let stored_fingerprint = make_fingerprint("auth-ORIGINAL", "src-abc", "ir-123");
 
     let completed = CompletedCall {
         sequence: 0,
@@ -363,15 +378,7 @@ async fn c29_fingerprint_mismatch_blocks_replay() {
     interp.load_completed_calls(loaded_calls);
 
     // Current fingerprint has a different authority
-    interp.set_replay_fingerprint(ReplayFingerprint {
-        authority_digest: "auth-CHANGED".into(),
-        source_digest: "src-abc".into(),
-        ir_digest: "ir-123".into(),
-        workspace_path_policy_id: "workspace:ws-1".into(),
-        session_id: Some("s1".into()),
-        agent_id: None,
-        manifest_digest: "manifest-v1".into(),
-    });
+    interp.set_replay_fingerprint(make_fingerprint("auth-CHANGED", "src-abc", "ir-123"));
 
     struct NoopBroker;
     #[async_trait::async_trait]
