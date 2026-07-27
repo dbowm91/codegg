@@ -38,6 +38,7 @@ fn journal_reservation_and_completion_are_request_bound() {
             output: ProgramValue::String("ok".into()),
             artifacts: vec![],
         },
+        replay_fingerprint: None,
     };
     ledger
         .persist_call_completion("tp-m011", &completed)

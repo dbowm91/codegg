@@ -1528,3 +1528,51 @@ interpreter; the broker owns tool-call policy and timeout enforcement; the
 ledger/result stores own durable call/result state. Hosted backend policy is
 explicit and fail-closed for `hosted_required`; preferred hosted requests are
 observable native fallbacks until a provider transport is attached.
+
+## M012 — Correctness Closure
+
+M012 corrects M011's authority, notification, descendant, recovery, and
+result mechanisms:
+
+**Authority grants**: `build_authority_grant` derives `ToolAuthorityGrant`
+from `ToolProgramExecutionContext` fields (not synthetic constants).
+`BrokerAuthority::verify_grant_scope()` verifies principal, workspace,
+caller class, effect class, manifest, and policy revision on every call.
+AgentLoop derives `grant_id` and `principal_ref` from the agent's identity
+(`agent:{agent_id}`), `workspace_id` from SHA-256 of workspace root,
+`agent_id` from current agent state, `manifest_digest` from tool name
+hash, and `allowed_effect_class` as `"non_idempotent"`.
+
+**Notification delivery**: `transition_to` uses SQLite CAS (compare-and-set
+UPDATE with expected state) when a pool is available. The CAS also updates
+`record_json` to keep the serialized notification consistent. `mark_injected`
+uses CAS (`WHERE state = 'claimed'`) and persists the injected event ID by
+re-serializing the full notification. `is_injected` checks the in-memory
+cache for the injected event ID. AgentLoop marks notifications as injected
+after session append and skips already-injected notifications during recovery.
+
+**Scheduler-owned descendant cancellation**: `JobStore::find_descendants()`
+and `cancel_descendants()` are available on the `JobStore` trait. The
+scheduler calls `cancel_descendants()` from `request_cancel()` and the
+executor completion path (non-success terminal states: Failed, TimedOut,
+Cancelled, Interrupted). Descendant cancellation is independent of
+executor-future liveness.
+
+**Child lineage**: `parent_job_id`, `parent_attempt_id`, and
+`parent_call_id` are populated in child `NewJob` by
+`BrokerAdapter::submit_child_job` and persisted to SQLite.
+
+**Replay identity binding**: `ReplayFingerprint` captures authority_digest,
+source_digest, ir_digest, workspace_path_policy_id, session_id, agent_id,
+and manifest_digest. Attached to every `CompletedCall`. Verified at replay
+time — mismatches trigger `InterpreterError::ReplayDivergence`.
+
+**Result convergence**: `call_artifacts` are populated from interpreter
+completed calls. `ProgramResultRecord` carries `call_artifacts` and
+`child_artifacts` with bounded previews, artifact IDs, and digests.
+Result digest is recomputed on load and mismatch is rejected.
+
+**Hosted disposition**: Production schema description is "Only native
+execution is supported." Hosted-preferred and hosted-required are not
+selectable through normal runtime construction. Provider adapter code
+remains as experimental/library infrastructure.

@@ -878,6 +878,32 @@ impl JobScheduler {
                         "executor completed but durable completion persistence failed"
                     );
                 }
+                // M012-F04/C-13: Cancel active descendants when the
+                // parent attempt terminates (timeout, failure, cancel,
+                // interrupt). This ensures children are cleaned up
+                // independently of executor-future liveness.
+                if !matches!(completion.status, ExecutorStatus::Completed) {
+                    if let Err(error) = store
+                        .cancel_descendants(
+                            &job_id_for_task,
+                            CancelReason::new(
+                                "scheduler",
+                                &format!(
+                                    "parent attempt {} terminated: {}",
+                                    attempt_id, completion.summary
+                                ),
+                            ),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            job_id = %job_id_for_task,
+                            attempt_id = %attempt_id,
+                            %error,
+                            "failed to cancel descendants after executor completion"
+                        );
+                    }
+                }
                 // Unregister running.
                 {
                     let mut rg = running.lock().await;
@@ -1108,6 +1134,22 @@ impl JobScheduler {
             if ra.job_id == *job_id {
                 ra.cancellation.cancel();
             }
+        }
+        drop(running);
+        // M012-F04/C-13: Cancel active descendants independently of
+        // the executor future. This ensures children are cleaned up
+        // even when the executor has already exited or the future is
+        // dropped.
+        if let Err(error) = self
+            .store
+            .cancel_descendants(job_id, CancelReason::new("scheduler", reason))
+            .await
+        {
+            tracing::warn!(
+                job_id = %job_id,
+                %error,
+                "failed to cancel descendants during request_cancel"
+            );
         }
         Ok(result)
     }

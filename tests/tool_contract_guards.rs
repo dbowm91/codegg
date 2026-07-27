@@ -136,7 +136,7 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
                 turn_id: None,
                 permission_mode: None,
                 policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "agent".into(),
+                allowed_caller_class: "program".into(),
                 allowed_effect_class: "read_only".into(),
                 manifest_digest: "test-manifest".into(),
                 issued_at: 0,

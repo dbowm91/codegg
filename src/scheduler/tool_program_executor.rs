@@ -1084,10 +1084,36 @@ impl JobExecutor for ToolProgramExecutor {
         // first instruction. Replay then returns the stored typed result
         // without invoking the broker again.
         let ledger = crate::tool::tool_program_ledger::ToolProgramLedger::new(&ctx.workspace_root);
-        let mut interpreter = MeteredInterpreter::new(compilation.ir, limits);
+        let mut interpreter = MeteredInterpreter::new(compilation.ir.clone(), limits);
         if let Ok(completed_calls) = ledger.load_completed_calls(&program_id) {
             interpreter.load_completed_calls(completed_calls);
         }
+
+        // C-21: Set the replay fingerprint so every new CompletedCall carries
+        // the execution context and loaded calls are verified against it.
+        let grant = crate::tool::tool_program_context::build_authority_grant(
+            Some(&execution_context),
+            ctx.workspace_id.as_str(),
+            &program_id,
+            &allowed_tools,
+            &source_digest,
+        );
+        let manifest_digest = crate::tool::tool_program_context::stable_digest(
+            &serde_json::to_string(&serde_json::json!({
+                "allowed_tools": allowed_tools,
+                "source_digest": source_digest,
+            }))
+            .unwrap_or_default(),
+        );
+        interpreter.set_replay_fingerprint(codegg_core::tool_program::ReplayFingerprint {
+            authority_digest: grant.compute_digest(),
+            source_digest: source_digest.clone(),
+            ir_digest: compilation.ir.digest.clone(),
+            workspace_path_policy_id: execution_context.workspace_path_policy_id.clone(),
+            session_id: execution_context.session_id.clone(),
+            agent_id: execution_context.agent_id.clone(),
+            manifest_digest,
+        });
 
         // Bind the immutable contract snapshot to this workspace's durable
         // artifact store for the lifetime of the attempt.
@@ -1120,13 +1146,7 @@ impl JobExecutor for ToolProgramExecutor {
                 Some(ctx.attempt_id.to_string()),
                 None,
             )
-            .with_grant(crate::tool::tool_program_context::build_authority_grant(
-                Some(&execution_context),
-                ctx.workspace_id.as_str(),
-                &program_id,
-                &allowed_tools,
-                &source_digest,
-            ))
+            .with_grant(grant)
             .with_deadline(wall_deadline);
 
         // Build run configuration

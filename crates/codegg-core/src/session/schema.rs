@@ -1011,13 +1011,23 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
             time_terminal INTEGER,
             cancel_requested_at INTEGER,
             cancel_reason TEXT,
-            labels_json TEXT NOT NULL DEFAULT '{}'
+            labels_json TEXT NOT NULL DEFAULT '{}',
+            parent_job_id TEXT,
+            parent_attempt_id TEXT,
+            parent_call_id TEXT
         )
         "#,
     )
     .execute(pool)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
+
+    // M012-F04/F06: Add parent lineage columns to existing databases.
+    for col in &["parent_job_id", "parent_attempt_id", "parent_call_id"] {
+        let _ = sqlx::query(&format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+            .execute(pool)
+            .await;
+    }
 
     sqlx::query(
         r#"

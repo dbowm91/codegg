@@ -1,6 +1,6 @@
 # Tool Broker
 
-Status: implemented (M011 ownership closure)
+Status: implemented (M011 ownership closure, corrected by M012)
 
 ## Purpose
 
@@ -96,6 +96,48 @@ authority digest; there is no boolean authorization bypass. The scheduler
 persists heartbeats and supplies the outer job deadline, while Tool Program
 call reservations/completions/checkpoints are written atomically by
 `ToolProgramLedger` before the interpreter advances.
+
+## M012 authority grants and broker failure mapping
+
+M012 corrects M011's authority and failure semantics:
+
+### Authority grant verification (`verify_grant_scope`)
+
+Every nested Broker call verifies the `ToolAuthorityGrant` against:
+
+- **Validity**: expiry timestamp, revocation flag, schema version
+- **Workspace**: grant's `workspace_id` must match the call context
+- **Caller class**: grant's `allowed_caller_class` must match the `ToolCaller` variant (agent, program, subagent, api, internal)
+- **Effect class**: grant's `allowed_effect_class` must match the tool contract's effect class
+
+Missing, stale, unknown-version, workspace-mismatched, caller-mismatched,
+or effect-mismatched grants fail closed before tool invocation.
+
+### Programmatic failure mapping (`into_programmatic_outcome`)
+
+`BrokerResult::into_programmatic_outcome()` maps terminal statuses for
+programmatic callers:
+
+| `ToolTerminalStatus` | `ProgrammaticOutcome` | Interpreter behavior |
+|---|---|---|
+| `Success` | `Ok(ToolValue)` | Completed call |
+| `Denied` | `Err(Denied)` | Failed terminal |
+| `Cancelled` | `Err(Cancelled)` | `InterpreterError::Cancelled` |
+| `TimedOut` | `Err(TimedOut)` | Timeout failure |
+| `InfrastructureError` | `Err(InfrastructureError)` | Failed terminal |
+| `Error` | `Err(InfrastructureError)` | Failed terminal |
+
+Only `Success` increments `calls_completed` and enters the
+replay-completed map. All other statuses produce durable failed call
+records and never become `CompletedCall`.
+
+### AgentLoop direct authority derivation
+
+The AgentLoop derives authority from the real execution context instead
+of synthetic constants: `grant_id` and `principal_ref` from the agent's
+identity (`agent:{agent_id}`), `workspace_id` from SHA-256 of workspace
+root, `agent_id` from current agent state, `manifest_digest` from tool
+name hash, and `allowed_effect_class` as `"non_idempotent"`.
 
 ## Related
 

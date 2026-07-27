@@ -113,7 +113,10 @@ CREATE TABLE job (
     time_terminal INTEGER,
     cancel_requested_at INTEGER,
     cancel_reason TEXT,
-    labels_json TEXT NOT NULL DEFAULT '{}'
+    labels_json TEXT NOT NULL DEFAULT '{}',
+    parent_job_id TEXT,
+    parent_attempt_id TEXT,
+    parent_call_id TEXT
 );
 
 CREATE TABLE job_attempt (
@@ -171,7 +174,7 @@ Indexes for queue scans by state/priority/not-before/workspace, attempts by job,
 
 ## JobStore Trait
 
-13 methods on `JobStore` (`crates/codegg-core/src/jobs/mod.rs`):
+15 methods on `JobStore` (`crates/codegg-core/src/jobs/mod.rs`):
 
 | Method | Purpose |
 |--------|---------|
@@ -188,6 +191,8 @@ Indexes for queue scans by state/priority/not-before/workspace, attempts by job,
 | `retry_job(JobId, DaemonGeneration, AttemptId)` | Create new attempt for retry |
 | `recover_generation(DaemonGeneration, RecoveryPolicy)` | Mark stale attempts `Interrupted`, requeue eligible jobs |
 | `set_attempt_executor(AttemptId, executor)` | Persist executor provenance before an attempt enters `Running` |
+| `find_descendants(JobId) → Vec<JobRecord>` | Find all non-terminal child jobs of a parent (M012) |
+| `cancel_descendants(JobId, CancelReason) → usize` | Cancel all non-terminal descendants; returns count (M012) |
 
 ## ScheduleStore Trait
 

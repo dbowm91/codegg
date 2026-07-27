@@ -1753,6 +1753,13 @@ impl AgentLoop {
         }
         // Claim each notification in deterministic order
         for notification in &pending {
+            // M012-F03: Skip notifications that were already injected
+            // before a restart. Recovery acknowledges them without
+            // re-injecting.
+            if svc.is_injected(&notification.notification_id).await {
+                let _ = svc.acknowledge(&notification.notification_id).await;
+                continue;
+            }
             if svc
                 .claim(&notification.notification_id)
                 .await
@@ -1785,6 +1792,16 @@ impl AgentLoop {
                 messages.push(Message::System {
                     content: std::sync::Arc::new(text),
                 });
+                // M012-F03: Mark as injected with a durable event identity
+                // before acknowledging, so recovery can detect the injection.
+                let event_id = format!(
+                    "tp-event:{}:{}",
+                    notification.program_id,
+                    chrono::Utc::now().timestamp_millis()
+                );
+                let _ = svc
+                    .mark_injected(&notification.notification_id, &event_id)
+                    .await;
                 // Acknowledge delivery
                 let _ = svc.acknowledge(&notification.notification_id).await;
             }
@@ -4518,7 +4535,26 @@ impl AgentLoop {
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
         let event_store = self.event_store.clone();
         let tool_broker = Arc::clone(&self.tool_broker);
-        let authority_ref = format!("agent:{}", self.session_id);
+        let authority_ref = {
+            // M012-F01: Derive authority from the agent's real identity.
+            // The agent_id is the current agent's name (e.g. "code", "plan"),
+            // replacing the legacy synthetic session-based format.
+            let agent_id = &self.state.current_agent;
+            format!("agent:{}", agent_id)
+        };
+        // M012-F01: Derive workspace identity from the workspace root path.
+        let agent_workspace_id = self
+            .workspace_root
+            .as_ref()
+            .map(|root| {
+                use sha2::Digest;
+                format!(
+                    "ws:{:x}",
+                    sha2::Sha256::digest(root.to_string_lossy().as_bytes())
+                )
+            })
+            .unwrap_or_else(|| "ws:session-scoped".into());
+        let agent_id = self.state.current_agent.clone();
         for (orig_idx, tc) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
@@ -4535,6 +4571,8 @@ impl AgentLoop {
             let plugin_service = plugin_service.clone();
             let session_id = self.session_id.clone();
             let authority_ref = authority_ref.clone();
+            let agent_workspace_id = agent_workspace_id.clone();
+            let agent_id = agent_id.clone();
             let idx_for_results = orig_idx;
             let event_store = event_store.clone();
             let tool_broker = Arc::clone(&tool_broker);
@@ -4702,14 +4740,32 @@ impl AgentLoop {
                             let tool_name_clone = tc_inner.name.clone();
                             let broker_for_exec = Arc::clone(&tool_broker);
                             let authority_ref = authority_ref.clone();
+                            let agent_workspace_id = agent_workspace_id.clone();
+                            let agent_id = agent_id.clone();
                             let exec_fut = async move {
+                                // M012-F01: Build manifest digest from the tool name.
+                                // For AgentLoop direct calls, the manifest is the
+                                // single tool being invoked.
+                                let manifest_digest = {
+                                    use sha2::Digest;
+                                    format!(
+                                        "sha256:{:x}",
+                                        sha2::Sha256::digest(tool_name_clone.as_bytes())
+                                    )
+                                };
+                                let policy_revision = format!(
+                                    "agent:{}:{}",
+                                    &agent_id,
+                                    exec_ctx.session_id.as_deref().unwrap_or("anon")
+                                );
+                                let ws_id = agent_workspace_id.clone();
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
                                     caller: crate::tool::contract::ToolCaller::Agent,
                                     cwd: exec_ctx.cwd.clone(),
                                     session_id: exec_ctx.session_id.clone(),
-                                    workspace_id: None,
-                                    agent_id: None,
-                                    turn_id: None,
+                                    workspace_id: Some(agent_workspace_id.clone()),
+                                    agent_id: Some(agent_id.clone()),
+                                    turn_id: exec_ctx.turn_id.clone(),
                                     job_id: None,
                                     attempt_id: None,
                                     permission_mode: exec_ctx.permission_mode.clone(),
@@ -4720,20 +4776,27 @@ impl AgentLoop {
                                             schema_version: 1,
                                             grant_id: authority_ref.clone(),
                                             principal_ref: authority_ref.clone(),
-                                            workspace_id: "unknown".into(),
-                                            workspace_path_policy_id: "workspace:unknown".into(),
+                                            workspace_id: agent_workspace_id,
+                                            workspace_path_policy_id: format!(
+                                                "workspace:{}",
+                                                ws_id
+                                            ),
                                             session_id: exec_ctx.session_id.clone(),
-                                            agent_id: None,
-                                            turn_id: None,
+                                            agent_id: Some(agent_id),
+                                            turn_id: exec_ctx.turn_id.clone(),
                                             permission_mode: exec_ctx.permission_mode.clone(),
-                                            policy_revision: "agent-policy-v1".into(),
+                                            policy_revision,
                                             allowed_caller_class: "agent".into(),
-                                            allowed_effect_class: "read_only".into(),
-                                            manifest_digest: "agent-direct".into(),
+                                            allowed_effect_class: "non_idempotent".into(),
+                                            manifest_digest,
                                             issued_at: chrono::Utc::now().timestamp_millis(),
                                             expires_at: None,
                                             revoked_at: None,
-                                            decision_digest: "agent-direct".into(),
+                                            decision_digest: format!(
+                                                "sha256:decision:{}:{}",
+                                                authority_ref,
+                                                chrono::Utc::now().timestamp_millis()
+                                            ),
                                         },
                                     ),
                                     cancellation: exec_ctx.cancellation.clone(),

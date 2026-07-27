@@ -7,8 +7,26 @@
 //!
 //! This test file exercises process-level failpoints and concurrency safety
 //! using public production boundaries (no internal-only APIs).
+//!
+//! ## Daemon-level process test deferral
+//!
+//! Full daemon launch/kill/restart tests (submitting Tool Programs through the
+//! daemon socket/stdio protocol, killing the daemon process at failpoints, and
+//! verifying recovery) are deferred. The daemon integration harness requires:
+//! - a real daemon lock/socket lifecycle with SIGKILL/SIGTERM at precise failpoints
+//! - temp workspace + SQLite database isolation per test
+//! - protocol-level submission via core-stdio or socket (not in-process)
+//! - deterministic failpoint injection into the executor/ledger/notification paths
+//!
+//! The current in-process SQLite/ledger/notification tests exercise the same
+//! durable storage boundaries the daemon uses (SQLite CAS, ledger persistence,
+//! replay fingerprint verification) without the process lifecycle overhead.
+//! A future integration test harness (see `scripts/e2e/tool_program_harness.py`)
+//! can cover the full daemon path.
 
 #![cfg(test)]
+
+mod common;
 
 use codegg::scheduler::tool_program_notifications::{
     NotificationState, ToolProgramNotificationService,
@@ -100,6 +118,32 @@ async fn c29_concurrent_claim_different_notifications() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn c29_concurrent_sqlite_claim_separate_instances() {
+    // C-29: Two separate SQLite-backed service instances (simulating two daemon
+    // processes sharing a database) concurrently race to claim one notification.
+    // Exactly one succeeds via CAS.
+    let pool = common::pool::isolated_pool().await;
+    let service1 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
+    let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
+    let notification = make_notification("tp-proc-sqlite-concurrent", "sess-1");
+    service1.record_notification(notification).await;
+
+    let s1 = Arc::clone(&service1);
+    let s2 = Arc::clone(&service2);
+    let handle1 = tokio::spawn(async move { s1.claim("tp-proc-sqlite-concurrent").await.unwrap() });
+    let handle2 = tokio::spawn(async move { s2.claim("tp-proc-sqlite-concurrent").await.unwrap() });
+
+    let r1 = handle1.await.unwrap();
+    let r2 = handle2.await.unwrap();
+    assert!(
+        r1 ^ r2,
+        "exactly one concurrent SQLite claim should succeed: got ({}, {})",
+        r1,
+        r2
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn c30_result_store_is_concurrent_safe() {
     // C-30: The result store can be accessed from multiple tasks safely.
     let temp = tempfile::tempdir().unwrap();
@@ -174,4 +218,218 @@ async fn c30_all_m012_test_files_exist() {
         let path = std::path::Path::new(file);
         assert!(path.exists(), "required test file {} should exist", file);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn c29_recovery_path_through_durable_ledger() {
+    // C-29: The durable ledger survives "restart" by loading completed calls
+    // into a fresh interpreter with replay fingerprint verification.
+    use codegg::tool::tool_program_ledger::ToolProgramLedger;
+    use codegg_core::tool_program::{
+        compile_program, CallRequest, CompletedCall, MeteredInterpreter, ReplayFingerprint,
+        RuntimeLimits,
+    };
+
+    struct CountingBroker {
+        count: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl codegg_core::tool_program::BrokerCallback for CountingBroker {
+        async fn execute_call(
+            &self,
+            _request: &codegg_core::tool_program::CallRequest,
+        ) -> Result<
+            codegg_core::tool_program::CallResult,
+            codegg_core::tool_program::InterpreterError,
+        > {
+            self.count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(codegg_core::tool_program::CallResult {
+                output: codegg_core::tool_program::ProgramValue::String("fresh".into()),
+                artifacts: vec![],
+            })
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let ledger = ToolProgramLedger::new(temp.path());
+    let program_id = "tp-recovery-path";
+
+    // Phase 1: Execute a program and persist to journal (simulating first run)
+    let fingerprint = ReplayFingerprint {
+        authority_digest: "auth-recovery-test".into(),
+        source_digest: "src-recovery".into(),
+        ir_digest: "ir-recovery".into(),
+        workspace_path_policy_id: "workspace:ws-test".into(),
+        session_id: Some("s1".into()),
+        agent_id: None,
+        manifest_digest: "manifest-recovery".into(),
+    };
+
+    let compilation =
+        compile_program("result = call({\"tool\": \"read\", \"path\": \"/f\"})\nemit(result)\n")
+            .unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+    let mut interp = MeteredInterpreter::new(compilation.ir.clone(), limits.clone());
+    interp.set_replay_fingerprint(fingerprint.clone());
+
+    let broker = CountingBroker {
+        count: std::sync::atomic::AtomicU32::new(0),
+    };
+    let result1 = interp.run(&broker, None).await;
+    assert_eq!(result1.status, ProgramStatus::Completed);
+    assert_eq!(interp.completed_calls().len(), 1);
+
+    // Persist each completed call to the journal (the durable replay store)
+    for (_seq, call) in interp.completed_calls() {
+        ledger.persist_call_completion(program_id, call).unwrap();
+    }
+
+    // Verify the journal has the calls
+    let loaded = ledger.load_completed_calls(program_id).unwrap();
+    assert_eq!(loaded.len(), 1, "should have one completed call in journal");
+
+    // Phase 2: "Restart" — load from journal into a fresh interpreter
+    let loaded_calls = ledger.load_completed_calls(program_id).unwrap();
+
+    let mut interp2 = MeteredInterpreter::new(compilation.ir, limits);
+    interp2.load_completed_calls(loaded_calls);
+    interp2.set_replay_fingerprint(fingerprint);
+
+    let broker2 = CountingBroker {
+        count: std::sync::atomic::AtomicU32::new(0),
+    };
+    let result2 = interp2.run(&broker2, None).await;
+
+    // The replayed call should succeed without invoking the broker
+    assert_eq!(result2.status, ProgramStatus::Completed);
+    assert_eq!(
+        broker2.count.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "broker should NOT be called during replay"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn c29_fingerprint_mismatch_blocks_replay() {
+    // C-29: A fingerprint mismatch between stored and current context blocks replay,
+    // proving that authority/manifest/workspace context is enforced across restarts.
+    use codegg::tool::tool_program_ledger::ToolProgramLedger;
+    use codegg_core::tool_program::{
+        compile_program, CallRequest, CompletedCall, MeteredInterpreter, ReplayFingerprint,
+        RuntimeLimits,
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let ledger = ToolProgramLedger::new(temp.path());
+    let program_id = "tp-fp-mismatch";
+
+    // Store a completed call with the original fingerprint in the journal
+    let stored_fingerprint = ReplayFingerprint {
+        authority_digest: "auth-ORIGINAL".into(),
+        source_digest: "src-abc".into(),
+        ir_digest: "ir-123".into(),
+        workspace_path_policy_id: "workspace:ws-1".into(),
+        session_id: Some("s1".into()),
+        agent_id: None,
+        manifest_digest: "manifest-v1".into(),
+    };
+
+    let completed = CompletedCall {
+        sequence: 0,
+        request: CallRequest {
+            tool_name: "read".into(),
+            input: serde_json::json!({"path": "/f"}),
+            call_id: Some("pc:0".into()),
+        },
+        result: codegg_core::tool_program::CallResult {
+            output: codegg_core::tool_program::ProgramValue::String("cached".into()),
+            artifacts: vec![],
+        },
+        replay_fingerprint: Some(stored_fingerprint),
+    };
+    ledger
+        .persist_call_completion(program_id, &completed)
+        .unwrap();
+
+    // Simulate restart with a different authority (policy changed)
+    let loaded_calls = ledger.load_completed_calls(program_id).unwrap();
+    let compilation =
+        compile_program("result = call({\"tool\": \"read\", \"path\": \"/f\"})\nemit(result)\n")
+            .unwrap();
+    let limits = RuntimeLimits::from(&compilation.ir.bounds);
+    let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+    interp.load_completed_calls(loaded_calls);
+
+    // Current fingerprint has a different authority
+    interp.set_replay_fingerprint(ReplayFingerprint {
+        authority_digest: "auth-CHANGED".into(),
+        source_digest: "src-abc".into(),
+        ir_digest: "ir-123".into(),
+        workspace_path_policy_id: "workspace:ws-1".into(),
+        session_id: Some("s1".into()),
+        agent_id: None,
+        manifest_digest: "manifest-v1".into(),
+    });
+
+    struct NoopBroker;
+    #[async_trait::async_trait]
+    impl codegg_core::tool_program::BrokerCallback for NoopBroker {
+        async fn execute_call(
+            &self,
+            _request: &codegg_core::tool_program::CallRequest,
+        ) -> Result<
+            codegg_core::tool_program::CallResult,
+            codegg_core::tool_program::InterpreterError,
+        > {
+            panic!("broker should not be called — replay should fail first")
+        }
+    }
+
+    let result = interp.run(&NoopBroker, None).await;
+
+    // Replay should fail with a divergence error, not invoke the broker
+    assert_eq!(result.status, ProgramStatus::Failed);
+    let error_msg = result.error_message.unwrap();
+    assert!(
+        error_msg.contains("replay identity mismatch"),
+        "error should mention replay identity mismatch, got: {}",
+        error_msg
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn c29_sqlite_restart_preserves_notification_state() {
+    // C-29: A SQLite-backed notification survives "restart" (new service instance
+    // with the same pool). This exercises the production notification delivery
+    // boundary across a simulated process restart.
+    let pool = common::pool::isolated_pool().await;
+
+    // Phase 1: Record a notification via service1.
+    let service1 = ToolProgramNotificationService::with_pool(pool.clone());
+    let notification = make_notification("tp-restart-1", "sess-restart");
+    service1.record_notification(notification).await;
+
+    // Mark as injected (simulating session append before ack).
+    service1
+        .mark_injected("tp-restart-1", "evt-restart-1")
+        .await;
+
+    // Phase 2: "Restart" — new service instance with the same SQLite pool.
+    let service2 = ToolProgramNotificationService::with_pool(pool.clone());
+
+    // The notification should be loadable from the durable store.
+    let loaded = service2.get("tp-restart-1").await;
+    assert!(
+        loaded.is_some(),
+        "notification should be loadable from SQLite after restart"
+    );
+    assert_eq!(loaded.unwrap().program_id, "tp-restart-1");
+
+    // Injection tracking should survive restart (persisted in SQLite).
+    assert!(
+        service2.is_injected("tp-restart-1").await,
+        "injection state should survive restart"
+    );
 }

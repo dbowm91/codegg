@@ -161,6 +161,22 @@ fn make_registry() -> ToolRegistry {
 }
 
 fn make_ctx(caller: ToolCaller) -> BrokerInvocationContext {
+    make_ctx_with_grant(caller, "agent", "read_only")
+}
+
+fn make_ctx_non_idempotent(caller: ToolCaller) -> BrokerInvocationContext {
+    make_ctx_with_grant(caller, "agent", "non_idempotent")
+}
+
+fn make_ctx_read_only(caller: ToolCaller) -> BrokerInvocationContext {
+    make_ctx_with_grant(caller, "agent", "read_only")
+}
+
+fn make_ctx_with_grant(
+    caller: ToolCaller,
+    allowed_caller_class: &str,
+    allowed_effect_class: &str,
+) -> BrokerInvocationContext {
     BrokerInvocationContext {
         caller,
         cwd: PathBuf::from("."),
@@ -185,8 +201,8 @@ fn make_ctx(caller: ToolCaller) -> BrokerInvocationContext {
                 turn_id: None,
                 permission_mode: None,
                 policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "agent".into(),
-                allowed_effect_class: "read_only".into(),
+                allowed_caller_class: allowed_caller_class.into(),
+                allowed_effect_class: allowed_effect_class.into(),
                 manifest_digest: "test-manifest".into(),
                 issued_at: 0,
                 expires_at: None,
@@ -210,7 +226,7 @@ async fn broker_full_pipeline_read_tool() {
             &registry,
             "read",
             json!({"path": "/tmp/test.txt"}),
-            make_ctx(ToolCaller::Agent),
+            make_ctx_read_only(ToolCaller::Agent),
         )
         .await
         .unwrap();
@@ -270,9 +286,13 @@ async fn broker_caller_policy_allows_programmatic_on_direct_or_programmatic() {
             &registry,
             "programmatic",
             json!({}),
-            make_ctx(ToolCaller::Program {
-                program_id: "test-program".to_string(),
-            }),
+            make_ctx_with_grant(
+                ToolCaller::Program {
+                    program_id: "test-program".to_string(),
+                },
+                "program",
+                "read_only",
+            ),
         )
         .await
         .unwrap();
@@ -294,7 +314,12 @@ async fn broker_input_too_large() {
     let broker = ToolBroker::with_config(&registry, config);
     let large_input = json!({"data": "x".repeat(200)});
     let err = broker
-        .execute(&registry, "read", large_input, make_ctx(ToolCaller::Agent))
+        .execute(
+            &registry,
+            "read",
+            large_input,
+            make_ctx_read_only(ToolCaller::Agent),
+        )
         .await
         .unwrap_err();
 
@@ -314,7 +339,7 @@ async fn broker_output_truncation() {
             &registry,
             "large_output",
             json!({}),
-            make_ctx(ToolCaller::Agent),
+            make_ctx_non_idempotent(ToolCaller::Agent),
         )
         .await
         .unwrap();
@@ -336,7 +361,7 @@ async fn broker_artifact_registration_for_large_output() {
             &registry,
             "large_output",
             json!({}),
-            make_ctx(ToolCaller::Agent),
+            make_ctx_non_idempotent(ToolCaller::Agent),
         )
         .await
         .unwrap();
@@ -350,7 +375,12 @@ async fn broker_permission_error_maps_to_denied() {
     let registry = make_registry();
     let broker = ToolBroker::new(&registry);
     let result = broker
-        .execute(&registry, "denied", json!({}), make_ctx(ToolCaller::Agent))
+        .execute(
+            &registry,
+            "denied",
+            json!({}),
+            make_ctx_non_idempotent(ToolCaller::Agent),
+        )
         .await
         .unwrap();
 
@@ -634,7 +664,7 @@ async fn broker_authorized_programmatic_caller_accepted() {
                 turn_id: None,
                 permission_mode: None,
                 policy_revision: "test-policy-v1".into(),
-                allowed_caller_class: "agent".into(),
+                allowed_caller_class: "program".into(),
                 allowed_effect_class: "read_only".into(),
                 manifest_digest: "test-manifest".into(),
                 issued_at: 0,

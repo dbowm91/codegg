@@ -491,6 +491,7 @@ mod tests {
                 output: ProgramValue::ToolResult(serde_json::json!({"secret": "hidden"})),
                 artifacts: vec!["artifact-1".into()],
             },
+            replay_fingerprint: None,
         };
         let calls = HashMap::from([(2, call)]);
         ledger.persist_completed_calls("tp-test", &calls).unwrap();

@@ -454,6 +454,64 @@ impl ToolProgramNotificationService {
         .await
     }
 
+    /// M012-F03: Mark a notification as injected with the durable event
+    /// identity. This is called after the notification message has been
+    /// appended to the session so that recovery can detect the injection
+    /// and acknowledge without re-injecting.
+    pub async fn mark_injected(
+        &self,
+        notification_id: &str,
+        event_id: &str,
+    ) -> Result<(), NotificationStoreError> {
+        // Update the in-memory record
+        let record_json = {
+            let mut notifications = self.notifications.write().await;
+            if let Some(n) = notifications.get_mut(notification_id) {
+                n.injected_event_id = Some(event_id.to_string());
+                serde_json::to_string(n).ok()
+            } else {
+                None
+            }
+        };
+        // Persist the update to SQLite with CAS: only update if the
+        // notification has not been delivered, suppressed, or already
+        // injected (prevents races where another instance may have
+        // acknowledged the claim or already injected).
+        // Note: state column stores JSON-serialized strings ("claimed"
+        // with quotes), so terminal states are matched with that format.
+        if let (Some(pool), Some(json)) = (&self.pool, record_json) {
+            sqlx::query(
+                "UPDATE tool_program_notification
+                 SET record_json = ?
+                 WHERE notification_id = ?
+                   AND state NOT IN ('\"delivered\"', '\"suppressed\"', '\"expired\"')
+                   AND json_extract(record_json, '$.injected_event_id') IS NULL",
+            )
+            .bind(json)
+            .bind(notification_id)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                NotificationStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    /// M012-F03: Check if a notification has already been injected into
+    /// the session. If `injected_event_id` is set, the notification was
+    /// injected and recovery should acknowledge without re-injecting.
+    pub async fn is_injected(&self, notification_id: &str) -> bool {
+        let notifications = self.notifications.read().await;
+        notifications
+            .get(notification_id)
+            .and_then(|n| n.injected_event_id.as_ref())
+            .is_some()
+    }
+
     /// Suppress a notification (e.g. parent session archived).
     pub async fn suppress(&self, notification_id: &str) -> Result<bool, NotificationStoreError> {
         self.load_one_from_pool(notification_id).await;
@@ -728,16 +786,23 @@ impl ToolProgramNotificationService {
                    SET state = ?2, updated_at = ?3,
                        claim_owner = CASE WHEN ?2 = 'claimed' THEN ?4 ELSE NULL END,
                        claim_lease_until = CASE WHEN ?2 = 'claimed' THEN ?5 ELSE NULL END,
-                       delivered_at = CASE WHEN ?2 = 'delivered' THEN ?6 ELSE delivered_at END
-                 WHERE notification_id = ?1 AND state = ?0",
+                       delivered_at = CASE WHEN ?2 = 'delivered' THEN ?6 ELSE delivered_at END,
+                       record_json = json_set(
+                           json_set(
+                               json_set(
+                                   json_set(record_json, '$.state', ?2),
+                                   '$.updated_at', ?3),
+                               '$.claim_owner', ?4),
+                           '$.claim_lease_until', ?5)
+                 WHERE notification_id = ?1 AND state = ?7",
             )
-            .bind(&from_str)
             .bind(notification_id)
             .bind(&to_str)
             .bind(now)
             .bind(owner_str)
             .bind(claim_lease_until)
             .bind(delivered_at)
+            .bind(&from_str)
             .execute(pool)
             .await
             .map_err(|e| {
@@ -839,13 +904,13 @@ impl ToolProgramNotificationService {
 
     async fn load_one_from_pool(&self, notification_id: &str) {
         let Some(pool) = &self.pool else { return };
-        let Ok(Some(json)) = sqlx::query_scalar::<_, String>(
+        let result = sqlx::query_scalar::<_, String>(
             "SELECT record_json FROM tool_program_notification WHERE notification_id = ?",
         )
         .bind(notification_id)
         .fetch_optional(pool)
-        .await
-        else {
+        .await;
+        let Ok(Some(json)) = result else {
             return;
         };
         let Ok(notification) = serde_json::from_str::<ToolProgramNotification>(&json) else {

@@ -1174,6 +1174,33 @@ pub trait JobStore: Send + Sync {
         stale: &DaemonGeneration,
         policy: &RecoveryPolicy,
     ) -> Result<RecoveryReport, JobStoreError>;
+
+    /// M012-F04/F06: Find all non-terminal jobs that are direct
+    /// descendants of `parent_job_id` (i.e. their `parent_job_id`
+    /// field matches). Returns job summaries for active descendants
+    /// that can be cancelled.
+    async fn find_descendants(
+        &self,
+        parent_job_id: &JobId,
+    ) -> Result<Vec<JobSummary>, JobStoreError> {
+        let _ = parent_job_id;
+        Ok(vec![])
+    }
+
+    /// M012-F04/F06: Cancel all non-terminal descendants of a parent
+    /// job. Returns the number of descendants that were cancelled or
+    /// had cancellation requested. Used by the scheduler when a parent
+    /// reaches a terminal state (timeout, cancel, daemon-generation
+    /// abandonment) to ensure descendants do not outlive the parent.
+    async fn cancel_descendants(
+        &self,
+        parent_job_id: &JobId,
+        reason: CancelReason,
+    ) -> Result<u32, JobStoreError> {
+        let _ = parent_job_id;
+        let _ = reason;
+        Ok(0)
+    }
 }
 
 /// Errors emitted by `JobStore` implementations.

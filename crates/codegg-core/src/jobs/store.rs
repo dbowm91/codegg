@@ -248,9 +248,9 @@ impl JobStore for InMemoryJobStore {
             cancel_reason: None,
             depends_on: spec.depends_on,
             labels: HashMap::new(),
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
+            parent_job_id: spec.parent_job_id,
+            parent_attempt_id: spec.parent_attempt_id,
+            parent_call_id: spec.parent_call_id,
         };
         guard.jobs.insert(job_id.clone(), record.clone());
         Ok(record)
@@ -776,6 +776,54 @@ impl JobStore for InMemoryJobStore {
             schedules_reconciled: 0,
         })
     }
+
+    /// M012-F04/F06: Find all non-terminal direct descendants of a parent job.
+    async fn find_descendants(
+        &self,
+        parent_job_id: &JobId,
+    ) -> Result<Vec<JobSummary>, JobStoreError> {
+        let guard = self.inner.lock().await;
+        let mut summaries = Vec::new();
+        for job in guard.jobs.values() {
+            if job.parent_job_id.as_ref() == Some(parent_job_id) && !job.state.is_terminal() {
+                summaries.push(JobSummary {
+                    job_id: job.job_id.clone(),
+                    workspace_id: job.workspace_id.clone(),
+                    kind: job.kind.clone(),
+                    priority: job.priority.clone(),
+                    state: job.state.clone(),
+                    attempt_count: job.attempt_count,
+                    current_attempt_id: job.current_attempt_id.clone(),
+                    created_at: job.created_at,
+                    updated_at: job.updated_at,
+                    schedule_id: job.schedule_id.clone(),
+                    cancel_requested_at: job.cancel_requested_at,
+                });
+            }
+        }
+        Ok(summaries)
+    }
+
+    /// M012-F04/F06: Cancel all non-terminal descendants of a parent job.
+    async fn cancel_descendants(
+        &self,
+        parent_job_id: &JobId,
+        reason: CancelReason,
+    ) -> Result<u32, JobStoreError> {
+        let descendants = self.find_descendants(parent_job_id).await?;
+        let mut cancelled = 0u32;
+        for desc in descendants {
+            if let Ok(result) = self.request_cancel(&desc.job_id, reason.clone()).await {
+                if matches!(
+                    result.state,
+                    CancelOutcome::Cancelled | CancelOutcome::Requested
+                ) {
+                    cancelled += 1;
+                }
+            }
+        }
+        Ok(cancelled)
+    }
 }
 
 // ── SQLite implementation ─────────────────────────────────────────────────
@@ -826,9 +874,10 @@ impl JobStore for SqliteJobStore {
                 idempotency, state, current_attempt_id, attempt_count,
                 not_before, deadline, schedule_id,
                 time_created, time_updated, time_terminal,
-                cancel_requested_at, cancel_reason, labels_json
+                cancel_requested_at, cancel_reason, labels_json,
+                parent_job_id, parent_attempt_id, parent_call_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, 0,
-                      ?, ?, ?, ?, ?, NULL, NULL, NULL, '{}')
+                      ?, ?, ?, ?, ?, NULL, NULL, '{}', ?, ?, ?)
             "#,
         )
         .bind(job_id.as_str())
@@ -846,6 +895,10 @@ impl JobStore for SqliteJobStore {
         .bind(spec.deadline.map(|d| d.timestamp_millis()))
         .bind(spec.schedule_id.as_ref().map(|s| s.as_str()))
         .bind(now.timestamp_millis())
+        .bind(now.timestamp_millis())
+        .bind(spec.parent_job_id.as_ref().map(|id| id.as_str()))
+        .bind(spec.parent_attempt_id.as_ref().map(|id| id.as_str()))
+        .bind(spec.parent_call_id.as_deref())
         .bind(now.timestamp_millis())
         .execute(&mut *tx)
         .await
@@ -1607,6 +1660,84 @@ impl JobStore for SqliteJobStore {
             schedules_reconciled: 0,
         })
     }
+
+    /// M012-F04/F06: Find all non-terminal direct descendants of a parent job.
+    async fn find_descendants(
+        &self,
+        parent_job_id: &JobId,
+    ) -> Result<Vec<JobSummary>, JobStoreError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT j.id, j.workspace_id, j.kind, j.priority, j.state,
+                   j.attempt_count, j.current_attempt_id,
+                   j.time_created, j.time_updated, j.schedule_id,
+                   j.cancel_requested_at
+            FROM job j
+            WHERE j.parent_job_id = ?
+              AND j.state NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted')
+            ORDER BY j.time_created ASC
+            "#,
+        )
+        .bind(parent_job_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+
+        let summaries: Vec<JobSummary> = rows
+            .into_iter()
+            .map(|row| {
+                let job_id: String = row.get("id");
+                let workspace_id: String = row.get("workspace_id");
+                let kind: String = row.get("kind");
+                let priority: String = row.get("priority");
+                let state: String = row.get("state");
+                let attempt_count: i64 = row.get("attempt_count");
+                let current_attempt_id: Option<String> = row.get("current_attempt_id");
+                let time_created: i64 = row.get("time_created");
+                let time_updated: i64 = row.get("time_updated");
+                let schedule_id: Option<String> = row.get("schedule_id");
+                let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
+                JobSummary {
+                    job_id: JobId::new_unchecked(job_id),
+                    workspace_id: WorkspaceId::new_unchecked(workspace_id),
+                    kind: JobKind::from_str_lossy(&kind),
+                    priority: priority_from_str(&priority),
+                    state: JobState::from_str_lossy(&state),
+                    attempt_count: attempt_count as u32,
+                    current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
+                    created_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_created)
+                        .unwrap_or_else(Utc::now),
+                    updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
+                        .unwrap_or_else(Utc::now),
+                    schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
+                    cancel_requested_at: cancel_requested_at
+                        .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
+                }
+            })
+            .collect();
+        Ok(summaries)
+    }
+
+    /// M012-F04/F06: Cancel all non-terminal descendants of a parent job.
+    async fn cancel_descendants(
+        &self,
+        parent_job_id: &JobId,
+        reason: CancelReason,
+    ) -> Result<u32, JobStoreError> {
+        let descendants = self.find_descendants(parent_job_id).await?;
+        let mut cancelled = 0u32;
+        for desc in descendants {
+            if let Ok(result) = self.request_cancel(&desc.job_id, reason.clone()).await {
+                if matches!(
+                    result.state,
+                    CancelOutcome::Cancelled | CancelOutcome::Requested
+                ) {
+                    cancelled += 1;
+                }
+            }
+        }
+        Ok(cancelled)
+    }
 }
 
 // ── Row helpers ───────────────────────────────────────────────────────────
@@ -1679,9 +1810,17 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
             .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
         cancel_reason,
         depends_on: Vec::new(),
-        parent_job_id: None,
-        parent_attempt_id: None,
-        parent_call_id: None,
+        parent_job_id: row
+            .try_get::<Option<String>, _>("parent_job_id")
+            .unwrap_or(None)
+            .map(JobId::new_unchecked),
+        parent_attempt_id: row
+            .try_get::<Option<String>, _>("parent_attempt_id")
+            .unwrap_or(None)
+            .map(AttemptId::new_unchecked),
+        parent_call_id: row
+            .try_get::<Option<String>, _>("parent_call_id")
+            .unwrap_or(None),
         labels,
     })
 }

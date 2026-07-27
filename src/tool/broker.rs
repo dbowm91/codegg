@@ -152,6 +152,76 @@ impl BrokerAuthority {
     pub fn untrusted() -> Self {
         BrokerAuthority::Unverified
     }
+
+    /// M012-F01/C-03/C-04: Verify the grant scope against the current
+    /// call context. Checks validity, workspace match, caller class,
+    /// and manifest scope. Returns `Ok(())` if the grant is valid for
+    /// this invocation, or `Err(reason)` describing the failure.
+    pub fn verify_grant_scope(
+        &self,
+        tool_name: &str,
+        contract: &ToolContract,
+        ctx: &BrokerInvocationContext,
+    ) -> Result<(), String> {
+        let grant = match self {
+            BrokerAuthority::Verified { grant } => grant,
+            BrokerAuthority::Unverified => {
+                return Err("unverified authority".into());
+            }
+        };
+
+        // C-04: schema version, expiry, revocation
+        let now = chrono::Utc::now().timestamp_millis();
+        if !grant.is_valid(now) {
+            return Err(format!(
+                "grant {} is not valid at {} (expires={:?}, revoked={:?})",
+                grant.grant_id, now, grant.expires_at, grant.revoked_at
+            ));
+        }
+
+        // Workspace match (if grant specifies one and context provides one)
+        if let Some(ref ctx_ws) = ctx.workspace_id {
+            if !ctx_ws.is_empty() && ctx_ws != &grant.workspace_id {
+                return Err(format!(
+                    "workspace mismatch: grant={}, context={}",
+                    grant.workspace_id, ctx_ws
+                ));
+            }
+        }
+
+        // Caller class match
+        let caller_class = match &ctx.caller {
+            ToolCaller::Agent => "agent",
+            ToolCaller::Program { .. } => "program",
+            ToolCaller::Subagent { .. } => "subagent",
+            ToolCaller::Api { .. } => "api",
+            ToolCaller::Internal => "internal",
+        };
+        if grant.allowed_caller_class != caller_class && grant.allowed_caller_class != "any" {
+            return Err(format!(
+                "caller class mismatch: grant={}, actual={}",
+                grant.allowed_caller_class, caller_class
+            ));
+        }
+
+        // Effect class match against tool contract
+        let contract_effect = match contract.effect_class {
+            ToolEffectClass::ReadOnly => "read_only",
+            ToolEffectClass::ReadValidate => "read_validate",
+            ToolEffectClass::SafeRepeat => "safe_repeat",
+            ToolEffectClass::IdempotentMutating => "idempotent_mutating",
+            ToolEffectClass::NonIdempotent => "non_idempotent",
+            ToolEffectClass::ProcessExec => "process_exec",
+        };
+        if grant.allowed_effect_class != contract_effect && grant.allowed_effect_class != "any" {
+            return Err(format!(
+                "effect class mismatch: grant={}, tool={}",
+                grant.allowed_effect_class, contract_effect
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 // ─── Broker result ────────────────────────────────────────────────
@@ -366,6 +436,19 @@ impl ToolBroker {
                 tool: contract.name.clone(),
                 caller: format!("{:?}", ctx.caller),
                 policy: contract.caller_policy,
+            });
+        }
+
+        // M012-F01/C-03/C-04: Verify grant scope against the current
+        // call context. This checks validity, workspace match, caller
+        // class, and effect class — not just Verified vs Unverified.
+        if let Err(reason) = ctx
+            .authority
+            .verify_grant_scope(&contract.name, contract, ctx)
+        {
+            return Err(BrokerError::AuthorityError {
+                tool: contract.name.clone(),
+                reason,
             });
         }
 
@@ -831,7 +914,7 @@ mod tests {
                 permission_mode: None,
                 policy_revision: "test-v1".into(),
                 allowed_caller_class: "agent".into(),
-                allowed_effect_class: "read_only".into(),
+                allowed_effect_class: "non_idempotent".into(),
                 manifest_digest: "sha256:test".into(),
                 issued_at: chrono::Utc::now().timestamp_millis(),
                 expires_at: None,

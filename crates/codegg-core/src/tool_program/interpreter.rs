@@ -471,12 +471,38 @@ pub struct CallResult {
     pub artifacts: Vec<String>,
 }
 
+/// Fingerprint of the execution context at the time a call was made.
+///
+/// Used during replay to verify that the current execution context matches
+/// the context in which the original call was executed (C-21).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplayFingerprint {
+    /// Digest of the authority grant active when the call was made.
+    pub authority_digest: String,
+    /// Digest of the source code.
+    pub source_digest: String,
+    /// Digest of the compiled IR.
+    pub ir_digest: String,
+    /// Workspace path policy identifier.
+    pub workspace_path_policy_id: String,
+    /// Session ID if available.
+    pub session_id: Option<String>,
+    /// Agent ID if available.
+    pub agent_id: Option<String>,
+    /// Manifest digest (allowed tools + source).
+    pub manifest_digest: String,
+}
+
 /// Recorded state of a completed call for replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompletedCall {
     pub sequence: u32,
     pub request: CallRequest,
     pub result: CallResult,
+    /// Execution context fingerprint for replay verification (C-21).
+    /// `None` for legacy calls predating M012 full replay binding.
+    #[serde(default)]
+    pub replay_fingerprint: Option<ReplayFingerprint>,
 }
 
 // ── Broker callback trait ─────────────────────────────────────────
@@ -618,6 +644,8 @@ pub struct MeteredInterpreter {
     terminated: bool,
     /// Checkpoints produced during execution.
     checkpoints: Vec<InterpreterCheckpoint>,
+    /// Replay fingerprint for C-21 verification.
+    replay_fingerprint: Option<ReplayFingerprint>,
 }
 
 impl MeteredInterpreter {
@@ -635,6 +663,7 @@ impl MeteredInterpreter {
             next_call_seq: 0,
             terminated: false,
             checkpoints: Vec::new(),
+            replay_fingerprint: None,
         }
     }
 
@@ -1083,6 +1112,8 @@ impl MeteredInterpreter {
                             "replayed call request differs from the durable reservation".into(),
                         ));
                     }
+                    // C-21: Verify replay fingerprint (authority, manifest, workspace, etc.)
+                    self.verify_replay_fingerprint(completed, &format!("call:{}", seq))?;
                     completed.result.clone()
                 } else {
                     broker.call_reserved(seq, &request).await?;
@@ -1094,11 +1125,8 @@ impl MeteredInterpreter {
                     match call_result {
                         Ok(result) => {
                             // Record as completed
-                            let completed = CompletedCall {
-                                sequence: seq,
-                                request: request.clone(),
-                                result: result.clone(),
-                            };
+                            let completed =
+                                self.make_completed_call(seq, request.clone(), result.clone());
                             broker.call_completed(&completed).await?;
                             self.completed_calls.insert(seq, completed);
                             self.commit_checkpoint(broker).await?;
@@ -1174,6 +1202,11 @@ impl MeteredInterpreter {
                                         "replayed parallel call request differs from the durable reservation".into(),
                                     ));
                                 }
+                                // C-21: Verify replay fingerprint for parallel calls
+                                self.verify_replay_fingerprint(
+                                    completed,
+                                    &format!("parallel:{}", seq),
+                                )?;
                                 completed.result.clone()
                             } else {
                                 broker.call_reserved(seq, &request).await?;
@@ -1184,11 +1217,11 @@ impl MeteredInterpreter {
 
                                 match call_result {
                                     Ok(result) => {
-                                        let completed = CompletedCall {
-                                            sequence: seq,
-                                            request: request.clone(),
-                                            result: result.clone(),
-                                        };
+                                        let completed = self.make_completed_call(
+                                            seq,
+                                            request.clone(),
+                                            result.clone(),
+                                        );
                                         broker.call_completed(&completed).await?;
                                         self.completed_calls.insert(seq, completed);
                                         self.commit_checkpoint(broker).await?;
@@ -1314,6 +1347,8 @@ impl MeteredInterpreter {
                                 .into(),
                         ));
                     }
+                    // C-21: Verify replay fingerprint for child-job calls
+                    self.verify_replay_fingerprint(completed, &format!("child_job:{}", seq))?;
                     // Replay: reconstruct the result from completed call
                     completed.result.clone()
                 } else {
@@ -1337,11 +1372,8 @@ impl MeteredInterpreter {
                                 artifacts: child_result.artifacts,
                             };
                             // Record as completed for replay
-                            let completed = CompletedCall {
-                                sequence: seq,
-                                request: call_request,
-                                result: call_result.clone(),
-                            };
+                            let completed =
+                                self.make_completed_call(seq, call_request, call_result.clone());
                             broker.call_completed(&completed).await?;
                             self.completed_calls.insert(seq, completed);
                             self.commit_checkpoint(broker).await?;
@@ -1954,6 +1986,54 @@ impl MeteredInterpreter {
         self.completed_calls = calls;
         // Don't override next_call_seq — it starts at 0 and the
         // ExecuteCall handler looks up each sequence in order.
+    }
+
+    /// Set the replay fingerprint context for this execution run.
+    /// The fingerprint is attached to every new CompletedCall and verified
+    /// against loaded CompletedCalls during replay (C-21).
+    pub fn set_replay_fingerprint(&mut self, fingerprint: ReplayFingerprint) {
+        self.replay_fingerprint = Some(fingerprint);
+    }
+
+    /// Create a CompletedCall with the current replay fingerprint attached.
+    fn make_completed_call(
+        &self,
+        sequence: u32,
+        request: CallRequest,
+        result: CallResult,
+    ) -> CompletedCall {
+        CompletedCall {
+            sequence,
+            request,
+            result,
+            replay_fingerprint: self.replay_fingerprint.clone(),
+        }
+    }
+
+    /// Verify that a loaded CompletedCall matches the current replay fingerprint.
+    /// Returns Ok(()) if the fingerprint matches or is absent (legacy call).
+    /// Returns Err with a descriptive message if the fingerprint diverges.
+    fn verify_replay_fingerprint(
+        &self,
+        loaded: &CompletedCall,
+        context: &str,
+    ) -> Result<(), InterpreterError> {
+        match (&self.replay_fingerprint, &loaded.replay_fingerprint) {
+            (Some(current), Some(stored)) => {
+                if current != stored {
+                    return Err(InterpreterError::ReplayDivergence(format!(
+                        "replay identity mismatch at {}: authority={} stored={} current={}",
+                        context,
+                        stored.authority_digest != current.authority_digest,
+                        stored.authority_digest,
+                        current.authority_digest,
+                    )));
+                }
+                Ok(())
+            }
+            // Legacy calls without fingerprint are accepted for backward compat
+            _ => Ok(()),
+        }
     }
 }
 

@@ -763,12 +763,14 @@ Key methods:
 ### Hosted Tool Program selection
 
 `HostedBackendPolicy` is the explicit backend-selection contract for Tool
-Programs. Native-only is the default production policy. Hosted-required is
-fail-closed when the provider has no Responses/hosted-program capability or
-when the daemon has not attached a hosted transport. Hosted-preferred records
-the selected policy and falls back to the native restricted interpreter when
-the hosted transport is unavailable; the fallback is visible in the typed
-Tool Program result rather than inferred from a human summary.
+Programs. **Native-only is the production policy (M012 Path B).** The
+model-facing schema description is "Only native execution is supported."
+Hosted-required and hosted-preferred are not selectable through normal
+runtime construction. The provider adapter code for hosted execution
+remains as experimental/library infrastructure for future interoperability
+work. A future Path A implementation would inject a real hosted transport
+into `ToolProgramExecutor` and route hosted calls through the same Broker,
+call store, cancellation, result, and artifact semantics.
 
 The durable connection foundation is owned by the daemon and is additive to
 the provider registry. `codegg_core::provider_connections` stores
