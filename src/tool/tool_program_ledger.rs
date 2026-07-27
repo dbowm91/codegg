@@ -15,7 +15,10 @@ use codegg_protocol::projection::dto::{ToolProgramCallPage, ToolProgramCallSumma
 use codegg_protocol::projection::limits::{
     MAX_PROJECTION_CALL_PAGE_SIZE, MAX_PROJECTION_TOOL_PROGRAM_CALLS,
 };
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::sync::Mutex;
 use thiserror::Error;
 
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
@@ -74,13 +77,46 @@ struct JournalDivergence {
 #[derive(Clone)]
 pub struct ToolProgramLedger {
     base_dir: PathBuf,
+    /// Per-program short-lived mutex used to serialize read-modify-write
+    /// cycles inside one process. Concurrent reservations/completions for
+    /// distinct sequences within the same program are funneled through
+    /// this lock so an in-flight write cannot lose another writer's update.
+    program_locks: std::sync::Arc<DashMap<String, std::sync::Arc<Mutex<()>>>>,
 }
 
 impl ToolProgramLedger {
     pub fn new(workspace_root: &Path) -> Self {
         Self {
             base_dir: workspace_root.join(".codegg").join("tool_program_calls"),
+            program_locks: std::sync::Arc::new(DashMap::new()),
         }
+    }
+
+    fn program_lock(&self, program_id: &str) -> std::sync::Arc<Mutex<()>> {
+        if let Some(existing) = self.program_locks.get(program_id) {
+            return existing.clone();
+        }
+        let new_lock = std::sync::Arc::new(Mutex::new(()));
+        self.program_locks
+            .entry(program_id.to_string())
+            .or_insert(new_lock)
+            .clone()
+    }
+
+    /// Run the given read-modify-write cycle under the per-program lock so
+    /// concurrent writers cannot lose reservations or completions.
+    fn mutate_journal<F, R>(&self, program_id: &str, f: F) -> Result<R, ToolProgramLedgerError>
+    where
+        F: FnOnce(&mut JournalFile) -> Result<R, ToolProgramLedgerError>,
+    {
+        let lock = self.program_lock(program_id);
+        let _guard = lock
+            .lock()
+            .map_err(|_| ToolProgramLedgerError::InvalidLedger("journal lock poisoned".into()))?;
+        let mut journal = self.read_journal(program_id)?;
+        let result = f(&mut journal)?;
+        self.write_journal(program_id, &journal)?;
+        Ok(result)
     }
 
     /// Persist the completed-call view atomically, replacing an earlier
@@ -180,38 +216,39 @@ impl ToolProgramLedger {
         request: &CallRequest,
     ) -> Result<(), ToolProgramLedgerError> {
         validate_program_id(program_id)?;
-        let mut journal = self.read_journal(program_id)?;
-        if let Some(completed) = journal.completed.iter().find(|c| c.sequence == sequence) {
-            if completed.request.tool_name != request.tool_name
-                || completed.request.input != request.input
-            {
-                return Err(ToolProgramLedgerError::InvalidLedger(
-                    "completed call diverges from requested replay".into(),
-                ));
+        self.mutate_journal(program_id, |journal| {
+            if let Some(completed) = journal.completed.iter().find(|c| c.sequence == sequence) {
+                if completed.request.tool_name != request.tool_name
+                    || completed.request.input != request.input
+                {
+                    return Err(ToolProgramLedgerError::InvalidLedger(
+                        "completed call diverges from requested replay".into(),
+                    ));
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if let Some(existing) = journal
-            .reservations
-            .iter()
-            .find(|reservation| reservation.sequence == sequence)
-        {
-            if existing.request.tool_name != request.tool_name
-                || existing.request.input != request.input
+            if let Some(existing) = journal
+                .reservations
+                .iter()
+                .find(|reservation| reservation.sequence == sequence)
             {
-                return Err(ToolProgramLedgerError::InvalidLedger(
-                    "reserved call diverges from requested replay".into(),
-                ));
+                if existing.request.tool_name != request.tool_name
+                    || existing.request.input != request.input
+                {
+                    return Err(ToolProgramLedgerError::InvalidLedger(
+                        "reserved call diverges from requested replay".into(),
+                    ));
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        journal.reservations.push(JournalReservation {
-            sequence,
-            request: request.clone(),
-            state: "reserved".into(),
-            reserved_at: Utc::now().timestamp_millis(),
-        });
-        self.write_journal(program_id, &journal)
+            journal.reservations.push(JournalReservation {
+                sequence,
+                request: request.clone(),
+                state: "reserved".into(),
+                reserved_at: Utc::now().timestamp_millis(),
+            });
+            Ok(())
+        })
     }
 
     /// Persist a typed completion before the interpreter advances.
@@ -221,27 +258,28 @@ impl ToolProgramLedger {
         completed: &CompletedCall,
     ) -> Result<(), ToolProgramLedgerError> {
         validate_program_id(program_id)?;
-        let mut journal = self.read_journal(program_id)?;
-        if let Some(existing) = journal
-            .completed
-            .iter()
-            .find(|call| call.sequence == completed.sequence)
-        {
-            if existing.request.tool_name != completed.request.tool_name
-                || existing.request.input != completed.request.input
+        self.mutate_journal(program_id, |journal| {
+            if let Some(existing) = journal
+                .completed
+                .iter()
+                .find(|call| call.sequence == completed.sequence)
             {
-                return Err(ToolProgramLedgerError::InvalidLedger(
-                    "completed call identity conflict".into(),
-                ));
+                if existing.request.tool_name != completed.request.tool_name
+                    || existing.request.input != completed.request.input
+                {
+                    return Err(ToolProgramLedgerError::InvalidLedger(
+                        "completed call identity conflict".into(),
+                    ));
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        journal
-            .reservations
-            .retain(|r| r.sequence != completed.sequence);
-        journal.completed.push(completed.clone());
-        journal.completed.sort_by_key(|call| call.sequence);
-        self.write_journal(program_id, &journal)
+            journal
+                .reservations
+                .retain(|r| r.sequence != completed.sequence);
+            journal.completed.push(completed.clone());
+            journal.completed.sort_by_key(|call| call.sequence);
+            Ok(())
+        })
     }
 
     /// Persist the latest interpreter checkpoint after a durable call
@@ -252,9 +290,10 @@ impl ToolProgramLedger {
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), ToolProgramLedgerError> {
         validate_program_id(program_id)?;
-        let mut journal = self.read_journal(program_id)?;
-        journal.checkpoint = Some(checkpoint.clone());
-        self.write_journal(program_id, &journal)
+        self.mutate_journal(program_id, |journal| {
+            journal.checkpoint = Some(checkpoint.clone());
+            Ok(())
+        })
     }
 
     /// Load completed calls for restart replay. The public redacted ledger is
@@ -286,9 +325,10 @@ impl ToolProgramLedger {
         deadline_millis: i64,
     ) -> Result<(), ToolProgramLedgerError> {
         validate_program_id(program_id)?;
-        let mut journal = self.read_journal(program_id)?;
-        journal.deadline_millis = Some(deadline_millis);
-        self.write_journal(program_id, &journal)
+        self.mutate_journal(program_id, |journal| {
+            journal.deadline_millis = Some(deadline_millis);
+            Ok(())
+        })
     }
 
     /// Retrieve the original absolute deadline (C-23).
@@ -306,13 +346,14 @@ impl ToolProgramLedger {
         observed_output_digest: &str,
     ) -> Result<(), ToolProgramLedgerError> {
         validate_program_id(program_id)?;
-        let mut journal = self.read_journal(program_id)?;
-        journal.divergences.push(JournalDivergence {
-            sequence,
-            observed_output_digest: observed_output_digest.to_string(),
-            diverged_at: Utc::now().timestamp_millis(),
-        });
-        self.write_journal(program_id, &journal)
+        self.mutate_journal(program_id, |journal| {
+            journal.divergences.push(JournalDivergence {
+                sequence,
+                observed_output_digest: observed_output_digest.to_string(),
+                diverged_at: Utc::now().timestamp_millis(),
+            });
+            Ok(())
+        })
     }
 
     /// Check if a divergence has been recorded for a call (C-22).
@@ -334,10 +375,7 @@ impl ToolProgramLedger {
         } else {
             return None;
         };
-        Some(format!(
-            "sha256:{}",
-            format!("{:x}", md5::compute(input_str))
-        ))
+        Some(format!("sha256:{:x}", Sha256::digest(input_str.as_bytes())))
     }
 
     /// Get the output digest for a completed call (C-21).
@@ -350,8 +388,8 @@ impl ToolProgramLedger {
             .and_then(|call| {
                 let output_str = serde_json::to_string(&call.result.output).ok()?;
                 Some(format!(
-                    "sha256:{}",
-                    format!("{:x}", md5::compute(output_str))
+                    "sha256:{:x}",
+                    Sha256::digest(output_str.as_bytes())
                 ))
             })
     }
