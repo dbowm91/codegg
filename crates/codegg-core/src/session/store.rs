@@ -2754,6 +2754,104 @@ impl EventStore {
                 .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.is_some())
     }
+
+    /// Load and semantically confirm an existing event by its expected
+    /// identity. Returns a typed outcome instead of swallowing query
+    /// failures as absence.
+    ///
+    /// Used by notification recovery to verify that a durable
+    /// parent-session event is semantically consistent with the
+    /// notification being recovered — not merely present.
+    pub async fn confirm_existing(
+        &self,
+        expected: &super::events::SessionEvent,
+    ) -> Result<ConfirmExistingEvent, StorageError> {
+        let expected_meta = expected.meta();
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT session_id, event_type, payload_json FROM session_events WHERE id = ?",
+        )
+        .bind(&expected_meta.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        let (stored_session_id, stored_type, stored_payload) = match row {
+            Some(r) => r,
+            None => return Ok(ConfirmExistingEvent::Absent),
+        };
+
+        if stored_session_id != expected_meta.session_id {
+            return Err(StorageError::Database(format!(
+                "session event identity collision: {}",
+                expected_meta.id
+            )));
+        }
+        if stored_type != expected.event_type_tag() {
+            return Err(StorageError::Database(format!(
+                "session event identity collision: {}",
+                expected_meta.id
+            )));
+        }
+
+        // Fast path: exact payload match.
+        let expected_payload =
+            serde_json::to_string(expected).map_err(|e| StorageError::Database(e.to_string()))?;
+        if stored_payload == expected_payload {
+            return Ok(ConfirmExistingEvent::SemanticMatch);
+        }
+
+        // Semantic path for ToolProgramNotification: ignore
+        // created_at differences while requiring all identity and
+        // content fields to match.
+        match (
+            expected,
+            serde_json::from_str::<super::events::SessionEvent>(&stored_payload),
+        ) {
+            (
+                super::events::SessionEvent::ToolProgramNotification(incoming),
+                Ok(super::events::SessionEvent::ToolProgramNotification(stored)),
+            ) => {
+                if incoming.semantic_equals(&stored) {
+                    Ok(ConfirmExistingEvent::SemanticMatch)
+                } else {
+                    Err(StorageError::Database(format!(
+                        "session event semantic collision: {}",
+                        expected_meta.id
+                    )))
+                }
+            }
+            (other, Ok(stored)) => {
+                if serde_json::to_string(other)
+                    .ok()
+                    .as_deref()
+                    .map(|p| p == stored_payload)
+                    .unwrap_or(false)
+                {
+                    Ok(ConfirmExistingEvent::SemanticMatch)
+                } else {
+                    Err(StorageError::Database(format!(
+                        "session event semantic collision: {}",
+                        expected_meta.id
+                    )))
+                }
+            }
+            (_, Err(e)) => Err(StorageError::Database(format!(
+                "session event identity collision: malformed stored payload for {}: {}",
+                expected_meta.id, e
+            ))),
+        }
+    }
+}
+
+/// Result of [`EventStore::confirm_existing`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfirmExistingEvent {
+    /// No event with this ID exists in the store.
+    Absent,
+    /// The stored event is semantically identical to the expected
+    /// event. Timestamp-only differences are accepted for Tool
+    /// Program notification events.
+    SemanticMatch,
 }
 
 #[cfg(test)]

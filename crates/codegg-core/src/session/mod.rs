@@ -32,8 +32,8 @@ pub use models::{
 pub use row::{MessageRow, PartRow, PermissionRow, SessionRow, TodoRow};
 pub use state::TuiSessionState;
 pub use store::{
-    escape_sql_like, generate_slug, EventStore, MessageStore, PartStore, PermissionStore,
-    SessionStore, TodoStore, UsageStore,
+    escape_sql_like, generate_slug, ConfirmExistingEvent, EventStore, MessageStore, PartStore,
+    PermissionStore, SessionStore, TodoStore, UsageStore,
 };
 
 const SESSION_COLUMNS: &str = r#"id, project_id, workspace_id, parent_id, slug, directory,
