@@ -77,7 +77,7 @@ async fn c07_claim_returns_result_not_bool() {
     // C-07: claim() returns Result<bool, NotificationStoreError>, not bool.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c07", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     let result = service.claim("tp-c07").await;
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -88,7 +88,7 @@ async fn c07_claim_is_idempotent_via_cas() {
     // C-07: A second claim on the same notification returns false (CAS prevents double-claim).
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c07b", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     assert!(service.claim("tp-c07b").await.unwrap());
     assert!(!service.claim("tp-c07b").await.unwrap());
 }
@@ -98,7 +98,7 @@ async fn c07_acknowledge_returns_result() {
     // C-07: acknowledge() returns Result<bool, NotificationStoreError>.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c07c", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-c07c").await.unwrap();
     let result = service.acknowledge("tp-c07c").await;
     assert!(result.is_ok());
@@ -110,7 +110,7 @@ async fn c07_suppress_returns_result() {
     // C-07: suppress() returns Result<bool, NotificationStoreError>.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c07d", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     let result = service.suppress("tp-c07d").await;
     assert!(result.is_ok());
     assert!(result.unwrap());
@@ -124,7 +124,7 @@ async fn c08_two_instances_cannot_claim_same_notification() {
     let service1 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let notification = make_notification("tp-c08", "sess-1", "completed", true);
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     // First instance claims via its own service handle.
     let claim1 = service1.claim("tp-c08").await.unwrap();
@@ -154,11 +154,11 @@ async fn c10_restart_after_claim_preserves_state() {
     // (simulated by re-reading from the same service).
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c10a", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-c10a").await.unwrap();
 
     // Simulate restart: re-read the notification.
-    let pending = service.pending_for_session("sess-1").await;
+    let pending = service.pending_for_session("sess-1").await.unwrap();
     assert!(
         pending.is_empty(),
         "claimed notification should not be pending"
@@ -170,11 +170,11 @@ async fn c10_restart_after_acknowledgement_preserves_state() {
     // C-10: After acknowledgement, the notification is no longer pending.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c10b", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-c10b").await.unwrap();
     service.acknowledge("tp-c10b").await.unwrap();
 
-    let pending = service.pending_for_session("sess-1").await;
+    let pending = service.pending_for_session("sess-1").await.unwrap();
     assert!(
         pending.is_empty(),
         "acknowledged notification should not be pending"
@@ -186,11 +186,11 @@ async fn c11_suppressed_not_recreated_by_recovery() {
     // C-11: A suppressed notification is not recreated by terminal-job recovery.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c11", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.suppress("tp-c11").await.unwrap();
 
     // Simulate recovery: only pending notifications should be returned.
-    let pending = service.pending_for_session("sess-1").await;
+    let pending = service.pending_for_session("sess-1").await.unwrap();
     assert!(
         pending.is_empty(),
         "suppressed notification should not be pending"
@@ -202,11 +202,11 @@ async fn c11_delivered_not_recreated_by_recovery() {
     // C-11: A delivered (acknowledged) notification is not recreated by recovery.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c11b", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-c11b").await.unwrap();
     service.acknowledge("tp-c11b").await.unwrap();
 
-    let pending = service.pending_for_session("sess-1").await;
+    let pending = service.pending_for_session("sess-1").await.unwrap();
     assert!(
         pending.is_empty(),
         "delivered notification should not be pending"
@@ -235,7 +235,7 @@ async fn c08_concurrent_sqlite_claim_exactly_one_succeeds() {
     let service1 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let notification = make_notification("tp-c08-concurrent", "sess-1", "completed", true);
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     let s1 = Arc::clone(&service1);
     let s2 = Arc::clone(&service2);
@@ -261,7 +261,7 @@ async fn c09_db_failure_returns_error_not_success() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-c09-fail", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     // Close the pool to simulate database unavailability.
     pool.close().await;
@@ -297,7 +297,7 @@ async fn c10_injection_pipeline_survives_restart() {
     // Phase 1: Record, claim, and inject via service1.
     let service1 = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-c10-pipeline", "sess-pipe", "completed", true);
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
     service1.claim("tp-c10-pipeline").await.unwrap();
     service1
         .mark_injected("tp-c10-pipeline", "evt-pipe-1")
@@ -308,14 +308,14 @@ async fn c10_injection_pipeline_survives_restart() {
     let service2 = ToolProgramNotificationService::with_pool(pool.clone());
 
     // The notification is loadable from SQL (proof of durable persistence).
-    let loaded = service2.get("tp-c10-pipeline").await;
+    let loaded = service2.get("tp-c10-pipeline").await.unwrap();
     assert!(
         loaded.is_some(),
         "notification should be loadable from SQLite after restart"
     );
 
     // The notification is no longer pending (was claimed before restart).
-    let pending = service2.pending_for_session("sess-pipe").await;
+    let pending = service2.pending_for_session("sess-pipe").await.unwrap();
     assert!(
         pending.is_empty(),
         "claimed+injected notification should not be pending after restart"
@@ -332,13 +332,13 @@ async fn c10_ack_durability_across_sqlite_restart() {
 
     let service1 = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-c10-ack-dur", "sess-ack", "completed", true);
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
     service1.claim("tp-c10-ack-dur").await.unwrap();
     service1.acknowledge("tp-c10-ack-dur").await.unwrap();
 
     // New service instance (restart).
     let service2 = ToolProgramNotificationService::with_pool(pool.clone());
-    let pending = service2.pending_for_session("sess-ack").await;
+    let pending = service2.pending_for_session("sess-ack").await.unwrap();
     assert!(
         pending.is_empty(),
         "acknowledged notification must not be pending after SQLite restart"
@@ -388,7 +388,8 @@ async fn c11_duplicate_terminal_result_idempotent() {
             Some("turn-1"),
             &record,
         )
-        .await;
+        .await
+        .unwrap();
     service
         .record_terminal_result(
             "tp-c11-dup",
@@ -398,10 +399,11 @@ async fn c11_duplicate_terminal_result_idempotent() {
             Some("turn-1"),
             &record,
         )
-        .await;
+        .await
+        .unwrap();
 
     // Exactly one pending notification exists (idempotent record).
-    let pending = service.pending_for_session("sess-dup").await;
+    let pending = service.pending_for_session("sess-dup").await.unwrap();
     assert_eq!(
         pending.len(),
         1,
@@ -423,7 +425,7 @@ async fn c08_lease_expiry_makes_notification_claimable_again() {
     // for the Pending→Claimed transition.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-c08-lease", "sess-lease", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     // First claim succeeds.
     assert!(service.claim("tp-c08-lease").await.unwrap());
@@ -435,7 +437,7 @@ async fn c08_lease_expiry_makes_notification_claimable_again() {
     );
 
     // Verify the notification state is Claimed.
-    let loaded = service.get("tp-c08-lease").await.unwrap();
+    let loaded = service.get("tp-c08-lease").await.unwrap().unwrap();
     assert_eq!(
         loaded.state,
         NotificationState::Claimed,

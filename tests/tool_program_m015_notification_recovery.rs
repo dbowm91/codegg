@@ -47,8 +47,11 @@ async fn sqlite_write_failure_returns_error_without_cache_success() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     pool.close().await;
-    assert!(service.record_notification(notification("tp-write-fail")).await.is_err());
-    assert!(service.get("tp-write-fail").await.unwrap().is_none());
+    assert!(service
+        .record_notification(notification("tp-write-fail"))
+        .await
+        .is_err());
+    assert!(service.get("tp-write-fail").await.is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -83,7 +86,10 @@ async fn append_before_ack_identity_survives_independent_instance() {
 
     let second = ToolProgramNotificationService::with_pool(pool);
     let recovered = second.get("tp-append").await.unwrap().unwrap();
-    assert_eq!(recovered.injected_event_id.as_deref(), Some("session-event-1"));
+    assert_eq!(
+        recovered.injected_event_id.as_deref(),
+        Some("session-event-1")
+    );
     assert!(second.acknowledge("tp-append").await.unwrap());
     assert!(!second.claim("tp-append").await.unwrap());
 }

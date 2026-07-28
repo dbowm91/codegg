@@ -152,7 +152,7 @@ async fn j1_notification_state_survives_restart() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-j1-restart-notif", "sess-j1");
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-j1-restart-notif").await.unwrap();
 
     // Verify claimed state.
@@ -294,7 +294,7 @@ async fn j3_independent_services_cannot_double_claim() {
     let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
 
     let notification = make_notification("tp-j3-no-double-claim", "sess-j3");
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     // First claim wins.
     let claim1 = service1.claim("tp-j3-no-double-claim").await.unwrap();
@@ -311,7 +311,7 @@ async fn j1_injection_key_idempotency() {
 
     let mut notification = make_notification("tp-j1-idempotent", "sess-j1");
     notification.injection_key = Some("unique-key-j1".to_string());
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     // Claim + inject.
     service.claim("tp-j1-idempotent").await.unwrap();
@@ -414,7 +414,7 @@ async fn j1_notification_full_lifecycle_survives_restart() {
     let service = ToolProgramNotificationService::with_pool(pool.clone());
 
     let notification = make_notification("tp-j1-full-lifecycle", "sess-j1");
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     // Claim.
     service.claim("tp-j1-full-lifecycle").await.unwrap();

@@ -64,7 +64,7 @@ async fn c31_persist_record_returns_result() {
     };
 
     // record_notification should succeed and return the notification
-    let result = service.record_notification(notification).await;
+    let result = service.record_notification(notification).await.unwrap();
     assert!(
         !result.notification_id.is_empty(),
         "record_notification must return a notification"

@@ -68,7 +68,7 @@ async fn c1_state_column_is_raw_text_not_json_quoted() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-m013-c1-state", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     let row: (String,) =
         sqlx::query_as("SELECT state FROM tool_program_notification WHERE notification_id = ?1")
@@ -95,7 +95,7 @@ async fn c1_state_transitions_use_raw_tokens() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-m013-c1-transit", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     service.claim("tp-m013-c1-transit").await.unwrap();
     let row: (String,) =
@@ -132,7 +132,7 @@ async fn c5_two_independent_services_share_database() {
     let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
 
     let notification = make_notification("tp-m013-c5-shared", "sess-1", "completed", true);
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     // service2 has separate in-memory cache but the database is shared.
     let claim1 = service1.claim("tp-m013-c5-shared").await.unwrap();
@@ -160,7 +160,7 @@ async fn c4_sql_error_propagates_as_err() {
     pool.close().await;
     let service = ToolProgramNotificationService::with_pool(pool);
     let notification = make_notification("tp-m013-c4-err", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     let result = service.claim("tp-m013-c4-err").await;
     assert!(
@@ -176,7 +176,7 @@ async fn c1_record_notification_writes_raw_state() {
     let pool = common::pool::isolated_pool().await;
     let service = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-m013-c1-raw", "sess-1", "completed", true);
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     let state: String = sqlx::query_scalar(
         "SELECT state FROM tool_program_notification WHERE notification_id = ?1",
@@ -202,7 +202,7 @@ async fn c13_notification_state_survives_service_restart() {
     {
         let service = ToolProgramNotificationService::with_pool(pool.clone());
         let notification = make_notification("tp-m013-c13-restart", "sess-1", "completed", true);
-        service.record_notification(notification).await;
+        service.record_notification(notification).await.unwrap();
         let claimed = service.claim("tp-m013-c13-restart").await.unwrap();
         assert!(claimed, "first claim must succeed");
     }
@@ -254,7 +254,7 @@ async fn c13_delivered_state_survives_restart() {
     {
         let service = ToolProgramNotificationService::with_pool(pool.clone());
         let notification = make_notification("tp-m013-c13-delivered", "sess-1", "completed", true);
-        service.record_notification(notification).await;
+        service.record_notification(notification).await.unwrap();
         service.claim("tp-m013-c13-delivered").await.unwrap();
         service.acknowledge("tp-m013-c13-delivered").await.unwrap();
     }
@@ -286,7 +286,7 @@ async fn c13_pending_notification_claimable_after_restart() {
         let service = ToolProgramNotificationService::with_pool(pool.clone());
         let notification =
             make_notification("tp-m013-c13-pending-restart", "sess-1", "completed", true);
-        service.record_notification(notification).await;
+        service.record_notification(notification).await.unwrap();
     }
 
     // Phase 2: New service can claim the pending notification.
@@ -312,7 +312,7 @@ async fn c13_injection_reservation_survives_restart() {
         let mut notification =
             make_notification("tp-m013-c13-inject-res", "sess-1", "completed", true);
         notification.injection_key = Some("tp-inject:tp-m013-c13-inject-res:sess-1".into());
-        service.record_notification(notification).await;
+        service.record_notification(notification).await.unwrap();
         let claimed = service.claim("tp-m013-c13-inject-res").await.unwrap();
         assert!(claimed, "claim must succeed");
         service
@@ -373,7 +373,7 @@ async fn c13_durable_append_survives_restart() {
         let mut notification =
             make_notification("tp-m013-c13-durable-append", "sess-1", "completed", true);
         notification.injection_key = Some("tp-inject:tp-m013-c13-durable-append:sess-1".into());
-        service.record_notification(notification).await;
+        service.record_notification(notification).await.unwrap();
         service.claim("tp-m013-c13-durable-append").await.unwrap();
         service
             .mark_injected("tp-m013-c13-durable-append", "evt-durable-1")

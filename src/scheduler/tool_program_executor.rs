@@ -1678,7 +1678,7 @@ impl JobExecutor for ToolProgramExecutor {
 
         if execution_mode == "background" {
             if let (Some(service), Some(record)) = (&self.notification_service, result_record) {
-                service
+                if let Err(error) = service
                     .record_terminal_result(
                         &program_id,
                         ctx.job_id().as_str(),
@@ -1687,7 +1687,20 @@ impl JobExecutor for ToolProgramExecutor {
                         execution_context.turn_id.as_deref(),
                         &record,
                     )
-                    .await;
+                    .await
+                {
+                    return ExecutorCompletion {
+                        status: ExecutorStatus::Failed,
+                        summary: format!(
+                            "terminal result committed but durable notification failed: {error}"
+                        ),
+                        run_id: None,
+                        metrics: ExecutorMetrics {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        },
+                    };
+                }
             }
         }
 

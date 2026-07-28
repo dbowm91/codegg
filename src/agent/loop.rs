@@ -1798,7 +1798,13 @@ impl AgentLoop {
         let Some(ref svc) = self.notification_service else {
             return;
         };
-        let pending = svc.pending_for_session(&self.session_id).await;
+        let pending = match svc.pending_for_session(&self.session_id).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                tracing::error!(%error, "failed to load durable Tool Program notifications");
+                return;
+            }
+        };
         if pending.is_empty() {
             return;
         }
@@ -1840,9 +1846,6 @@ impl AgentLoop {
                         )
                     }
                 };
-                messages.push(Message::System {
-                    content: std::sync::Arc::new(text),
-                });
                 // M012-F03: Mark as injected with a durable event identity
                 // before acknowledging, so recovery can detect the injection.
                 let event_id = format!(
@@ -1850,11 +1853,19 @@ impl AgentLoop {
                     notification.program_id,
                     chrono::Utc::now().timestamp_millis()
                 );
-                let _ = svc
+                if let Err(error) = svc
                     .mark_injected(&notification.notification_id, &event_id)
-                    .await;
-                // Acknowledge delivery
-                let _ = svc.acknowledge(&notification.notification_id).await;
+                    .await
+                {
+                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to persist Tool Program notification injection");
+                    continue;
+                }
+                messages.push(Message::System {
+                    content: std::sync::Arc::new(text),
+                });
+                if let Err(error) = svc.acknowledge(&notification.notification_id).await {
+                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to acknowledge Tool Program notification");
+                }
             }
         }
     }

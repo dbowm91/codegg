@@ -119,7 +119,8 @@ async fn terminal_notification_is_created_once_from_typed_result() {
             Some("turn-1"),
             &record,
         )
-        .await;
+        .await
+        .unwrap();
     service
         .record_terminal_result(
             "tp-notify",
@@ -129,8 +130,9 @@ async fn terminal_notification_is_created_once_from_typed_result() {
             Some("turn-1"),
             &record,
         )
-        .await;
-    let pending = service.pending_for_session("session-1").await;
+        .await
+        .unwrap();
+    let pending = service.pending_for_session("session-1").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].program_id, "tp-notify");
     assert!(service.claim("tp-notify").await.unwrap());

@@ -95,9 +95,9 @@ async fn restart_before_terminal_no_notification() {
     // be created.
     let svc = ToolProgramNotificationService::new();
     // No terminal jobs to recover from
-    let recovered = svc.recover_from_terminal_jobs(vec![]).await;
+    let recovered = svc.recover_from_terminal_jobs(vec![]).await.unwrap();
     assert_eq!(recovered, 0);
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert!(pending.is_empty());
 }
 
@@ -116,9 +116,9 @@ async fn restart_after_terminal_before_notification_delivery() {
         success: true,
         created_at: 1000,
     }];
-    let recovered = svc.recover_from_terminal_jobs(jobs).await;
+    let recovered = svc.recover_from_terminal_jobs(jobs).await.unwrap();
     assert_eq!(recovered, 1);
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].program_id, "tp-1");
 }
@@ -132,11 +132,11 @@ async fn restart_after_terminal_after_claim_before_ack() {
 
     // Simulate: create and claim, then "crash" (service is in-memory)
     let n = make_notification("tp-1", "s1", "completed", true);
-    svc.record_notification(n).await;
+    svc.record_notification(n).await.unwrap();
     svc.claim("tp-1").await.unwrap();
 
     // Verify it was claimed
-    let n = svc.get("tp-1").await.unwrap();
+    let n = svc.get("tp-1").await.unwrap().unwrap();
     assert_eq!(n.state, NotificationState::Claimed);
 
     // After restart: create a new service and recover
@@ -151,9 +151,9 @@ async fn restart_after_terminal_after_claim_before_ack() {
         success: true,
         created_at: 1000,
     }];
-    let recovered = svc2.recover_from_terminal_jobs(jobs).await;
+    let recovered = svc2.recover_from_terminal_jobs(jobs).await.unwrap();
     assert_eq!(recovered, 1);
-    let pending = svc2.pending_for_session("s1").await;
+    let pending = svc2.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 1);
     // The recovered notification is pending, not claimed
     assert_eq!(pending[0].state, NotificationState::Pending);
@@ -165,7 +165,7 @@ async fn restart_after_ack_no_duplicate() {
     // After restart, recovery should not create a duplicate.
     let svc = ToolProgramNotificationService::new();
     let n = make_notification("tp-1", "s1", "completed", true);
-    svc.record_notification(n).await;
+    svc.record_notification(n).await.unwrap();
     svc.claim("tp-1").await.unwrap();
     svc.acknowledge("tp-1").await.unwrap();
 
@@ -181,11 +181,11 @@ async fn restart_after_ack_no_duplicate() {
         success: true,
         created_at: 1000,
     }];
-    let recovered = svc2.recover_from_terminal_jobs(jobs).await;
+    let recovered = svc2.recover_from_terminal_jobs(jobs).await.unwrap();
     // Should recover because the new service doesn't know about the
     // old notification
     assert_eq!(recovered, 1);
-    let pending = svc2.pending_for_session("s1").await;
+    let pending = svc2.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 1);
 }
 
@@ -204,13 +204,13 @@ async fn replay_does_not_duplicate_notification() {
         success: true,
         created_at: 1000,
     }];
-    let recovered1 = svc.recover_from_terminal_jobs(jobs.clone()).await;
+    let recovered1 = svc.recover_from_terminal_jobs(jobs.clone()).await.unwrap();
     assert_eq!(recovered1, 1);
 
-    let recovered2 = svc.recover_from_terminal_jobs(jobs).await;
+    let recovered2 = svc.recover_from_terminal_jobs(jobs).await.unwrap();
     assert_eq!(recovered2, 0);
 
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 1);
 }
 
@@ -281,10 +281,10 @@ async fn many_programs_completing_simultaneously() {
             created_at: 1000 + i as i64,
         });
     }
-    let recovered = svc.recover_from_terminal_jobs(jobs).await;
+    let recovered = svc.recover_from_terminal_jobs(jobs).await.unwrap();
     assert_eq!(recovered, 10);
 
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 10);
 
     // Claim all — only first claim per program should succeed
@@ -314,18 +314,19 @@ async fn session_bound_enforcement_suppresses_oldest() {
             "completed",
             true,
         ))
-        .await;
+        .await
+        .unwrap();
     }
 
-    let suppressed = svc.enforce_session_bound("s1", 3).await;
+    let suppressed = svc.enforce_session_bound("s1", 3).await.unwrap();
     assert_eq!(suppressed.len(), 5);
 
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 3);
 
     // The suppressed ones should be in Suppressed state
     for id in &suppressed {
-        let n = svc.get(id).await.unwrap();
+        let n = svc.get(id).await.unwrap().unwrap();
         assert_eq!(n.state, NotificationState::Suppressed);
     }
 }
@@ -336,21 +337,24 @@ async fn parent_session_inactive_does_not_block_other_sessions() {
     // should not be affected.
     let svc = ToolProgramNotificationService::new();
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.record_notification(make_notification("tp-2", "s2", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.record_notification(make_notification("tp-3", "s1", "failed", false))
-        .await;
+        .await
+        .unwrap();
 
     // s1 has 2 pending, s2 has 1
-    assert_eq!(svc.pending_count("s1").await, 2);
-    assert_eq!(svc.pending_count("s2").await, 1);
+    assert_eq!(svc.pending_count("s1").await.unwrap(), 2);
+    assert_eq!(svc.pending_count("s2").await.unwrap(), 1);
 
     // Suppress all of s1
-    svc.enforce_session_bound("s1", 0).await;
-    assert_eq!(svc.pending_count("s1").await, 0);
+    svc.enforce_session_bound("s1", 0).await.unwrap();
+    assert_eq!(svc.pending_count("s1").await.unwrap(), 0);
     // s2 is unaffected
-    assert_eq!(svc.pending_count("s2").await, 1);
+    assert_eq!(svc.pending_count("s2").await.unwrap(), 1);
 }
 
 #[tokio::test]
@@ -361,12 +365,13 @@ async fn cancellation_during_terminal_notification_race() {
 
     // First, record a "completed" notification
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
 
     // Then, try to record a "cancelled" notification for the same program
     // (simulating a race between completion and cancellation)
     let cancelled = make_notification("tp-1", "s1", "cancelled", false);
-    let result = svc.record_notification(cancelled).await;
+    let result = svc.record_notification(cancelled).await.unwrap();
 
     // The original notification should be retained (idempotent)
     assert_eq!(result.status, "completed");
@@ -379,22 +384,25 @@ async fn unrelated_sessions_receive_only_own_events() {
     // pending list.
     let svc = ToolProgramNotificationService::new();
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.record_notification(make_notification("tp-2", "s2", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.record_notification(make_notification("tp-3", "s3", "failed", false))
-        .await;
+        .await
+        .unwrap();
 
-    assert_eq!(svc.pending_count("s1").await, 1);
-    assert_eq!(svc.pending_count("s2").await, 1);
-    assert_eq!(svc.pending_count("s3").await, 1);
+    assert_eq!(svc.pending_count("s1").await.unwrap(), 1);
+    assert_eq!(svc.pending_count("s2").await.unwrap(), 1);
+    assert_eq!(svc.pending_count("s3").await.unwrap(), 1);
 
     // Claim s1's notification
     svc.claim("tp-1").await.unwrap();
-    assert_eq!(svc.pending_count("s1").await, 0);
+    assert_eq!(svc.pending_count("s1").await.unwrap(), 0);
     // s2 and s3 are unaffected
-    assert_eq!(svc.pending_count("s2").await, 1);
-    assert_eq!(svc.pending_count("s3").await, 1);
+    assert_eq!(svc.pending_count("s2").await.unwrap(), 1);
+    assert_eq!(svc.pending_count("s3").await.unwrap(), 1);
 }
 
 // ============================================================================
@@ -407,10 +415,11 @@ async fn cross_session_notification_forgery_blocked() {
     // session "s2"'s pending list.
     let svc = ToolProgramNotificationService::new();
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
 
     // s2 should see no pending notifications
-    assert!(svc.pending_for_session("s2").await.is_empty());
+    assert!(svc.pending_for_session("s2").await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -421,11 +430,11 @@ async fn repeated_fake_terminal_events_cannot_trigger_multiple_model_turns() {
     let n1 = make_notification("tp-1", "s1", "completed", true);
     let n2 = make_notification("tp-1", "s1", "completed", true);
 
-    svc.record_notification(n1).await;
-    svc.record_notification(n2).await;
+    svc.record_notification(n1).await.unwrap();
+    svc.record_notification(n2).await.unwrap();
 
     // Only one pending notification
-    assert_eq!(svc.pending_count("s1").await, 1);
+    assert_eq!(svc.pending_count("s1").await.unwrap(), 1);
 
     // Only one claim should succeed
     assert!(svc.claim("tp-1").await.unwrap());
@@ -444,34 +453,37 @@ async fn notification_state_transitions_are_valid() {
 
     // Test Pending -> Claimed -> Delivered
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     assert_eq!(
-        svc.get("tp-1").await.unwrap().state,
+        svc.get("tp-1").await.unwrap().unwrap().state,
         NotificationState::Pending
     );
     svc.claim("tp-1").await.unwrap();
     assert_eq!(
-        svc.get("tp-1").await.unwrap().state,
+        svc.get("tp-1").await.unwrap().unwrap().state,
         NotificationState::Claimed
     );
     svc.acknowledge("tp-1").await.unwrap();
     assert_eq!(
-        svc.get("tp-1").await.unwrap().state,
+        svc.get("tp-1").await.unwrap().unwrap().state,
         NotificationState::Delivered
     );
 
     // Test Pending -> Suppressed
     svc.record_notification(make_notification("tp-2", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.suppress("tp-2").await.unwrap();
     assert_eq!(
-        svc.get("tp-2").await.unwrap().state,
+        svc.get("tp-2").await.unwrap().unwrap().state,
         NotificationState::Suppressed
     );
 
     // Test Claimed -> Expired (via expire_stale)
     svc.record_notification(make_notification("tp-3", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.claim("tp-3").await.unwrap();
     // Set updated_at to the past
     {
@@ -482,7 +494,7 @@ async fn notification_state_transitions_are_valid() {
     }
     svc.expire_stale(100).await;
     assert_eq!(
-        svc.get("tp-3").await.unwrap().state,
+        svc.get("tp-3").await.unwrap().unwrap().state,
         NotificationState::Expired
     );
 }
@@ -492,7 +504,8 @@ async fn claim_only_from_pending_state() {
     // Claiming a non-pending notification should fail.
     let svc = ToolProgramNotificationService::new();
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
 
     // Claim succeeds from Pending
     assert!(svc.claim("tp-1").await.unwrap());
@@ -512,7 +525,8 @@ async fn acknowledge_only_from_claimed_state() {
     // Acknowledging a non-claimed notification should fail.
     let svc = ToolProgramNotificationService::new();
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
 
     // Ack fails from Pending
     assert!(!svc.acknowledge("tp-1").await.unwrap());
@@ -534,7 +548,8 @@ async fn suppress_only_from_pending_or_claimed() {
 
     // Create, claim, ack -> Delivered
     svc.record_notification(make_notification("tp-1", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.claim("tp-1").await.unwrap();
     svc.acknowledge("tp-1").await.unwrap();
 
@@ -543,7 +558,8 @@ async fn suppress_only_from_pending_or_claimed() {
 
     // Create, claim, expire -> Expired
     svc.record_notification(make_notification("tp-2", "s1", "completed", true))
-        .await;
+        .await
+        .unwrap();
     svc.claim("tp-2").await.unwrap();
     {
         let mut notifications = svc.notifications.write().await;
@@ -566,8 +582,8 @@ async fn notification_payload_is_bounded() {
     n.status = "y".repeat(100_000);
 
     // Should not panic
-    svc.record_notification(n).await;
-    let got = svc.get("tp-1").await.unwrap();
+    svc.record_notification(n).await.unwrap();
+    let got = svc.get("tp-1").await.unwrap().unwrap();
     assert_eq!(got.program_id, "tp-1");
 }
 
@@ -577,10 +593,10 @@ async fn notification_id_is_program_id() {
     // identity per program.
     let svc = ToolProgramNotificationService::new();
     let n = make_notification("tp-42", "s1", "completed", true);
-    svc.record_notification(n).await;
+    svc.record_notification(n).await.unwrap();
 
     // Lookup by program_id should work
-    let got = svc.get("tp-42").await;
+    let got = svc.get("tp-42").await.unwrap();
     assert!(got.is_some());
     assert_eq!(got.unwrap().notification_id, "tp-42");
 }
@@ -601,7 +617,7 @@ async fn concurrent_record_and_claim() {
                 "completed",
                 true,
             );
-            svc.record_notification(n).await;
+            svc.record_notification(n).await.unwrap();
             let _ = svc.claim(&format!("tp-{}", i)).await;
             let _ = svc.acknowledge(&format!("tp-{}", i)).await;
         }));
@@ -613,7 +629,7 @@ async fn concurrent_record_and_claim() {
 
     // All 20 notifications should be in Delivered state
     for i in 0..20 {
-        let n = svc.get(&format!("tp-{}", i)).await.unwrap();
+        let n = svc.get(&format!("tp-{}", i)).await.unwrap().unwrap();
         assert_eq!(n.state, NotificationState::Delivered);
     }
 }
@@ -718,17 +734,18 @@ async fn backpressure_suppresses_oldest_when_session_bound_exceeded() {
             "completed",
             true,
         ))
-        .await;
+        .await
+        .unwrap();
     }
 
     // Enforce bound — should suppress oldest 2
-    let suppressed = svc.enforce_session_bound("s1", 3).await;
+    let suppressed = svc.enforce_session_bound("s1", 3).await.unwrap();
     assert_eq!(suppressed.len(), 2);
     assert_eq!(suppressed[0], "tp-0");
     assert_eq!(suppressed[1], "tp-1");
 
     // Only 3 pending should remain
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 3);
     assert_eq!(pending[0].program_id, "tp-2");
     assert_eq!(pending[1].program_id, "tp-3");
@@ -747,22 +764,24 @@ async fn backpressure_does_not_affect_other_sessions() {
             "completed",
             true,
         ))
-        .await;
+        .await
+        .unwrap();
         svc.record_notification(make_notification(
             &format!("tp-s2-{}", i),
             "s2",
             "completed",
             true,
         ))
-        .await;
+        .await
+        .unwrap();
     }
 
     // Bound s1 to 2
-    let suppressed = svc.enforce_session_bound("s1", 2).await;
+    let suppressed = svc.enforce_session_bound("s1", 2).await.unwrap();
     assert_eq!(suppressed.len(), 3);
 
     // s2 should be unaffected
-    let pending_s2 = svc.pending_for_session("s2").await;
+    let pending_s2 = svc.pending_for_session("s2").await.unwrap();
     assert_eq!(pending_s2.len(), 5);
 }
 

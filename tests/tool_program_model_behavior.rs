@@ -389,10 +389,10 @@ async fn behavior_background_returns_immediately() {
         injection_key: None,
         injected_event_id: None,
     };
-    svc.record_notification(notification).await;
+    svc.record_notification(notification).await.unwrap();
 
     // Verify handle is immediately available
-    let pending = svc.pending_for_session("s1").await;
+    let pending = svc.pending_for_session("s1").await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].program_id, "tp-bg-test");
 

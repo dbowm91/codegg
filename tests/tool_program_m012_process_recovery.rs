@@ -111,7 +111,7 @@ async fn c29_concurrent_claim_is_safe() {
     // C-29: Concurrent claims on the same notification are safe (CAS prevents double-claim).
     let service = Arc::new(ToolProgramNotificationService::new());
     let notification = make_notification("tp-proc-1", "sess-1");
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
 
     let service1 = Arc::clone(&service);
     let service2 = Arc::clone(&service);
@@ -132,8 +132,8 @@ async fn c29_concurrent_claim_different_notifications() {
     let service = Arc::new(ToolProgramNotificationService::new());
     let n1 = make_notification("tp-proc-2a", "sess-1");
     let n2 = make_notification("tp-proc-2b", "sess-1");
-    service.record_notification(n1).await;
-    service.record_notification(n2).await;
+    service.record_notification(n1).await.unwrap();
+    service.record_notification(n2).await.unwrap();
 
     let service1 = Arc::clone(&service);
     let service2 = Arc::clone(&service);
@@ -157,7 +157,7 @@ async fn c29_concurrent_sqlite_claim_separate_instances() {
     let service1 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let service2 = Arc::new(ToolProgramNotificationService::with_pool(pool.clone()));
     let notification = make_notification("tp-proc-sqlite-concurrent", "sess-1");
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     let s1 = Arc::clone(&service1);
     let s2 = Arc::clone(&service2);
@@ -221,11 +221,11 @@ async fn c29_notification_service_restart_safety() {
     // instance with same state) preserves the claimed state.
     let service = ToolProgramNotificationService::new();
     let notification = make_notification("tp-proc-4", "sess-1");
-    service.record_notification(notification).await;
+    service.record_notification(notification).await.unwrap();
     service.claim("tp-proc-4").await.unwrap();
 
     // Simulate restart: the same service instance retains state.
-    let pending = service.pending_for_session("sess-1").await;
+    let pending = service.pending_for_session("sess-1").await.unwrap();
     assert!(
         pending.is_empty(),
         "claimed notification should not be pending after restart"
@@ -418,7 +418,7 @@ async fn c29_sqlite_restart_preserves_notification_state() {
     // Phase 1: Record a notification via service1.
     let service1 = ToolProgramNotificationService::with_pool(pool.clone());
     let notification = make_notification("tp-restart-1", "sess-restart");
-    service1.record_notification(notification).await;
+    service1.record_notification(notification).await.unwrap();
 
     // Mark as injected (simulating session append before ack).
     service1
@@ -429,7 +429,7 @@ async fn c29_sqlite_restart_preserves_notification_state() {
     let service2 = ToolProgramNotificationService::with_pool(pool.clone());
 
     // The notification should be loadable from the durable store.
-    let loaded = service2.get("tp-restart-1").await;
+    let loaded = service2.get("tp-restart-1").await.unwrap();
     assert!(
         loaded.is_some(),
         "notification should be loadable from SQLite after restart"
