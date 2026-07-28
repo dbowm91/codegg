@@ -3199,7 +3199,7 @@ emit({k: v})
                     Err(InterpreterError::BrokerError("transient".into()))
                 } else {
                     Ok(CallResult {
-                        output: ProgramValue::String("ok".into()),
+                        output: ProgramValue::String("recovered".into()),
                         artifacts: vec![],
                         success: true,
                     })
