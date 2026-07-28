@@ -184,6 +184,12 @@ async fn c14_pending_child_wait_restored() {
         child_job_id: "job-child-1".into(),
         expected_result_slot: 0,
         child_op: "Test".into(),
+        parent_program_id: String::new(),
+        parent_job_id: String::new(),
+        parent_attempt_id: String::new(),
+        canonical_call_id: String::new(),
+        instruction_sequence: 0,
+        operation_config_digest: String::new(),
     };
 
     let checkpoint = InterpreterCheckpoint {

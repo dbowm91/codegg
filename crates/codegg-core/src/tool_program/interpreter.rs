@@ -487,12 +487,56 @@ pub struct PendingChildWait {
     pub expected_result_slot: u32,
     /// The child operation that was submitted.
     pub child_op: String,
+    #[serde(default)]
+    pub parent_program_id: String,
+    #[serde(default)]
+    pub parent_job_id: String,
+    #[serde(default)]
+    pub parent_attempt_id: String,
+    #[serde(default)]
+    pub canonical_call_id: String,
+    #[serde(default)]
+    pub instruction_sequence: u32,
+    #[serde(default)]
+    pub operation_config_digest: String,
+}
+
+impl InterpreterCheckpoint {
+    fn semantic_material(&self) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "pc": self.pc,
+            "steps": self.steps,
+            "iterations": self.iterations,
+            "calls_completed": self.calls_completed,
+            "bytes_used": self.bytes_used,
+            "parallel_groups": self.parallel_groups,
+            "locals": &self.locals,
+            "stack": &self.stack,
+            "next_call_seq": self.completed_calls.iter()
+                .map(|call| call.sequence)
+                .max()
+                .map(|sequence| sequence + 1)
+                .unwrap_or(0),
+            "terminated": false,
+            "completed_calls_count": self.completed_calls.len(),
+            "pending_child_wait": &self.pending_child_wait,
+            "original_deadline_millis": self.original_deadline_millis,
+        }))
+        .expect("checkpoint semantic state is serializable")
+    }
+
+    pub fn refresh_semantic_digest(&mut self) {
+        self.semantic_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(self.semantic_material().as_bytes())
+        );
+    }
 }
 
 // ── Broker call types ─────────────────────────────────────────────
 
 /// A tool call request constructed by the interpreter.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallRequest {
     pub tool_name: String,
     pub input: serde_json::Value,
@@ -500,7 +544,7 @@ pub struct CallRequest {
 }
 
 /// Result of a broker tool call.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CallResult {
     pub output: ProgramValue,
@@ -570,7 +614,7 @@ pub struct ReplayFingerprint {
 }
 
 /// Recorded state of a completed call for replay.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompletedCall {
     pub sequence: u32,
     pub request: CallRequest,
@@ -601,6 +645,14 @@ pub trait BrokerCallback: Send + Sync {
         Err(InterpreterError::BrokerError(
             "child-job execution is not supported by this broker".into(),
         ))
+    }
+
+    async fn submit_child_job_with_checkpoint(
+        &self,
+        request: &ChildJobRequest,
+        _checkpoint: &InterpreterCheckpoint,
+    ) -> Result<ChildJobResult, InterpreterError> {
+        self.submit_child_job(request).await
     }
 
     /// Emit a heartbeat with current budget snapshot. Called at
@@ -722,6 +774,7 @@ pub struct MeteredInterpreter {
     checkpoints: Vec<InterpreterCheckpoint>,
     /// Replay fingerprint for C-21 verification.
     replay_fingerprint: Option<ReplayFingerprint>,
+    pending_child_wait: Option<PendingChildWait>,
 }
 
 impl MeteredInterpreter {
@@ -740,6 +793,7 @@ impl MeteredInterpreter {
             terminated: false,
             checkpoints: Vec::new(),
             replay_fingerprint: None,
+            pending_child_wait: None,
         }
     }
 
@@ -1439,7 +1493,25 @@ impl MeteredInterpreter {
                     };
                     broker.call_reserved(seq, &call_request).await?;
                     self.budget.inflight_calls += 1;
-                    let call_result = broker.submit_child_job(&request).await;
+                    if let Some(pending) = &self.pending_child_wait {
+                        let mut hasher = sha2::Sha256::new();
+                        hasher.update(format!("{:?}", request.op).as_bytes());
+                        hasher.update(format!("{:?}", request.config).as_bytes());
+                        let config_digest = format!("sha256:{:x}", hasher.finalize());
+                        if pending.expected_result_slot != seq
+                            || pending.instruction_sequence != seq
+                            || pending.child_op != request.op.to_string()
+                            || pending.operation_config_digest != config_digest
+                        {
+                            return Err(InterpreterError::ReplayDivergence(
+                                "pending child lineage or operation digest mismatch".into(),
+                            ));
+                        }
+                    }
+                    let checkpoint = self.create_checkpoint();
+                    let call_result = broker
+                        .submit_child_job_with_checkpoint(&request, &checkpoint)
+                        .await;
                     self.budget.inflight_calls -= 1;
 
                     match call_result {
@@ -1457,6 +1529,7 @@ impl MeteredInterpreter {
                                 self.make_completed_call(seq, call_request, call_result.clone());
                             broker.call_completed(&completed).await?;
                             self.completed_calls.insert(seq, completed);
+                            self.pending_child_wait = None;
                             self.commit_checkpoint(broker).await?;
                             call_result
                         }
@@ -1532,28 +1605,7 @@ impl MeteredInterpreter {
         let mut completed_calls: Vec<_> = self.completed_calls.values().cloned().collect();
         completed_calls.sort_by_key(|call| call.sequence);
 
-        // M014-C1: Compute the semantic digest over the complete checkpoint
-        // state using deterministic serialization and SHA-256.
-        let semantic_material = serde_json::to_string(&serde_json::json!({
-            "pc": self.pc,
-            "steps": self.budget.steps,
-            "iterations": self.budget.iterations,
-            "calls_completed": self.budget.calls,
-            "bytes_used": self.budget.bytes,
-            "parallel_groups": self.budget.parallel_groups,
-            "locals": &self.locals,
-            "stack": &self.stack,
-            "next_call_seq": self.next_call_seq,
-            "terminated": self.terminated,
-            "completed_calls_count": completed_calls.len(),
-        }))
-        .unwrap_or_default();
-        let semantic_digest = format!(
-            "sha256:{:x}",
-            sha2::Sha256::digest(semantic_material.as_bytes())
-        );
-
-        InterpreterCheckpoint {
+        let mut checkpoint = InterpreterCheckpoint {
             pc: self.pc,
             steps: self.budget.steps,
             iterations: self.budget.iterations,
@@ -1562,17 +1614,19 @@ impl MeteredInterpreter {
             parallel_groups: self.budget.parallel_groups,
             locals: self.locals.clone(),
             stack: self.stack.clone(),
-            pending_child_wait: None, // Set by the executor when checkpointing during child wait
+            pending_child_wait: self.pending_child_wait.clone(),
             original_deadline_millis: self
                 .replay_fingerprint
                 .as_ref()
                 .and_then(|f| f.original_deadline_millis),
             checkpoint_sequence: 0, // Set by the caller (ledger)
             created_at_millis: chrono::Utc::now().timestamp_millis(),
-            semantic_digest,
+            semantic_digest: String::new(),
             completed_calls,
             locals_hash,
-        }
+        };
+        checkpoint.refresh_semantic_digest();
+        checkpoint
     }
 
     /// Execute a single broker call with transient retry and per-call timeout.
@@ -2120,7 +2174,7 @@ impl MeteredInterpreter {
         checkpoint: InterpreterCheckpoint,
     ) -> Result<(), InterpreterError> {
         // M014-C1: Verify the semantic digest before restoring.
-        let expected_material = serde_json::to_string(&serde_json::json!({
+        let legacy_material = serde_json::to_string(&serde_json::json!({
             "pc": checkpoint.pc,
             "steps": checkpoint.steps,
             "iterations": checkpoint.iterations,
@@ -2138,11 +2192,18 @@ impl MeteredInterpreter {
             "completed_calls_count": checkpoint.completed_calls.len(),
         }))
         .unwrap_or_default();
+        let legacy_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(legacy_material.as_bytes())
+        );
         let expected_digest = format!(
             "sha256:{:x}",
-            sha2::Sha256::digest(expected_material.as_bytes())
+            sha2::Sha256::digest(checkpoint.semantic_material().as_bytes())
         );
-        if !checkpoint.semantic_digest.is_empty() && checkpoint.semantic_digest != expected_digest {
+        if !checkpoint.semantic_digest.is_empty()
+            && checkpoint.semantic_digest != expected_digest
+            && checkpoint.semantic_digest != legacy_digest
+        {
             return Err(InterpreterError::ReplayDivergence(format!(
                 "checkpoint semantic digest mismatch: expected={}, got={}",
                 expected_digest, checkpoint.semantic_digest
@@ -2159,11 +2220,21 @@ impl MeteredInterpreter {
         self.locals = checkpoint.locals;
         // M014-C1: Restore the stack for control-frame continuity.
         self.stack = checkpoint.stack;
-        self.completed_calls = checkpoint
-            .completed_calls
-            .into_iter()
-            .map(|c| (c.sequence, c))
-            .collect();
+        self.pending_child_wait = checkpoint.pending_child_wait;
+        for completed in checkpoint.completed_calls {
+            match self.completed_calls.get(&completed.sequence) {
+                Some(durable) if durable != &completed => {
+                    return Err(InterpreterError::ReplayDivergence(format!(
+                        "conflicting completed call at sequence {}",
+                        completed.sequence
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    self.completed_calls.insert(completed.sequence, completed);
+                }
+            }
+        }
         // Set next_call_seq to one past the highest restored sequence.
         self.next_call_seq = self
             .completed_calls

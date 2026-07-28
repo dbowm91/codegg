@@ -37,8 +37,8 @@ pub use diagnostics::{Diagnostic, DiagnosticCode, SourceSpan};
 pub use guards::{cpython_execution_is_forbidden, ToolProgramCompilerIsParseOnly};
 pub use interpreter::{
     BrokerCallback, BudgetSnapshot, CallRequest, CallResult, CompletedCall, FailureClass,
-    InterpreterCheckpoint, InterpreterError, MeteredInterpreter, ProgramResult, ProgramStatus,
-    ProgramValue, ReplayFingerprint, RunConfig, RuntimeLimits,
+    InterpreterCheckpoint, InterpreterError, MeteredInterpreter, PendingChildWait, ProgramResult,
+    ProgramStatus, ProgramValue, ReplayFingerprint, RunConfig, RuntimeLimits,
 };
 pub use ir::{IrProgram, IrVersion, COMPILER_VERSION, LANGUAGE_VERSION, PARSER_VERSION};
 pub use ir_verifier::verify_ir;

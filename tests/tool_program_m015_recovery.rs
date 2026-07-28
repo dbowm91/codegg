@@ -45,7 +45,8 @@ fn checkpoint(calls: Vec<CompletedCall>) -> InterpreterCheckpoint {
 
 fn interpreter() -> MeteredInterpreter {
     let compiled = compile_program("emit('done')").unwrap();
-    MeteredInterpreter::new(compiled.ir, RuntimeLimits::default())
+    let limits = RuntimeLimits::from(&compiled.ir.bounds);
+    MeteredInterpreter::new(compiled.ir, limits)
 }
 
 #[test]
@@ -115,7 +116,7 @@ fn overlapping_ledger_writers_preserve_all_completed_calls() {
             let ledger = ledger.clone();
             scope.spawn(move || {
                 ledger
-                    .record_completed_call(program, &completed(sequence, "ok"))
+                    .persist_call_completion(program, &completed(sequence, "ok"))
                     .unwrap();
             });
         }
