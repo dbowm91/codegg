@@ -661,6 +661,7 @@ impl ToolProgramNotificationService {
                     NotificationState::Expired,
                     now,
                     None,
+                    None,
                 )
                 .await;
         }
@@ -832,6 +833,7 @@ impl ToolProgramNotificationService {
             to,
             chrono::Utc::now().timestamp_millis(),
             owner,
+            None,
         )
         .await
     }
@@ -843,6 +845,7 @@ impl ToolProgramNotificationService {
         to: NotificationState,
         now: i64,
         owner: Option<String>,
+        injected_event_id: Option<&str>,
     ) -> Result<bool, NotificationStoreError> {
         // M012-D: When a SQLite pool is available, use CAS as the authority.
         if let Some(pool) = &self.pool {
@@ -868,10 +871,16 @@ impl ToolProgramNotificationService {
                        record_json = json_set(
                            json_set(
                                json_set(
-                                   json_set(record_json, '$.state', ?2),
-                                   '$.updated_at', ?3),
-                               '$.claim_owner', ?4),
-                           '$.claim_lease_until', ?5)
+                                   json_set(
+                                       json_set(
+                                           json_set(record_json, '$.state', ?2),
+                                           '$.updated_at', ?3),
+                                       '$.claim_owner', ?4),
+                                   '$.claim_lease_until', ?5),
+                               '$.delivered_at',
+                               CASE WHEN ?2 = 'delivered' THEN ?6 ELSE json_extract(record_json, '$.delivered_at') END),
+                           '$.injected_event_id',
+                           CASE WHEN ?8 IS NOT NULL THEN ?8 ELSE json_extract(record_json, '$.injected_event_id') END)
                  WHERE notification_id = ?1 AND state = ?7",
             )
             .bind(notification_id)
@@ -881,6 +890,7 @@ impl ToolProgramNotificationService {
             .bind(claim_lease_until)
             .bind(delivered_at)
             .bind(from_str)
+            .bind(injected_event_id)
             .execute(pool)
             .await
             .map_err(|e| {
@@ -1033,6 +1043,7 @@ impl ToolProgramNotificationService {
                 NotificationState::Claimed,
                 NotificationState::Pending,
                 now,
+                None,
                 None,
             )
             .await?;

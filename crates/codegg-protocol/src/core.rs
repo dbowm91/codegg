@@ -478,6 +478,16 @@ pub enum CoreResponse {
         skipped: usize,
         errors: Vec<String>,
     },
+    /// M017: Durable state inspection for integration tests.
+    ToolProgramRecoveryDebugInspectReport {
+        event_count: usize,
+        event_ids: Vec<String>,
+        notification_state: String,
+        injected_event_id: Option<String>,
+        delivered_at: Option<i64>,
+        claim_owner: Option<String>,
+        claim_lease_until: Option<i64>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1031,6 +1041,14 @@ pub enum CoreRequest {
     /// a real provider turn.
     ToolProgramNotificationReinject {
         session_id: String,
+    },
+    /// M017: Debug-only request that inspects durable notification and
+    /// event state for a session. Only accepted by processes running in
+    /// recovery-fixture mode. Used by integration tests to assert
+    /// durable state directly rather than relying on report counters.
+    ToolProgramRecoveryDebugInspect {
+        session_id: String,
+        notification_id: String,
     },
 }
 

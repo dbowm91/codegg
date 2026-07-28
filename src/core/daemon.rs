@@ -5964,6 +5964,62 @@ impl CoreDaemon {
                     errors: report.errors,
                 })
             }
+            CoreRequest::ToolProgramRecoveryDebugInspect {
+                session_id,
+                notification_id,
+            } => {
+                if !crate::test_failpoint::recovery_fixture_enabled() {
+                    return Ok(CoreResponse::Error {
+                        code: "not_recovery_fixture".into(),
+                        message: "ToolProgramRecoveryDebugInspect is only available in recovery-fixture mode".into(),
+                    });
+                }
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "no_durable_pool".into(),
+                        message: "daemon has no SQLite pool; cannot inspect durable state".into(),
+                    });
+                };
+                let event_store = codegg_core::session::EventStore::new(pool.clone());
+                let notification_service =
+                    crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(
+                        pool,
+                    );
+                let events = match event_store.list_for_session(&session_id).await {
+                    Ok(events) => events,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "event_store_query_failed".into(),
+                            message: format!("failed to list events: {e}"),
+                        });
+                    }
+                };
+                let event_ids: Vec<String> = events.iter().map(|e| e.meta().id.clone()).collect();
+                let notification = match notification_service.get(&notification_id).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "notification_query_failed".into(),
+                            message: format!("failed to load notification: {e}"),
+                        });
+                    }
+                };
+                match notification {
+                    Some(n) => Ok(CoreResponse::ToolProgramRecoveryDebugInspectReport {
+                        event_count: events.len(),
+                        event_ids,
+                        notification_state: format!("{:?}", n.state).to_lowercase(),
+                        injected_event_id: n.injected_event_id,
+                        delivered_at: n.delivered_at,
+                        claim_owner: n.claim_owner,
+                        claim_lease_until: n.claim_lease_until,
+                    }),
+                    None => Ok(CoreResponse::Error {
+                        code: "notification_not_found".into(),
+                        message: format!("notification {notification_id} not found"),
+                    }),
+                }
+            }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
