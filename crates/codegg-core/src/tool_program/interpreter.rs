@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 
 use super::child_job::{ChildJobRequest, ChildJobResult};
 use super::ir::{IrBinOp, IrCmpOp, IrInstruction, IrOp, IrProgram, IrUnaryOp};

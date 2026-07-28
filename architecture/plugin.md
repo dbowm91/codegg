@@ -1395,10 +1395,9 @@ validated via `validate_relative_install_path`, which rejects `..`, `RootDir`,
 
 ### CI / Validation Signal
 
-`.github/workflows/ci.yml` runs a `plugin-focused` job (install, management,
-registry, TUI command tests, and the codegg-core boundary check) plus an
-`examples` job (Rust SDK, Python SDK, and the three WASM examples under
-`examples/plugins/`). For local reproduction, run:
+Routine CI runs the workspace test suite which includes plugin tests. The
+dedicated `plugin-focused` and `examples` CI jobs were removed in the routine
+CI contraction (Milestone 001). For local plugin-specific reproduction, run:
 
 ```bash
 ./scripts/validate_plugin_ui.sh

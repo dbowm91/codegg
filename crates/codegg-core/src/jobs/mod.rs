@@ -166,6 +166,7 @@ impl ToolAuthorityGrant {
     /// Test/seed constructor that fills the new M013 fields with
     /// empty defaults. Production code should use
     /// `build_authority_grant` so the digest is computed correctly.
+    #[allow(clippy::too_many_arguments)]
     pub fn for_test_default(
         schema_version: u16,
         grant_id: impl Into<String>,

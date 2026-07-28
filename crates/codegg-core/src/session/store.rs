@@ -2820,7 +2820,7 @@ impl EventStore {
                     )))
                 }
             }
-            (other, Ok(stored)) => {
+            (other, Ok(_stored)) => {
                 if serde_json::to_string(other)
                     .ok()
                     .as_deref()

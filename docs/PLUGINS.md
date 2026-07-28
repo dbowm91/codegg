@@ -472,9 +472,7 @@ which is what `/plugin-info` and `/plugin-doctor` surface to the user.
 
 ### Validation
 
-Run `./scripts/validate_plugin_ui.sh` to reproduce the GitHub Actions
-`plugin-focused` and `examples` jobs locally. See `architecture/plugin.md` for
-the authoritative CI workflow.
+Run `./scripts/validate_plugin_ui.sh` to reproduce plugin validation checks locally. The `plugin-focused` and `examples` CI jobs were removed in the routine CI contraction (Milestone 001). See `architecture/plugin.md` for plugin-specific verification guidance.
 
 ## Security Policy (Phase 12)
 

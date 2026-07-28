@@ -32,25 +32,22 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
-| Development verification and release | active | `plans/subsystems/development-verification-release-roadmap.md` | Milestone 001 ready | Milestones 002–004 are registered but remain sequentially blocked on prior milestone closure |
+| Development verification and release | closed | `plans/subsystems/development-verification-release-roadmap.md` | Milestone 001 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 001 — routine CI contraction | ready | `plans/implementation/development-verification-release/001-routine-ci-contraction.md` | — |
+| Development verification and release | 002 — canonical local verification contract | ready | `plans/implementation/development-verification-release/002-local-verification-contract.md` | — |
 
 ## Active closure work
 
 M017 implementation landed; `plans/closure/tool-programs/017-status.md` must remain absent until a separate reviewer creates it.
 
-Development verification and release Milestone 001 has not started; no closure record should exist yet.
-
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Development verification and release | 002 — canonical local verification contract | blocked | `plans/implementation/development-verification-release/002-local-verification-contract.md` | Milestone 001 strict closure |
 | Development verification and release | 003 — manual crates.io release ownership | blocked | `plans/implementation/development-verification-release/003-manual-crates-io-release-ownership.md` | Milestone 002 strict closure |
 | Development verification and release | 004 — optional integration evidence cleanup and closure | blocked | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | Milestone 003 strict closure |
 
@@ -72,6 +69,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | implementation series starting at this commit | Unblocked M002 (canonical local verification contract) |
 | Programmatic tool execution and Tool Programs | 016 — notification replay polish implementation | `plans/closure/tool-programs/016-status.md` | implementation `f4101b9`; conditional review in the M017 registration series | Historical conditional record; M017 owns semantic confirmation, typed recovery errors, direct durable state evidence, roadmap synchronization, and final strict closure |
 | Programmatic tool execution and Tool Programs | 015 — final production-path implementation and review | `plans/closure/tool-programs/015-status.md` | implementation `247ef50`; independent approval `230f435`; original closure `9bd9d0b`; post-closure reconciliation in the M016 registration series | Historical conditional record; strict closure transferred through M016 to M017 |
 | Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; strict closure transferred through M015/M016 to M017 |

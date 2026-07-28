@@ -297,6 +297,7 @@ impl ProjectionPublicationSeam {
     /// context's artifact registry (if present) to mint a bounded
     /// public descriptor. Returns `None` when no registry is
     /// configured.
+    #[allow(clippy::too_many_arguments)]
     pub async fn issue_artifact_for_event(
         &self,
         disclosure: &ProjectionDisclosureContext,

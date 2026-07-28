@@ -810,9 +810,9 @@ impl JobStore for InMemoryJobStore {
                     summaries.push(JobSummary {
                         job_id: job.job_id.clone(),
                         workspace_id: job.workspace_id.clone(),
-                        kind: job.kind.clone(),
-                        priority: job.priority.clone(),
-                        state: job.state.clone(),
+                        kind: job.kind,
+                        priority: job.priority,
+                        state: job.state,
                         attempt_count: job.attempt_count,
                         current_attempt_id: job.current_attempt_id.clone(),
                         created_at: job.created_at,

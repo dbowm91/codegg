@@ -137,7 +137,7 @@ cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 cargo test -p codegg-core
 
 # Full serial validation (conservative, CI baseline)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
+CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
 
 # LSP integration (fake server, serial)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -207,27 +207,19 @@ diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile ci-heav
 
 ## CI Structure
 
-The CI pipeline runs jobs in sequence: `agent-assets` → `fmt` → `check` → `clippy` → `test` → `plugin-focused` → `examples`.
+Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` that runs for pull requests and pushes to `main`. It uses default features, bounded Cargo resources (`CARGO_BUILD_JOBS=1`, `--test-threads=1`), and performs no release, artifact, cross-build, audit, or example work.
 
-### `test` job
+The job runs these steps in order:
 
-Runs the full serial workspace suite:
+1. Generated-agent schema/source checks (`generate_builtin_agents.py --check`, `check_builtin_agents.py`)
+2. Tokio test-flavor regression guard (`check-tokio-test-flavors.py`)
+3. `codegg-core` boundary guard (`check-core-boundary.sh`)
+4. Formatting (`cargo fmt --check --all`)
+5. Workspace check (`cargo check --workspace --all-targets --locked`)
+6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
+7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-```bash
-cargo test --workspace --all-features -- --test-threads=14
-```
-
-This is the primary validation gate. All test resource classes are covered here.
-
-### `plugin-focused` job
-
-Runs targeted plugin tests with explicit serial flags (`-- --test-threads=1`). **This job is duplicate-by-design**: the `test` job already runs `--workspace --all-features` which includes plugin tests. The `plugin-focused` job exists for:
-
-1. **Focused diagnostic logs** — easier to identify plugin-specific failures in CI logs
-2. **Core boundary validation** — runs `scripts/check-core-boundary.sh` to enforce the codegg-core isolation contract
-3. **Defense-in-depth** — if the broad test lane is narrowed in the future, plugin coverage is already isolated
-
-All plugin test commands run serially because plugin paths may instantiate Wasmtime runtime state.
+Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally and will be canonically documented by Milestone 002 of the development-verification-release roadmap.
 
 ### Real LSP tests
 
@@ -277,13 +269,13 @@ See `AGENTS.md` for the full test command catalog.
 
 ## CI Lane Roadmap Decision
 
-**Decision: Conservative keep** — maintain the current monolithic serial test lane.
+**Decision: Conservative keep** — maintain the current single-job serial test lane.
 
 The closure pass evaluation determined that splitting the CI into resource lanes (fast, storage, process-heavy, plugin-heavy) would add complexity without sufficient benefit at the current test count (~1,219 tests). The conservative approach is retained because:
 
 1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
 2. **Regression guards are in place** — `check-tokio-test-flavors.py` prevents new bare tokio tests, and `audit_tokio_tests.py` identifies concurrency-sensitive tests.
-3. **Limited parallelism is reliable** — `--test-threads=14` balances speed with resource control.
+3. **Limited parallelism is reliable** — `--test-threads=1` balances speed with resource control.
 4. **Wall-clock is acceptable** — the full serial suite completes within CI timeout limits.
 
 ### Future Considerations

@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 002 — Canonical Local Verification Contract
 
-Status: blocked — Milestone 001 closure required
+Status: ready for handoff
 
 Repository baseline: `39d0720f9748cabc978ad9b0a3a32c31c6bc84d1` plus the development-verification-release planning registration series
 

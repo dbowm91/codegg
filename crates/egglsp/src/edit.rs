@@ -68,15 +68,11 @@ pub fn preview_workspace_edit(
             }
             let path = uri_to_path(&uri)?;
             validate_path_against_root(&path, allowed_root)?;
-            match build_file_preview(&path, text_edits, allowed_root) {
-                Ok(fp) => {
-                    if fp.patch_omitted {
-                        truncated = true;
-                    }
-                    files.push(fp);
-                }
-                Err(e) => return Err(e),
+            let fp = build_file_preview(&path, text_edits, allowed_root)?;
+            if fp.patch_omitted {
+                truncated = true;
             }
+            files.push(fp);
         }
     }
 
@@ -100,15 +96,11 @@ pub fn preview_workspace_edit(
                         truncated = true;
                         continue;
                     }
-                    match build_file_preview(&path, text_edits, allowed_root) {
-                        Ok(fp) => {
-                            if fp.patch_omitted {
-                                truncated = true;
-                            }
-                            files.push(fp);
-                        }
-                        Err(e) => return Err(e),
+                    let fp = build_file_preview(&path, text_edits, allowed_root)?;
+                    if fp.patch_omitted {
+                        truncated = true;
                     }
+                    files.push(fp);
                 }
             }
             DocumentChanges::Operations(ops) => {
@@ -131,15 +123,11 @@ pub fn preview_workspace_edit(
                                 truncated = true;
                                 continue;
                             }
-                            match build_file_preview(&path, text_edits, allowed_root) {
-                                Ok(fp) => {
-                                    if fp.patch_omitted {
-                                        truncated = true;
-                                    }
-                                    files.push(fp);
-                                }
-                                Err(e) => return Err(e),
+                            let fp = build_file_preview(&path, text_edits, allowed_root)?;
+                            if fp.patch_omitted {
+                                truncated = true;
                             }
+                            files.push(fp);
                         }
                         DocumentChangeOperation::Op(res) => {
                             return Err(LspError::UnsupportedEdit(format!(

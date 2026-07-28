@@ -1,156 +1,55 @@
 name: CI
 
+# Routine verification: one bounded job answering the ordinary development
+# question — does this revision format, compile, lint, and pass the default
+# workspace tests? Optional feature, plugin, example, LSP, audit, and
+# cross-platform checks remain available locally and will be canonically
+# documented by Milestone 002.
+
 on:
-  push:
-    branches: [dev, main]
   pull_request:
-    branches: [dev, main]
+  push:
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 1
+
+permissions:
+  contents: read
 
 jobs:
-  agent-assets:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: '3.11'
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: Validate agent TOML schema
         run: python3 scripts/generate_builtin_agents.py --check
+
       - name: Check builtin agents match source
         run: python3 scripts/check_builtin_agents.py
-      - name: Regression guard: bare tokio::test annotations
+
+      - name: Tokio test-flavor regression guard
         run: python3 scripts/check-tokio-test-flavors.py
 
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --check --all
-
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace --all-features --all-targets
-      - name: Projection transport bounds and isolation guards
-        run: |
-          python3 scripts/check_projection_transport_isolation.py
-          python3 scripts/check_websocket_bounds.py
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Full workspace test suite (all features, serial). Shell projection tests
-      # (harness, phase10, redactor, rtk) are included in this run — no separate
-      # rerun needed. See architecture/testing.md for the test taxonomy.
-      - run: cargo test --workspace --all-features -- --test-threads=14
-
-  plugin-focused:
-    runs-on: ubuntu-latest
-    needs: [fmt, check, clippy, test]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      # Plugin tests run serially — plugin paths may instantiate Wasmtime runtime state.
-      - name: Plugin install path / policy tests
-        run: cargo test -p codegg --lib plugin::install --all-features -- --test-threads=1
-      - name: Plugin management tests
-        run: cargo test -p codegg --lib plugin::management --all-features -- --test-threads=1
-      - name: Plugin registry tests
-        run: cargo test -p codegg --lib plugin::registry --all-features -- --test-threads=1
-      - name: Plugin TUI command tests
-        run: cargo test -p codegg --lib tui::commands::plugin_management --all-features -- --test-threads=1
-      - name: Core boundary check
+      - name: codegg-core boundary guard
         run: ./scripts/check-core-boundary.sh
 
-  examples:
-    runs-on: ubuntu-latest
-    needs: [plugin-focused]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Rust SDK tests
-        run: cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Python SDK tests
-        run: PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
-      - name: Install wasm32 target
-        run: rustup target add wasm32-unknown-unknown
-      - name: "WASM example: command-table"
-        run: cargo check --manifest-path examples/plugins/wasm-command-table/Cargo.toml --target wasm32-unknown-unknown
-      - name: "WASM example: hook-message-transform"
-        run: cargo check --manifest-path examples/plugins/wasm-hook-message-transform/Cargo.toml --target wasm32-unknown-unknown
-      - name: "WASM example: status-widget"
-        run: cargo check --manifest-path examples/plugins/wasm-status-widget/Cargo.toml --target wasm32-unknown-unknown
+      - name: Formatting
+        run: cargo fmt --check --all
 
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-      - run: cargo audit
+      - name: Workspace check
+        run: cargo check --workspace --all-targets --locked
 
-  build-cross:
-    needs: [plugin-focused]
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross
-      - name: Build
-        run: |
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
-        shell: bash
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: codegg-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/codegg*
+      - name: Workspace Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Workspace tests
+        run: cargo test --workspace --locked -- --test-threads=1

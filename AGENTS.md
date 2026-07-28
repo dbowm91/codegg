@@ -393,7 +393,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to dev/main. Independent jobs: `agent-assets`, `fmt`, `check`, `clippy`, `test`, `audit`. Then `plugin-focused` (depends on fmt/check/clippy/test) runs plugin install/management/registry/TUI tests, the core boundary check, and the `check_scheduler_bypass.py` static guard. `examples` (depends on plugin-focused) tests SDKs and WASM builds. `build-cross` (depends on plugin-focused) builds release binaries for linux-x86_64, linux-aarch64, darwin-x86_64, darwin-aarch64. The `agent-assets` job validates built-in agent TOML schemas and checks for stale generated output. The `test` job runs the full workspace test suite plus explicit shell projection validation steps (harness, context budget, redactor, RTK unit tests) and the `check_execution_ownership.py` static guard. Local equivalent: `scripts/validate_plugin_ui.sh`.
+CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor annotations, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 

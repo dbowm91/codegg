@@ -210,6 +210,7 @@ impl HandleRegistrar {
         self.registry.mint_id()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn issue(
         &self,
         kind: ArtifactKind,

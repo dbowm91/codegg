@@ -91,6 +91,7 @@ pub trait ProjectionArtifactRegistry: Send + Sync {
     /// Issue a new artifact handle for the given run and kind.
     /// The registry stores metadata and returns a bounded
     /// public descriptor that carries no authority by itself.
+    #[allow(clippy::too_many_arguments)]
     async fn issue_for_run(
         &self,
         project_id: &str,

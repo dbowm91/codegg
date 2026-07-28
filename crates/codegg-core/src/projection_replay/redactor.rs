@@ -353,12 +353,11 @@ impl ProjectionFieldRedactor {
                         // The captured value (last group) is
                         // dropped.
                         let first = caps.get(1).unwrap().as_str();
-                        let replacement = if rule.replacement.contains("$1") {
+                        if rule.replacement.contains("$1") {
                             rule.replacement.replace("$1", first)
                         } else {
                             rule.replacement.to_string()
-                        };
-                        replacement
+                        }
                     } else {
                         rule.replacement.to_string()
                     }
@@ -531,9 +530,7 @@ impl RedactionSummary {
 
 fn classify_object_key(key: &str) -> FieldName {
     let lower = key.to_ascii_lowercase();
-    if is_secret_key(&lower) {
-        FieldName::Authorization
-    } else if lower.contains("authorization") || lower == "auth" {
+    if is_secret_key(&lower) || lower.contains("authorization") || lower == "auth" {
         FieldName::Authorization
     } else if lower == "environment" || lower == "env" || lower.ends_with("_env") {
         FieldName::Environment

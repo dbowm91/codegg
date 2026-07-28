@@ -159,6 +159,7 @@ impl ProjectionCapabilitySet {
 
     /// Construct a capability set from a fixed list. Duplicates are
     /// removed and the list is sorted for deterministic hashing.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I>(iter: I) -> Self
     where
         I: IntoIterator<Item = ProjectionCapability>,
