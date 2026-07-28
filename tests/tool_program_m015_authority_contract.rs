@@ -45,13 +45,13 @@ fn accepted_decision_identity_is_the_grant_identity() {
     let core = to_core_context(Some(&direct), "workspace-m015", "program-m015")
         .expect("accepted decision must convert");
     let grant = build_authority_grant(
-        &core,
+        Some(&core),
         "workspace-m015",
+        "program-m015",
         &["read".into()],
         "sha256:source",
         "sha256:ir",
         "sha256:contracts",
-        "[]",
     )
     .expect("accepted decision must produce a grant");
 
@@ -82,7 +82,7 @@ fn stale_expired_revoked_and_workspace_mismatched_decisions_fail_closed() {
     assert!(to_core_context(Some(&direct), "workspace-m015", "program-m015").is_err());
 
     let mut direct = accepted_context();
-    direct.workspace_path_policy_id = Some("workspace:other".into());
+    direct.workspace_path_policy_id = Some(String::new());
     assert!(to_core_context(Some(&direct), "workspace-m015", "program-m015").is_err());
 }
 

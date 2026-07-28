@@ -110,6 +110,9 @@ pub struct ToolExecutionContext {
     pub decision_expires_at: Option<i64>,
     /// Revocation reference, if the decision has been revoked.
     pub decision_revoked_at: Option<i64>,
+    /// Frozen contracts resolved from the same runtime Broker catalog that
+    /// admitted the direct `tool_program` invocation.
+    pub program_contract_snapshot: Option<Vec<crate::tool::tool_program_context::ContractEntry>>,
 }
 
 impl ToolExecutionContext {
@@ -142,6 +145,7 @@ impl ToolExecutionContext {
             decision_issued_at: None,
             decision_expires_at: None,
             decision_revoked_at: None,
+            program_contract_snapshot: None,
         }
     }
 }

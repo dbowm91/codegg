@@ -704,10 +704,22 @@ async fn authority_digest_validated_at_admission() {
         use codegg_core::workspace::WorkspaceId;
         let now = chrono::Utc::now();
         let source_digest = ProgramStore::digest_source(source);
-        let execution_context = codegg_core::jobs::ToolProgramExecutionContext::for_workspace(
-            "ws-1",
-            "test-correlation",
-        );
+        let execution_context = codegg_core::jobs::ToolProgramExecutionContext {
+            workspace_path_policy_id: "ws-1".into(),
+            principal_ref: Some("test-principal".into()),
+            authority_ref: Some("test-decision".into()),
+            policy_revision: Some("test-policy-v1".into()),
+            path_policy_revision: Some("test-path-v1".into()),
+            decision_outcome: Some("allowed".into()),
+            caller_class: Some("agent".into()),
+            maximum_effect_class: Some("read_only".into()),
+            decision_issued_at: Some(chrono::Utc::now().timestamp_millis()),
+            contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+            ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace(
+                "ws-1",
+                "test-correlation",
+            )
+        };
         let authority_digest = codegg::tool::tool_program_context::authority_digest(
             &execution_context,
             &[],
@@ -726,7 +738,8 @@ async fn authority_digest_validated_at_admission() {
             &source_digest,
             "",
             "",
-        );
+        )
+        .unwrap();
         let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
         JobRecord {
             job_id: JobId::new_unchecked("j-auth"),

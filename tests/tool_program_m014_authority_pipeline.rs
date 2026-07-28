@@ -15,6 +15,22 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+fn accepted_context(workspace: &str) -> codegg_core::jobs::ToolProgramExecutionContext {
+    codegg_core::jobs::ToolProgramExecutionContext {
+        workspace_path_policy_id: workspace.into(),
+        principal_ref: Some("test-principal".into()),
+        authority_ref: Some(format!("test-decision:{workspace}")),
+        policy_revision: Some("test-policy-v1".into()),
+        path_policy_revision: Some("test-path-v1".into()),
+        decision_outcome: Some("allowed".into()),
+        caller_class: Some("agent".into()),
+        maximum_effect_class: Some("read_only".into()),
+        decision_issued_at: Some(now_millis()),
+        contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace, "test")
+    }
+}
+
 /// C-01: The grant is created from the actual accepted direct-call
 /// permission/path-policy decision. Verify that build_authority_grant
 /// populates real decision fields from the ToolProgramExecutionContext.
@@ -24,8 +40,7 @@ async fn c01_grant_uses_real_decision_fields() {
     let program_id = "tp-c01";
     let source_digest = "sha256:source-c01";
 
-    let execution_context =
-        codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace_id, "test");
+    let execution_context = accepted_context(workspace_id);
 
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&execution_context),
@@ -35,7 +50,8 @@ async fn c01_grant_uses_real_decision_fields() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
 
     assert_eq!(grant.workspace_path_policy_id, workspace_id);
     assert!(
@@ -81,6 +97,7 @@ async fn c02_empty_context_grant_fails() {
         source_digest: String::new(),
         ir_digest: String::new(),
         contract_digest: String::new(),
+        contract_snapshot_json: String::new(),
         issued_at: now_millis(),
         expires_at: Some(now_millis() + 3600_000),
         revoked_at: None,
@@ -100,8 +117,7 @@ async fn c03_grant_round_trip_preserves_decision_identity() {
     let program_id = "tp-c03";
     let source_digest = "sha256:source-c03";
 
-    let execution_context =
-        codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace_id, "test");
+    let execution_context = accepted_context(workspace_id);
 
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&execution_context),
@@ -111,7 +127,8 @@ async fn c03_grant_round_trip_preserves_decision_identity() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
 
     let json = serde_json::to_string(&grant).unwrap();
     let restored: ToolAuthorityGrant = serde_json::from_str(&json).unwrap();
@@ -133,8 +150,7 @@ async fn c04_tampered_grant_fails_verification() {
     let program_id = "tp-c04";
     let source_digest = "sha256:source-c04";
 
-    let execution_context =
-        codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace_id, "test");
+    let execution_context = accepted_context(workspace_id);
 
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&execution_context),
@@ -144,7 +160,8 @@ async fn c04_tampered_grant_fails_verification() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
 
     assert!(grant.verify_integrity());
 
@@ -163,7 +180,8 @@ async fn c04_tampered_grant_fails_verification() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
     grant.workspace_path_policy_id = "wrong-workspace".to_string();
     assert!(
         !grant.verify_integrity(),
@@ -178,8 +196,7 @@ async fn c06_stale_policy_revision_fails() {
     let program_id = "tp-c06";
     let source_digest = "sha256:source-c06";
 
-    let execution_context =
-        codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace_id, "test");
+    let execution_context = accepted_context(workspace_id);
 
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&execution_context),
@@ -189,7 +206,8 @@ async fn c06_stale_policy_revision_fails() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
 
     assert!(grant.verify_integrity());
 
@@ -208,8 +226,7 @@ async fn c06_expired_grant_fails() {
     let program_id = "tp-c06-exp";
     let source_digest = "sha256:source-c06-exp";
 
-    let execution_context =
-        codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace_id, "test");
+    let execution_context = accepted_context(workspace_id);
 
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&execution_context),
@@ -219,7 +236,8 @@ async fn c06_expired_grant_fails() {
         source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
 
     let mut expired_grant = grant.clone();
     expired_grant.expires_at = Some(now_millis() - 1000); // expired 1 second ago

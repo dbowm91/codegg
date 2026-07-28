@@ -403,17 +403,12 @@ impl ToolProgramTool {
             ));
         }
 
-        let source_digest = ProgramStore::digest_source(source);
         let workspace_root = execution_context
             .as_ref()
             .map(|context| context.cwd.clone())
             .unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             });
-        let source_ref =
-            crate::tool::tool_program_source::ToolProgramSourceStore::new(&workspace_root)
-                .persist(source)
-                .map_err(|e| ToolError::Execution(format!("source persistence failed: {}", e)))?;
         let workspace_id = submission
             .workspace_id_for_root(&workspace_root)
             .await
@@ -439,8 +434,35 @@ impl ToolProgramTool {
             execution_context.as_ref(),
             workspace_id.as_str(),
             &program_id,
-        );
+        )
+        .map_err(ToolError::Permission)?;
         context_record.backend_policy = backend_policy.as_str().to_string();
+        let contract_entries = execution_context
+            .as_ref()
+            .and_then(|context| context.program_contract_snapshot.clone())
+            .ok_or_else(|| {
+                ToolError::Permission(
+                    "accepted invocation is missing the frozen runtime Broker catalog".into(),
+                )
+            })?;
+        let requested: std::collections::BTreeSet<_> = tools.iter().cloned().collect();
+        let frozen: std::collections::BTreeSet<_> = contract_entries
+            .iter()
+            .map(|entry| entry.tool_name.clone())
+            .collect();
+        if requested != frozen {
+            return Err(ToolError::Permission(
+                "requested tools do not match the accepted frozen runtime catalog".into(),
+            ));
+        }
+        let contract_snapshot_json =
+            crate::tool::tool_program_context::canonical_contract_json(&contract_entries)
+                .map_err(ToolError::Permission)?;
+        let contract_digest =
+            crate::tool::tool_program_context::canonical_contract_digest(&contract_entries)
+                .map_err(ToolError::Permission)?;
+        context_record.contract_snapshot_json = contract_snapshot_json;
+        let source_digest = ProgramStore::digest_source(source);
         let requested_deadline = chrono::Utc::now()
             + chrono::Duration::from_std(std::time::Duration::from_millis(timeout_ms))
                 .map_err(|_| ToolError::Format("timeout_ms is too large".into()))?;
@@ -457,16 +479,6 @@ impl ToolProgramTool {
             &source_digest,
         );
 
-        // M014-B2: Build the canonical contract snapshot from the real
-        // Broker catalog at submission time. The same digest is used at
-        // executor admission and every nested Broker call.
-        let broker = crate::tool::ToolRegistry::with_defaults();
-        let catalog_broker = crate::tool::broker::ToolBroker::new(&broker);
-        let contract_entries =
-            crate::tool::tool_program_context::resolve_contract_snapshot(&catalog_broker, &tools)
-                .unwrap_or_default();
-        let contract_digest =
-            crate::tool::tool_program_context::canonical_contract_digest(&contract_entries);
         let authority_grant = crate::tool::tool_program_context::build_authority_grant(
             Some(&context_record),
             workspace_id.as_str(),
@@ -475,9 +487,16 @@ impl ToolProgramTool {
             &source_digest,
             &compilation.ir.digest,
             &contract_digest,
-        );
+        )
+        .map_err(ToolError::Permission)?;
         let authority_grant_json = serde_json::to_string(&authority_grant)
             .map_err(|e| ToolError::Execution(format!("grant serialization failed: {}", e)))?;
+        // Authorization and contract validation intentionally precede source
+        // persistence, so rejected direct calls leave no executable residue.
+        let source_ref =
+            crate::tool::tool_program_source::ToolProgramSourceStore::new(&workspace_root)
+                .persist(source)
+                .map_err(|e| ToolError::Execution(format!("source persistence failed: {}", e)))?;
 
         let new_job = NewJob {
             workspace_id,

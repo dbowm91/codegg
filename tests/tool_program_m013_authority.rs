@@ -22,6 +22,22 @@ fn now_millis() -> i64 {
         .as_millis() as i64
 }
 
+fn accepted_context(workspace: &str) -> codegg_core::jobs::ToolProgramExecutionContext {
+    codegg_core::jobs::ToolProgramExecutionContext {
+        workspace_path_policy_id: workspace.into(),
+        principal_ref: Some("test-principal".into()),
+        authority_ref: Some(format!("test-decision:{workspace}")),
+        policy_revision: Some("test-policy-v1".into()),
+        path_policy_revision: Some("test-path-policy-v1".into()),
+        decision_outcome: Some("allowed".into()),
+        caller_class: Some("agent".into()),
+        maximum_effect_class: Some("read_only".into()),
+        decision_issued_at: Some(now_millis()),
+        contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace(workspace, "test")
+    }
+}
+
 /// M013 A2 / C-04: build_authority_grant now populates source/IR/contract digests
 /// and computes a decision_digest that verifies against compute_digest().
 #[tokio::test(flavor = "current_thread")]
@@ -34,14 +50,15 @@ async fn a2_build_authority_grant_includes_source_ir_contract() {
     let contract_digest = "sha256:contract-abc";
 
     let grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context(workspace_id)),
         workspace_id,
         program_id,
         &allowed_tools,
         source_digest,
         ir_digest,
         contract_digest,
-    );
+    )
+    .unwrap();
 
     assert_eq!(grant.source_digest, source_digest);
     assert_eq!(grant.ir_digest, ir_digest);
@@ -61,14 +78,15 @@ async fn a2_build_authority_grant_includes_source_ir_contract() {
 #[test]
 fn c04_tampering_any_field_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-tamper")),
         "ws-tamper",
         "tp-m013-tamper",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     let original = grant.decision_digest.clone();
     assert!(grant.verify_integrity());
 
@@ -105,14 +123,15 @@ fn c04_tampering_any_field_fails_integrity() {
 #[test]
 fn c04_tampering_source_digest_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-src")),
         "ws-src",
         "tp-m013-src",
         &["read".to_string()],
         "sha256:original-source",
         "sha256:ir-original",
         "sha256:contract-original",
-    );
+    )
+    .unwrap();
     assert!(grant.verify_integrity());
     grant.source_digest = "sha256:evil-source".into();
     assert!(
@@ -125,14 +144,15 @@ fn c04_tampering_source_digest_fails_integrity() {
 #[test]
 fn c04_tampering_ir_digest_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-ir")),
         "ws-ir",
         "tp-m013-ir",
         &["read".to_string()],
         "sha256:source",
         "sha256:original-ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     assert!(grant.verify_integrity());
     grant.ir_digest = "sha256:evil-ir".into();
     assert!(
@@ -145,14 +165,15 @@ fn c04_tampering_ir_digest_fails_integrity() {
 #[test]
 fn c04_tampering_contract_digest_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-contract")),
         "ws-contract",
         "tp-m013-contract",
         &["read".to_string()],
         "sha256:source",
         "sha256:ir",
         "sha256:original-contract",
-    );
+    )
+    .unwrap();
     assert!(grant.verify_integrity());
     grant.contract_digest = "sha256:evil-contract".into();
     assert!(
@@ -165,14 +186,15 @@ fn c04_tampering_contract_digest_fails_integrity() {
 #[test]
 fn a4_expired_grant_fails_is_valid() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-exp")),
         "ws-exp",
         "tp-m013-exp",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     grant.expires_at = Some(now_millis() - 10_000);
     assert!(!grant.is_valid(now_millis()));
     assert!(
@@ -185,14 +207,15 @@ fn a4_expired_grant_fails_is_valid() {
 #[test]
 fn a4_revoked_grant_fails_is_valid() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-rev")),
         "ws-rev",
         "tp-m013-rev",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     grant.revoked_at = Some(now_millis() - 1_000);
     assert!(!grant.is_valid(now_millis()));
 }
@@ -201,14 +224,15 @@ fn a4_revoked_grant_fails_is_valid() {
 #[test]
 fn a4_workspace_mismatch_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-original")),
         "ws-original",
         "tp-m013-ws",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     grant.workspace_id = "ws-different".into();
     assert!(
         !grant.verify_integrity(),
@@ -220,14 +244,15 @@ fn a4_workspace_mismatch_fails_integrity() {
 #[test]
 fn a4_policy_revision_tampering_fails_integrity() {
     let mut grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-pol")),
         "ws-pol",
         "tp-m013-pol",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     grant.policy_revision = "policy-v999-forged".into();
     assert!(
         !grant.verify_integrity(),
@@ -241,14 +266,15 @@ fn a4_policy_revision_tampering_fails_integrity() {
 #[test]
 fn a5_production_constructor_grant_is_valid_and_intact() {
     let grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-prod")),
         "ws-prod",
         "tp-m013-prod",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     assert!(
         grant.verify_integrity(),
         "production-constructed grant must verify integrity"
@@ -263,14 +289,15 @@ fn a5_production_constructor_grant_is_valid_and_intact() {
 #[test]
 fn a2_grant_carries_required_identity_fields() {
     let grant = codegg::tool::tool_program_context::build_authority_grant(
-        None,
+        Some(&accepted_context("ws-fields")),
         "ws-fields",
         "tp-m013-fields",
         &["read".to_string()],
         "sha256:src",
         "sha256:ir",
         "sha256:contract",
-    );
+    )
+    .unwrap();
     let required = [
         ("schema_version", grant.schema_version == 1),
         ("grant_id non-empty", !grant.grant_id.is_empty()),
@@ -301,7 +328,7 @@ fn c06_session_mismatch_fails_scope() {
 
     let exec_ctx = codegg_core::jobs::ToolProgramExecutionContext {
         session_id: Some("sess-granted".into()),
-        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-scope", "corr")
+        ..accepted_context("ws-scope")
     };
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&exec_ctx),
@@ -311,7 +338,8 @@ fn c06_session_mismatch_fails_scope() {
         "src",
         "ir",
         "contract",
-    );
+    )
+    .unwrap();
     let authority = BrokerAuthority::Verified { grant };
     let contract = ToolContract::legacy("read", serde_json::json!({}));
 
@@ -355,7 +383,7 @@ fn c06_permission_mode_mismatch_fails_scope() {
     let exec_ctx = codegg_core::jobs::ToolProgramExecutionContext {
         permission_mode: Some("allow".into()),
         session_id: Some("sess-pm".into()),
-        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-pm", "corr")
+        ..accepted_context("ws-pm")
     };
     let grant = codegg::tool::tool_program_context::build_authority_grant(
         Some(&exec_ctx),
@@ -365,7 +393,8 @@ fn c06_permission_mode_mismatch_fails_scope() {
         "src",
         "ir",
         "contract",
-    );
+    )
+    .unwrap();
     let authority = BrokerAuthority::Verified { grant };
     let contract = ToolContract::legacy("read", serde_json::json!({}));
 

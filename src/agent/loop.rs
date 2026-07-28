@@ -948,6 +948,27 @@ impl AgentLoop {
             decision_issued_at: Some(now),
             decision_expires_at: None,
             decision_revoked_at: None,
+            program_contract_snapshot: if tc.name.as_str() == "tool_program" {
+                tc.arguments
+                    .get("tools")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .and_then(|tools| {
+                        crate::tool::tool_program_context::resolve_contract_snapshot(
+                            &self.tool_broker,
+                            &tools,
+                        )
+                        .ok()
+                    })
+            } else {
+                None
+            },
         }
     }
 
@@ -4838,6 +4859,7 @@ impl AgentLoop {
                                     source_digest: String::new(),
                                     ir_digest: String::new(),
                                     contract_digest: String::new(),
+                                    contract_snapshot_json: String::new(),
                                     issued_at: exec_ctx.decision_issued_at.unwrap_or(now),
                                     expires_at: exec_ctx.decision_expires_at,
                                     revoked_at: exec_ctx.decision_revoked_at,

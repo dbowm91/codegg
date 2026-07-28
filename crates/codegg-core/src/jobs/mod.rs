@@ -75,6 +75,22 @@ pub struct ToolProgramExecutionContext {
     pub authority_ref: Option<String>,
     pub permission_mode: Option<String>,
     pub policy_revision: Option<String>,
+    #[serde(default)]
+    pub path_policy_revision: Option<String>,
+    #[serde(default)]
+    pub decision_outcome: Option<String>,
+    #[serde(default)]
+    pub caller_class: Option<String>,
+    #[serde(default)]
+    pub maximum_effect_class: Option<String>,
+    #[serde(default)]
+    pub decision_issued_at: Option<i64>,
+    #[serde(default)]
+    pub decision_expires_at: Option<i64>,
+    #[serde(default)]
+    pub decision_revoked_at: Option<i64>,
+    #[serde(default)]
+    pub contract_snapshot_json: String,
     pub provider_connection_id: Option<String>,
     pub provider_model: Option<String>,
     pub backend_policy: String,
@@ -137,6 +153,9 @@ pub struct ToolAuthorityGrant {
     /// M013-A2.
     #[serde(default)]
     pub contract_digest: String,
+    /// Canonical JSON for the complete frozen runtime contract snapshot.
+    #[serde(default)]
+    pub contract_snapshot_json: String,
     pub issued_at: i64,
     pub expires_at: Option<i64>,
     pub revoked_at: Option<i64>,
@@ -183,6 +202,7 @@ impl ToolAuthorityGrant {
             source_digest: String::new(),
             ir_digest: String::new(),
             contract_digest: String::new(),
+            contract_snapshot_json: String::new(),
             issued_at,
             expires_at,
             revoked_at,
@@ -196,7 +216,7 @@ impl ToolAuthorityGrant {
     /// digests so any tamper fails verification.
     pub fn compute_digest(&self) -> String {
         let fields = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.schema_version,
             self.grant_id,
             self.principal_ref,
@@ -213,7 +233,14 @@ impl ToolAuthorityGrant {
             self.source_digest,
             self.ir_digest,
             self.contract_digest,
+            self.contract_snapshot_json,
             self.issued_at,
+            self.expires_at
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            self.revoked_at
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
         );
         format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
     }
@@ -266,7 +293,7 @@ impl ToolProgramExecutionContext {
     /// digest in the replay fingerprint.
     pub fn compute_digest(&self) -> String {
         let fields = format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.schema_version,
             self.workspace_path_policy_id,
             self.session_id.as_deref().unwrap_or(""),
@@ -278,6 +305,7 @@ impl ToolProgramExecutionContext {
             self.permission_mode.as_deref().unwrap_or(""),
             self.policy_revision.as_deref().unwrap_or(""),
             self.principal_ref.as_deref().unwrap_or(""),
+            self.contract_snapshot_json,
         );
         format!("{:x}", sha2::Sha256::digest(fields.as_bytes()))
     }

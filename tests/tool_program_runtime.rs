@@ -22,10 +22,22 @@ use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
 fn sample_job(program_id: &str, source: &str) -> JobRecord {
     let now = chrono::Utc::now();
     let source_digest = ProgramStore::digest_source(source);
-    let execution_context = codegg_core::jobs::ToolProgramExecutionContext::for_workspace(
-        "ws-integration",
-        "test-correlation",
-    );
+    let execution_context = codegg_core::jobs::ToolProgramExecutionContext {
+        workspace_path_policy_id: "ws-integration".into(),
+        principal_ref: Some("test-principal".into()),
+        authority_ref: Some("test-decision".into()),
+        policy_revision: Some("test-policy-v1".into()),
+        path_policy_revision: Some("test-path-v1".into()),
+        decision_outcome: Some("allowed".into()),
+        caller_class: Some("agent".into()),
+        maximum_effect_class: Some("read_only".into()),
+        decision_issued_at: Some(chrono::Utc::now().timestamp_millis()),
+        contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace(
+            "ws-integration",
+            "test-correlation",
+        )
+    };
     let authority_digest = codegg::tool::tool_program_context::authority_digest(
         &execution_context,
         &[],
@@ -44,7 +56,8 @@ fn sample_job(program_id: &str, source: &str) -> JobRecord {
         &source_digest,
         "",
         "",
-    );
+    )
+    .unwrap();
     let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
     JobRecord {
         job_id: JobId::new_unchecked("j-tp-integration"),

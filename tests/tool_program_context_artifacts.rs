@@ -35,6 +35,7 @@ fn make_test_grant() -> ToolAuthorityGrant {
         source_digest: String::new(),
         ir_digest: String::new(),
         contract_digest: String::new(),
+        contract_snapshot_json: String::new(),
         issued_at: 0,
         expires_at: None,
         revoked_at: None,
