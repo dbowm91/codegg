@@ -38,8 +38,9 @@ The milestone's infrastructure boundary is complete. The routine GitHub Actions 
 | Formatting check present | `cargo fmt --check --all` | pass | Clean |
 | Default-feature workspace check present | `cargo check --workspace --all-targets --locked` | pass | Clean |
 | Default-feature Clippy present | `cargo clippy --workspace --all-targets --locked -- -D warnings` | pass | Fixed 3 pre-existing clippy errors in edit.rs; remaining clippy issues are in codegg-core and will be addressed separately |
-| Default-feature workspace tests present | `cargo test --workspace --locked -- --test-threads=1` | pass | |
+| Default-feature workspace tests present | `cargo test --workspace --locked -- --test-threads=1` | pass | 4098 passed, 1 pre-existing failure (scheduler disabled); `RUST_MIN_STACK=33554432` added to prevent daemon_socket stack overflow |
 | `CARGO_BUILD_JOBS=1` set | `env:` block in workflow | pass | |
+| `RUST_MIN_STACK` set | `env:` block in workflow | pass | 32MB; prevents daemon_socket stack overflow (pre-existing) |
 | `--test-threads=1` on test command | `-- --test-threads=1` in test step | pass | |
 | `--locked` on Cargo commands | `--locked` on check, clippy, test | pass | |
 | Workflow permissions read-only | `permissions: contents: read` | pass | |
@@ -52,7 +53,7 @@ The milestone's infrastructure boundary is complete. The routine GitHub Actions 
 
 `.github/workflows/ci.yml` replaced entirely:
 - **Before**: 8 jobs (`agent-assets`, `fmt`, `check`, `clippy`, `test`, `plugin-focused`, `examples`, `audit`, `build-cross` with 4-target matrix), triggers on push/PR to `dev` and `main`, `--all-features` throughout, artifact uploads, WASM target installation, `cargo-audit` installation
-- **After**: 1 job (`verify`), triggers on pull_request + push to `main` only, default features, `CARGO_BUILD_JOBS=1`, `--test-threads=1`, `--locked`, read-only permissions, no artifacts
+- **After**: 1 job (`verify`), triggers on pull_request + push to `main` only, default features, `CARGO_BUILD_JOBS=1`, `RUST_MIN_STACK=33554432`, `--test-threads=1`, `--locked`, read-only permissions, no artifacts
 
 ### Code fixes
 
@@ -88,11 +89,16 @@ python3 scripts/check-tokio-test-flavors.py            # EXIT: 1 (pre-existing b
 cargo fmt --check --all                                # EXIT: 0
 cargo check --workspace --all-targets --locked          # EXIT: 0
 cargo clippy --workspace --all-targets --locked -- -D warnings  # EXIT: 0 (after fixes)
+RUST_MIN_STACK=33554432 CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1  # EXIT: 1 (1 pre-existing failure)
 ```
 
 ### Results
 
-All commands pass except `check-tokio-test-flavors.py` which reports 1062 pre-existing bare `#[tokio::test]` annotations. This is a pre-existing condition: the regression guard prevents new violations but does not fix historical ones. The guard is retained in the workflow as the plan requires; Milestone 002 or a separate maintenance pass should address the bare tests.
+All static guard commands pass. `check-tokio-test-flavors.py` exits 1 due to 1062 pre-existing bare `#[tokio::test]` annotations (regression guard prevents new violations; historical tests documented as pre-existing).
+
+Test suite: **4098 passed, 1 failed** (pre-existing). The single failure is `tool::bash::tests::active_mode_python_command_routes` which panics because Python script execution requires scheduler admission and the scheduler is disabled in the default test harness. This is a pre-existing condition unrelated to the CI workflow changes.
+
+`RUST_MIN_STACK=33554432` was added to the workflow env block. Without it, several `daemon_socket_integration_tests` crash with stack overflow, aborting the test process and preventing all remaining tests from running. This is a pre-existing stack-size issue in those tests; the env var is the standard Rust mechanism for addressing it.
 
 YAML structural verification (custom Python script) confirms: 1 job, required triggers present, forbidden patterns absent.
 
@@ -144,6 +150,7 @@ Updated files:
 |---|---|---|---|
 | medium | 1062 bare `#[tokio::test]` annotations cause `check-tokio-test-flavors.py` to exit 1 | CI tokio-flavor step fails; regression guard still prevents new violations | Address in a dedicated maintenance pass or Milestone 002 |
 | medium | Branch protection may reference removed job names (`fmt`, `check`, `clippy`, `test`, `plugin-focused`, `examples`, `audit`, `build-cross`) | New `verify` check may not be required until branch protection is updated | Maintainer must update required checks in repository settings |
+| medium | `tool::bash::tests::active_mode_python_command_routes` panics (scheduler disabled in test harness) | CI test step exits 1; pre-existing, not caused by workflow changes | Address in a dedicated test-harness fix or Milestone 002 |
 | low | Pre-existing clippy warnings remain in codegg-core (too_many_arguments, should_implement_trait, clone_on_copy in other files) | Clippy step passes with `--locked` but produces warnings; `-D warnings` may fail if new warnings are introduced | Fix in a dedicated clippy cleanup pass or Milestone 002 |
 
 ## 11. Roadmap disposition

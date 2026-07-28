@@ -14,6 +14,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_JOBS: 1
+  RUST_MIN_STACK: 33554432
 
 permissions:
   contents: read

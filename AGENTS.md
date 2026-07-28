@@ -393,7 +393,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor annotations, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor annotations, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 
