@@ -408,9 +408,10 @@ impl BrokerCallback for BrokerAdapter {
         }
     }
 
-    async fn submit_child_job(
+    async fn submit_child_job_with_checkpoint(
         &self,
         request: &codegg_core::tool_program::child_job::ChildJobRequest,
+        checkpoint: &codegg_core::tool_program::InterpreterCheckpoint,
     ) -> Result<codegg_core::tool_program::child_job::ChildJobResult, InterpreterError> {
         use crate::scheduler::submission::SubmissionKey;
         use codegg_core::tool_program::child_job::*;
@@ -537,9 +538,9 @@ impl BrokerCallback for BrokerAdapter {
                 .attempt_id
                 .as_ref()
                 .map(|id| codegg_core::jobs::AttemptId::new_unchecked(id)),
-            parent_call_id: Some(format!("call:{}:{}", self.program_id, request.op)),
+            parent_call_id: Some(format!("call:{}:{}", self.program_id, request.sequence)),
             parent_program_id: Some(self.program_id.clone()),
-            parent_instruction_sequence: Some(request.op as u32),
+            parent_instruction_sequence: Some(request.sequence),
             relation_kind: Some("child_job".to_string()),
         };
 
@@ -550,6 +551,48 @@ impl BrokerCallback for BrokerAdapter {
             .map_err(|e| {
                 InterpreterError::BrokerError(format!("child job submission failed: {}", e))
             })?;
+
+        let parent_job_id = self
+            .job_id
+            .as_ref()
+            .map(ToString::to_string)
+            .ok_or_else(|| {
+                InterpreterError::BrokerError(
+                    "child wait checkpoint requires parent job identity".into(),
+                )
+            })?;
+        let parent_attempt_id = self.attempt_id.clone().ok_or_else(|| {
+            InterpreterError::BrokerError(
+                "child wait checkpoint requires parent attempt identity".into(),
+            )
+        })?;
+        if let Some(pending) = &checkpoint.pending_child_wait {
+            if pending.child_job_id != submitted.job_id.to_string()
+                || pending.parent_program_id != self.program_id
+                || pending.parent_job_id != parent_job_id
+                || pending.parent_attempt_id != parent_attempt_id
+                || pending.instruction_sequence != request.sequence
+                || pending.operation_config_digest != format!("sha256:{config_hash}")
+            {
+                return Err(InterpreterError::ReplayDivergence(
+                    "reattached child identity or lineage mismatch".into(),
+                ));
+            }
+        }
+        let mut pending_checkpoint = checkpoint.clone();
+        pending_checkpoint.pending_child_wait = Some(codegg_core::tool_program::PendingChildWait {
+            child_job_id: submitted.job_id.to_string(),
+            expected_result_slot: request.sequence,
+            child_op: request.op.to_string(),
+            parent_program_id: self.program_id.clone(),
+            parent_job_id,
+            parent_attempt_id,
+            canonical_call_id: format!("call:{}:{}", self.program_id, request.sequence),
+            instruction_sequence: request.sequence,
+            operation_config_digest: format!("sha256:{config_hash}"),
+        });
+        pending_checkpoint.refresh_semantic_digest();
+        self.checkpoint(&pending_checkpoint).await?;
 
         let mut wait_timeout = effective_timeout + std::time::Duration::from_secs(30);
 
@@ -1171,6 +1214,19 @@ impl JobExecutor for ToolProgramExecutor {
         // locals, stack, budgets, next call sequence, and pending child
         // wait identity.
         if let Some(checkpoint) = ledger.load_latest_checkpoint(&program_id) {
+            let durable_deadline = ctx.job.deadline.map(|deadline| deadline.timestamp_millis());
+            if checkpoint.original_deadline_millis != durable_deadline {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: "checkpoint original deadline diverges from durable job deadline"
+                        .into(),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
             match interpreter.restore_checkpoint(checkpoint) {
                 Ok(()) => {
                     let _ = ctx
