@@ -1,9 +1,10 @@
 # Testing Architecture
 
-Codegg's test suite contains ~1,219 async tests across 94 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The default CI command uses limited parallelism:
+Codegg's test suite contains ~1,219 async tests across 94 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The canonical verification commands use limited parallelism:
 
 ```bash
-cargo test --workspace --all-features -- --test-threads=14
+scripts/verify.sh quick    # cheap sanity for ordinary iteration
+scripts/verify.sh full     # broad verification before handoff or release
 ```
 
 This document defines the test taxonomy, resource model, and guidance for adding new tests.
@@ -19,7 +20,7 @@ This document defines the test taxonomy, resource model, and guidance for adding
 | `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs` (139), `tests/python_sandbox_adversarial.rs` (57), `tests/context_projection_adversarial.rs` (90) |
 | `workspace` | Two-workspace isolation and unbound session rejection | Serial | `tests/workspace_isolation.rs` |
 | `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
-| `release-full` | Conservative full validation for main/tags | Serial | `cargo test --workspace --all-features -- --test-threads=14` |
+| `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` (adds clippy, production-feature check) |
 
 ## Why Serial by Default
 
@@ -130,13 +131,17 @@ Classify every new test against these resource classes before writing it:
 ## Local Commands
 
 ```bash
+# Canonical verification entry points
+scripts/verify.sh quick              # cheap sanity (fmt, static checks, compile)
+scripts/verify.sh full               # broad verification (adds clippy, tests, feature check)
+
 # Fast feedback (cheap tests only, low parallelism)
 cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 
 # Single crate
 cargo test -p codegg-core
 
-# Full serial validation (conservative, CI baseline)
+# Capped workspace validation (what verify.sh full runs internally)
 RUST_MIN_STACK=33554432 CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
 
 # LSP integration (fake server, serial)
@@ -160,16 +165,14 @@ cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -
 
 ## Test Timing with Nextest
 
-Nextest is configured in `.config/nextest.toml` with profiles for different workloads. Use it to identify slow tests and capture baseline timing data.
+Nextest is optional diagnostic tooling configured in `.config/nextest.toml`. It is not required for quick or full verification. Use it to identify slow tests and capture baseline timing data.
 
 ### Profiles
 
 | Profile | Timeout | Threads | Use Case |
 |---------|---------|---------|----------|
 | `default` | 30s | Auto | Local development |
-| `ci-fast` | 20s | Auto | Quick CI validation |
-| `ci-heavy` | 60s | Serial | Full workspace timing |
-| `ci-release` | 120s | Serial | Release validation |
+| `timing` | 60s | Serial | Local timing diagnostics |
 
 ### Local Timing Commands
 
@@ -178,17 +181,17 @@ Nextest is configured in `.config/nextest.toml` with profiles for different work
 cargo install cargo-nextest
 
 # Run full workspace with timing
-cargo nextest run --workspace --profile ci-heavy --all-features
+cargo nextest run --workspace --profile timing --all-features
 
 # Run specific crate with timing
-cargo nextest run -p codegg-core --profile ci-heavy
+cargo nextest run -p codegg-core --profile timing
 
 # Capture timing report via helper script
 scripts/capture-nextest-timing.sh --top 20
-scripts/capture-nextest-timing.sh --profile ci-heavy --top 30
+scripts/capture-nextest-timing.sh --profile timing --top 30
 
 # Manual timing report (slowest tests first)
-cargo nextest run --workspace --profile ci-heavy --all-features --json | \
+cargo nextest run --workspace --profile timing --all-features --json | \
   python3 -c "import sys,json; data=json.load(sys.stdin); tests=data.get('test',{}).get('executed',[]); tests.sort(key=lambda t: t.get('time',{}).get('duration',0), reverse=True); [print(f\"{t['time']['duration']:.2f}s  {t['name']}\") for t in tests[:20]]"
 ```
 
@@ -198,11 +201,11 @@ To capture baseline timing data for comparison:
 
 ```bash
 # Full workspace timing (single run)
-cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | \
+cargo nextest run --workspace --profile timing --all-features 2>&1 | \
   grep -E "^test result:|slow test" > /tmp/nextest-baseline.txt
 
 # Compare against future runs
-diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile ci-heavy --all-features 2>&1 | grep -E "^test result:|slow test")
+diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile timing --all-features 2>&1 | grep -E "^test result:|slow test")
 ```
 
 ## CI Structure
@@ -219,7 +222,9 @@ The job runs these steps in order:
 6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
 7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally and will be canonically documented by Milestone 002 of the development-verification-release roadmap.
+These steps match the commands in `scripts/verify.sh quick` (steps 1-5) and `scripts/verify.sh full` (steps 1-7 plus a production-feature check). CI runs a subset of the full verification — it omits the production-feature compile check (`server,plugins,lsp-test-support`) because that requires `--features` which is heavier than default-feature compilation.
+
+Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally via the change-specific matrix documented in `scripts/verify.sh` and this file.
 
 ### Real LSP tests
 
@@ -264,6 +269,8 @@ The root `--all-features` flag enables the `lsp-real-server-tests` feature, whic
 3. **CI does not install real servers** — the default `test` job does not set `CODEGG_RA_BIN` or similar env vars
 
 The separate `lsp-real-server.yml` workflow explicitly installs server binaries and runs with `--features lsp-real-server-tests` to exercise the real compatibility path.
+
+`scripts/verify.sh full` uses `--features server,plugins,lsp-test-support` instead of `--all-features` to avoid activating `lsp-real-server-tests`. Real-server tests remain opt-in.
 
 See `AGENTS.md` for the full test command catalog.
 

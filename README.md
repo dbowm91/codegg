@@ -284,18 +284,17 @@ run artifacts are documented in [compaction](architecture/compaction.md),
 ## Development
 
 ```bash
-cargo fmt
-cargo check --workspace
+scripts/verify.sh quick    # cheap sanity (fmt, static checks, compile)
+scripts/verify.sh full     # broad verification (adds clippy, tests, feature check)
+cargo fmt                  # format
+```
+
+For focused crate tests:
+
+```bash
 cargo test -p codegg-core
 cargo test --test tui
 cargo test --test tui_render
-cargo test --workspace --all-features
-```
-
-For a resource-capped full run, use:
-
-```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
 ```
 
 See [AGENTS.md](AGENTS.md) for crate boundaries, feature gates, test

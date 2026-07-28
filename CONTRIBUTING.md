@@ -15,11 +15,10 @@ Thank you for your interest in contributing to codegg!
 2. Clone your fork: `git clone https://github.com/YOUR_HANDLE/codegg`
 3. Create a branch: `git checkout -b feature/your-feature-name`
 4. Make your changes
-5. Run tests: `cargo test --all-features`
-6. Format code: `cargo fmt --check`
-7. Lint: `cargo clippy --all-features -- -D warnings`
-8. Commit your changes
-9. Push to your fork and submit a pull request
+5. Run quick verification: `scripts/verify.sh quick`
+6. Format code: `cargo fmt`
+7. Commit your changes
+8. Push to your fork and submit a pull request
 
 ## Code Style
 
@@ -31,10 +30,19 @@ Thank you for your interest in contributing to codegg!
 
 ## Testing
 
-All new functionality should include tests:
+All new functionality should include tests. Run the appropriate verification for your changes:
 
 ```bash
-cargo test --all-features
+scripts/verify.sh quick    # cheap sanity for ordinary iteration
+scripts/verify.sh full     # broad verification before handoff or release
+```
+
+For focused tests on specific crates:
+
+```bash
+cargo test -p codegg-core
+cargo test -p codegg-config
+cargo test -p codegg-protocol
 ```
 
 For integration tests, see the `tests/` directory.

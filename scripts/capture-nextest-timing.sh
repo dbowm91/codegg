@@ -9,10 +9,8 @@
 #   scripts/capture-nextest-timing.sh [PROFILE] [--all-features] [-- NEXTEST_ARGS...]
 #
 # Profiles (defined in .config/nextest.toml):
-#   default    – 30s timeout, auto parallelism
-#   ci-fast    – 20s timeout, auto parallelism
-#   ci-heavy   – 60s timeout, serial
-#   ci-release – 120s timeout, serial
+#   default  – 30s timeout, auto parallelism
+#   timing   – 60s timeout, serial (for local diagnostic use)
 #
 # Options:
 #   --top N          Number of slowest tests to show (default: 20)

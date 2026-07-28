@@ -3,8 +3,8 @@ name: CI
 # Routine verification: one bounded job answering the ordinary development
 # question — does this revision format, compile, lint, and pass the default
 # workspace tests? Optional feature, plugin, example, LSP, audit, and
-# cross-platform checks remain available locally and will be canonically
-# documented by Milestone 002.
+# cross-platform checks remain available locally via scripts/verify.sh
+# and the change-specific matrix in architecture/testing.md.
 
 on:
   pull_request:

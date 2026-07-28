@@ -5,9 +5,8 @@
 Rust 1.81+ required. Edition 2021. Tokio async runtime.
 
 ```bash
-cargo build --all-features           # build
-cargo clippy --all-features -- -D warnings  # lint (errors in CI)
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14  # full suite, capped
+scripts/verify.sh quick              # cheap sanity (fmt, static checks, compile)
+scripts/verify.sh full               # broad verification (adds clippy, tests, feature check)
 cargo fmt                            # format
 ```
 
@@ -75,7 +74,7 @@ Changes to server/plugin modules need `--all-features` testing. LSP integration 
 
 The workspace test matrix is large (~1,219 async tests across 94 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
 
-When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
+The canonical local entry points are `scripts/verify.sh quick` and `scripts/verify.sh full`. When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
 ```bash
 CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14

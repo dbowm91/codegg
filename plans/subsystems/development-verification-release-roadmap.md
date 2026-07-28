@@ -446,6 +446,6 @@ This roadmap is closed only when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | 001 — Routine CI contraction | closed | `plans/implementation/development-verification-release/001-routine-ci-contraction.md` | `plans/closure/development-verification-release/001-status.md` | — |
-| 002 — Canonical local verification contract | ready | `plans/implementation/development-verification-release/002-local-verification-contract.md` | — | — |
-| 003 — Manual crates.io release ownership | blocked | `plans/implementation/development-verification-release/003-manual-crates-io-release-ownership.md` | — | Milestone 002 closure |
+| 002 — Canonical local verification contract | closed | `plans/implementation/development-verification-release/002-local-verification-contract.md` | `plans/closure/development-verification-release/002-status.md` | — |
+| 003 — Manual crates.io release ownership | ready | `plans/implementation/development-verification-release/003-manual-crates-io-release-ownership.md` | — | — |
 | 004 — Optional integration evidence cleanup and closure | blocked | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | — | Milestone 003 closure |

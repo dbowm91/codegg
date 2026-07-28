@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 003 — Manual crates.io Release Ownership
 
-Status: blocked — Milestone 002 closure required
+Status: ready for handoff
 
 Repository baseline: `39d0720f9748cabc978ad9b0a3a32c31c6bc84d1` plus the development-verification-release planning registration series
 
