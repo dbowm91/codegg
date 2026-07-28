@@ -1,6 +1,6 @@
 # Tool Programs Milestone 015 — Final Production-Path and Independent Closure
 
-Status: ready for handoff
+Status: closing
 
 Class: final corrective implementation / authorization convergence / restart correctness / canonical persistence / process evidence / independent closure
 
@@ -633,3 +633,38 @@ After independent acceptance:
 - M015 becomes the final strict closure record for native-only Tool Programs;
 - deferred hosted execution and programmable-palette expansion remain separate, unregistered product work;
 - no additional corrective milestone should be created unless a new production-path defect is demonstrated.
+
+## 16. Implementation handoff
+
+Implementation head: `aec7284c`
+
+Implementation commits, in order:
+
+- `e22ceb06`, `bc3e8b32`, `27bbb834`
+- `2d5ab5a3`, `85d2f9a7`, `8415d81b`
+- `af8a3c5b`, `351edb85`
+- `3bfa10e1`, `de432a8c`
+- `280365de`, `143a8b59`
+- `ffcac3d3`, `b10716a0`
+- `6dc63ab6`, `73b8db6b`, `aec7284c`
+
+Observed validation at the implementation head:
+
+- `cargo fmt --all -- --check` — passed.
+- `cargo check -p codegg --all-targets` — passed; existing warnings remain non-fatal.
+- `cargo test -p codegg --test tool_program_m015_authority_contract -- --test-threads=1` — 5 passed.
+- `cargo test -p codegg --test tool_program_m015_recovery -- --test-threads=1` — 5 passed.
+- `cargo test -p codegg --test tool_program_m015_artifact_pipeline -- --test-threads=1` — 4 passed.
+- `cargo test -p codegg --test tool_program_m015_notification_recovery -- --test-threads=1` — 9 passed.
+- `cargo test -p codegg --test tool_program_m015_descendant_convergence -- --test-threads=1` — 8 passed.
+- `cargo test -p codegg --test tool_program_m015_daemon_failpoints -- --test-threads=1` — 7 passed.
+- `cargo test -p codegg tool_program -- --test-threads=1` — 56 passed.
+- `cargo test -p codegg-core tool_program -- --test-threads=1` — 156 passed.
+- `scripts/check-core-boundary.sh` — passed.
+- `python3 scripts/check_scheduler_bypass.py` — passed.
+- `python3 scripts/check_execution_ownership.py` — passed.
+- `python3 scripts/e2e/tool_program_harness.py --mode native --scenario all` — passed through the M015 real-daemon matrix.
+
+No platform-specific test was skipped. The process suite ran on macOS arm64 using the real debug `codegg core-stdio` binary. No storage schema version was added in M015, so a new pre-v35 migration fixture was not required; the existing v35 lineage columns were corrected at their SQLite insert/read production sites.
+
+Per the separation rule, this implementation handoff does not create or approve `plans/closure/tool-programs/015-status.md`. A later review commit owns independent acceptance.

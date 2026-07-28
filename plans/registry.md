@@ -31,17 +31,17 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 015 ready | M011–M014 are historical conditional implementation records; M015 owns final accepted-decision authority, canonical contract convergence, monotonic restart recovery, active-child reattachment, canonical artifacts, fail-closed delivery, complete descendant/resource convergence, real daemon failpoint evidence, and independent strict closure |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 015 closing | Implementation head `aec7284c` is awaiting the separate closure review; M011–M014 remain historical conditional implementation records |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 015 — final production-path and independent closure | ready | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | M001–M014 implementation present; normal permission/path-policy decision path, runtime Broker catalog, scheduler, SQLite session/job stores, RunStore, artifact store, managed process layer, and native daemon protocol available; no external provider required |
+| Programmatic tool execution and Tool Programs | 015 — final production-path and independent closure | closing | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | Implementation head `aec7284c` passed the required local evidence set; independent closure review remains |
 
 ## Active closure work
 
-No active closure record exists for Tool Programs. The M015 implementation pass must move the plan to `closing` and leave `plans/closure/tool-programs/015-status.md` absent. A separate reviewer creates that record after implementation.
+No active closure record exists for Tool Programs. M015 is `closing` at implementation head `aec7284c`; a separate review commit creates `plans/closure/tool-programs/015-status.md`.
 
 ## Blocked work
 

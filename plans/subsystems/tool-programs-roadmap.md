@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: closed — Milestone 013 closed; strict Tool Programs subsystem closure achieved
+Status: active — Milestone 015 closing; independent strict closure review pending
 
 Long-term references:
 
