@@ -773,11 +773,30 @@ impl JobStore for InMemoryJobStore {
         let mut visited: std::collections::HashSet<JobId> = std::collections::HashSet::new();
         visited.insert(parent_job_id.clone());
         while let Some(current) = queue.pop() {
-            for job in guard.jobs.values() {
-                if job.parent_job_id.as_ref().is_some_and(|p| p == &current)
-                    && !job.state.is_terminal()
-                    && visited.insert(job.job_id.clone())
-                {
+            let mut children = guard
+                .jobs
+                .values()
+                .filter(|job| job.parent_job_id.as_ref().is_some_and(|p| p == &current))
+                .collect::<Vec<_>>();
+            children.sort_by(|left, right| {
+                left.created_at
+                    .cmp(&right.created_at)
+                    .then_with(|| left.job_id.as_str().cmp(right.job_id.as_str()))
+            });
+            // Reverse because `queue` is a stack and callers require stable
+            // creation/id order.
+            for job in children.into_iter().rev() {
+                if !visited.insert(job.job_id.clone()) {
+                    tracing::warn!(
+                        root_job_id = %parent_job_id,
+                        current_job_id = %current,
+                        repeated_job_id = %job.job_id,
+                        "bounded malformed job-lineage cycle while finding descendants"
+                    );
+                    continue;
+                }
+                queue.push(job.job_id.clone());
+                if !job.state.is_terminal() {
                     summaries.push(JobSummary {
                         job_id: job.job_id.clone(),
                         workspace_id: job.workspace_id.clone(),
@@ -791,10 +810,14 @@ impl JobStore for InMemoryJobStore {
                         schedule_id: job.schedule_id.clone(),
                         cancel_requested_at: job.cancel_requested_at,
                     });
-                    queue.push(job.job_id.clone());
                 }
             }
         }
+        summaries.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.job_id.as_str().cmp(right.job_id.as_str()))
+        });
         Ok(summaries)
     }
 
@@ -1678,8 +1701,7 @@ impl JobStore for SqliteJobStore {
                        j.cancel_requested_at
                 FROM job j
                 WHERE j.parent_job_id = ?
-                  AND j.state NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted')
-                ORDER BY j.time_created ASC
+                ORDER BY j.time_created ASC, j.id ASC
                 "#,
             )
             .bind(&current)
@@ -1690,6 +1712,12 @@ impl JobStore for SqliteJobStore {
             for row in rows {
                 let job_id: String = row.get("id");
                 if !visited.insert(job_id.clone()) {
+                    tracing::warn!(
+                        root_job_id = %parent_job_id,
+                        current_job_id = %current,
+                        repeated_job_id = %job_id,
+                        "bounded malformed job-lineage cycle while finding descendants"
+                    );
                     continue;
                 }
                 let workspace_id: String = row.get("workspace_id");
@@ -1702,25 +1730,35 @@ impl JobStore for SqliteJobStore {
                 let time_updated: i64 = row.get("time_updated");
                 let schedule_id: Option<String> = row.get("schedule_id");
                 let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
-                summaries.push(JobSummary {
-                    job_id: JobId::new_unchecked(job_id.clone()),
-                    workspace_id: WorkspaceId::new_unchecked(workspace_id),
-                    kind: JobKind::from_str_lossy(&kind),
-                    priority: priority_from_str(&priority),
-                    state: JobState::from_str_lossy(&state),
-                    attempt_count: attempt_count as u32,
-                    current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
-                    created_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_created)
-                        .unwrap_or_else(Utc::now),
-                    updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
-                        .unwrap_or_else(Utc::now),
-                    schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
-                    cancel_requested_at: cancel_requested_at
-                        .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
-                });
                 queue.push(job_id);
+                let state = JobState::from_str_lossy(&state);
+                if !state.is_terminal() {
+                    summaries.push(JobSummary {
+                        job_id: JobId::new_unchecked(
+                            queue.last().expect("just pushed descendant").clone(),
+                        ),
+                        workspace_id: WorkspaceId::new_unchecked(workspace_id),
+                        kind: JobKind::from_str_lossy(&kind),
+                        priority: priority_from_str(&priority),
+                        state,
+                        attempt_count: attempt_count as u32,
+                        current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
+                        created_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_created)
+                            .unwrap_or_else(Utc::now),
+                        updated_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_updated)
+                            .unwrap_or_else(Utc::now),
+                        schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
+                        cancel_requested_at: cancel_requested_at
+                            .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
+                    });
+                }
             }
         }
+        summaries.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.job_id.as_str().cmp(right.job_id.as_str()))
+        });
         Ok(summaries)
     }
 
