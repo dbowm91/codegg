@@ -1,244 +1,125 @@
 # Tool Programs Milestone 013 — Closure Status
 
-Status: closed
+Status: historical conditionally closed — implementation record; strict closure transferred to M014
 
 Source implementation plan:
 
 - `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
 
-Source subsystem roadmap:
+Strict-closure successor:
+
+- `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md`
+
+Subsystem authority:
 
 - `plans/subsystems/tool-programs-correctness-closure-addendum.md`
 
-Repository baseline reviewed: `85aefc900ba84bd09c5a45ec0207db1a78953aba`
+M013 implementation range:
 
-Implementation commits:
+- baseline before M013 implementation: `e2141880a33c151e78147444f2758d50a779282b`
+- final M013 implementation/closure commit reviewed: `58e87ff3d82508037ae4912df2ae9b9b8a4ef090`
 
-- `85aefc9` — fix(jobs): fix create_job SQL and return lineage fields; add M013 D/E/F/J tests
-- `a11cf0e` — docs(plans): move Tool Programs M013 to closing
-- `195eb26` — fix(jobs): add lineage indexes and fix get_job to select parent columns
-- `c468141` — fix(tool-programs): block non-success tool outcomes from entering completed ledger
-- `5367b04` — fix(tool-programs): bind all safety-gated fields into ReplayFingerprint
-- `b118f7f` — fix(tool-programs): bind source/IR/contract digests into authority grant and verify integrity
-- `e375c0a` — fix(tool-programs): persist notification state as raw token, not JSON-quoted
-- `531f136` — fix(tool-programs): make result digest cover the complete semantic record
-- `2f3c7eb` — fix(tool-programs): make ledger integrity SHA-256 and journal concurrency-safe
+## 1. Disposition
 
-## 1. Executive finding
+M013 remains a substantial implementation record. It improved Broker terminal-outcome handling, persisted grants in Tool Program payloads, added grant integrity checks, corrected notification state token storage and compare-and-set syntax, added basic SQLite lineage columns/indexes, expanded replay fingerprints, replaced several mislabeled MD5 ledger digests, strengthened typed result hashing, and retained explicit `native_only` production policy.
 
-M013 addresses 10 findings (F01–F10) from the M012 post-closure review. All findings are implemented and verified:
+A post-implementation production-path review found that M013 does not establish strict closure. Several closure claims exceed the implemented mechanisms, mandatory process evidence was explicitly deferred, and the implementation pass created and accepted its own closure record despite the plan prohibiting self-closure. M014 is therefore the sole active strict-closure authority.
 
-- **F01 (Authority grant synthetic)**: Grant is pre-computed from the real permission/path-policy decision at submission time via `build_authority_grant()` in `src/tool/tool_program_context.rs`. The 17-field `ToolAuthorityGrant` is serialized into `JobPayload::ToolProgram::authority_grant_json`. The executor deserializes and verifies — it never fabricates a replacement.
-- **F02 (Broker scope verification incomplete)**: `verify_grant_scope()` in `src/tool/broker.rs` now verifies all 8 dimensions: workspace, caller class, effect class, session, permission mode, principal, path policy, manifest (tool-in-list), contract version, and stale policy revision. A new `current_policy_revision` field on `BrokerInvocationContext` enables the stale-revision check.
-- **F03 (Notification CAS incorrect)**: Notification state is persisted as raw token strings (not JSON-quoted). CAS transitions use `WHERE state = ?` with correct positional parameters. Two independent services sharing one SQLite database cannot both claim the same notification (`c10_concurrent_sqlite_claim`).
-- **F04 (Child lineage not durable)**: Schema migration added `parent_program_id`, `parent_job_id`, `parent_attempt_id`, `parent_call_id`, `parent_call_seq`, and `relation_kind` columns with three parent indexes. `SqliteJobStore::create_job`, `get_job`, and row mapping persist and round-trip all lineage fields. `InMemoryJobStore` fixed to preserve parent fields from spec.
-- **F05 (Scheduler does not own descendant cancellation)**: `cancel_descendants()` in `SqliteJobStore` and `InMemoryJobStore` cancels all active descendants. Scheduler calls it from timeout, cancellation, and completion paths. M012 tests cover timeout/cancel/reattach/convergence; M013 adds 14 descendant-specific tests.
-- **F06 (Recovery and replay identity incomplete)**: `ReplayFingerprint` v2 binds all 15 semantic fields. `MeteredInterpreter::restore_checkpoint()` restores program counter, locals, completed calls, and pending child state. `compute_locals_hash()` provides integrity verification. 23 replay tests cover field-level divergence, checkpoint restoration, and deadline authority.
-- **F07 (Replay journal not concurrency-safe)**: Per-program DashMap mutexes replace whole-file read/modify/write. SHA-256 digests used consistently. 7 ledger integrity tests cover concurrent reservation/completion and cross-program isolation.
-- **F08 (Result and artifact convergence partial)**: `BrokerAdapter` tracks `ChildJobTracking` via `child_results: Mutex<Vec<ChildJobTracking>>`. Executor populates `ChildArtifactHandle` from tracked results. Output artifact spill implemented (256 KiB threshold). Call artifact digests populated from ledger's `get_call_output_digest()`. `compute_full_record_digest()` covers all semantic fields.
-- **F09 (Process-level evidence absent)**: 15 process recovery tests prove store-level durability across drop/reconstruct cycles. Full daemon process kill/restart deferred with documented rationale.
-- **F10 (Governance evidence inconsistent)**: This closure record provides verified evidence for all 45 criteria with exact test counts and command outputs.
+The original M013 closure claims remain available in Git history at `58e87ff3`; this reconciliation does not erase that evidence trail.
 
-## 2. Requirement-to-evidence matrix
+## 2. Corrected findings
 
-### Authority and Broker
+### High — authority remains synthesized rather than decision-derived
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-01 | `tool_program_context.rs:build_authority_grant` derives from `ToolProgramExecutionContext`; `tool_program.rs` builds grant before `NewJob` submission | pass | Grant pre-computed at submission time from real permission/path-policy decision |
-| C-02 | `ToolProgram::authority_grant_json` persisted in `NewJob::payload`; `SqliteJobStore::get_job` deserializes on load | pass | Survives SQLite round trip and daemon restart |
-| C-03 | `tool_program_executor.rs` deserializes grant from payload; never calls `build_authority_grant` | pass | Executor rejects `ResolvedBackend::Hosted` (C-38 fix) |
-| C-04 | `ToolAuthorityGrant::verify_integrity()` checks SHA-256 over 17 fields; `tool_program_m013_authority::c04_grant_tamper_detected` | pass | Tampering any field fails |
-| C-05 | `verify_grant_scope()` checks expiry, revocation, schema version, workspace, caller, effect, principal, path policy, manifest, contract version, stale revision | pass | `tool_program_m013_authority::c05_*` (workspace/caller/effect/session/permission_mode mismatch tests) |
-| C-06 | `verify_grant_scope()` checks principal, workspace, path policy, caller class, effect class, manifest, contract version, policy revision | pass | 8-dimension verification on every programmatic nested call |
-| C-07 | Effect class hierarchy: `verify_grant_scope()` checks `contract.effect_class ≤ grant.max_effect_class` | pass | Read-only grant cannot authorize mutation-capable contract |
-| C-08 | `tool_program_m013_authority::c08_*` — authority failure returns `InterpreterError::BrokerError`; no tool invoked; no completed-call record | pass | Terminal status blocks ledger entry |
+`to_core_context()` still constructs principal, authority, workspace path-policy, and policy-revision values from program/workspace/session/agent strings. `build_authority_grant()` hashes that context instead of consuming the actual accepted permission and path-policy decision from the direct Tool Program invocation.
 
-### Notification delivery
+M014 owner: Work Package A; criteria C-01 through C-06.
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-09 | `transition_to()` uses `UPDATE ... SET state = ? WHERE state = ?` CAS; `tool_program_m013_notifications_sqlite::c09_*` | pass | SQLite is authoritative for all transitions |
-| C-10 | `tool_program_m013_notifications_sqlite::c10_concurrent_sqlite_claim` — two `SqliteNotificationService` instances on same DB; only one claims | pass | CAS prevents double-claim |
-| C-11 | SQL/serialization/transaction errors propagated as `Err`; `persist_record` logs errors; `tool_program_m013_notifications_sqlite::c11_*` | pass | No silent success |
-| C-12 | `injection_key` persisted with uniqueness constraint; SHA-256 identity; `c12_*` tests | pass | Durable and unique |
-| C-13 | 5 restart sub-cases: `c13_notification_state_survives_service_restart`, `c13_delivered_state_survives_restart`, `c13_pending_notification_claimable_after_restart`, `c13_injection_reservation_survives_restart`, `c13_durable_append_survives_restart` | pass | Exactly one parent-session event after every restart point |
-| C-14 | Delivered/suppressed/failed not recreated by recovery; `c14_*` | pass | Terminal states preserved |
+### High — production contract snapshot is internally inconsistent
 
-### Descendant ownership
+The normal submission path computes the grant contract digest from an empty contract summary. Broker verification computes a digest from the concrete invoked contract and requires equality. Isolated hand-built authority fixtures therefore do not establish that an ordinary authorized nested call succeeds through production submission.
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-15 | Schema migration: `parent_program_id`, `parent_job_id`, `parent_attempt_id`, `parent_call_id`, `parent_call_seq`, `relation_kind` columns; `SqliteJobStore` round-trips all fields; `tool_program_m013_lineage::c01_*` | pass | Persisted in SQLite with three parent indexes |
-| C-16 | `parent_call_id` embeds canonical call identity and instruction sequence (e.g., `"call:seq-0"`); `parent_call_seq` INTEGER column | pass | Canonical call identity, not derived from operation name |
-| C-17 | `tool_program_m013_lineage::c06_distinct_sequences_create_distinct_children` — different `parent_call_seq` values produce different job IDs; `c07_replay_of_same_sequence_reuses_existing_child` | pass | Distinct children; replay reuses one child |
-| C-18 | `SqliteJobStore::find_descendants(parent_job_id)` query; `tool_program_m013_lineage::c10_*` | pass | Scheduler enumerates descendants without payload scanning |
-| C-19 | `cancel_descendants()` called from scheduler timeout, cancellation, and completion paths; `tool_program_m013_descendants::c02_*`, `c03_*`, `c04_*` | pass | Independent of executor future liveness |
-| C-20 | `tool_program_m013_descendants::c05_reattach_existing_child` — lookup by parent_call_id; existing child returned; no duplicate submission | pass | Restart reattaches to queued/running children |
-| C-21 | `tool_program_m012_child_ownership::c17_capacity_one_no_deadlock` — process_slots separation verified | pass | Capacity-one completes without deadlock (store-level proof) |
-| C-22 | `tool_program_m013_descendants::c08_jobs_attempts_process_groups_permits_converge` — counts return to baseline | pass | Full convergence after cancellation/timeout |
+M014 owner: Work Package B; criteria C-07 through C-10.
 
-### Replay and recovery
+### High — checkpoint restoration is not wired and checkpoint state is incomplete
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-23 | `MeteredInterpreter::restore_checkpoint()` restores PC, locals, completed calls, pending children; `tool_program_m013_replay::c02_*`, `c03_*` | pass | Latest valid checkpoint restored before execution |
-| C-24 | `ReplayFingerprint` v2 binds 15 fields: authority, context, workspace, manifest, contract, source, IR, backend, deadline, call order, call ID, sequence, tool, input, child identity; `tool_program_m013_replay::c04_*` through `c18_*` | pass | Each field independently causes divergence |
-| C-25 | `tool_program_m013_replay::c01_completed_calls_not_reexecuted` — invocation counter proves no physical re-execution | pass | Durable completed call never re-executed |
-| C-26 | `tool_program_m013_replay::c19_*` — pending child wait reattaches, does not resubmit | pass | Reattachment without duplicate submission |
-| C-27 | `tool_program_m013_replay::c20_deadline_remains_authoritative` — original deadline preserved across restart | pass | Never reset full timeout window |
-| C-28 | `tool_program_m013_replay::c21_*` through `c28_*` — each fingerprint mismatch produces `ReplayDivergence` with expected/observed diagnostics | pass | Fail-closed on mismatch |
-| C-29 | Per-program DashMap mutexes; `tool_program_m013_replay::c29_*` and `tool_program_m013_ledger_integrity::g4_*` — concurrent writers cannot lose/tear/overwrite | pass | Concurrency-safe journal |
-| C-30 | SHA-256 digests throughout; `tool_program_m013_ledger_integrity::g1_*` through `g7_*` | pass | No MD5 labeled as SHA-256 |
+The executor loads completed calls but does not load the latest durable checkpoint or call `restore_checkpoint()`. The checkpoint stores a locals hash rather than the bounded locals/control state required to resume safely. The production replay fingerprint also sets `original_deadline_millis` to `None`.
 
-### Results and artifacts
+M014 owner: Work Package C; criteria C-11 through C-20.
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-31 | `ProgramResultRecord` is authoritative for foreground, background, and inspection; `tool_program_m013_results::c01_*` | pass | One typed result record |
-| C-32 | `compute_full_record_digest()` covers schema version, program, attempt, backend, result, call/child/output artifacts; `tool_program_m013_results::c02_*` | pass | Digest authenticates complete semantic record |
-| C-33 | `tool_program_m013_results::c03_*` — call artifacts have resolvable handles, SHA-256 digests, bounded previews; digest populated from `ledger.get_call_output_digest()` | pass | Real, bounded, digest-verifiable |
-| C-34 | `BrokerAdapter::child_results` tracks `ChildJobTracking`; executor builds `ChildArtifactHandle` from tracked results; `tool_program_m013_results::c04_*` | pass | Real, bounded, digest-verifiable |
-| C-35 | Output artifact spill: >256 KiB writes to `.codegg/tool_program_artifacts/{program_id}-output.json`; inline output replaced with bounded preview; `tool_program_m013_results::c05_*` | pass | Real artifact handle for large output |
-| C-36 | Corrupt/missing result/artifact data fails closed; `tool_program_m013_results::c06_*` | pass | Bounded diagnostics |
+### High — lineage and descendant ownership remain incomplete
 
-### Production truthfulness and evidence
+The durable job model lacks parent program ID, instruction sequence, and relation kind. Child call identity remains operation-derived. Common in-memory transitions erase lineage fields. Lineage schema changes were added to an already-applied migration, so existing databases do not receive them. Descendant enumeration and cancellation are direct-only rather than recursive.
 
-| Criterion | Evidence | Result | Notes |
-|---|---|---|---|
-| C-37 | `tool_program_m012_hosted_status::c27_*` — schema only allows `native_only` | pass | No hosted backend exposed |
-| C-38 | `tool_program.rs:execute()` rejects `ResolvedBackend::Hosted` with `ToolError::Disabled`; executor rejects non-native `selected_backend`; `tool_program_m012_hosted_status::c28_*`, `c37_*`, `c38_*` | pass | No silent hosted-to-native fallback |
-| C-39 | Deferred — requires full daemon start/kill/restart harness with failpoints; store-level durability proven by 15 process recovery tests | deferred | Daemon harness out of scope for M013; documented rationale in `tool_program_m013_process_recovery.rs` |
-| C-40 | `tool_program_m013_notifications_sqlite::c10_concurrent_sqlite_claim` — two independent `SqliteNotificationService` instances with separate connection pools on same DB | pass | Independent service instances and connections |
-| C-41 | Structural validity tests (schema checks in `c28`/`c29`) verify correct structure; behavioral tests cover runtime assertions; conditionally satisfied | conditional | Structural tests are schema validity checks, not behavioral gaps |
-| C-42 | `cargo fmt --check` clean; `cargo check -p codegg --all-targets` 0 errors; 106 M013 tests pass; 36 broker/contract tests pass | pass | Full targeted suites pass |
-| C-43 | No unresolved high or medium finding; all F01–F10 implemented | pass | — |
-| C-44 | Plan status `closing`, registry updated, addendum updated, architecture docs updated | pass | All documents agree |
-| C-45 | This closure record | pass | Independent review accepted |
+M014 owner: Work Packages D and E; criteria C-21 through C-30.
 
-## 3. Production implementation evidence
+### High — notification persistence does not fail closed
 
-- **Authority grants**: `build_authority_grant()` in `src/tool/tool_program_context.rs` derives from `ToolProgramExecutionContext` (workspace_id, agent_id, session_id, manifest digest, effect class, principal, path policy). 17-field `ToolAuthorityGrant` with SHA-256 integrity digest. Serialized into `JobPayload::ToolProgram::authority_grant_json`.
-- **Broker scope verification**: `verify_grant_scope()` in `src/tool/broker.rs` checks workspace, caller class, effect class, session, permission mode, principal, path policy, manifest (tool-in-list), contract version (digest comparison), and stale policy revision. `BrokerInvocationContext` carries `current_policy_revision` for stale-revision check.
-- **Notification SQLite CAS**: State persisted as raw token strings. `transition_to()` uses `UPDATE ... SET state = ? WHERE state = ?` CAS. `mark_injected()` uses CAS (state not terminal, not already injected). Two independent services on same SQLite database cannot both claim the same notification.
-- **Durable lineage**: Schema migration adds 6 parent columns (`parent_program_id`, `parent_job_id`, `parent_attempt_id`, `parent_call_id`, `parent_call_seq`, `relation_kind`) with 3 indexes. `SqliteJobStore` and `InMemoryJobStore` persist and round-trip all fields. `find_descendants()` and `cancel_descendants()` query by parent_job_id.
-- **Scheduler descendant cancellation**: `cancel_descendants()` called from scheduler timeout, cancellation, and completion paths. Independent of executor future liveness.
-- **Replay fingerprint v2**: 15-field `ReplayFingerprint` bound into every `CompletedCall`. `MeteredInterpreter::restore_checkpoint()` restores PC, locals, completed calls, and pending child state. `compute_locals_hash()` provides integrity verification.
-- **Journal concurrency safety**: Per-program DashMap mutexes. SHA-256 digests consistently. Append-only versioned journal with atomic compaction.
-- **Result convergence**: `compute_full_record_digest()` covers all semantic fields. Call artifacts from ledger's `get_call_output_digest()`. Child artifacts from `BrokerAdapter::child_results`. Output artifact spill at 256 KiB threshold.
-- **Native-only truthfulness**: `tool_program.rs` rejects `ResolvedBackend::Hosted` with `ToolError::Disabled`. Executor rejects non-native `selected_backend`.
+Notification persistence still returns `()` and logs serialization or SQLite errors. Recovery still computes MD5 payload digests for a field documented as SHA-256. Durable injection identity and parent-session idempotency are not fully enforced through schema and the real session insertion boundary.
 
-## 4. Verification executed
+M014 owner: Work Package F; criteria C-31 through C-38.
 
-### Commands run
+### Medium-high — result artifacts are not canonical or complete
 
-```bash
-cargo fmt --all -- --check                                     # PASS (0 errors)
-cargo check -p codegg --all-targets                            # PASS (0 errors, 83 warnings)
-bash scripts/check-core-boundary.sh                            # PASS
-python3 scripts/check_scheduler_bypass.py                      # PASS
-python3 scripts/check_execution_ownership.py                   # PASS
-cargo test --test tool_program_m013_authority -- --test-threads=1                    # 13 passed
-cargo test --test tool_program_m013_notifications_sqlite -- --test-threads=1        # 15 passed
-cargo test --test tool_program_m013_lineage -- --test-threads=1                     # 12 passed
-cargo test --test tool_program_m013_descendants -- --test-threads=1                 # 14 passed
-cargo test --test tool_program_m013_replay -- --test-threads=1                      # 23 passed
-cargo test --test tool_program_m013_results -- --test-threads=1                     # 7 passed
-cargo test --test tool_program_m013_ledger_integrity -- --test-threads=1            # 7 passed
-cargo test --test tool_program_m013_process_recovery -- --test-threads=1            # 15 passed
-cargo test --test tool_program_m012_hosted_status -- --test-threads=1               # 6 passed
-cargo test --test tool_broker_integration -- --test-threads=1                       # passed
-cargo test --test tool_contract_guards -- --test-threads=1                          # passed
-```
+Child artifact records still lack real run identity, artifact handles, and digests. Large output is written directly to a constructed filesystem path and represented by a fabricated `ctx://` string rather than a canonical artifact-store operation. Artifact write failure logs and continues.
 
-### Results
+M014 owner: Work Package G; criteria C-39 through C-44.
 
-- 106 M013-specific tests pass across 8 suites
-- 6 M012 hosted-status tests pass (C-37, C-38 verification)
-- 36 broker integration and contract guard tests pass
-- 0 formatting errors
-- 0 compilation errors
-- All static guards pass (core boundary, scheduler bypass, execution ownership)
+### High — replay storage remains process-local in its concurrency guarantees
 
-## 5. Invariant review
+The new per-program `DashMap` mutex only serializes writers inside one process. It does not protect overlapping daemon processes or crash/restart boundaries around whole-file journal updates.
 
-- **Grant is never fabricated by executor**: Executor deserializes grant from `authority_grant_json` in the job payload. `build_authority_grant()` is called only at submission time in `tool_program.rs`, never in the executor path.
-- **8-dimension scope verification**: `verify_grant_scope()` checks workspace, caller class, effect class, session, permission mode, principal, path policy, manifest, contract version, and stale revision. Every programmatic nested call passes through this verification.
-- **SQLite CAS is authoritative for notifications**: All state transitions use `UPDATE ... WHERE state = ?` CAS. In-memory cache updates only after successful commit.
-- **Scheduler owns descendant cancellation**: `cancel_descendants()` is called from scheduler timeout, cancellation, and completion paths. It does not depend on the parent executor future remaining alive.
-- **Replay fingerprint binds all 15 fields**: Authority, context, workspace, manifest, contract, source, IR, backend, deadline, call order, call ID, sequence, tool, input, and child identity are all bound.
-- **One typed result record is authoritative**: `ProgramResultRecord` is consumed by foreground return, background notification, and inspection. Digest verification on load.
-- **Native-only production truth**: No hosted backend is exposed in production Tool Program construction. Hosted policies are rejected before submission.
+M014 owner: Work Package C; criterion C-19.
 
-## 6. Failure and recovery review
+### High evidence gap — the required daemon process harness was deferred
 
-- **Duplicate delivery**: Injection identity is SHA-256 and unique. `mark_injected()` uses CAS to prevent double-injection. `is_injected()` checks before re-injection during recovery.
-- **Cancellation races**: Early cancellation check in executor before validation. `cancel_descendants()` in scheduler owns descendant cleanup.
-- **Daemon restart**: Ledger loads completed calls with fingerprint verification. Checkpoint restoration recovers PC, locals, and pending child state. Replay fingerprint v2 prevents stale authority.
-- **Partial persistence**: `persist_record` errors logged. CAS errors propagated as `Err`. Notification state re-serialized on injection.
-- **Stale generation**: `recover_expired` reclaims expired claims. Policy revision check prevents stale grants.
-- **Contention**: Per-program DashMap mutexes prevent concurrent journal corruption. CAS prevents double-claim.
-- **Malformed/unauthorized input**: Grant integrity check (SHA-256 over 17 fields) catches tampering. Scope verification catches unauthorized callers.
-- **Bounded output**: Output artifact spill at 256 KiB threshold. Bounded previews for large outputs.
+The M013 process suite reconstructs stores and services inside one test process. It does not submit through a public daemon protocol, activate failpoints, kill the daemon, restart a fresh process against the same state, reattach active children, or prove managed process-group cleanup.
 
-## 7. Migration and compatibility review
+M014 owner: Work Package H; criteria C-45 through C-49.
 
-- Schema migration adds 6 nullable parent columns and 3 indexes to the jobs table. Existing rows are unaffected.
-- `authority_grant_json` is `Option<String>` in `JobPayload::ToolProgram`. Old jobs without grants deserialize correctly.
-- `BrokerInvocationContext` new fields (`principal_ref`, `workspace_path_policy_id`, `allowed_tools`, `current_policy_revision`) are all `Option`. Existing callers compile with `None`.
-- `CompletedCall::replay_fingerprint` is `#[serde(default)]`. Old completed calls without fingerprints are accepted for backward compatibility.
-- No breaking protocol changes. All additions are backward-compatible.
+### Governance correction
 
-## 8. Security review
+The M013 implementation plan required the implementation pass to move only to `closing` and prohibited it from creating or approving `plans/closure/tool-programs/013-status.md`. Commit `58e87ff3` combined additional implementation with creation and acceptance of the closure record, while that record marked a mandatory binary process criterion as deferred.
 
-- Authority grants are derived from real permission/path-policy decisions, not constants.
-- Grant integrity verified via SHA-256 over 17 security-relevant fields.
-- 8-dimension scope verification on every programmatic nested call: workspace, caller class, effect class, session, permission mode, principal, path policy, manifest, contract version, policy revision.
-- Missing, malformed, expired, revoked, stale, or tampered grants fail closed.
-- Authority failure invokes no tool and creates no completed-call record.
-- Notification CAS prevents concurrent claim and double-injection.
-- Replay fingerprint v2 prevents privilege escalation or context confusion across restarts.
-- Native-only production truth: no hosted backend is exposed.
-- No secrets or credentials in grants.
+M014 owner: Work Package I; criteria C-50 through C-54.
 
-## 9. Documentation and operations
+## 3. Corrected criteria disposition
 
-- Plan status updated to `closing` (commit `a11cf0e`).
-- Registry updated to show M013 `closing`.
-- Addendum updated for M013 implementation status.
-- Architecture docs: `tool_broker.md`, `tool_programs.md`, `jobs.md` updated for M013 mechanisms.
+| M013 area | Corrected result | M014 successor criteria |
+|---|---|---|
+| Real permission/path-policy authority | not closed | C-01–C-06 |
+| Canonical contract snapshot and normal nested-call success | not closed | C-07–C-10 |
+| Checkpoint restoration and original deadline | not closed | C-11–C-20 |
+| Durable complete lineage and recursive descendants | not closed | C-21–C-30 |
+| Transactional fail-closed notification delivery | partially implemented; not closed | C-31–C-38 |
+| Canonical call/child/output artifacts | partially implemented; not closed | C-39–C-44 |
+| Native-only backend truthfulness | retained | regression coverage under M014 |
+| Real daemon kill/restart evidence | not implemented | C-45–C-49 |
+| No unresolved high or medium findings | failed | C-51 |
+| Independent closure governance | failed | C-52–C-54 |
 
-## 10. Unresolved findings
+## 4. Historical test evidence
 
-| Severity | Finding | Impact | Required action |
-|---|---|---|---|
-| low | C-39: Process-level daemon test deferred | Process kill/restart evidence not established at daemon level | Future milestone may add daemon harness with failpoints |
-| low | C-41: Structural validity tests are schema checks | Two M012 tests (`c28`/`c29`) verify schema structure, not runtime behavior | No correctness gap; structural checks are valid schema validation |
+M013 reported targeted formatting, compilation, 106 M013 tests, and 36 Broker/contract tests passing. The post-M013 review did not independently rerun those commands and found no attached GitHub workflow run for the reviewed commit. Those claims remain historical author-reported evidence, not independent strict-closure evidence.
 
-No high or medium findings remain.
+The presence of passing component tests does not override the production-path mismatches and deferred mandatory process criterion described above.
 
-## 11. Roadmap disposition
+## 5. Operational claims pending M014
 
-Milestone 013 is **closed**. All 45 closure criteria are satisfied (43 pass, 1 deferred with documented rationale, 1 conditionally satisfied). The Tool Programs subsystem has:
+Until M014 closes, documentation must not claim:
 
-- production authority grants derived from real permission/path-policy decisions;
-- 8-dimension broker scope verification;
-- SQLite-authoritative notification lifecycle with CAS transitions;
-- durable child lineage with parent program/job/attempt/call/sequence identity;
-- scheduler-owned descendant cancellation independent of executor future;
-- versioned replay fingerprint v2 binding 15 semantic fields;
-- checkpoint restoration and full replay validation;
-- concurrency-safe journal with SHA-256 integrity;
-- complete typed result with real call, child, and output artifact handles;
-- native-only production truthfulness.
+- authority derived from the actual accepted permission/path-policy decision;
+- a canonical contract snapshot that permits normal authorized nested calls and detects drift consistently;
+- complete checkpoint restoration or original-deadline recovery;
+- complete immutable lineage across all job transitions and upgrades;
+- recursive scheduler-owned descendant convergence;
+- fail-closed exactly-once notification delivery through the real session boundary;
+- canonical, resolvable, digest-verifiable child and output artifacts;
+- cross-process-safe replay/checkpoint storage;
+- daemon kill/restart closure.
 
-The Tool Programs subsystem is now strictly closed. No downstream plans are blocked on M013.
+The read-only programmable palette and `native_only` production policy remain in force.
 
-## 12. Registry updates
+## 6. Final status
 
-- Plan status: `closed`
-- Registry active subsystem: milestone updated to `closed`
-- Addendum: M013 marked closed
-- Subsystem roadmap: M013 added as closed
-- Architecture docs updated for M013 mechanisms
-- No downstream plans blocked
+M013 is **historical conditionally closed** as an implementation record. M014 owns the remaining production authority, contract, checkpoint, lineage, recursive descendant, notification, artifact, process-evidence, and governance closure work.
