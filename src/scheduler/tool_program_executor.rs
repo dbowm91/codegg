@@ -1451,7 +1451,10 @@ impl JobExecutor for ToolProgramExecutor {
         {
             return ExecutorCompletion {
                 status: ExecutorStatus::Failed,
-                summary: "runtime contract snapshot drift detected".into(),
+                summary: format!(
+                    "runtime contract snapshot drift detected (grant={}, frozen={:?}, current={:?})",
+                    grant.contract_digest, frozen_digest, current_digest
+                ),
                 run_id: None,
                 metrics: ExecutorMetrics {
                     elapsed_ms: started.elapsed().as_millis() as u64,
@@ -1899,6 +1902,15 @@ mod tests {
 
     fn sample_tool_program_job(program_id: &str, source_digest: &str) -> JobRecord {
         let now = chrono::Utc::now();
+        let registry = crate::tool::ToolRegistry::with_defaults();
+        let broker = crate::tool::ToolBroker::new(&registry);
+        let tools = vec!["read".to_string()];
+        let contracts =
+            crate::tool::tool_program_context::resolve_contract_snapshot(&broker, &tools).unwrap();
+        let contract_json =
+            crate::tool::tool_program_context::canonical_contract_json(&contracts).unwrap();
+        let contract_digest =
+            crate::tool::tool_program_context::canonical_contract_digest(&contracts).unwrap();
         let execution_context = codegg_core::jobs::ToolProgramExecutionContext {
             workspace_path_policy_id: "ws-1".into(),
             principal_ref: Some("test-principal".into()),
@@ -1909,22 +1921,22 @@ mod tests {
             caller_class: Some("agent".into()),
             maximum_effect_class: Some("read_only".into()),
             decision_issued_at: Some(chrono::Utc::now().timestamp_millis()),
-            contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+            contract_snapshot_json: contract_json,
             ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-1", "test")
         };
         let authority_digest = crate::tool::tool_program_context::authority_digest(
             &execution_context,
-            &[],
+            &tools,
             source_digest,
         );
         let authority_grant = crate::tool::tool_program_context::build_authority_grant(
             Some(&execution_context),
             "ws-1",
             program_id,
-            &[],
+            &tools,
             source_digest,
             "",
-            "",
+            &contract_digest,
         )
         .unwrap();
         let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
@@ -1947,7 +1959,7 @@ mod tests {
                 execution_mode: "foreground".to_string(),
                 source_ref: Some(format!("{}.py", source_digest)),
                 source_length: Some(0),
-                allowed_tools: Vec::new(),
+                allowed_tools: tools,
                 authority_grant_json: Some(authority_grant_json),
             },
             resource_request: ResourceRequest::default(),
@@ -2076,12 +2088,12 @@ mod tests {
         use crate::scheduler::permit::ResourcePermitGuard;
         use codegg_core::jobs::AttemptId;
         use codegg_core::workspace::WorkspaceId;
+        let workspace = tempfile::tempdir().unwrap();
         let fixture_source = "emit({\"status\": \"ok\", \"program_id\": \"test_prog\"})\n";
-        let source_ref = crate::tool::tool_program_source::ToolProgramSourceStore::new(
-            &std::env::current_dir().unwrap(),
-        )
-        .persist(fixture_source)
-        .unwrap();
+        let source_ref =
+            crate::tool::tool_program_source::ToolProgramSourceStore::new(workspace.path())
+                .persist(fixture_source)
+                .unwrap();
 
         let exec = ToolProgramExecutor::default();
         let source = codegg_core::tool_program::ProgramStore::digest_source(fixture_source);
@@ -2102,14 +2114,19 @@ mod tests {
             attempt_id: AttemptId::new_unchecked("att-1"),
             daemon_generation: codegg_core::jobs::DaemonGeneration::new_unchecked("gen-1"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
-            workspace_root: std::env::current_dir().unwrap(),
+            workspace_root: workspace.path().to_path_buf(),
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(NoopProgressSink),
             resources: ResourcePermitGuard::new_orphan(Default::default()),
         };
 
         let result = exec.execute(ctx).await;
-        assert_eq!(result.status, ExecutorStatus::Completed);
+        assert_eq!(
+            result.status,
+            ExecutorStatus::Completed,
+            "{}",
+            result.summary
+        );
         assert!(result.summary.contains("Completed"));
     }
 
