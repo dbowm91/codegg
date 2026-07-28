@@ -1159,6 +1159,39 @@ idempotent: duplicate program_ids are ignored. Each recovered
 notification gets a computed `payload_digest` and a three-way
 `classification`.
 
+#### Recovery State Machine (M017)
+
+The `inject_recoverable_notifications` loop drives Pending and
+Claimed notifications to Delivered following a strict state machine.
+Every recovery branch uses `expected_notification_event()` to
+reconstruct the expected event from durable notification data, and
+`EventStore::confirm_existing()` to semantically verify existing
+events before any state transition.
+
+**Already-injected** (`injected_event_id` is set):
+1. Verify the stored `injected_event_id` matches the stable
+   `tp-event:{injection_key}` ID.
+2. Confirm the durable event semantically via `confirm_existing`.
+3. Acknowledge only after both checks pass.
+
+**Claimed** (not injected):
+1. Reconstruct expected event via `expected_notification_event`.
+2. `confirm_existing(expected)`:
+   - `SemanticMatch` → `mark_injected` → `acknowledge`.
+   - `Absent` → leave for lease expiry (do not insert).
+   - Error/collision → report; do not mark or acknowledge.
+
+**Pending**:
+1. Claim via CAS.
+2. Reconstruct expected event, `append_idempotent`.
+3. `mark_injected`, `acknowledge`.
+
+Event existence alone (`has_event`) is never used for semantic
+confirmation. Query failures are propagated as typed errors, not
+converted to absence. `EventStore::confirm_existing()` returns
+`Absent` only when the query succeeds and no row exists; any
+deserialization or semantic mismatch is a typed error.
+
 ### AgentLoop Integration
 
 At the start of each turn, the AgentLoop checks for pending
@@ -1203,6 +1236,9 @@ background programs are running.
    logically running or cause repeated model turns.
 8. Frontend renders projections and never owns program state or
    terminal-delivery truth.
+9. Recovery confirms existing events semantically before any
+   notification state transition; event existence alone is
+   insufficient (M017).
 
 ## M009: OpenAI Responses Hosted-Program Adapter
 

@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 017 ready for implementation
+Status: closing — Milestone 017 implementation landed, awaiting independent reviewer
 
 Canonical subsystem roadmap:
 
@@ -150,7 +150,7 @@ The implementation pass must leave that closure record absent.
 | 014 | conditionally closed, historical | Checkpoint loading, v35 lineage, result integrity, native-only enforcement, and other improvements retained; strict closure transferred forward |
 | 015 | conditionally closed, historical | Broad production-path closure retained; notification reconstruction defect transferred forward |
 | 016 | conditionally closed, historical | Semantic event equality and restart fixture retained; recovery confirmation/evidence defects transferred to M017 |
-| 017 | ready | Sole active handoff for semantic confirmation, typed errors, direct durable evidence, document convergence, and independent final closure |
+| 017 | closing | Sole active handoff for semantic confirmation, typed errors, direct durable evidence, document convergence, and independent final closure |
 
 ## 7. Completion definition
 

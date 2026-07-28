@@ -31,17 +31,15 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 ready | M016 is conditionally closed at implementation `f4101b9`; M017 owns semantic confirmation before notification state transitions, typed event-store error propagation, direct three-process durable evidence, roadmap convergence, and independent strict closure |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Status | Implementation plan | Dependencies |
-|---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence closure | ready | `plans/implementation/tool-programs/017-semantic-recovery-confirmation-and-evidence-closure.md` | M015 implementation `247ef50`, M016 implementation `f4101b9`, durable notification/session stores, semantic event equality, recovery loop, and fixture-gated process harness are present; no external provider required |
+No dependency-ready plans remain. M017 implementation has landed.
 
 ## Active closure work
 
-No active M017 closure record exists. The implementation pass must move M017 to `closing` and leave `plans/closure/tool-programs/017-status.md` absent. A separate reviewer creates that record after implementation.
+M017 implementation landed; `plans/closure/tool-programs/017-status.md` must remain absent until a separate reviewer creates it.
 
 ## Blocked work
 

@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: closed — Milestone 015 independently accepted
+Status: closing — Milestone 017 implementation landed, awaiting independent reviewer
 
 Long-term references:
 
@@ -514,4 +514,6 @@ This subsystem is closed only when:
 | 012 | closed | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | `plans/closure/tool-programs/012-status.md` | Authority grants, broker failure mapping, transactional notifications, scheduler-owned descendant cancellation, replay identity binding, result convergence, hosted Path B, and process-level closure |
 | 013 | closed | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | `plans/closure/tool-programs/013-status.md` | Production authority grants, 8-dimension broker scope verification, SQLite notification CAS, durable lineage, scheduler descendant cancellation, replay fingerprint v2, checkpoint restoration, journal concurrency safety, typed result convergence, native-only truthfulness |
 | 014 | conditionally closed, historical | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | `plans/closure/tool-programs/014-status.md` | Strict closure transferred to M015 |
-| 015 | closed | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | `plans/closure/tool-programs/015-status.md` | Implementation `247ef50`; independent approval `230f435`; no registered downstream plan unblocked |
+| 015 | conditionally closed, historical | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | `plans/closure/tool-programs/015-status.md` | Implementation `247ef50`; independent approval `230f435`; notification reconstruction defect transferred to M016 |
+| 016 | conditionally closed, historical | `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md` | `plans/closure/tool-programs/016-status.md` | Semantic event equality and restart fixture retained; recovery confirmation/evidence defects transferred to M017 |
+| 017 | closing | `plans/implementation/tool-programs/017-semantic-recovery-confirmation-and-evidence-closure.md` | — (awaiting independent reviewer) | Semantic confirmation, typed errors, direct durable evidence; awaiting independent closure record |
