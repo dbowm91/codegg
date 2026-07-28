@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 015 ready for handoff
+Status: active — Milestone 015 closing
 
 Canonical subsystem roadmap:
 
@@ -148,7 +148,7 @@ The implementation pass must leave that closure record absent.
 | 012 | conditionally closed, historical | Broker failure and native-only improvements retained; strict closure transferred forward |
 | 013 | conditionally closed, historical | Grant persistence, CAS syntax, basic lineage, replay/result improvements retained; strict closure transferred forward |
 | 014 | conditionally closed, historical | Checkpoint loading, v35 lineage, result integrity, native-only enforcement, and other improvements retained; post-review production gaps owned by M015 |
-| 015 | closing | Implementation head `aec7284c` passed the required local evidence; independent closure review remains |
+| 015 | closing | Implementation head `247ef50` passed the required local evidence; independent closure review remains |
 
 ## 7. Completion definition
 

@@ -636,7 +636,7 @@ After independent acceptance:
 
 ## 16. Implementation handoff
 
-Implementation head: `aec7284c`
+Implementation head: `247ef50`
 
 Implementation commits, in order:
 
@@ -647,6 +647,7 @@ Implementation commits, in order:
 - `280365de`, `143a8b59`
 - `ffcac3d3`, `b10716a0`
 - `6dc63ab6`, `73b8db6b`, `aec7284c`
+- `247ef50`
 
 Observed validation at the implementation head:
 
@@ -657,14 +658,19 @@ Observed validation at the implementation head:
 - `cargo test -p codegg --test tool_program_m015_artifact_pipeline -- --test-threads=1` — 4 passed.
 - `cargo test -p codegg --test tool_program_m015_notification_recovery -- --test-threads=1` — 9 passed.
 - `cargo test -p codegg --test tool_program_m015_descendant_convergence -- --test-threads=1` — 8 passed.
-- `cargo test -p codegg --test tool_program_m015_daemon_failpoints -- --test-threads=1` — 7 passed.
-- `cargo test -p codegg tool_program -- --test-threads=1` — 56 passed.
+- `cargo test -p codegg --test tool_program_m015_daemon_failpoints -- --test-threads=1` — 8 passed.
+- `cargo test -p codegg --lib tool_program -- --test-threads=1` — 39 passed.
 - `cargo test -p codegg-core tool_program -- --test-threads=1` — 156 passed.
+- `cargo test -p codegg-core event_store_idempotency_tests` — 2 passed.
 - `scripts/check-core-boundary.sh` — passed.
 - `python3 scripts/check_scheduler_bypass.py` — passed.
 - `python3 scripts/check_execution_ownership.py` — passed.
 - `python3 scripts/e2e/tool_program_harness.py --mode native --scenario all` — passed through the M015 real-daemon matrix.
 
 No platform-specific test was skipped. The process suite ran on macOS arm64 using the real debug `codegg core-stdio` binary. No storage schema version was added in M015, so a new pre-v35 migration fixture was not required; the existing v35 lineage columns were corrected at their SQLite insert/read production sites.
+
+`cargo clippy --workspace --all-features --all-targets -- -D warnings` remains
+blocked by three pre-existing `clippy::question_mark` findings in
+`crates/egglsp/src/edit.rs`; M015 does not touch that crate or those findings.
 
 Per the separation rule, this implementation handoff does not create or approve `plans/closure/tool-programs/015-status.md`. A later review commit owns independent acceptance.
