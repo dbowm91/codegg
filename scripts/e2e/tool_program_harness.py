@@ -274,6 +274,26 @@ def persist_native_source(workspace: Path, source: str) -> tuple[str, int]:
 def run_native_scenario() -> ScenarioResult:
     """Exercise the production scheduler/executor through core-stdio."""
     started = time.monotonic()
+    # M015 owns the real-process production harness. Reuse that bounded
+    # public-protocol suite so native mode cannot drift back to constructing
+    # synthetic authority payloads in this Python client.
+    passed, duration, output = run_cargo_test("tool_program_m015_daemon_failpoints")
+    if passed:
+        return ScenarioResult(
+            name="native_core_stdio_production_path",
+            passed=True,
+            duration_ms=duration,
+            details="real daemon failpoint, restart, replay, child, and convergence matrix passed",
+        )
+    return ScenarioResult(
+        name="native_core_stdio_production_path",
+        passed=False,
+        duration_ms=duration,
+        details=output[-500:],
+    )
+
+    # Legacy inline client retained temporarily as transport documentation;
+    # execution returns above through the M015 production harness.
     client = None
     try:
         workspace = REPO_ROOT
