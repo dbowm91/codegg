@@ -136,6 +136,25 @@ pub struct ToolProgramNotificationEvent {
     pub content: String,
 }
 
+impl ToolProgramNotificationEvent {
+    /// Semantic equality that ignores `meta.created_at`.
+    ///
+    /// The event identity is anchored to `meta.id` (which is derived from
+    /// `injection_key`) and the notification fields. Process B reconstructs
+    /// the event after a crash and may stamp it with a fresh `created_at`
+    /// even though the durable identity is the same. Full payload
+    /// comparison would treat that as a collision; semantic equality
+    /// accepts it while still failing closed for any other field change.
+    pub fn semantic_equals(&self, other: &Self) -> bool {
+        self.meta.id == other.meta.id
+            && self.meta.session_id == other.meta.session_id
+            && self.injection_key == other.injection_key
+            && self.notification_id == other.notification_id
+            && self.program_id == other.program_id
+            && self.content == other.content
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessageEvent {
     pub meta: EventMeta,
@@ -347,6 +366,7 @@ impl SessionEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn test_event_type_tag_coverage() {
@@ -423,5 +443,131 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: SessionEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.event_type_tag(), "goal_set");
+    }
+
+    fn tp_notification(
+        id: &str,
+        session_id: &str,
+        injection_key: &str,
+        created_at: DateTime<Utc>,
+    ) -> ToolProgramNotificationEvent {
+        ToolProgramNotificationEvent {
+            meta: EventMeta {
+                id: id.into(),
+                session_id: session_id.into(),
+                created_at,
+            },
+            injection_key: injection_key.into(),
+            notification_id: "n-1".into(),
+            program_id: "p-1".into(),
+            content: "completed".into(),
+        }
+    }
+
+    #[test]
+    fn semantic_equals_ignores_created_at() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let b = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_999_999).unwrap(),
+        );
+        assert!(
+            a.semantic_equals(&b),
+            "timestamps must not affect semantic equality"
+        );
+        assert!(b.semantic_equals(&a), "semantic equality must be symmetric");
+    }
+
+    #[test]
+    fn semantic_equals_rejects_meta_id_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let b = tp_notification(
+            "tp-event:inj-2",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        assert!(!a.semantic_equals(&b));
+    }
+
+    #[test]
+    fn semantic_equals_rejects_session_id_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let b = tp_notification(
+            "tp-event:inj-1",
+            "session-other",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        assert!(!a.semantic_equals(&b));
+    }
+
+    #[test]
+    fn semantic_equals_rejects_injection_key_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let mut b = a.clone();
+        b.injection_key = "inj-2".into();
+        assert!(!a.semantic_equals(&b));
+    }
+
+    #[test]
+    fn semantic_equals_rejects_notification_id_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let mut b = a.clone();
+        b.notification_id = "n-2".into();
+        assert!(!a.semantic_equals(&b));
+    }
+
+    #[test]
+    fn semantic_equals_rejects_program_id_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let mut b = a.clone();
+        b.program_id = "p-2".into();
+        assert!(!a.semantic_equals(&b));
+    }
+
+    #[test]
+    fn semantic_equals_rejects_content_mismatch() {
+        let a = tp_notification(
+            "tp-event:inj-1",
+            "session-1",
+            "inj-1",
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        );
+        let mut b = a.clone();
+        b.content = "different".into();
+        assert!(!a.semantic_equals(&b));
     }
 }

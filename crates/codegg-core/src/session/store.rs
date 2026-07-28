@@ -2592,6 +2592,13 @@ impl EventStore {
         Self { pool }
     }
 
+    /// Returns a clone of the underlying pool. Test-only escape hatch
+    /// for fixtures that want to bind the same SQLite database to a
+    /// second store instance (e.g. recovery-loop restart simulation).
+    pub fn pool(&self) -> SqlitePool {
+        self.pool.clone()
+    }
+
     pub async fn append(&self, event: &super::events::SessionEvent) -> Result<(), StorageError> {
         let meta = event.meta();
         let event_type = event.event_type_tag();
@@ -2660,21 +2667,50 @@ impl EventStore {
         .await
         .map_err(|e| StorageError::Database(e.to_string()))?;
         match existing {
-            Some((session_id, stored_type, stored_payload))
-                if session_id == meta.session_id
-                    && stored_type == event_type
-                    && stored_payload == payload_json =>
-            {
-                Ok(())
-            }
-            Some(_) => Err(StorageError::Database(format!(
-                "session event identity collision: {}",
-                meta.id
-            ))),
             None => Err(StorageError::Database(format!(
                 "session event disappeared after idempotent append: {}",
                 meta.id
             ))),
+            Some((session_id, stored_type, stored_payload)) => {
+                if session_id != meta.session_id || stored_type != event_type {
+                    return Err(StorageError::Database(format!(
+                        "session event identity collision: {}",
+                        meta.id
+                    )));
+                }
+                if stored_payload == payload_json {
+                    return Ok(());
+                }
+                // Tool Program notification events use semantic equality
+                // for conflict reconciliation: the durable identity is
+                // anchored to `injection_key` (== `meta.id`) and the
+                // notification fields, but `meta.created_at` is stamped
+                // on reconstruction and may legitimately differ from the
+                // stored value. Full payload comparison would treat that
+                // as a collision and break restart recovery. Any other
+                // field change still fails closed.
+                if let (
+                    super::events::SessionEvent::ToolProgramNotification(incoming),
+                    super::events::SessionEvent::ToolProgramNotification(stored_notification),
+                ) = (
+                    event,
+                    serde_json::from_str::<super::events::SessionEvent>(&stored_payload)
+                        .map_err(|e| {
+                            StorageError::Database(format!(
+                                "session event identity collision: malformed stored payload for {}: {}",
+                                meta.id, e
+                            ))
+                        })?,
+                ) {
+                    if incoming.semantic_equals(&stored_notification) {
+                        return Ok(());
+                    }
+                }
+                Err(StorageError::Database(format!(
+                    "session event identity collision: {}",
+                    meta.id
+                )))
+            }
         }
     }
 
@@ -2702,6 +2738,22 @@ impl EventStore {
             })
             .collect()
     }
+
+    /// Lightweight existence check used by Tool Program notification
+    /// recovery to detect a parent-session event that was appended by
+    /// an earlier process before the crash. Returns `false` for both
+    /// "not present" and "query failed" so the recovery loop can fall
+    /// back to the regular append path without surfacing transient
+    /// storage errors as fatal.
+    pub async fn has_event(&self, event_id: &str) -> Result<bool, StorageError> {
+        let row: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM session_events WHERE id = ? LIMIT 1")
+                .bind(event_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(row.is_some())
+    }
 }
 
 #[cfg(test)]
@@ -2728,10 +2780,16 @@ mod event_store_idempotency_tests {
     }
 
     fn notification(content: &str) -> SessionEvent {
-        notification_with_timestamp(content, Utc.timestamp_millis_opt(1_700_000_000_000).unwrap())
+        notification_with_timestamp(
+            content,
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+        )
     }
 
-    fn notification_with_timestamp(content: &str, created_at: chrono::DateTime<Utc>) -> SessionEvent {
+    fn notification_with_timestamp(
+        content: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> SessionEvent {
         SessionEvent::ToolProgramNotification(ToolProgramNotificationEvent {
             meta: EventMeta {
                 id: "tp-event:inject-1".into(),
@@ -3006,5 +3064,76 @@ mod event_store_idempotency_tests {
             error.to_string().contains("collision") || error.to_string().contains("deserialize"),
             "malformed stored payload must fail closed: {error}"
         );
+    }
+
+    // ── M016 hardening: cross-process recovery via fresh EventStore ──
+
+    /// Process A persists the parent-session event, then process B (a
+    /// fresh `EventStore` over the same pool) reconstructs the event
+    /// with a fresh `created_at`. Semantic equality must accept the
+    /// second insert, the stored payload must remain authoritative,
+    /// and exactly one row must persist.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_survives_independent_store_instance() {
+        let first = store().await;
+        let first_event = notification("completed");
+        first.append_idempotent(&first_event).await.unwrap();
+
+        let second = EventStore::new(first.pool().clone());
+        let second_event = notification_with_timestamp(
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_999_999).unwrap(),
+        );
+        second.append_idempotent(&second_event).await.unwrap();
+
+        let events = second.list_for_session("session-1").await.unwrap();
+        assert_eq!(events.len(), 1, "exactly one event must persist");
+        let stored = match &events[0] {
+            SessionEvent::ToolProgramNotification(e) => e,
+            _ => panic!("expected ToolProgramNotification event"),
+        };
+        assert_eq!(
+            stored.meta.created_at,
+            Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            "process A's timestamp remains authoritative"
+        );
+        assert_eq!(stored.content, "completed");
+    }
+
+    /// The same identity with truly different content must fail closed
+    /// even when the rest of the semantic fields line up — protects
+    /// against silent overwrite of a parent-session insertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_content_swap_fails_closed_with_semantic_path() {
+        let first = store().await;
+        first
+            .append_idempotent(&notification("completed"))
+            .await
+            .unwrap();
+
+        let second = EventStore::new(first.pool().clone());
+        let error = second
+            .append_idempotent(&notification("DIFFERENT"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "semantic collision must still fail closed: {error}"
+        );
+    }
+
+    /// `has_event` is the recovery probe used by the agent loop. It
+    /// must report presence for both stored variants and absence for
+    /// unrelated IDs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn has_event_reflects_durable_inserts() {
+        let store = store().await;
+        assert!(!store.has_event("tp-event:inject-1").await.unwrap());
+        store
+            .append_idempotent(&notification("completed"))
+            .await
+            .unwrap();
+        assert!(store.has_event("tp-event:inject-1").await.unwrap());
+        assert!(!store.has_event("tp-event:other").await.unwrap());
     }
 }

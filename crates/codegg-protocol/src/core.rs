@@ -466,6 +466,18 @@ pub enum CoreResponse {
     ToolProgramCallPage {
         page: Option<crate::projection::dto::ToolProgramCallPage>,
     },
+    /// M016: Report from a recovery-only notification reinjection
+    /// request. Echoes the per-session reconcile outcome so a
+    /// recovery-fixture test can assert delivery convergence.
+    ToolProgramNotificationReinjectReport {
+        considered: usize,
+        injected: usize,
+        recovered_via_event: usize,
+        already_injected: usize,
+        leased: usize,
+        skipped: usize,
+        errors: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1010,6 +1022,15 @@ pub enum CoreRequest {
         program_id: String,
         #[serde(default)]
         offset: u32,
+    },
+    /// M016: Recovery-only request that drives Tool Program notification
+    /// reconciliation for a session. Only accepted by processes running
+    /// in recovery-fixture mode (`CODEGG_TEST_RECOVERY_FIXTURE=1`); the
+    /// daemon ignores the request otherwise. Used by cross-process
+    /// tests to exercise the production recovery loop without invoking
+    /// a real provider turn.
+    ToolProgramNotificationReinject {
+        session_id: String,
     },
 }
 

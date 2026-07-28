@@ -1793,105 +1793,25 @@ impl AgentLoop {
     ///
     /// Classifies notifications into three categories as required by
     /// the plan: completed, incomplete-recoverable, and failed-terminal.
+    /// Recovery for cross-process crashes is delegated to
+    /// [`crate::agent::tool_program_recovery::inject_recoverable_notifications`].
     async fn inject_pending_notifications(&self, messages: &mut Vec<Message>) {
-        use codegg_protocol::projection::dto::NotificationClassification;
         let Some(ref svc) = self.notification_service else {
             return;
         };
-        let pending = match svc.pending_for_session(&self.session_id).await {
-            Ok(pending) => pending,
-            Err(error) => {
-                tracing::error!(%error, "failed to load durable Tool Program notifications");
-                return;
-            }
-        };
-        if pending.is_empty() {
-            return;
-        }
-        // Claim each notification in deterministic order
-        for notification in &pending {
-            // A persisted injected identity means the parent-session event
-            // was durably appended before the notification state changed.
-            if svc.is_injected(&notification.notification_id).await {
-                let _ = svc.acknowledge(&notification.notification_id).await;
-                continue;
-            }
-            if svc
-                .claim(&notification.notification_id)
-                .await
-                .unwrap_or(false)
-            {
-                let text = match notification.classification {
-                    NotificationClassification::Completed => {
-                        format!(
-                            "Background program {} completed successfully: {}",
-                            notification.program_id, notification.summary
-                        )
-                    }
-                    NotificationClassification::IncompleteRecoverable => {
-                        format!(
-                            "Background program {} is incomplete but recoverable ({}): {}",
-                            notification.program_id,
-                            notification.failure_class.as_deref().unwrap_or("unknown"),
-                            notification.summary
-                        )
-                    }
-                    NotificationClassification::FailedTerminal => {
-                        format!(
-                            "Background program {} failed terminally ({}): {}",
-                            notification.program_id,
-                            notification.failure_class.as_deref().unwrap_or("unknown"),
-                            notification.summary
-                        )
-                    }
-                };
-                let Some(injection_key) = notification.injection_key.as_deref() else {
-                    tracing::error!(
-                        notification_id = %notification.notification_id,
-                        "Tool Program notification has no durable injection key"
-                    );
-                    continue;
-                };
-                let event_id = format!("tp-event:{injection_key}");
-                let Some(event_store) = self.event_store.as_ref() else {
-                    tracing::error!(
-                        notification_id = %notification.notification_id,
-                        "Tool Program notification cannot be injected without a durable session store"
-                    );
-                    continue;
-                };
-                let event = crate::session::events::SessionEvent::ToolProgramNotification(
-                    crate::session::events::ToolProgramNotificationEvent {
-                        meta: crate::session::events::EventMeta {
-                            id: event_id.clone(),
-                            session_id: self.session_id.clone(),
-                            created_at: chrono::Utc::now(),
-                        },
-                        injection_key: injection_key.to_string(),
-                        notification_id: notification.notification_id.clone(),
-                        program_id: notification.program_id.clone(),
-                        content: text.clone(),
-                    },
-                );
-                if let Err(error) = event_store.append_idempotent(&event).await {
-                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to append durable parent-session notification event");
-                    continue;
-                }
-                crate::test_failpoint::hit("tool_program_after_session_append");
-                if let Err(error) = svc
-                    .mark_injected(&notification.notification_id, &event_id)
-                    .await
-                {
-                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to persist Tool Program notification injection");
-                    continue;
-                }
+        let report = crate::agent::tool_program_recovery::inject_recoverable_notifications(
+            self.event_store.as_deref(),
+            svc,
+            &self.session_id,
+            |text| {
                 messages.push(Message::System {
                     content: std::sync::Arc::new(text),
                 });
-                if let Err(error) = svc.acknowledge(&notification.notification_id).await {
-                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to acknowledge Tool Program notification");
-                }
-            }
+            },
+        )
+        .await;
+        for error in &report.errors {
+            tracing::error!(%error, "Tool Program notification recovery error");
         }
     }
 

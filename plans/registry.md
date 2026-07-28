@@ -31,17 +31,21 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 016 ready | M015 is a historical conditional implementation/review record; M016 owns semantic notification-event replay, append-before-mark process recovery, eventual delivered-state convergence, and independent strict closure |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 016 closing | M015 is a historical conditional implementation/review record; M016 owns semantic notification-event replay, append-before-mark process recovery, eventual delivered-state convergence, and independent strict closure; implementation landed, closure record remains the separate reviewer's responsibility |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 016 — notification replay polish and final closure | ready | `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md` | M015 implementation `247ef50`, durable notification/session stores, AgentLoop delivery path, and debug two-process failpoint harness are present; no external provider required |
+| Programmatic tool execution and Tool Programs | 016 — notification replay polish and final closure | closing | `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md` | M015 implementation `247ef50`, durable notification/session stores, AgentLoop delivery path, and debug two-process failpoint harness are present; no external provider required; implementation landed; closure record remains the separate reviewer's responsibility |
 
 ## Active closure work
 
-No active M016 closure record exists. The implementation pass must move M016 to `closing` and leave `plans/closure/tool-programs/016-status.md` absent. A separate reviewer creates that record after implementation.
+| Subsystem | Milestone | Status | Implementation plan | Evidence commit | Closure record |
+|---|---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 016 — notification replay polish and final closure | implementation landed, awaiting reviewer | `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md` | implementation head | not yet created; reviewer responsibility |
+
+The implementation pass has moved M016 to `closing`. `plans/closure/tool-programs/016-status.md` is intentionally absent and remains the separate reviewer's responsibility.
 
 ## Blocked work
 

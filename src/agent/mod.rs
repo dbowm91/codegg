@@ -25,6 +25,7 @@ pub mod runtime_factory;
 pub mod task;
 pub mod task_tool_runtime;
 pub mod team;
+pub mod tool_program_recovery;
 pub mod turn_runtime;
 pub mod worker;
 

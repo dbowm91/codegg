@@ -1,6 +1,6 @@
 # Tool Programs Milestone 016 — Notification Replay Polish and Final Closure
 
-Status: ready for handoff
+Status: implementation landed, awaiting reviewer for closure record
 
 Class: narrow restart-correctness polish / durable session injection / independent closure
 

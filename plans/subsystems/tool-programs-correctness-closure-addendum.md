@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 016 ready for implementation
+Status: active — Milestone 016 implementation landed, awaiting reviewer for closure
 
 Canonical subsystem roadmap:
 
@@ -136,7 +136,7 @@ The implementation pass must leave that closure record absent.
 | 013 | conditionally closed, historical | Grant persistence, CAS syntax, basic lineage, replay/result improvements retained; strict closure transferred forward |
 | 014 | conditionally closed, historical | Checkpoint loading, v35 lineage, result integrity, native-only enforcement, and other improvements retained; strict closure transferred forward |
 | 015 | conditionally closed, historical | Broad production-path closure retained; notification reconstruction defect transferred to M016 |
-| 016 | ready | Sole active handoff for semantic notification replay and independent final closure |
+| 016 | closing | Implementation landed; awaiting separate reviewer for closure record |
 
 ## 7. Completion definition
 

@@ -5914,6 +5914,56 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::ToolProgramNotificationReinject { session_id } => {
+                if !crate::test_failpoint::recovery_fixture_enabled() {
+                    return Ok(CoreResponse::Error {
+                        code: "not_recovery_fixture".into(),
+                        message:
+                            "ToolProgramNotificationReinject is only available in recovery-fixture mode"
+                                .into(),
+                    });
+                }
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "no_durable_pool".into(),
+                        message: "daemon has no SQLite pool; cannot drive recovery".into(),
+                    });
+                };
+                // The session_events row is FK-constrained to
+                // session(id). A notification can exist for a session
+                // that has not yet been created via SessionStore (for
+                // example, a process that died before the agent loop
+                // ran a turn). The recovery-fixture path ensures the
+                // session row exists so the production inject loop's
+                // FK-constrained append can succeed.
+                if let Err(error) = ensure_session_row(&pool, &session_id).await {
+                    return Ok(CoreResponse::Error {
+                        code: "recovery_session_seed_failed".into(),
+                        message: error,
+                    });
+                }
+                let event_store = codegg_core::session::EventStore::new(pool.clone());
+                let notification_service =
+                    crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(
+                        pool,
+                    );
+                let report = crate::agent::tool_program_recovery::inject_recoverable_notifications(
+                    Some(&event_store),
+                    &notification_service,
+                    &session_id,
+                    |_| {},
+                )
+                .await;
+                Ok(CoreResponse::ToolProgramNotificationReinjectReport {
+                    considered: report.considered,
+                    injected: report.injected,
+                    recovered_via_event: report.recovered_via_event,
+                    already_injected: report.already_injected,
+                    leased: report.leased,
+                    skipped: report.skipped,
+                    errors: report.errors,
+                })
+            }
             _ => {
                 tracing::warn!("Unhandled CoreRequest variant");
                 Ok(CoreResponse::Error {
@@ -7300,4 +7350,30 @@ mod tests {
         // Note: do not remove OPENAI_API_KEY here to avoid racing
         // with other tests that also set it. The env var is process-global.
     }
+}
+
+/// M016: ensure a `session` row exists for `session_id` so the
+/// production inject loop's FK-constrained append to `session_events`
+/// can succeed even when the session row was never created via
+/// `SessionStore`. Used only by the recovery-fixture path.
+async fn ensure_session_row(pool: &sqlx::SqlitePool, session_id: &str) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, '', '[]', 0, 0)",
+    )
+    .bind("recovery-fixture-project")
+    .execute(pool)
+    .await
+    .map_err(|error| format!("ensure recovery-fixture project: {error}"))?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, ?, '1', 0, 0)",
+    )
+    .bind(session_id)
+    .bind("recovery-fixture-project")
+    .bind("recovery-fixture")
+    .bind("/tmp/recovery-fixture")
+    .bind("Recovery Fixture")
+    .execute(pool)
+    .await
+    .map_err(|error| format!("ensure recovery-fixture session: {error}"))?;
+    Ok(())
 }

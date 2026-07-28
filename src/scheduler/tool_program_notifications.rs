@@ -581,6 +581,44 @@ impl ToolProgramNotificationService {
         })
     }
 
+    /// Get all notifications for a session that may need recovery
+    /// attention (Pending or Claimed), in deterministic creation order.
+    ///
+    /// This is the union of [`Self::pending_for_session`] and the
+    /// currently Claimed notifications for the session. The caller
+    /// decides how to handle each state:
+    ///
+    /// - Pending: claim, append the session event, mark injected, and
+    ///   acknowledge.
+    /// - Claimed with no persisted event: leave for lease expiry.
+    /// - Claimed with a persisted event: mark injected and acknowledge
+    ///   without re-appending the session event. This covers the
+    ///   "crash after append but before mark_injected" restart case.
+    pub async fn recoverable_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ToolProgramNotification>, NotificationStoreError> {
+        if self.pool.is_some() {
+            self.load_session_from_pool(session_id).await?;
+        }
+        let index = self.session_index.read().await;
+        let notifications = self.notifications.read().await;
+        Ok(if let Some(nids) = index.get(session_id) {
+            nids.iter()
+                .filter_map(|nid| notifications.get(nid))
+                .filter(|n| {
+                    matches!(
+                        n.state,
+                        NotificationState::Pending | NotificationState::Claimed
+                    )
+                })
+                .cloned()
+                .collect()
+        } else {
+            vec![]
+        })
+    }
+
     /// Get a notification by ID.
     pub async fn get(
         &self,
