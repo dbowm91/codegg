@@ -31,26 +31,24 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 014 closing | M011–M013 are historical conditional implementation records; M014 owns real decision-derived authority, canonical contracts, complete checkpoint recovery, migration-safe lineage, recursive descendants, fail-closed delivery, canonical artifacts, daemon process evidence, and independent strict closure |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 015 ready | M011–M014 are historical conditional implementation records; M015 owns final accepted-decision authority, canonical contract convergence, monotonic restart recovery, active-child reattachment, canonical artifacts, fail-closed delivery, complete descendant/resource convergence, real daemon failpoint evidence, and independent strict closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 014 — production-boundary and process-evidence closure | closing | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | M001–M013 implementation present; normal permission/path-policy, Broker, scheduler, SQLite session/job stores, RunStore, artifact store, managed process layer, and native daemon runtime available; no external provider required |
+| Programmatic tool execution and Tool Programs | 015 — final production-path and independent closure | ready | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | M001–M014 implementation present; normal permission/path-policy decision path, runtime Broker catalog, scheduler, SQLite session/job stores, RunStore, artifact store, managed process layer, and native daemon protocol available; no external provider required |
 
 ## Active closure work
 
-| Subsystem | Milestone | Status | Closure record | Notes |
-|---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 014 — production-boundary and process-evidence closure | closing | `plans/closure/tool-programs/014-status.md` | Implementation landed; closure evidence being gathered by independent reviewer |
+No active closure record exists for Tool Programs. The M015 implementation pass must move the plan to `closing` and leave `plans/closure/tool-programs/015-status.md` absent. A separate reviewer creates that record after implementation.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 
-No registered downstream implementation plan is blocked on M014. Strict Tool Programs subsystem closure is blocked by M014 itself.
+No registered downstream implementation plan is blocked on M015. Strict Tool Programs subsystem closure is blocked by M015 itself.
 
 ## Deferred unregistered product work
 
@@ -68,22 +66,23 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, delivery, and recovery implementation | `plans/closure/tool-programs/013-status.md` | implementation/closure head `58e87ff`; post-implementation reconciliation at `7b782da` | Historical conditional implementation record; M014 owns strict production-boundary and process-evidence closure |
-| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective implementation | `plans/closure/tool-programs/012-status.md` | `d056e42` implementation; later reviews transferred strict closure through M013 to M014 | Historical conditional implementation record |
-| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` original closure; post-closure review at `d71a5ee` | Historical conditional implementation record; remaining findings transferred through M012/M013 to M014 |
+| Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; M015 owns final production-path and independent strict closure |
+| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, delivery, and recovery implementation | `plans/closure/tool-programs/013-status.md` | implementation/closure head `58e87ff`; post-implementation reconciliation at `7b782da` | Historical conditional implementation record; strict closure transferred through M014 to M015 |
+| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective implementation | `plans/closure/tool-programs/012-status.md` | `d056e42` implementation; later reviews transferred strict closure through M013/M014 to M015 | Historical conditional implementation record |
+| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` original closure; post-closure review at `d71a5ee` | Historical conditional implementation record; remaining findings transferred through M012–M015 |
 | Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | `plans/closure/tool-programs/010-status.md` | `2f5e3d3` implementation; `b62686e` closure/reconciliation | Historical conditional closure; later milestones own final production correctness depth |
 | Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | `plans/closure/tool-programs/009-status.md` | HEAD implementation | Historical capability/library closure; production Tool Programs remain native-only |
-| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | Historical closure; M014 owns fail-closed transactional delivery and daemon restart correctness |
-| Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | `plans/closure/tool-programs/007-status.md` | HEAD implementation | Historical closure; M014 owns complete migration-safe lineage, recursive scheduler ownership, reattachment, convergence, and artifacts |
-| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | `plans/closure/tool-programs/006-status.md` | HEAD implementation | Read-only palette retained; M014 must not broaden authority |
-| Programmatic tool execution and Tool Programs | 005 — durable interpreter, watchdog, and recovery | `plans/closure/tool-programs/005-status.md` | `75f3c5ae` implementation | Historical component closure; M014 owns complete checkpoint restoration, deadline authority, cross-process replay, and daemon restart proof |
+| Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | Historical closure; M015 owns fail-closed transactional delivery and daemon restart correctness |
+| Programmatic tool execution and Tool Programs | 007 — build/test child-job composition | `plans/closure/tool-programs/007-status.md` | HEAD implementation | Historical closure; M015 owns active-child persistence, restart reattachment, complete descendant convergence, and canonical child artifacts |
+| Programmatic tool execution and Tool Programs | 006 — read-only programmable tool palette | `plans/closure/tool-programs/006-status.md` | HEAD implementation | Read-only palette retained; M015 must not broaden authority |
+| Programmatic tool execution and Tool Programs | 005 — durable interpreter, watchdog, and recovery | `plans/closure/tool-programs/005-status.md` | `75f3c5ae` implementation | Historical component closure; M015 owns monotonic call/checkpoint recovery, active-child restart correctness, and daemon failpoint proof |
 | Programmatic tool execution and Tool Programs | 004 — restricted-Python frontend and static bounds | `plans/closure/tool-programs/004-status.md` | `dcd2024e` implementation | Restricted language and static-bound foundation retained |
 | Programmatic tool execution and Tool Programs | 003 — program domain, storage, and call ledger | `plans/closure/tool-programs/003-status.md` | `733993b` implementation + docs follow-up | Durable domain foundation retained and extended by later milestones |
-| Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | `plans/closure/tool-programs/002-status.md` | HEAD implementation | Historical closure; M014 owns real decision-derived grants and canonical frozen contract convergence |
+| Programmatic tool execution and Tool Programs | 002 — tool contracts and canonical broker | `plans/closure/tool-programs/002-status.md` | HEAD implementation | Historical closure; M015 owns accepted-decision grants and canonical frozen contract convergence |
 | Programmatic tool execution and Tool Programs | 001 — scheduler-owned Python execution | `plans/closure/tool-programs/001-status.md` | HEAD implementation | Scheduler-owned ordinary Python foundation retained |
 | Frontend-neutral session projections | 012 — TUI disconnect lifecycle and final evidence closure | `plans/closure/session-projections/012-status.md` | `0672044` implementation; `f046de5` corrective test evidence; final reviewed head `f046de5` | Closed; no registered future plan was newly unblocked, and deferred product work remains unregistered |
 | Frontend-neutral session projections | 011 — evidence correctness and mechanism verification closure | `plans/closure/session-projections/011-status.md` | `560b8b7` main implementation; final reviewed head `1a93167` | Historical conditional closure; M012 accepted the remaining lifecycle, evidence, stability, and reconciliation work |
-| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final depth |
+| Frontend-neutral session projections | 010 — mechanism-faithful transport verification and final closure | `plans/closure/session-projections/010-status.md` | `a3ab136` implementation/evidence; final reviewed M10 head `8bd59b2` | Historical conditional record; M011/M012 own final depth |
 | Frontend-neutral session projections | 009 — production-shaped transport verification and strict closure | `plans/closure/session-projections/009-status.md` | `3406c742` implementation/evidence; `426dfffe` follow-up | Historical conditional record; M10–M12 own final depth |
 | Frontend-neutral session projections | 008 — final transport lifecycle and replay evidence polish | `plans/closure/session-projections/008-status.md` | `6975050a` implementation; `ea6e38d` original closure | Historical conditional record; later milestones own final depth |
 | Frontend-neutral session projections | 007 — corrective transport lifecycle and evidence closure | `plans/closure/session-projections/007-status.md` | `9887c2d` implementation; `922333b` original closure | Historical conditional record |
