@@ -112,6 +112,10 @@ fn program_ctx() -> BrokerInvocationContext {
         authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant()),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     }
 }
 

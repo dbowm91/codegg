@@ -68,3 +68,60 @@ async fn c30_all_m012_tests_compile_and_run() {
     // C-30: This test itself is evidence that M012 tests compile and run.
     assert!(true);
 }
+
+/// M013 C-37/C-38: Non-native backend policy is rejected at execution level.
+/// This exercises the actual execute path, not just schema validation.
+#[tokio::test(flavor = "current_thread")]
+async fn c37_hosted_required_rejected_at_execution() {
+    use codegg::tool::backend::{ToolBackendKind, ToolExecutionContext};
+
+    let tool = ToolProgramTool::new();
+    let input = serde_json::json!({
+        "source": "emit({\"ok\": true})\n",
+        "tools": ["read"],
+        "backend_policy": "hosted_required"
+    });
+    let mut ctx = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+    ctx.backend_policy = Some("hosted_required".into());
+    ctx.provider_name = Some("unknown".into());
+    let result = tool.execute_structured(input, Some(ctx)).await;
+    assert!(
+        result.is_err(),
+        "hosted_required must be rejected at execution: {:?}",
+        result
+    );
+    let err_str = format!("{}", result.unwrap_err());
+    assert!(
+        err_str.contains("hosted") || err_str.contains("transport") || err_str.contains("disabled"),
+        "rejection reason should mention hosted/transport/disabled: {}",
+        err_str
+    );
+}
+
+/// M013 C-37/C-38: Native_only policy is accepted (does not reject).
+#[tokio::test(flavor = "current_thread")]
+async fn c37_native_only_accepted_at_execution() {
+    use codegg::tool::backend::{ToolBackendKind, ToolExecutionContext};
+
+    let tool = ToolProgramTool::new();
+    let input = serde_json::json!({
+        "source": "emit({\"ok\": true})\n",
+        "tools": ["read"],
+        "backend_policy": "native_only"
+    });
+    let mut ctx = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+    ctx.backend_policy = Some("native_only".into());
+    ctx.provider_name = Some("unknown".into());
+    // This will fail because there's no submission service, but it should
+    // NOT fail with ToolError::Disabled for backend policy reasons.
+    let result = tool.execute_structured(input, Some(ctx)).await;
+    if let Err(err) = &result {
+        let err_str = format!("{}", err);
+        assert!(
+            !err_str.contains("hosted"),
+            "native_only must not be rejected as hosted: {}",
+            err_str
+        );
+    }
+    // Expected: fails with "requires scheduler submission service" not backend rejection
+}

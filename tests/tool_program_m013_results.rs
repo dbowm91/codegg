@@ -79,7 +79,11 @@ async fn h1_tampering_call_artifacts_changes_digest() {
         digest: Some("sha256:tampered".into()),
     });
     let tampered_json = serde_json::to_string(&loaded).expect("serialize tampered");
-    let path = temp.path().join(".codegg").join("tool_program_results").join(format!("{program_id}.json"));
+    let path = temp
+        .path()
+        .join(".codegg")
+        .join("tool_program_results")
+        .join(format!("{program_id}.json"));
     std::fs::write(&path, tampered_json).expect("write tampered");
 
     let reload = store.load(program_id);
@@ -116,7 +120,11 @@ async fn h1_tampering_child_artifacts_changes_digest() {
     let mut loaded = store.load(program_id).expect("load").expect("present");
     loaded.child_artifacts.push(child_artifact("job-injected"));
     let tampered_json = serde_json::to_string(&loaded).expect("serialize tampered");
-    let path = temp.path().join(".codegg").join("tool_program_results").join(format!("{program_id}.json"));
+    let path = temp
+        .path()
+        .join(".codegg")
+        .join("tool_program_results")
+        .join(format!("{program_id}.json"));
     std::fs::write(&path, tampered_json).expect("write tampered");
 
     let reload = store.load(program_id);
@@ -153,7 +161,11 @@ async fn h1_tampering_output_artifact_changes_digest() {
     let mut loaded = store.load(program_id).expect("load").expect("present");
     loaded.output_artifact = Some("ctx://artifacts/output-tampered".into());
     let tampered_json = serde_json::to_string(&loaded).expect("serialize tampered");
-    let path = temp.path().join(".codegg").join("tool_program_results").join(format!("{program_id}.json"));
+    let path = temp
+        .path()
+        .join(".codegg")
+        .join("tool_program_results")
+        .join(format!("{program_id}.json"));
     std::fs::write(&path, tampered_json).expect("write tampered");
 
     let reload = store.load(program_id);
@@ -237,13 +249,31 @@ async fn h1_result_payload_change_changes_digest() {
 
     let result_a = make_completed_result();
     let record_a = store
-        .persist(program_id, attempt_id, "native_only", result_a, vec![], vec![], None)
+        .persist(
+            program_id,
+            attempt_id,
+            "native_only",
+            result_a,
+            vec![],
+            vec![],
+            None,
+        )
         .expect("persist a");
 
     let mut result_b = make_completed_result();
-    result_b.output = Some(codegg_core::tool_program::ProgramValue::String("different".into()));
+    result_b.output = Some(codegg_core::tool_program::ProgramValue::String(
+        "different".into(),
+    ));
     let record_b = store
-        .persist(program_id, attempt_id, "native_only", result_b, vec![], vec![], None)
+        .persist(
+            program_id,
+            attempt_id,
+            "native_only",
+            result_b,
+            vec![],
+            vec![],
+            None,
+        )
         .expect("persist b");
 
     assert_ne!(
@@ -262,13 +292,25 @@ async fn h1_selected_backend_tampering_changes_digest() {
 
     let result = make_completed_result();
     store
-        .persist(program_id, attempt_id, "native_only", result, vec![], vec![], None)
+        .persist(
+            program_id,
+            attempt_id,
+            "native_only",
+            result,
+            vec![],
+            vec![],
+            None,
+        )
         .expect("persist");
 
     let mut loaded = store.load(program_id).expect("load").expect("present");
     loaded.selected_backend = "hosted".into();
     let tampered_json = serde_json::to_string(&loaded).expect("serialize tampered");
-    let path = temp.path().join(".codegg").join("tool_program_results").join(format!("{program_id}.json"));
+    let path = temp
+        .path()
+        .join(".codegg")
+        .join("tool_program_results")
+        .join(format!("{program_id}.json"));
     std::fs::write(&path, tampered_json).expect("write tampered");
 
     let reload = store.load(program_id);

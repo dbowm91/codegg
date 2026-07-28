@@ -29,12 +29,14 @@ use codegg::scheduler::tool_program_notifications::{
 };
 use codegg::tool::tool_program_ledger::ToolProgramLedger;
 use codegg::tool::tool_program_result::ToolProgramResultStore;
+use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::jobs::{
     CancelReason, DaemonGeneration, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource,
     JobStore, NewJob, RecoveryPolicy, ResourceRequest, RetryPolicy,
 };
-use codegg_core::jobs::store::SqliteJobStore;
-use codegg_core::tool_program::{CallRequest, CompletedCall, ProgramResult, ProgramStatus, ProgramValue};
+use codegg_core::tool_program::{
+    CallRequest, CompletedCall, ProgramResult, ProgramStatus, ProgramValue,
+};
 use codegg_core::workspace::WorkspaceId;
 use std::sync::Arc;
 
@@ -124,6 +126,7 @@ fn make_tool_program_job(program_id: &str) -> NewJob {
             source_ref: None,
             source_length: None,
             allowed_tools: vec!["read".into(), "grep".into()],
+            authority_grant_json: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -150,26 +153,24 @@ async fn j1_notification_state_survives_restart() {
     service.claim("tp-j1-restart-notif").await.unwrap();
 
     // Verify claimed state.
-    let row: (String,) = sqlx::query_as(
-        "SELECT state FROM tool_program_notification WHERE notification_id = ?1",
-    )
-    .bind("tp-j1-restart-notif")
-    .fetch_one(&pool)
-    .await
-    .expect("read row");
+    let row: (String,) =
+        sqlx::query_as("SELECT state FROM tool_program_notification WHERE notification_id = ?1")
+            .bind("tp-j1-restart-notif")
+            .fetch_one(&pool)
+            .await
+            .expect("read row");
     assert_eq!(row.0, "claimed");
 
     // Phase 2: simulate restart — create a new service instance with the same pool.
     let _service2 = ToolProgramNotificationService::with_pool(pool.clone());
 
     // Verify durable state is still claimed.
-    let row: (String,) = sqlx::query_as(
-        "SELECT state FROM tool_program_notification WHERE notification_id = ?1",
-    )
-    .bind("tp-j1-restart-notif")
-    .fetch_one(&pool)
-    .await
-    .expect("read row after restart");
+    let row: (String,) =
+        sqlx::query_as("SELECT state FROM tool_program_notification WHERE notification_id = ?1")
+            .bind("tp-j1-restart-notif")
+            .fetch_one(&pool)
+            .await
+            .expect("read row after restart");
     assert_eq!(row.0, "claimed");
 }
 
@@ -232,7 +233,15 @@ async fn j1_result_store_survives_restart() {
         bytes_used: 0,
     };
     store
-        .persist(program_id, attempt_id, "native_only", result, vec![], vec![], None)
+        .persist(
+            program_id,
+            attempt_id,
+            "native_only",
+            result,
+            vec![],
+            vec![],
+            None,
+        )
         .expect("persist");
 
     // Phase 2: simulate restart — create a new store at the same path.
@@ -305,13 +314,12 @@ async fn j1_injection_key_idempotency() {
     service.claim("tp-j1-idempotent").await.unwrap();
     // The injection key uniqueness is enforced at the application level.
     // Verify the notification record exists and is in claimed state.
-    let row: (String,) = sqlx::query_as(
-        "SELECT state FROM tool_program_notification WHERE notification_id = ?1",
-    )
-    .bind("tp-j1-idempotent")
-    .fetch_one(&pool)
-    .await
-    .expect("read state");
+    let row: (String,) =
+        sqlx::query_as("SELECT state FROM tool_program_notification WHERE notification_id = ?1")
+            .bind("tp-j1-idempotent")
+            .fetch_one(&pool)
+            .await
+            .expect("read state");
     assert_eq!(row.0, "claimed");
 }
 
@@ -351,7 +359,11 @@ async fn j1_descendant_cancellation_converges_to_baseline() {
 
     // Verify baseline: no active descendants.
     let remaining = store.find_descendants(&parent.job_id).await.unwrap();
-    assert_eq!(remaining.len(), 0, "all descendants must be terminal after cancellation");
+    assert_eq!(
+        remaining.len(),
+        0,
+        "all descendants must be terminal after cancellation"
+    );
 }
 
 /// J1: Daemon generation recovery — stale attempts are interrupted.
@@ -370,7 +382,10 @@ async fn j1_daemon_generation_recovery_interrupts_stale() {
 
     // Start an attempt under the old generation.
     let attempt = store.begin_attempt(&job.job_id, &old_gen).await.unwrap();
-    store.mark_attempt_running(&attempt.attempt_id).await.unwrap();
+    store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .unwrap();
 
     // Recover with new generation.
     let policy = RecoveryPolicy {
@@ -383,7 +398,10 @@ async fn j1_daemon_generation_recovery_interrupts_stale() {
     // The attempt should be interrupted.
     let attempts = store.list_attempts(&job.job_id).await.unwrap();
     assert_eq!(attempts.len(), 1);
-    assert_eq!(attempts[0].state, codegg_core::jobs::AttemptState::Interrupted);
+    assert_eq!(
+        attempts[0].state,
+        codegg_core::jobs::AttemptState::Interrupted
+    );
 }
 
 /// J1: Notification claim+acknowledge full lifecycle survives restart.
@@ -405,13 +423,12 @@ async fn j1_notification_full_lifecycle_survives_restart() {
     service2.acknowledge("tp-j1-full-lifecycle").await.unwrap();
 
     // Verify final state.
-    let row: (String,) = sqlx::query_as(
-        "SELECT state FROM tool_program_notification WHERE notification_id = ?1",
-    )
-    .bind("tp-j1-full-lifecycle")
-    .fetch_one(&pool)
-    .await
-    .expect("read row");
+    let row: (String,) =
+        sqlx::query_as("SELECT state FROM tool_program_notification WHERE notification_id = ?1")
+            .bind("tp-j1-full-lifecycle")
+            .fetch_one(&pool)
+            .await
+            .expect("read row");
     assert_eq!(row.0, "delivered");
 }
 
@@ -453,8 +470,14 @@ async fn j1_ledger_digests_survive_restart() {
     let input_digest2 = ledger2.get_call_input_digest(program_id, 0).unwrap();
     let output_digest2 = ledger2.get_call_output_digest(program_id, 0).unwrap();
 
-    assert_eq!(input_digest, input_digest2, "input digest must survive restart");
-    assert_eq!(output_digest, output_digest2, "output digest must survive restart");
+    assert_eq!(
+        input_digest, input_digest2,
+        "input digest must survive restart"
+    );
+    assert_eq!(
+        output_digest, output_digest2,
+        "output digest must survive restart"
+    );
     assert!(input_digest.starts_with("sha256:"));
     assert!(output_digest.starts_with("sha256:"));
 }

@@ -1,6 +1,6 @@
 # Tool Programs Milestone 013 — Production Authority, Descendant, Delivery, and Recovery Closure
 
-Status: closing
+Status: closed
 
 Class: corrective implementation / authorization / durable ownership / scheduler convergence / recovery / evidence closure
 

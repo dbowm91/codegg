@@ -124,8 +124,8 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
+        authority: codegg::tool::BrokerAuthority::from_grant({
+            let g = codegg_core::jobs::ToolAuthorityGrant {
                 schema_version: 1,
                 grant_id: "test-grant".into(),
                 principal_ref: "test-principal".into(),
@@ -142,12 +142,21 @@ fn program_ctx(program_id: &str) -> BrokerInvocationContext {
                 issued_at: 0,
                 expires_at: None,
                 revoked_at: None,
-                decision_digest: "test-decision".into(),
+                decision_digest: String::new(),
                 ..Default::default()
-            },
-        ),
+            };
+            let decision_digest = g.compute_digest();
+            codegg_core::jobs::ToolAuthorityGrant {
+                decision_digest,
+                ..g
+            }
+        }),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     }
 }
 
@@ -246,6 +255,10 @@ async fn programmatic_unauthorized_caller_rejected() {
         authority: codegg::tool::BrokerAuthority::Unverified,
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     };
     let err = broker
         .execute(&registry, "valid_read", json!({}), ctx)

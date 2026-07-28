@@ -11,12 +11,12 @@
 
 mod common;
 
+use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::jobs::{
     AttemptId, AttemptState, CancelReason, DaemonGeneration, IdempotencyClass, JobId, JobKind,
     JobPayload, JobPriority, JobSource, JobState, JobStore, NewJob, RecoveryPolicy,
     ResourceRequest, RetryPolicy,
 };
-use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::workspace::WorkspaceId;
 
 fn ws() -> WorkspaceId {
@@ -48,6 +48,7 @@ fn make_tool_program_job(
             source_ref: None,
             source_length: None,
             allowed_tools: vec!["read".into(), "grep".into()],
+            authority_grant_json: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -153,7 +154,10 @@ async fn e1_recursive_descendant_cancellation() {
         )
         .await
         .unwrap();
-    assert_eq!(count, 1, "only direct non-terminal descendants are cancelled");
+    assert_eq!(
+        count, 1,
+        "only direct non-terminal descendants are cancelled"
+    );
 
     // Now cancel parent's descendants (simulating recursive cancellation).
     let count = store
@@ -196,11 +200,11 @@ async fn e1_daemon_generation_recovery_interrupts_stale_attempts() {
         .unwrap();
 
     // Start an attempt under the old generation.
-    let attempt = store
-        .begin_attempt(&parent.job_id, &old_gen)
+    let attempt = store.begin_attempt(&parent.job_id, &old_gen).await.unwrap();
+    store
+        .mark_attempt_running(&attempt.attempt_id)
         .await
         .unwrap();
-    store.mark_attempt_running(&attempt.attempt_id).await.unwrap();
 
     // Recover with new generation — old attempt should be interrupted.
     let policy = RecoveryPolicy {
@@ -307,10 +311,7 @@ async fn e1_cancel_descendants_with_no_children_returns_zero() {
         .unwrap();
 
     let count = store
-        .cancel_descendants(
-            &parent.job_id,
-            CancelReason::new("test", "no children"),
-        )
+        .cancel_descendants(&parent.job_id, CancelReason::new("test", "no children"))
         .await
         .unwrap();
     assert_eq!(count, 0);
@@ -323,7 +324,12 @@ async fn e1_mixed_terminal_and_active_descendants() {
     let store = SqliteJobStore::new(pool);
 
     let parent = store
-        .create_job(make_tool_program_job("tp-e1-mixed-parent", None, None, None))
+        .create_job(make_tool_program_job(
+            "tp-e1-mixed-parent",
+            None,
+            None,
+            None,
+        ))
         .await
         .unwrap();
 
@@ -405,7 +411,10 @@ async fn e2_cancel_descendants_independent_of_parent_state() {
     // Start parent attempt, then mark it as timed out.
     let gen = DaemonGeneration::new_unchecked("gen-e2");
     let attempt = store.begin_attempt(&parent.job_id, &gen).await.unwrap();
-    store.mark_attempt_running(&attempt.attempt_id).await.unwrap();
+    store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .unwrap();
 
     // Finish attempt as timed out.
     store
@@ -439,7 +448,12 @@ async fn e1_large_fanout_descendant_cancellation() {
     let store = SqliteJobStore::new(pool);
 
     let parent = store
-        .create_job(make_tool_program_job("tp-e1-fanout-parent", None, None, None))
+        .create_job(make_tool_program_job(
+            "tp-e1-fanout-parent",
+            None,
+            None,
+            None,
+        ))
         .await
         .unwrap();
 

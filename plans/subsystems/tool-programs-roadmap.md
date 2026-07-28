@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: closing — Milestone 012 closing with independent review; Milestone 011 is historical conditionally closed
+Status: closed — Milestone 013 closed; strict Tool Programs subsystem closure achieved
 
 Long-term references:
 
@@ -511,4 +511,5 @@ This subsystem is closed only when:
 | 009 | closed | `plans/implementation/tool-programs/009-openai-responses-hosted-program-adapter.md` | `plans/closure/tool-programs/009-status.md` | — |
 | 010 | conditionally closed | `plans/implementation/tool-programs/010-harness-eggpool-chaos-performance-and-closure.md` | `plans/closure/tool-programs/010-status.md` | Native/deterministic evidence complete; live Eggpool, ACP, and CI evidence outstanding |
 | 011 | closed | `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md` | `plans/closure/tool-programs/011-status.md` | Strict native closure accepted; live hosted-provider transport remains operational evidence |
-| 012 | closing | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | `plans/closure/tool-programs/012-status.md` | Authority grants, broker failure mapping, transactional notifications, scheduler-owned descendant cancellation, replay identity binding, result convergence, hosted Path B, and process-level closure |
+| 012 | closed | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | `plans/closure/tool-programs/012-status.md` | Authority grants, broker failure mapping, transactional notifications, scheduler-owned descendant cancellation, replay identity binding, result convergence, hosted Path B, and process-level closure |
+| 013 | closed | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | `plans/closure/tool-programs/013-status.md` | Production authority grants, 8-dimension broker scope verification, SQLite notification CAS, durable lineage, scheduler descendant cancellation, replay fingerprint v2, checkpoint restoration, journal concurrency safety, typed result convergence, native-only truthfulness |

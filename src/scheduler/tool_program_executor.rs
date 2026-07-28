@@ -184,6 +184,19 @@ pub struct BrokerAdapter {
     attempt_id: Option<String>,
     grant: Option<codegg_core::jobs::ToolAuthorityGrant>,
     deadline: Option<tokio::time::Instant>,
+    /// M013-C-34: Track submitted child job results for artifact handles.
+    child_results: std::sync::Mutex<Vec<ChildJobTracking>>,
+}
+
+/// M013-C-34: Tracking record for child jobs submitted during Tool Program
+/// execution. Used to build `ChildArtifactHandle` records after execution.
+#[derive(Debug, Clone)]
+struct ChildJobTracking {
+    job_id: String,
+    #[allow(dead_code)]
+    sequence: u32,
+    status: String,
+    success: bool,
 }
 
 impl BrokerAdapter {
@@ -206,7 +219,17 @@ impl BrokerAdapter {
             attempt_id: None,
             grant: None,
             deadline: None,
+            child_results: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// M013-C-34: Return the tracked child job results for artifact handle
+    /// construction. Consumes the tracking vector.
+    pub fn take_child_results(&self) -> Vec<ChildJobTracking> {
+        self.child_results
+            .lock()
+            .map(|mut v| std::mem::take(&mut *v))
+            .unwrap_or_default()
     }
 
     pub fn with_submission(
@@ -323,6 +346,16 @@ impl BrokerCallback for BrokerAdapter {
                     + chrono::Duration::from_std(std::time::Duration::from_millis(millis))
                         .unwrap_or_else(|_| chrono::Duration::zero())
             }),
+            principal_ref: self.grant.as_ref().map(|g| g.principal_ref.clone()),
+            workspace_path_policy_id: self
+                .grant
+                .as_ref()
+                .map(|g| g.workspace_path_policy_id.clone()),
+            allowed_tools: self
+                .allowed_tools
+                .as_ref()
+                .map(|s| s.iter().cloned().collect()),
+            current_policy_revision: self.grant.as_ref().map(|g| g.policy_revision.clone()),
         };
 
         if self
@@ -673,6 +706,25 @@ impl BrokerCallback for BrokerAdapter {
             }),
         };
 
+        // M013-C-34: Track the child job result for artifact handle construction.
+        let status_str = if success {
+            "completed"
+        } else if is_cancelled {
+            "cancelled"
+        } else if is_timed_out {
+            "timed_out"
+        } else {
+            "failed"
+        };
+        if let Ok(mut results) = self.child_results.lock() {
+            results.push(ChildJobTracking {
+                job_id: submitted.job_id.to_string(),
+                sequence: request.sequence,
+                status: status_str.to_string(),
+                success,
+            });
+        }
+
         Ok(ChildJobResult {
             success,
             exit_code,
@@ -760,6 +812,7 @@ impl JobExecutor for ToolProgramExecutor {
                 source_ref,
                 source_length,
                 allowed_tools,
+                authority_grant_json,
                 ..
             } => {
                 if program_id.is_empty() {
@@ -788,6 +841,11 @@ impl JobExecutor for ToolProgramExecutor {
                 if source_ref.is_none() || source_length.is_none() {
                     return Err(ExecutorValidationError::MissingField(
                         "source_ref/source_length".into(),
+                    ));
+                }
+                if authority_grant_json.is_none() {
+                    return Err(ExecutorValidationError::MissingField(
+                        "authority_grant_json".into(),
                     ));
                 }
                 let manifest =
@@ -849,6 +907,7 @@ impl JobExecutor for ToolProgramExecutor {
             source_length,
             allowed_tools,
             execution_mode,
+            authority_grant_json,
         ) = match &ctx.job.payload {
             JobPayload::ToolProgram {
                 program_id,
@@ -861,6 +920,7 @@ impl JobExecutor for ToolProgramExecutor {
                 source_length,
                 allowed_tools,
                 execution_mode,
+                authority_grant_json,
                 ..
             } => (
                 program_id.clone(),
@@ -873,6 +933,7 @@ impl JobExecutor for ToolProgramExecutor {
                 *source_length,
                 allowed_tools.clone(),
                 execution_mode.clone(),
+                authority_grant_json.clone(),
             ),
             _ => {
                 return ExecutorCompletion {
@@ -1091,39 +1152,49 @@ impl JobExecutor for ToolProgramExecutor {
             interpreter.load_completed_calls(completed_calls);
         }
 
-        // C-21: Set the replay fingerprint so every new CompletedCall carries
-        // the execution context and loaded calls are verified against it.
-        // M013-A2: bind source/IR/contract digests into the grant.
-        let mut contract_summary: Vec<(String, String)> = self
-            .broker
-            .catalog()
-            .tool_names()
-            .map(|name| {
-                let contract = self.broker.catalog().get(name);
-                (
-                    name.to_string(),
-                    contract
-                        .map(|c| format!("{:?}", c.effect_class))
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-        contract_summary.sort();
-        let contract_digest = crate::tool::tool_program_context::stable_digest(
-            &serde_json::to_string(&serde_json::json!({
-                "contracts": contract_summary,
-            }))
-            .unwrap_or_default(),
-        );
-        let grant = crate::tool::tool_program_context::build_authority_grant(
-            Some(&execution_context),
-            ctx.workspace_id.as_str(),
-            &program_id,
-            &allowed_tools,
-            &source_digest,
-            &compilation.ir.digest,
-            &contract_digest,
-        );
+        // M013 C-01/C-03: The authority grant is pre-computed at submission
+        // time and carried in the job payload. Deserialize and verify it.
+        // The executor must NOT fabricate a replacement grant.
+        let grant: codegg_core::jobs::ToolAuthorityGrant = match authority_grant_json
+            .as_ref()
+            .and_then(|json| serde_json::from_str(json).ok())
+        {
+            Some(g) => g,
+            None => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: "missing or invalid authority_grant_json in payload".into(),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        if !grant.verify_integrity() {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "authority grant integrity verification failed".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
+        if !grant.is_valid(chrono::Utc::now().timestamp_millis()) {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "authority grant is expired or revoked".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
+        let contract_digest = grant.contract_digest.clone();
         let manifest_digest = crate::tool::tool_program_context::stable_digest(
             &serde_json::to_string(&serde_json::json!({
                 "allowed_tools": allowed_tools,
@@ -1142,7 +1213,10 @@ impl JobExecutor for ToolProgramExecutor {
             ir_digest: compilation.ir.digest.clone(),
             workspace_id: ctx.workspace_id.to_string(),
             workspace_path_policy_id: execution_context.workspace_path_policy_id.clone(),
-            policy_revision: execution_context.policy_revision.clone().unwrap_or_default(),
+            policy_revision: execution_context
+                .policy_revision
+                .clone()
+                .unwrap_or_default(),
             session_id: execution_context.session_id.clone(),
             agent_id: execution_context.agent_id.clone(),
             manifest_digest,
@@ -1214,18 +1288,33 @@ impl JobExecutor for ToolProgramExecutor {
             };
         }
 
+        // M013-C-38: Only native backend is supported. The admission
+        // gate in tool_program.rs rejects hosted policies, but we
+        // enforce the invariant defensively here too.
         let selected_backend = if execution_context.backend_policy == "native_only" {
             "native"
         } else {
-            "native"
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: format!(
+                    "non-native backend policy '{}' is not supported",
+                    execution_context.backend_policy
+                ),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
         };
 
-        // M012-G: Collect call artifacts from completed calls.
+        // M012-G / M013-C-33: Collect call artifacts from completed calls,
+        // including output digests from the ledger for integrity verification.
         let call_artifacts: Vec<crate::tool::tool_program_result::ProgramArtifactHandle> =
             interpreter
                 .completed_calls()
                 .iter()
-                .map(|(_, call)| {
+                .map(|(seq, call)| {
                     let preview = match &call.result.output {
                         codegg_core::tool_program::ProgramValue::String(s) => {
                             s.chars().take(200).collect::<String>()
@@ -1237,14 +1326,72 @@ impl JobExecutor for ToolProgramExecutor {
                         other => format!("{:?}", other).chars().take(200).collect::<String>(),
                     };
                     let artifact_id = call.result.artifacts.first().cloned();
+                    // M013-C-33: Populate the digest from the ledger's stored
+                    // output digest so the artifact is digest-verifiable.
+                    let digest = ledger.get_call_output_digest(&program_id, *seq);
                     crate::tool::tool_program_result::ProgramArtifactHandle {
                         tool_name: Some(call.request.tool_name.clone()),
                         preview,
                         success: true,
                         artifact_id,
-                        digest: None,
+                        digest,
                     }
                 })
+                .collect();
+
+        // M013-C-35: Output artifact spill. When the serialized output exceeds
+        // a threshold, write it to a file and replace the inline output with
+        // a bounded preview. The output_artifact handle points to the file.
+        let mut output_artifact: Option<String> = None;
+        let mut result = result;
+        if let Some(ref output) = result.output {
+            let output_json = serde_json::to_vec(output).unwrap_or_default();
+            const OUTPUT_SPILL_THRESHOLD: usize = 256 * 1024; // 256 KiB
+            if output_json.len() > OUTPUT_SPILL_THRESHOLD {
+                let artifact_dir = ctx
+                    .workspace_root
+                    .join(".codegg")
+                    .join("tool_program_artifacts");
+                let _ = std::fs::create_dir_all(&artifact_dir);
+                let artifact_path = artifact_dir.join(format!("{}-output.json", program_id));
+                if let Err(e) = std::fs::write(&artifact_path, &output_json) {
+                    tracing::warn!(
+                        program_id = %program_id,
+                        error = %e,
+                        "failed to spill output artifact"
+                    );
+                } else {
+                    output_artifact = Some(format!("ctx://artifact/{}-output.json", program_id));
+                    // Replace inline output with a bounded preview
+                    let preview: String = String::from_utf8_lossy(
+                        &output_json[..OUTPUT_SPILL_THRESHOLD.min(output_json.len())],
+                    )
+                    .chars()
+                    .take(1024)
+                    .collect();
+                    result.output = Some(codegg_core::tool_program::ProgramValue::String(format!(
+                        "[output spilled to artifact — {} bytes] preview: {}",
+                        output_json.len(),
+                        preview
+                    )));
+                }
+            }
+        }
+
+        // M013-C-34: Collect child artifacts from tracked child job results.
+        let child_artifacts: Vec<crate::tool::tool_program_result::ChildArtifactHandle> =
+            broker_adapter
+                .take_child_results()
+                .into_iter()
+                .map(
+                    |child| crate::tool::tool_program_result::ChildArtifactHandle {
+                        job_id: child.job_id,
+                        run_id: None,
+                        status: child.status,
+                        artifact_id: None,
+                        digest: None,
+                    },
+                )
                 .collect();
 
         let result_record = match crate::tool::tool_program_result::ToolProgramResultStore::new(
@@ -1256,8 +1403,8 @@ impl JobExecutor for ToolProgramExecutor {
             selected_backend,
             result.clone(),
             call_artifacts,
-            vec![], // child_artifacts — populated below if child jobs complete
-            None,   // output_artifact
+            child_artifacts,
+            output_artifact,
         ) {
             Ok(record) => Some(record),
             Err(error) => {
@@ -1358,6 +1505,16 @@ mod tests {
             &[],
             source_digest,
         );
+        let authority_grant = crate::tool::tool_program_context::build_authority_grant(
+            Some(&execution_context),
+            "ws-1",
+            program_id,
+            &[],
+            source_digest,
+            "",
+            "",
+        );
+        let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
         JobRecord {
             job_id: JobId::new_unchecked("j-tp"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
@@ -1378,6 +1535,7 @@ mod tests {
                 source_ref: Some(format!("{}.py", source_digest)),
                 source_length: Some(0),
                 allowed_tools: Vec::new(),
+                authority_grant_json: Some(authority_grant_json),
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

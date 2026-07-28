@@ -11,11 +11,11 @@
 
 mod common;
 
+use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::jobs::{
     CancelReason, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority, JobSource, JobStore,
     NewJob, ResourceRequest, RetryPolicy,
 };
-use codegg_core::jobs::store::SqliteJobStore;
 use codegg_core::workspace::WorkspaceId;
 
 fn make_ws() -> WorkspaceId {
@@ -42,6 +42,7 @@ fn make_parent_job(program_id: &str) -> NewJob {
             source_ref: None,
             source_length: None,
             allowed_tools: vec!["read".into(), "grep".into()],
+            authority_grant_json: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -82,6 +83,7 @@ fn make_child_job(
             source_ref: None,
             source_length: None,
             allowed_tools: vec!["read".into(), "grep".into()],
+            authority_grant_json: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -105,7 +107,10 @@ async fn d2_lineage_round_trip_preserves_all_fields() {
     let pool = common::pool::isolated_pool().await;
     let store = SqliteJobStore::new(pool);
 
-    let parent = store.create_job(make_parent_job("tp-m013-d2-parent")).await.unwrap();
+    let parent = store
+        .create_job(make_parent_job("tp-m013-d2-parent"))
+        .await
+        .unwrap();
     let child_spec = make_child_job(
         &parent.job_id,
         "att-d2-1",
@@ -134,7 +139,10 @@ async fn d2_retry_retains_lineage() {
     let pool = common::pool::isolated_pool().await;
     let store = SqliteJobStore::new(pool);
 
-    let parent = store.create_job(make_parent_job("tp-m013-d2-retry-parent")).await.unwrap();
+    let parent = store
+        .create_job(make_parent_job("tp-m013-d2-retry-parent"))
+        .await
+        .unwrap();
     let child_spec = make_child_job(
         &parent.job_id,
         "att-d2-retry",
@@ -186,10 +194,8 @@ async fn d5_distinct_sequences_create_distinct_children() {
 
     let descendants = store.find_descendants(&parent.job_id).await.unwrap();
     assert_eq!(descendants.len(), 2);
-    let ids: std::collections::BTreeSet<String> = descendants
-        .iter()
-        .map(|j| j.job_id.to_string())
-        .collect();
+    let ids: std::collections::BTreeSet<String> =
+        descendants.iter().map(|j| j.job_id.to_string()).collect();
     assert!(ids.contains(child_a.job_id.as_str()));
     assert!(ids.contains(child_b.job_id.as_str()));
 }
@@ -283,7 +289,11 @@ async fn d5_cancel_descendants_only_affects_non_terminal() {
 
     // The child should now be cancelled (terminal).
     let descendants = store.find_descendants(&parent.job_id).await.unwrap();
-    assert_eq!(descendants.len(), 0, "cancelled children are terminal and excluded");
+    assert_eq!(
+        descendants.len(),
+        0,
+        "cancelled children are terminal and excluded"
+    );
 }
 
 /// D2: SQLite indexes exist and parent_job_id is queryable.

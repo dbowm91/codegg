@@ -718,6 +718,16 @@ async fn authority_digest_validated_at_admission() {
         )
         .persist(source)
         .unwrap();
+        let authority_grant = codegg::tool::tool_program_context::build_authority_grant(
+            Some(&execution_context),
+            "ws-1",
+            program_id,
+            &[],
+            &source_digest,
+            "",
+            "",
+        );
+        let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
         JobRecord {
             job_id: JobId::new_unchecked("j-auth"),
             workspace_id: WorkspaceId::new_unchecked("ws-1"),
@@ -738,6 +748,7 @@ async fn authority_digest_validated_at_admission() {
                 source_ref: Some(source_ref.relative_path),
                 source_length: Some(source_ref.length),
                 allowed_tools: Vec::new(),
+                authority_grant_json: Some(authority_grant_json),
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

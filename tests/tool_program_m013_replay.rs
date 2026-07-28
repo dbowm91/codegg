@@ -156,11 +156,79 @@ async fn f2_checkpoint_preserves_state() {
         codegg_core::tool_program::ProgramStatus::Completed
     );
 
-    // Verify the interpreter completed successfully — checkpoints are internal state.
-    assert_eq!(result.status, codegg_core::tool_program::ProgramStatus::Completed);
-
     // Verify completed calls are present.
     assert_eq!(interp.completed_calls().len(), 1);
+}
+
+/// F2: Restore_checkpoint sets PC, budget, and completed calls from checkpoint.
+#[tokio::test(flavor = "current_thread")]
+async fn f2_restore_checkpoint_sets_state() {
+    use codegg_core::tool_program::InterpreterCheckpoint;
+
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+
+    // Run to generate a checkpoint.
+    let (broker1, _count) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+
+    // Extract checkpoint data.
+    let completed = interp1.completed_calls().clone();
+    let checkpoint = InterpreterCheckpoint {
+        pc: 42,
+        steps: 100,
+        iterations: 5,
+        calls_completed: 1,
+        bytes_used: 2048,
+        parallel_groups: 0,
+        locals_hash: "test-hash".into(),
+        completed_calls: completed.values().cloned().collect(),
+    };
+
+    // Restore into a new interpreter.
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    interp2.restore_checkpoint(checkpoint);
+
+    // Verify PC was restored.
+    assert_eq!(interp2.pc(), 42, "PC must be restored from checkpoint");
+
+    // Verify completed calls were loaded.
+    assert_eq!(
+        interp2.completed_calls().len(),
+        1,
+        "completed calls must be restored"
+    );
+
+    // Verify next_call_seq was set correctly.
+    assert_eq!(
+        interp2.next_call_seq(),
+        1,
+        "next_call_seq must be one past the highest restored sequence"
+    );
+}
+
+/// F2: compute_locals_hash matches create_checkpoint's hash.
+#[tokio::test(flavor = "current_thread")]
+async fn f2_locals_hash_matches_checkpoint() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+
+    let (broker, _count) = CountingBroker::new();
+    let mut interp = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp.set_replay_fingerprint(default_fingerprint());
+    let _result = interp.run(&broker, None).await;
+
+    // After execution, locals hash should be deterministic.
+    let hash1 = interp.compute_locals_hash();
+    let hash2 = interp.compute_locals_hash();
+    assert_eq!(hash1, hash2, "locals hash must be deterministic");
+    assert!(!hash1.is_empty(), "locals hash must not be empty");
 }
 
 /// F4: Each fingerprint field independently causes fail-closed divergence
@@ -176,7 +244,10 @@ async fn f4_authority_digest_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     // Restart with a different authority_digest.
     let completed = interp1.completed_calls().clone();
@@ -208,7 +279,10 @@ async fn f4_source_digest_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -234,7 +308,10 @@ async fn f4_ir_digest_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -260,7 +337,10 @@ async fn f4_workspace_path_policy_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -286,7 +366,10 @@ async fn f4_manifest_digest_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -312,7 +395,10 @@ async fn f4_contract_digest_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -338,7 +424,10 @@ async fn f4_backend_selection_divergence() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
 
     let completed = interp1.completed_calls().clone();
     let (broker2, _) = CountingBroker::new();
@@ -352,6 +441,195 @@ async fn f4_backend_selection_divergence() {
         result2.status,
         codegg_core::tool_program::ProgramStatus::Failed,
         "backend selection mismatch must cause failure"
+    );
+}
+
+/// F4: Program ID divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_program_id_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.program_id = "tp-different-program".into();
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Execution context digest divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_execution_context_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.execution_context_digest = "sha256:DIFFERENT-CTX".into();
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Workspace ID divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_workspace_id_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.workspace_id = "ws-different".into();
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Policy revision divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_policy_revision_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.policy_revision = "rev-DIFFERENT".into();
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Session ID divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_session_id_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.session_id = Some("sess-DIFFERENT".into());
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Agent ID divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_agent_id_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.agent_id = Some("agent-DIFFERENT".into());
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
+    );
+}
+
+/// F4: Original deadline divergence causes fail-closed.
+#[tokio::test(flavor = "current_thread")]
+async fn f4_deadline_divergence() {
+    let ir = compile_one_call_program();
+    let limits = RuntimeLimits::from(&ir.bounds);
+    let (broker1, _) = CountingBroker::new();
+    let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
+    interp1.set_replay_fingerprint(default_fingerprint());
+    let result1 = interp1.run(&broker1, None).await;
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
+    let completed = interp1.completed_calls().clone();
+    let (broker2, _) = CountingBroker::new();
+    let mut interp2 = MeteredInterpreter::new(ir, limits);
+    let mut modified_fp = default_fingerprint();
+    modified_fp.original_deadline_millis = Some(999_999_999_999);
+    interp2.set_replay_fingerprint(modified_fp);
+    interp2.load_completed_calls(completed);
+    let result2 = interp2.run(&broker2, None).await;
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Failed
     );
 }
 
@@ -414,7 +692,10 @@ async fn f5_stored_result_is_used_during_replay() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
     let mut completed = interp1.completed_calls().clone();
     assert_eq!(completed.len(), 1);
 
@@ -433,7 +714,10 @@ async fn f5_stored_result_is_used_during_replay() {
     interp2.load_completed_calls(completed);
     let result2 = interp2.run(&broker2, None).await;
 
-    assert_eq!(result2.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
     assert_eq!(
         call_count2.load(Ordering::SeqCst),
         0,
@@ -462,7 +746,10 @@ async fn f5_multiple_calls_all_replayed() {
     let mut interp1 = MeteredInterpreter::new(ir.clone(), limits.clone());
     interp1.set_replay_fingerprint(default_fingerprint());
     let result1 = interp1.run(&broker1, None).await;
-    assert_eq!(result1.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result1.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
     assert_eq!(call_count1.load(Ordering::SeqCst), 2);
 
     // Capture completed calls.
@@ -475,7 +762,10 @@ async fn f5_multiple_calls_all_replayed() {
     interp2.set_replay_fingerprint(default_fingerprint());
     interp2.load_completed_calls(completed);
     let result2 = interp2.run(&broker2, None).await;
-    assert_eq!(result2.status, codegg_core::tool_program::ProgramStatus::Completed);
+    assert_eq!(
+        result2.status,
+        codegg_core::tool_program::ProgramStatus::Completed
+    );
     assert_eq!(
         call_count2.load(Ordering::SeqCst),
         0,

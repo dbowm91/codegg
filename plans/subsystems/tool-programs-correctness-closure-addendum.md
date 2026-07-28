@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: closing — Milestone 013 implementation landed, closure review pending; Milestone 012 is historical conditionally closed; Milestone 011 is historical conditionally closed
+Status: closed — Milestone 013 closed; strict Tool Programs subsystem closure achieved; Milestone 012 is historical conditionally closed; Milestone 011 is historical conditionally closed
 
 Canonical subsystem roadmap:
 
@@ -130,7 +130,8 @@ The eventual closure record must be created at:
 | 009 | historical closed; capability/library record | M012 must wire hosted production execution completely or classify it explicitly non-production |
 | 010 | conditionally closed, historical | Native harness retained; strict closure transferred through M011 to M012 |
 | 011 | conditionally closed, historical | Substantial production mechanics landed; post-closure high/medium findings are owned by M012 |
-| 012 | closing | Authority, failure semantics, transactional delivery, descendant ownership, replay, artifacts, hosted truthfulness, and process-level closure |
+| 012 | closed | Authority, failure semantics, transactional delivery, descendant ownership, replay, artifacts, hosted truthfulness, and process-level closure |
+| 013 | closed | Production authority grants, 8-dimension broker scope verification, SQLite notification CAS, durable lineage indexes, replay fingerprint v2, journal SHA-256, result digest, and native-only truthfulness |
 
 ## 7. Completion definition
 

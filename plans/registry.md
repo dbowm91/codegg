@@ -31,28 +31,28 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 013 closing | — |
+| Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 013 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective closure | closed | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | M001–M011 implementation present; no external provider required for native correctness; recommended hosted disposition is explicit native-only production status |
-| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, and recovery closure | closing | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | M012 closed; broker grant verification; notification SQLite CAS; durable lineage; replay fingerprint; journal integrity |
+| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, and recovery closure | closed | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | M012 closed; broker grant verification; notification SQLite CAS; durable lineage; replay fingerprint; journal integrity |
 
 ## Active closure work
 
 | Subsystem | Milestone | Status | Closure record | Notes |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 012 | closed | `plans/closure/tool-programs/012-status.md` | All 32 closure criteria pass; 66 tests; broker grant verification; AgentLoop authority derivation; notification injection tracking; descendant cancellation |
-| Programmatic tool execution and Tool Programs | 013 | closing | — | Implementation landed; closure review pending; authority grant integrity; SQLite notification CAS; durable lineage indexes; replay fingerprint v2; journal SHA-256; result digest; success-gated ledger |
+| Programmatic tool execution and Tool Programs | 013 | closed | `plans/closure/tool-programs/013-status.md` | All 45 closure criteria satisfied; 106 M013 tests + 36 broker/contract tests pass; authority grant integrity; SQLite notification CAS; durable lineage indexes; replay fingerprint v2; journal SHA-256; result digest; success-gated ledger |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 
-No registered downstream plan is blocked on M012 or M013. Strict Tool Programs subsystem closure is blocked by M013 closure review.
+No registered downstream plan is blocked on M012 or M013. The Tool Programs subsystem is now strictly closed.
 
 ## Deferred unregistered product work
 
@@ -70,6 +70,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, and recovery closure | `plans/closure/tool-programs/013-status.md` | `85aefc9` implementation; closure at `85aefc9` | Tool Programs subsystem strictly closed; no downstream plans blocked |
 | Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` original closure; post-closure review at `d71a5ee` | Conditionally closed historical implementation record; M012 owns remaining high/medium production findings and strict closure |
 | Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | `plans/closure/tool-programs/010-status.md` | `2f5e3d3` implementation; `b62686e` closure/reconciliation | Historical conditional closure; M011/M012 own final production correctness and ownership depth |
 | Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | `plans/closure/tool-programs/009-status.md` | HEAD implementation | Historical capability/library closure; M012 must wire normal production execution completely or classify hosted Tool Programs explicitly non-production |

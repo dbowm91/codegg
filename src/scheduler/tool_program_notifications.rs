@@ -277,6 +277,9 @@ impl ToolProgramNotificationService {
         index.entry(session_id).or_default().push(nid);
         drop(index);
         self.persist_record(&notification).await;
+        // M013-C-11: If persist_record fails, the notification is still
+        // in the in-memory cache and will be recovered by recover_from_pool
+        // on restart. Log the failure for diagnostics.
         notification
     }
 

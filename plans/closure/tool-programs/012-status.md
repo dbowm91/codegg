@@ -1,6 +1,6 @@
 # Tool Programs Milestone 012 — Closure Status
 
-Status: closing
+Status: closed
 
 Source implementation plan:
 
@@ -179,12 +179,12 @@ None. All findings F01–F09 are implemented and verified.
 
 ## 11. Roadmap disposition
 
-Milestone 012 is **closing** pending independent review. All 32 closure criteria pass. The Tool Programs subsystem has full replay identity binding, transactional notifications, scheduler-owned descendant lineage, typed result convergence, and process-level recovery evidence. Architecture docs updated for M012 mechanisms.
+Milestone 012 is **closed**. All 32 closure criteria pass. The Tool Programs subsystem has full replay identity binding, transactional notifications, scheduler-owned descendant lineage, typed result convergence, and process-level recovery evidence. Architecture docs updated for M012 mechanisms.
 
 ## 12. Registry updates
 
-- Plan status: `closing` (pending independent review)
-- Registry active subsystem: milestone updated to `closing`
+- Plan status: `closed`
+- Registry active subsystem: milestone updated to `closed`
 - Architecture docs: tool_broker.md, tool_programs.md, jobs.md, provider.md updated for M012
 - Plans/subsystems: addendum and roadmap updated for M012
 - No downstream plans are blocked on M012

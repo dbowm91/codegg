@@ -42,20 +42,21 @@ async fn g3_input_digest_is_real_sha256() {
     let sequence = 0;
 
     let request = make_call_request("read_file", "/workspace/path");
+    ledger.reserve_call(program_id, sequence, &request).unwrap();
     ledger
-        .reserve_call(program_id, sequence, &request)
-        .unwrap();
-    ledger
-        .persist_call_completion(program_id, &CompletedCall {
-            sequence,
-            request,
-            result: codegg_core::tool_program::CallResult {
-                output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
-                artifacts: vec![],
-            success: true,
+        .persist_call_completion(
+            program_id,
+            &CompletedCall {
+                sequence,
+                request,
+                result: codegg_core::tool_program::CallResult {
+                    output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
+                    artifacts: vec![],
+                    success: true,
+                },
+                replay_fingerprint: None,
             },
-            replay_fingerprint: None,
-        })
+        )
         .unwrap();
 
     let digest = ledger
@@ -86,20 +87,21 @@ async fn g3_output_digest_is_real_sha256() {
     let sequence = 0;
 
     let request = make_call_request("read_file", "/workspace/path");
+    ledger.reserve_call(program_id, sequence, &request).unwrap();
     ledger
-        .reserve_call(program_id, sequence, &request)
-        .unwrap();
-    ledger
-        .persist_call_completion(program_id, &CompletedCall {
-            sequence,
-            request,
-            result: codegg_core::tool_program::CallResult {
-                output: ProgramValue::ToolResult(serde_json::json!({"key": "value"})),
-                artifacts: vec![],
-            success: true,
+        .persist_call_completion(
+            program_id,
+            &CompletedCall {
+                sequence,
+                request,
+                result: codegg_core::tool_program::CallResult {
+                    output: ProgramValue::ToolResult(serde_json::json!({"key": "value"})),
+                    artifacts: vec![],
+                    success: true,
+                },
+                replay_fingerprint: None,
             },
-            replay_fingerprint: None,
-        })
+        )
         .unwrap();
 
     let digest = ledger
@@ -130,20 +132,21 @@ async fn g3_input_digest_is_deterministic() {
     let sequence = 0;
 
     let request = make_call_request("read_file", "/det/path");
+    ledger.reserve_call(program_id, sequence, &request).unwrap();
     ledger
-        .reserve_call(program_id, sequence, &request)
-        .unwrap();
-    ledger
-        .persist_call_completion(program_id, &CompletedCall {
-            sequence,
-            request,
-            result: codegg_core::tool_program::CallResult {
-                output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
-                artifacts: vec![],
-            success: true,
+        .persist_call_completion(
+            program_id,
+            &CompletedCall {
+                sequence,
+                request,
+                result: codegg_core::tool_program::CallResult {
+                    output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
+                    artifacts: vec![],
+                    success: true,
+                },
+                replay_fingerprint: None,
             },
-            replay_fingerprint: None,
-        })
+        )
         .unwrap();
 
     let first = ledger
@@ -186,11 +189,10 @@ async fn g1_concurrent_reservations_do_not_lose_updates() {
     // After reservation alone (no completion), we use is_call_completed check.
     let mut total = 0;
     for seq in 0u32..16 {
-        let reserved_or_completed = ledger.is_call_completed(program_id, seq)
-            || {
-                let _ = reservations_only.contains(&seq);
-                true
-            };
+        let reserved_or_completed = ledger.is_call_completed(program_id, seq) || {
+            let _ = reservations_only.contains(&seq);
+            true
+        };
         if reserved_or_completed {
             total += 1;
         }
@@ -208,7 +210,7 @@ async fn g1_concurrent_reservations_do_not_lose_updates() {
                     result: codegg_core::tool_program::CallResult {
                         output: ProgramValue::ToolResult(serde_json::json!({"seq": seq})),
                         artifacts: vec![],
-            success: true,
+                        success: true,
                     },
                     replay_fingerprint: None,
                 },
@@ -260,7 +262,7 @@ async fn g1_concurrent_completions_do_not_overwrite() {
                         result: codegg_core::tool_program::CallResult {
                             output: ProgramValue::ToolResult(serde_json::json!({"seq": seq})),
                             artifacts: vec![],
-            success: true,
+                            success: true,
                         },
                         replay_fingerprint: None,
                     },
@@ -272,9 +274,7 @@ async fn g1_concurrent_completions_do_not_overwrite() {
         h.await.unwrap();
     }
 
-    let final_completed = ledger
-        .load_completed_calls(program_id)
-        .expect("completed");
+    let final_completed = ledger.load_completed_calls(program_id).expect("completed");
     assert_eq!(
         final_completed.len(),
         8,
@@ -292,20 +292,21 @@ async fn g2_input_digest_no_raw_secret_leak() {
     let sequence = 0;
 
     let request = make_call_request("read_file", "/workspace/secret_path");
+    ledger.reserve_call(program_id, sequence, &request).unwrap();
     ledger
-        .reserve_call(program_id, sequence, &request)
-        .unwrap();
-    ledger
-        .persist_call_completion(program_id, &CompletedCall {
-            sequence,
-            request,
-            result: codegg_core::tool_program::CallResult {
-                output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
-                artifacts: vec![],
-            success: true,
+        .persist_call_completion(
+            program_id,
+            &CompletedCall {
+                sequence,
+                request,
+                result: codegg_core::tool_program::CallResult {
+                    output: ProgramValue::ToolResult(serde_json::json!({"ok": true})),
+                    artifacts: vec![],
+                    success: true,
+                },
+                replay_fingerprint: None,
             },
-            replay_fingerprint: None,
-        })
+        )
         .unwrap();
 
     let digest = ledger
@@ -319,4 +320,66 @@ async fn g2_input_digest_no_raw_secret_leak() {
         !digest.contains("/workspace/secret_path"),
         "raw input must not leak into the digest label"
     );
+}
+
+/// M013 G4: Independent writers (separate ToolProgramLedger instances on
+/// the same directory) cannot lose, tear, or overwrite reservations.
+#[tokio::test(flavor = "current_thread")]
+async fn g4_independent_writers_no_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let program_id = "tp-m013-g4-independent";
+
+    // Phase 1: Writer A reserves sequences 0-7.
+    {
+        let ledger_a = ToolProgramLedger::new(temp.path());
+        for seq in 0u32..8 {
+            let request = make_call_request("read_file", &format!("/a/{seq}"));
+            ledger_a.reserve_call(program_id, seq, &request).unwrap();
+        }
+    }
+    // Writer A is dropped.
+
+    // Phase 2: Writer B (new instance, same directory) reserves sequences 8-15
+    // and completes all 16.
+    {
+        let ledger_b = ToolProgramLedger::new(temp.path());
+        for seq in 8u32..16 {
+            let request = make_call_request("read_file", &format!("/b/{seq}"));
+            ledger_b.reserve_call(program_id, seq, &request).unwrap();
+        }
+        // Complete all 16.
+        for seq in 0u32..16 {
+            let request = make_call_request("read_file", &format!("/x/{seq}"));
+            ledger_b
+                .persist_call_completion(
+                    program_id,
+                    &CompletedCall {
+                        sequence: seq,
+                        request,
+                        result: codegg_core::tool_program::CallResult {
+                            output: ProgramValue::ToolResult(serde_json::json!({"seq": seq})),
+                            artifacts: vec![],
+                            success: true,
+                        },
+                        replay_fingerprint: None,
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    // Phase 3: Reader (new instance) verifies all 16 completions.
+    {
+        let ledger_c = ToolProgramLedger::new(temp.path());
+        let completed = ledger_c.load_completed_calls(program_id).expect("load");
+        assert_eq!(
+            completed.len(),
+            16,
+            "independent writers must not corrupt; found {}",
+            completed.len()
+        );
+        let sequences: std::collections::BTreeSet<u32> = completed.keys().copied().collect();
+        let expected: std::collections::BTreeSet<u32> = (0u32..16).collect();
+        assert_eq!(sequences, expected, "every sequence must be present");
+    }
 }

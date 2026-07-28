@@ -356,19 +356,13 @@ impl ToolProgramTool {
                 return Err(ToolError::Disabled(reason));
             }
             codegg_providers::ResolvedBackend::Hosted => {
-                if matches!(
-                    backend_policy,
-                    codegg_providers::HostedBackendPolicy::HostedRequired
-                ) {
-                    return Err(ToolError::Disabled(
-                        "hosted backend selected but no hosted transport is attached".into(),
-                    ));
-                }
-                tracing::info!(
-                    provider = %provider_name,
-                    policy = backend_policy.as_str(),
-                    "falling back to native Tool Program executor"
-                );
+                // M013-C-38: Non-native backends are not supported for Tool
+                // Programs. Reject hosted_required and hosted_preferred
+                // instead of silently falling back to native.
+                return Err(ToolError::Disabled(format!(
+                    "hosted backend is not available for Tool Programs (policy={})",
+                    backend_policy.as_str()
+                )));
             }
             codegg_providers::ResolvedBackend::Native => {}
         }
@@ -463,6 +457,28 @@ impl ToolProgramTool {
             &source_digest,
         );
 
+        // M013 C-01/C-03: Build the authority grant at submission time from
+        // the real permission/path-policy decision. Serialize it into the
+        // payload so the executor must verify rather than fabricate.
+        let contract_summary: Vec<(String, String)> = Vec::new(); // populated at execution when catalog is available
+        let contract_digest = crate::tool::tool_program_context::stable_digest(
+            &serde_json::to_string(&serde_json::json!({
+                "contracts": contract_summary,
+            }))
+            .unwrap_or_default(),
+        );
+        let authority_grant = crate::tool::tool_program_context::build_authority_grant(
+            Some(&context_record),
+            workspace_id.as_str(),
+            &program_id,
+            &tools,
+            &source_digest,
+            &compilation.ir.digest,
+            &contract_digest,
+        );
+        let authority_grant_json = serde_json::to_string(&authority_grant)
+            .map_err(|e| ToolError::Execution(format!("grant serialization failed: {}", e)))?;
+
         let new_job = NewJob {
             workspace_id,
             session_id: context_record.session_id.clone(),
@@ -485,6 +501,7 @@ impl ToolProgramTool {
                 source_ref: Some(source_ref.relative_path),
                 source_length: Some(source_ref.length),
                 allowed_tools: tools,
+                authority_grant_json: Some(authority_grant_json),
             },
             resource_request: ResourceRequest::for_kind(JobKind::ToolProgram),
             timeout: Some(std::time::Duration::from_millis(timeout_ms)),

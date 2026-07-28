@@ -223,6 +223,10 @@ fn make_ctx_with_grant(
         )),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     }
 }
 
@@ -635,6 +639,10 @@ async fn broker_unauthorized_non_agent_non_internal_rejected() {
         authority: codegg::tool::BrokerAuthority::Unverified,
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     };
     let err = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -669,6 +677,10 @@ async fn broker_authorized_programmatic_caller_accepted() {
         )),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     };
     let result = broker
         .execute(&registry, "programmatic", json!({}), ctx)
@@ -743,8 +755,8 @@ async fn broker_validate_pre_execution_caller_policy() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(
-            codegg_core::jobs::ToolAuthorityGrant {
+        authority: codegg::tool::BrokerAuthority::from_grant({
+            let g = codegg_core::jobs::ToolAuthorityGrant {
                 schema_version: 1,
                 grant_id: "test-grant".into(),
                 principal_ref: "test-principal".into(),
@@ -761,12 +773,21 @@ async fn broker_validate_pre_execution_caller_policy() {
                 issued_at: 0,
                 expires_at: None,
                 revoked_at: None,
-                decision_digest: "test-decision".into(),
+                decision_digest: String::new(),
                 ..Default::default()
-            },
-        ),
+            };
+            let decision_digest = g.compute_digest();
+            codegg_core::jobs::ToolAuthorityGrant {
+                decision_digest,
+                ..g
+            }
+        }),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     };
 
     let err = broker

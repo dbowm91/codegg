@@ -2025,6 +2025,16 @@ impl MeteredInterpreter {
         &self.completed_calls
     }
 
+    /// Get the current program counter.
+    pub fn pc(&self) -> u32 {
+        self.pc
+    }
+
+    /// Get the next call sequence number.
+    pub fn next_call_seq(&self) -> u32 {
+        self.next_call_seq
+    }
+
     /// Load completed calls from a checkpoint (for restart replay).
     /// The interpreter re-executes from PC=0 and each ExecuteCall
     /// instruction looks up its sequence in the completed_calls map.
@@ -2032,6 +2042,46 @@ impl MeteredInterpreter {
         self.completed_calls = calls;
         // Don't override next_call_seq — it starts at 0 and the
         // ExecuteCall handler looks up each sequence in order.
+    }
+
+    /// M013 C-23: Restore interpreter state from a durable checkpoint.
+    /// Restores program counter, budget counters, and completed calls.
+    /// The locals are reconstructed by re-execution; the checkpoint's
+    /// `locals_hash` is used for integrity verification.
+    pub fn restore_checkpoint(&mut self, checkpoint: InterpreterCheckpoint) {
+        self.pc = checkpoint.pc;
+        self.budget.steps = checkpoint.steps;
+        self.budget.iterations = checkpoint.iterations;
+        self.budget.calls = checkpoint.calls_completed;
+        self.budget.bytes = checkpoint.bytes_used;
+        self.budget.parallel_groups = checkpoint.parallel_groups;
+        self.completed_calls = checkpoint
+            .completed_calls
+            .into_iter()
+            .map(|c| (c.sequence, c))
+            .collect();
+        // Set next_call_seq to one past the highest restored sequence.
+        self.next_call_seq = self
+            .completed_calls
+            .keys()
+            .max()
+            .map(|k| k + 1)
+            .unwrap_or(0);
+    }
+
+    /// M013 C-23: Compute the current locals hash for integrity
+    /// verification against a checkpoint's `locals_hash`.
+    pub fn compute_locals_hash(&self) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        for (i, local) in self.locals.iter().enumerate() {
+            (i as u32).hash(&mut hasher);
+            if let Some(val) = local {
+                format!("{:?}", val).hash(&mut hasher);
+            }
+        }
+        format!("{:016x}", hasher.finish())
     }
 
     /// Set the replay fingerprint context for this execution run.
@@ -2072,28 +2122,52 @@ impl MeteredInterpreter {
                     // fingerprint is included for cross-process inspection.
                     return Err(InterpreterError::ReplayDivergence(format!(
                         "replay identity mismatch at {} \
-                         (authority stored={} current={} \
+                         (schema_version stored={} current={} \
+                          program_id stored={} current={} \
+                          authority stored={} current={} \
+                          execution_context stored={} current={} \
                           source stored={} current={} \
                           ir stored={} current={} \
+                          workspace_id stored={} current={} \
                           workspace_path_policy stored={} current={} \
+                          policy_revision stored={} current={} \
+                          session_id stored={:?} current={:?} \
+                          agent_id stored={:?} current={:?} \
                           manifest stored={} current={} \
                           contract stored={} current={} \
-                          backend stored={} current={})",
+                          backend stored={} current={} \
+                          deadline stored={:?} current={:?})",
                         context,
+                        stored.schema_version,
+                        current.schema_version,
+                        stored.program_id,
+                        current.program_id,
                         stored.authority_digest,
                         current.authority_digest,
+                        stored.execution_context_digest,
+                        current.execution_context_digest,
                         stored.source_digest,
                         current.source_digest,
                         stored.ir_digest,
                         current.ir_digest,
+                        stored.workspace_id,
+                        current.workspace_id,
                         stored.workspace_path_policy_id,
                         current.workspace_path_policy_id,
+                        stored.policy_revision,
+                        current.policy_revision,
+                        stored.session_id,
+                        current.session_id,
+                        stored.agent_id,
+                        current.agent_id,
                         stored.manifest_digest,
                         current.manifest_digest,
                         stored.contract_digest,
                         current.contract_digest,
                         stored.backend_selection,
                         current.backend_selection,
+                        stored.original_deadline_millis,
+                        current.original_deadline_millis,
                     )));
                 }
                 Ok(())
@@ -2907,11 +2981,11 @@ emit({k: v})
                 if attempts < 2 {
                     Err(InterpreterError::BrokerError("transient".into()))
                 } else {
-                Ok(CallResult {
-                    output: ProgramValue::String("ok".into()),
-                    artifacts: vec![],
-                    success: true,
-                })
+                    Ok(CallResult {
+                        output: ProgramValue::String("ok".into()),
+                        artifacts: vec![],
+                        success: true,
+                    })
                 }
             }
 

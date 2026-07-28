@@ -1007,6 +1007,12 @@ pub enum JobPayload {
         /// compatibility with old persisted jobs and denies all calls.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         allowed_tools: Vec<String>,
+        /// M013 C-01/C-03: Pre-computed authority grant serialized as JSON.
+        /// Built at submission time from the real permission/path-policy
+        /// decision. The executor must deserialize and verify this grant
+        /// rather than fabricating a replacement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authority_grant_json: Option<String>,
     },
     Maintenance {
         task: String,

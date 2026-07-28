@@ -4758,6 +4758,7 @@ impl AgentLoop {
                                     &agent_id,
                                     exec_ctx.session_id.as_deref().unwrap_or("anon")
                                 );
+                                let policy_revision_for_ctx = policy_revision.clone();
                                 let ws_id = agent_workspace_id.clone();
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
                                     caller: crate::tool::contract::ToolCaller::Agent,
@@ -4804,6 +4805,10 @@ impl AgentLoop {
                                     ),
                                     cancellation: exec_ctx.cancellation.clone(),
                                     deadline: exec_ctx.deadline,
+                                    principal_ref: Some(authority_ref.clone()),
+                                    workspace_path_policy_id: Some(format!("workspace:{}", ws_id)),
+                                    allowed_tools: None,
+                                    current_policy_revision: Some(policy_revision_for_ctx),
                                 };
                                 let broker_result = broker_for_exec
                                     .execute(registry, &tool_name_clone, exec_args, broker_ctx)

@@ -159,6 +159,10 @@ fn program_ctx() -> BrokerInvocationContext {
         authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant()),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     }
 }
 
@@ -286,6 +290,10 @@ async fn broker_returns_display_for_agent_calls() {
         }),
         cancellation: None,
         deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
     };
     let result = broker
         .execute(&registry, "read", json!({"path": "/tmp/test.txt"}), ctx)

@@ -279,7 +279,7 @@ async fn c29_recovery_path_through_durable_ledger() {
             Ok(codegg_core::tool_program::CallResult {
                 output: codegg_core::tool_program::ProgramValue::String("fresh".into()),
                 artifacts: vec![],
-            success: true,
+                success: true,
             })
         }
     }

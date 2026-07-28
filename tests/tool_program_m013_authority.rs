@@ -292,3 +292,110 @@ fn a2_grant_carries_required_identity_fields() {
         assert!(ok, "required field must be present: {field}");
     }
 }
+
+/// M013 C-06: Session mismatch between grant and context is rejected.
+#[test]
+fn c06_session_mismatch_fails_scope() {
+    use codegg::tool::broker::{BrokerAuthority, BrokerInvocationContext};
+    use codegg::tool::contract::{ToolCaller, ToolContract};
+
+    let exec_ctx = codegg_core::jobs::ToolProgramExecutionContext {
+        session_id: Some("sess-granted".into()),
+        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-scope", "corr")
+    };
+    let grant = codegg::tool::tool_program_context::build_authority_grant(
+        Some(&exec_ctx),
+        "ws-scope",
+        "tp-session",
+        &["read".into()],
+        "src",
+        "ir",
+        "contract",
+    );
+    let authority = BrokerAuthority::Verified { grant };
+    let contract = ToolContract::legacy("read", serde_json::json!({}));
+
+    // Context uses a different session
+    let ctx = BrokerInvocationContext {
+        caller: ToolCaller::Program {
+            program_id: "tp-session".into(),
+        },
+        cwd: std::path::PathBuf::from("/tmp"),
+        session_id: Some("sess-other".into()),
+        workspace_id: Some("ws-scope".into()),
+        agent_id: None,
+        turn_id: None,
+        job_id: None,
+        attempt_id: None,
+        permission_mode: None,
+        timeout_ms: None,
+        submission_key: None,
+        authority: authority.clone(),
+        cancellation: None,
+        deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
+    };
+    let result = authority.verify_grant_scope("read", &contract, &ctx);
+    assert!(
+        result.is_err(),
+        "session mismatch must fail scope: {:?}",
+        result
+    );
+}
+
+/// M013 C-06: Permission mode mismatch between grant and context is rejected.
+#[test]
+fn c06_permission_mode_mismatch_fails_scope() {
+    use codegg::tool::broker::{BrokerAuthority, BrokerInvocationContext};
+    use codegg::tool::contract::{ToolCaller, ToolContract};
+
+    let exec_ctx = codegg_core::jobs::ToolProgramExecutionContext {
+        permission_mode: Some("allow".into()),
+        session_id: Some("sess-pm".into()),
+        ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-pm", "corr")
+    };
+    let grant = codegg::tool::tool_program_context::build_authority_grant(
+        Some(&exec_ctx),
+        "ws-pm",
+        "tp-pm",
+        &["read".into()],
+        "src",
+        "ir",
+        "contract",
+    );
+    let authority = BrokerAuthority::Verified { grant };
+    let contract = ToolContract::legacy("read", serde_json::json!({}));
+
+    // Context uses a different permission mode
+    let ctx = BrokerInvocationContext {
+        caller: ToolCaller::Program {
+            program_id: "tp-pm".into(),
+        },
+        cwd: std::path::PathBuf::from("/tmp"),
+        session_id: Some("sess-pm".into()),
+        workspace_id: Some("ws-pm".into()),
+        agent_id: None,
+        turn_id: None,
+        job_id: None,
+        attempt_id: None,
+        permission_mode: Some("deny".into()),
+        timeout_ms: None,
+        submission_key: None,
+        authority: authority.clone(),
+        cancellation: None,
+        deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
+    };
+    let result = authority.verify_grant_scope("read", &contract, &ctx);
+    assert!(
+        result.is_err(),
+        "permission mode mismatch must fail scope: {:?}",
+        result
+    );
+}
