@@ -194,6 +194,8 @@ pub struct BrokerAdapter {
 #[derive(Debug, Clone)]
 struct ChildJobTracking {
     job_id: String,
+    attempt_id: Option<String>,
+    run_id: Option<String>,
     #[allow(dead_code)]
     sequence: u32,
     status: String,
@@ -201,7 +203,9 @@ struct ChildJobTracking {
     /// M014-G1: SHA-256 digest of the child's terminal result for artifact
     /// integrity verification. Computed from the child's completion summary
     /// and status.
-    result_digest: Option<String>,
+    artifact_id: Option<String>,
+    artifact_digest: Option<String>,
+    absence_reason: Option<String>,
 }
 
 impl BrokerAdapter {
@@ -766,19 +770,31 @@ impl BrokerCallback for BrokerAdapter {
         } else {
             "failed"
         };
+        let attempts = submission
+            .scheduler()
+            .store()
+            .list_attempts(&submitted.job_id)
+            .await
+            .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
+        let attempt = attempts.into_iter().max_by_key(|attempt| attempt.sequence);
         if let Ok(mut results) = self.child_results.lock() {
-            let result_digest = if success {
-                let material = format!("{}:{}", submitted.job_id, status_str);
-                Some(format!("sha256:{:x}", Sha256::digest(material.as_bytes())))
-            } else {
-                None
-            };
             results.push(ChildJobTracking {
                 job_id: submitted.job_id.to_string(),
+                attempt_id: attempt
+                    .as_ref()
+                    .map(|attempt| attempt.attempt_id.to_string()),
+                run_id: attempt
+                    .as_ref()
+                    .and_then(|attempt| attempt.run_id.as_ref())
+                    .map(ToString::to_string),
                 sequence: request.sequence,
                 status: status_str.to_string(),
                 success,
-                result_digest,
+                artifact_id: None,
+                artifact_digest: None,
+                absence_reason: Some(
+                    "child executor completed without a canonical result artifact".into(),
+                ),
             });
         }
 
@@ -1377,11 +1393,11 @@ impl JobExecutor for ToolProgramExecutor {
 
         // Bind the immutable contract snapshot to this workspace's durable
         // artifact store for the lifetime of the attempt.
-        let workspace_broker =
-            self.broker
-                .for_workspace_artifacts(Arc::new(crate::context::FileArtifactStore::new(
-                    &ctx.workspace_root,
-                )));
+        let canonical_artifact_store: Arc<dyn crate::context::ContextArtifactStore> =
+            Arc::new(crate::context::FileArtifactStore::new(&ctx.workspace_root));
+        let workspace_broker = self
+            .broker
+            .for_workspace_artifacts(canonical_artifact_store.clone());
 
         // Create real broker adapter
         let mut broker_adapter = BrokerAdapter::new(
@@ -1460,34 +1476,72 @@ impl JobExecutor for ToolProgramExecutor {
 
         // M012-G / M013-C-33: Collect call artifacts from completed calls,
         // including output digests from the ledger for integrity verification.
-        let call_artifacts: Vec<crate::tool::tool_program_result::ProgramArtifactHandle> =
-            interpreter
-                .completed_calls()
-                .iter()
-                .map(|(seq, call)| {
-                    let preview = match &call.result.output {
-                        codegg_core::tool_program::ProgramValue::String(s) => {
-                            s.chars().take(200).collect::<String>()
-                        }
-                        codegg_core::tool_program::ProgramValue::ToolResult(v) => {
-                            let s = v.to_string();
-                            s.chars().take(200).collect::<String>()
-                        }
-                        other => format!("{:?}", other).chars().take(200).collect::<String>(),
-                    };
-                    let artifact_id = call.result.artifacts.first().cloned();
-                    // M013-C-33: Populate the digest from the ledger's stored
-                    // output digest so the artifact is digest-verifiable.
-                    let digest = ledger.get_call_output_digest(&program_id, *seq);
-                    crate::tool::tool_program_result::ProgramArtifactHandle {
-                        tool_name: Some(call.request.tool_name.clone()),
-                        preview,
-                        success: true,
-                        artifact_id,
-                        digest,
+        let mut call_artifacts = Vec::new();
+        for call in interpreter.completed_calls().values() {
+            let preview = match &call.result.output {
+                codegg_core::tool_program::ProgramValue::String(s) => {
+                    s.chars().take(200).collect::<String>()
+                }
+                codegg_core::tool_program::ProgramValue::ToolResult(v) => {
+                    v.to_string().chars().take(200).collect::<String>()
+                }
+                other => format!("{:?}", other).chars().take(200).collect::<String>(),
+            };
+            let artifact_id = call.result.artifacts.first().cloned();
+            let (digest, absence_reason) = if let Some(handle) = artifact_id.as_deref() {
+                let artifact = match canonical_artifact_store.get(handle).await {
+                    Ok(Some(artifact)) => artifact,
+                    Ok(None) => {
+                        return ExecutorCompletion {
+                            status: ExecutorStatus::Failed,
+                            summary: format!("canonical call artifact is missing: {handle}"),
+                            run_id: None,
+                            metrics: ExecutorMetrics {
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                                ..Default::default()
+                            },
+                        };
                     }
-                })
-                .collect();
+                    Err(error) => {
+                        return ExecutorCompletion {
+                            status: ExecutorStatus::Failed,
+                            summary: format!("canonical call artifact read failed: {error}"),
+                            run_id: None,
+                            metrics: ExecutorMetrics {
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                                ..Default::default()
+                            },
+                        };
+                    }
+                };
+                let computed = crate::context::compute_content_hash(&artifact.redacted_content);
+                if computed != artifact.content_hash {
+                    return ExecutorCompletion {
+                        status: ExecutorStatus::Failed,
+                        summary: format!("canonical call artifact digest mismatch: {handle}"),
+                        run_id: None,
+                        metrics: ExecutorMetrics {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        },
+                    };
+                }
+                (Some(format!("sha256:{computed}")), None)
+            } else {
+                (
+                    None,
+                    Some("nested call output remained below artifact threshold".into()),
+                )
+            };
+            call_artifacts.push(crate::tool::tool_program_result::ProgramArtifactHandle {
+                tool_name: Some(call.request.tool_name.clone()),
+                preview,
+                success: call.result.success,
+                artifact_id,
+                digest,
+                absence_reason,
+            });
+        }
 
         // M013-C-35: Output artifact spill. When the serialized output exceeds
         // a threshold, write it to a file and replace the inline output with
@@ -1498,33 +1552,46 @@ impl JobExecutor for ToolProgramExecutor {
             let output_json = serde_json::to_vec(output).unwrap_or_default();
             const OUTPUT_SPILL_THRESHOLD: usize = 256 * 1024; // 256 KiB
             if output_json.len() > OUTPUT_SPILL_THRESHOLD {
-                let artifact_dir = ctx
-                    .workspace_root
-                    .join(".codegg")
-                    .join("tool_program_artifacts");
-                let _ = std::fs::create_dir_all(&artifact_dir);
-                let artifact_path = artifact_dir.join(format!("{}-output.json", program_id));
-                if let Err(e) = std::fs::write(&artifact_path, &output_json) {
-                    tracing::warn!(
-                        program_id = %program_id,
-                        error = %e,
-                        "failed to spill output artifact"
-                    );
-                } else {
-                    output_artifact = Some(format!("ctx://artifact/{}-output.json", program_id));
-                    // Replace inline output with a bounded preview
-                    let preview: String = String::from_utf8_lossy(
-                        &output_json[..OUTPUT_SPILL_THRESHOLD.min(output_json.len())],
-                    )
-                    .chars()
-                    .take(1024)
-                    .collect();
-                    result.output = Some(codegg_core::tool_program::ProgramValue::String(format!(
-                        "[output spilled to artifact — {} bytes] preview: {}",
-                        output_json.len(),
-                        preview
-                    )));
-                }
+                let session_id = execution_context
+                    .session_id
+                    .as_deref()
+                    .unwrap_or("tool-program");
+                let reference = match crate::tool::tool_program_result::persist_program_artifact(
+                    canonical_artifact_store.clone(),
+                    session_id,
+                    &format!("{program_id}-output"),
+                    "tool_program",
+                    &output_json,
+                )
+                .await
+                {
+                    Ok(reference) => reference,
+                    Err(error) => {
+                        return ExecutorCompletion {
+                            status: ExecutorStatus::Failed,
+                            summary: format!(
+                                "canonical output artifact persistence failed: {error}"
+                            ),
+                            run_id: None,
+                            metrics: ExecutorMetrics {
+                                elapsed_ms: started.elapsed().as_millis() as u64,
+                                ..Default::default()
+                            },
+                        };
+                    }
+                };
+                output_artifact = Some(reference.handle);
+                let preview: String = String::from_utf8_lossy(
+                    &output_json[..OUTPUT_SPILL_THRESHOLD.min(output_json.len())],
+                )
+                .chars()
+                .take(1024)
+                .collect();
+                result.output = Some(codegg_core::tool_program::ProgramValue::String(format!(
+                    "[output spilled to artifact — {} bytes] preview: {}",
+                    output_json.len(),
+                    preview
+                )));
             }
         }
 
@@ -1536,10 +1603,12 @@ impl JobExecutor for ToolProgramExecutor {
                 .map(
                     |child| crate::tool::tool_program_result::ChildArtifactHandle {
                         job_id: child.job_id,
-                        run_id: None,
+                        attempt_id: child.attempt_id,
+                        run_id: child.run_id,
                         status: child.status,
-                        artifact_id: child.result_digest.clone(),
-                        digest: child.result_digest,
+                        artifact_id: child.artifact_id,
+                        digest: child.artifact_digest,
+                        absence_reason: child.absence_reason,
                     },
                 )
                 .collect();

@@ -35,6 +35,7 @@ async fn c39_call_artifacts_have_digests() {
         success: true,
         artifact_id: Some("sha256:artifact-c39".into()),
         digest: Some("sha256:content-c39".into()),
+        absence_reason: None,
     }];
 
     let record = store
@@ -89,10 +90,12 @@ async fn c40_child_artifacts_have_identity_and_digests() {
 
     let child_artifacts = vec![codegg::tool::tool_program_result::ChildArtifactHandle {
         job_id: "job-child-c40".into(),
+        attempt_id: None,
         run_id: None,
         status: "completed".into(),
         artifact_id: Some("sha256:child-result-c40".into()),
         digest: Some("sha256:child-digest-c40".into()),
+        absence_reason: None,
     }];
 
     let record = store
@@ -253,6 +256,7 @@ async fn c43_tampered_record_fails_load() {
         success: true,
         artifact_id: Some("sha256:art".into()),
         digest: Some("sha256:digest".into()),
+        absence_reason: None,
     }];
 
     let record = store

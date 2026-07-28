@@ -17,7 +17,6 @@ use sha2::Digest;
 use thiserror::Error;
 
 const MAX_RESULT_BYTES: usize = 2 * 1024 * 1024;
-const SPILL_THRESHOLD_BYTES: usize = 100 * 1024;
 const MAX_PROGRAM_ID_BYTES: usize = 128;
 
 #[derive(Debug, Error)]
@@ -36,6 +35,74 @@ pub enum ToolProgramResultError {
     DigestMismatch { stored: String, computed: String },
     #[error("result version mismatch")]
     VersionMismatch,
+    #[error("canonical artifact error: {0}")]
+    Artifact(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalArtifactRef {
+    pub handle: String,
+    pub digest: String,
+    pub byte_length: usize,
+}
+
+pub async fn persist_program_artifact(
+    store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
+    session_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    content: &[u8],
+) -> Result<CanonicalArtifactRef, ToolProgramResultError> {
+    let redacted_content = String::from_utf8_lossy(content).into_owned();
+    let handle = crate::context::ContextHandle::build_tool(session_id, 0, call_id)
+        .map_err(|error| ToolProgramResultError::Artifact(error.to_string()))?;
+    let content_hash = crate::context::compute_content_hash(&redacted_content);
+    let artifact = crate::context::ContextArtifact {
+        handle: handle.clone(),
+        session_id: session_id.to_string(),
+        turn_index: 0,
+        tool_call_id: Some(call_id.to_string()),
+        tool_name: Some(tool_name.to_string()),
+        kind: crate::context::ArtifactKind::ToolResult,
+        created_at_ms: Utc::now().timestamp_millis(),
+        content_hash: content_hash.clone(),
+        redacted_content,
+        raw_bytes_len: content.len(),
+        estimated_tokens: crate::context::estimate_tokens(&String::from_utf8_lossy(content)),
+    };
+    store
+        .put(artifact)
+        .await
+        .map_err(|error| ToolProgramResultError::Artifact(error.to_string()))?;
+    Ok(CanonicalArtifactRef {
+        handle,
+        digest: format!("sha256:{content_hash}"),
+        byte_length: content.len(),
+    })
+}
+
+pub async fn resolve_program_artifact(
+    store: std::sync::Arc<dyn crate::context::ContextArtifactStore>,
+    reference: &CanonicalArtifactRef,
+) -> Result<crate::context::ContextArtifact, ToolProgramResultError> {
+    let artifact = store
+        .get(&reference.handle)
+        .await
+        .map_err(|error| ToolProgramResultError::Artifact(error.to_string()))?
+        .ok_or_else(|| ToolProgramResultError::Artifact("artifact is missing".into()))?;
+    let computed = format!(
+        "sha256:{}",
+        crate::context::compute_content_hash(&artifact.redacted_content)
+    );
+    if computed != reference.digest
+        || artifact.raw_bytes_len != reference.byte_length
+        || format!("sha256:{}", artifact.content_hash) != reference.digest
+    {
+        return Err(ToolProgramResultError::Artifact(
+            "artifact content digest or length mismatch".into(),
+        ));
+    }
+    Ok(artifact)
 }
 
 /// Bounded artifact handle for a tool call or child job result.
@@ -53,6 +120,8 @@ pub struct ProgramArtifactHandle {
     pub artifact_id: Option<String>,
     /// Content digest for integrity verification.
     pub digest: Option<String>,
+    #[serde(default)]
+    pub absence_reason: Option<String>,
 }
 
 /// Bounded child job artifact handle.
@@ -60,6 +129,8 @@ pub struct ProgramArtifactHandle {
 pub struct ChildArtifactHandle {
     /// Child job ID.
     pub job_id: String,
+    #[serde(default)]
+    pub attempt_id: Option<String>,
     /// Child run ID, if available.
     pub run_id: Option<String>,
     /// Child terminal status.
@@ -68,6 +139,8 @@ pub struct ChildArtifactHandle {
     pub artifact_id: Option<String>,
     /// Content digest.
     pub digest: Option<String>,
+    #[serde(default)]
+    pub absence_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,7 +183,7 @@ impl ToolProgramResultStore {
         mut result: ProgramResult,
         call_artifacts: Vec<ProgramArtifactHandle>,
         child_artifacts: Vec<ChildArtifactHandle>,
-        mut output_artifact: Option<String>,
+        output_artifact: Option<String>,
     ) -> Result<ProgramResultRecord, ToolProgramResultError> {
         validate_identity(program_id)?;
         if attempt_id.is_empty() || attempt_id.len() > MAX_PROGRAM_ID_BYTES {
@@ -118,26 +191,6 @@ impl ToolProgramResultStore {
         }
         if let Some(error) = result.error_message.as_mut() {
             error.truncate(4096);
-        }
-
-        // M014-G1: Automatically spill large outputs to the artifact store.
-        // If the output is large and no explicit output_artifact was
-        // provided, spill it to a canonical ctx:// handle.
-        if output_artifact.is_none() {
-            if let Some(output) = result.output.as_ref() {
-                let output_str = serde_json::to_string(output).unwrap_or_default();
-                if output_str.len() > SPILL_THRESHOLD_BYTES {
-                    let artifact_dir = self.base_dir.join("artifacts");
-                    std::fs::create_dir_all(&artifact_dir)?;
-                    let artifact_id =
-                        format!("ctx://artifact/{}/{}", program_id, uuid::Uuid::new_v4());
-                    let artifact_path = artifact_dir.join(format!("{}.json", uuid::Uuid::new_v4()));
-                    std::fs::write(&artifact_path, &output_str)?;
-                    output_artifact = Some(artifact_id);
-                    // Clear the inline output to avoid duplication
-                    result.output = None;
-                }
-            }
         }
 
         let mut record = ProgramResultRecord {
@@ -234,6 +287,7 @@ pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
                 "artifact_handle": a.artifact_id,
                 "preview": a.preview,
                 "digest": a.digest,
+                "absence_reason": a.absence_reason,
             })
         })
         .collect();
@@ -243,10 +297,12 @@ pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
         .map(|a| {
             serde_json::json!({
                 "job_id": a.job_id,
+                "attempt_id": a.attempt_id,
                 "run_id": a.run_id,
                 "status": a.status,
                 "artifact_handle": a.artifact_id,
                 "digest": a.digest,
+                "absence_reason": a.absence_reason,
             })
         })
         .collect();

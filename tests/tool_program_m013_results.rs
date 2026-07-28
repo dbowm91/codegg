@@ -35,16 +35,19 @@ fn call_artifact(success: bool) -> ProgramArtifactHandle {
         success,
         artifact_id: Some("ctx://artifacts/abc".into()),
         digest: Some("sha256:deadbeef".into()),
+        absence_reason: None,
     }
 }
 
 fn child_artifact(job_id: &str) -> ChildArtifactHandle {
     ChildArtifactHandle {
         job_id: job_id.to_string(),
+        attempt_id: None,
         run_id: None,
         status: "completed".into(),
         artifact_id: Some("ctx://artifacts/child-abc".into()),
         digest: Some("sha256:childbeef".into()),
+        absence_reason: None,
     }
 }
 
@@ -77,6 +80,7 @@ async fn h1_tampering_call_artifacts_changes_digest() {
         success: false,
         artifact_id: Some("ctx://artifacts/tampered".into()),
         digest: Some("sha256:tampered".into()),
+        absence_reason: None,
     });
     let tampered_json = serde_json::to_string(&loaded).expect("serialize tampered");
     let path = temp

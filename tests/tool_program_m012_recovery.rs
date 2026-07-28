@@ -580,6 +580,7 @@ async fn c26_artifact_handles_present_and_verifiable() {
             success: true,
             artifact_id: Some("ctx://artifact-1".into()),
             digest: Some("sha256:abc123".into()),
+            absence_reason: None,
         },
         codegg::tool::tool_program_result::ProgramArtifactHandle {
             tool_name: Some("grep".into()),
@@ -587,15 +588,18 @@ async fn c26_artifact_handles_present_and_verifiable() {
             success: true,
             artifact_id: Some("ctx://artifact-2".into()),
             digest: Some("sha256:def456".into()),
+            absence_reason: None,
         },
     ];
 
     let child_artifacts = vec![codegg::tool::tool_program_result::ChildArtifactHandle {
         job_id: "child-job-1".into(),
+        attempt_id: None,
         run_id: Some("run-1".into()),
         status: "completed".into(),
         artifact_id: Some("ctx://child-artifact-1".into()),
         digest: Some("sha256:child1".into()),
+        absence_reason: None,
     }];
 
     let result = ProgramResult {
