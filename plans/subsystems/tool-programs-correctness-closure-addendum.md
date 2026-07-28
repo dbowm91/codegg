@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: closed — Milestone 015 accepted at independent review
+Status: active — Milestone 016 ready for implementation
 
 Canonical subsystem roadmap:
 
@@ -8,10 +8,12 @@ Canonical subsystem roadmap:
 
 Current strict-closure implementation plan:
 
-- `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`
+- `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md`
 
 Historical predecessors:
 
+- `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`
+- `plans/closure/tool-programs/015-status.md`
 - `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md`
 - `plans/closure/tool-programs/014-status.md`
 - `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md`
@@ -21,9 +23,9 @@ Historical predecessors:
 - `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md`
 - `plans/closure/tool-programs/011-status.md`
 
-M015 baseline reviewed:
+M016 baseline reviewed:
 
-- `c9559d23634771dc1bae742da43ae8e362507f6f` (`main`)
+- `9bd9d0bf1e27a021e5610fb8564ca601fda775c0` (`main`)
 
 Applicable ADR:
 
@@ -33,83 +35,68 @@ Applicable ADR:
 
 This addendum is the active corrective control document for strict native-only Tool Programs closure.
 
-M011 through M014 added substantial production mechanics: durable program identity, canonical Broker routing, typed terminal-outcome handling, scheduler timeout plumbing, call journaling, notification compare-and-set operations, expanded lineage, checkpoint loading, replay fingerprints, typed results, SHA-256 integrity checks, and explicit `native_only` policy.
+M015 closed the broad production gaps carried forward from M011–M014: accepted-decision authority, one runtime contract snapshot, monotonic replay, active-child restart recovery, canonical artifacts, typed notification persistence, complete descendant traversal, real daemon failpoints, and separate implementation/review governance.
 
-A post-M014 production-path review found that several strict-closure claims still exceed the implemented mechanisms and evidence. M014 is therefore retained as a historical, conditionally closed implementation record. M015 is the sole active strict-closure authority.
+A post-M015 production-path review demonstrated one remaining restart defect. Parent-session notification events use a stable event ID, but process B reconstructs the event with a new timestamp after a crash between session append and `mark_injected`. The current idempotent append compares complete serialized payloads, so the same logical event can be rejected as an identity collision and the notification can remain permanently unacknowledged.
 
-M015 is a narrow final corrective pass. It does not redesign the restricted Python language, broaden the programmable tool palette, or implement hosted Tool Programs.
+M015 is therefore retained as a historical conditionally closed implementation and review record. M016 is the sole active strict-closure authority.
 
-## 2. Post-M014 trigger findings
+M016 is a narrow polish pass. It does not redesign Tool Programs, broaden authority, change the restricted Python language, expand the programmable palette, or implement hosted execution.
 
-The review of `c9559d23634771dc1bae742da43ae8e362507f6f` found:
+## 2. Post-M015 trigger finding
 
-1. executable authority can still be synthesized from program, workspace, session, or agent-derived fallback values when an accepted permission/path-policy decision is absent;
-2. submission and Broker verification use incompatible contract digest algorithms, submission constructs a separate default catalog, and contract-resolution failure can become an empty snapshot;
-3. restoring a checkpoint can replace and erase newer completed-call records loaded from the durable ledger;
-4. the checkpoint type contains pending-child state, but production checkpoint creation never persists the active child wait before blocking;
-5. child artifacts use synthetic job/status digests, omit actual run identity, and large output bypasses the canonical artifact store with manually constructed handles;
-6. notification creation still writes memory first, logs durable persistence failures, and can report database recovery failure as zero recovered records;
-7. descendant traversal prunes terminal intermediate nodes and therefore can miss active deeper descendants;
-8. complete process-group, permit, lease, counter, and capacity convergence remains unproven;
-9. the daemon suite does not submit through a public protocol, activate deterministic failpoints, or prove recovery across two independent daemon processes;
-10. the implementation pass created its own M014 closure record and claimed independent closure without a separate reviewed commit or mechanism-faithful evidence.
+The review of `9bd9d0bf1e27a021e5610fb8564ca601fda775c0` found:
 
-These are unresolved high and medium authorization, contract, replay, child-recovery, notification, artifact, descendant, process-evidence, and governance defects. They invalidate strict M014 closure but do not erase its implementation value.
+1. `ToolProgramNotificationEvent` uses stable event identity but reconstructs `created_at` on each delivery attempt;
+2. `EventStore::append_idempotent` accepts an existing event only when the complete serialized payload matches;
+3. a crash after append and before `mark_injected` can therefore make process B reject the same logical event because only timestamp metadata changed;
+4. the existing unit test reuses one fixed event instance and does not reproduce a reconstructed process-B event;
+5. the current process evidence does not prove that this exact crash window reaches injected and delivered state without a duplicate event.
+
+This is a narrow medium restart-correctness defect. It invalidates strict exactly-once parent-session notification closure but does not invalidate the other M015 mechanisms.
 
 ## 3. Current corrective milestone
 
-### Milestone 015 — Final production-path and independent closure
+### Milestone 016 — Notification replay polish and final closure
 
-Class: final corrective implementation / authorization convergence / restart correctness / canonical persistence / process evidence / independent closure
+Class: narrow restart-correctness polish / durable session injection / independent closure
 
-Objective: close the remaining production-path mismatches while retaining the valid M014 work, then establish strict closure through a separate independent review.
+Objective: make reconstruction of one logical Tool Program notification event semantically idempotent across the append-before-mark crash window, prove eventual delivered-state convergence through a real two-process fixture, and restore strict closure through a separate reviewer.
 
 Dependencies:
 
-- M001–M014 implementation and historical records are present;
-- the normal AgentLoop/Broker permission path, runtime Broker catalog, scheduler, JobStore, SQLite session store, RunStore, artifact store, managed process layer, and native daemon protocol are available;
+- M001–M015 implementation is present;
+- M015 accepted-decision authority, contract, replay, child, artifact, descendant, process-fixture, and native-only mechanisms remain the baseline;
+- the durable notification record, session event store, SQLite notification service, AgentLoop delivery path, and debug failpoint harness are available;
 - no external provider is required;
 - production remains explicitly `native_only`;
-- M015 does not broaden program authority.
+- M016 does not broaden program authority.
 
 Exit conditions:
 
-- an actual accepted direct-call permission/path-policy decision is required before source persistence or job creation;
-- identity-derived values remain correlation-only and cannot create executable authority;
-- submission, executor, and Broker verify one frozen runtime contract snapshot with one canonical digest helper;
-- a normal authorized nested read-only call succeeds through the production path;
-- checkpoint and completed-call recovery merge monotonically and never duplicate a durably completed call;
-- active child identity is persisted before waiting and restart reattaches or consumes the same child without duplicate submission;
-- call, child, and large-output artifacts use canonical resolvable stores and verified digests;
-- notification persistence and session injection fail closed and remain durably idempotent across independent service instances and restart;
-- descendant traversal crosses terminal intermediate nodes and scheduler-owned reconciliation converges processes, permits, leases, counters, and capacity;
-- real daemon tests submit through a public protocol, activate deterministic failpoints, kill process A, restart process B against the same durable state, and prove exact-once recovery and bounded convergence;
-- implementation moves only to `closing`; an independent reviewer later creates and accepts the M015 closure record;
+- `tp-event:{injection_key}` remains the stable parent-session event ID;
+- timestamp-only reconstruction differences do not cause a collision for the same logical notification;
+- session, injection key, notification, program, event type, and exact content differences still fail closed;
+- an existing matching event is accepted without update, delete, or duplication;
+- delivery order remains append/confirm, mark injected, then acknowledge;
+- append, mark, acknowledgement, query, and serialization failures remain typed and recoverable;
+- a real process-A append/failpoint/kill and process-B reconstruction reaches one event and delivered state;
+- repeated restart remains stable and duplicate-free;
+- affected M015 suites, broader bounded Tool Program tests, native harness, and static guards pass;
+- implementation moves only to `closing`; a separate reviewer later creates and accepts the M016 closure record;
 - no unresolved high or medium finding remains.
 
 ## 4. Dependency graph
 
 ```text
-M001–M010 foundations
+M001–M014 foundations and corrective implementations
         |
         v
-M011 production ownership implementation
-(conditionally closed historical record)
+M015 final production-path implementation
+(conditionally closed after notification replay review)
         |
         v
-M012 authority/recovery/delivery corrective implementation
-(conditionally closed historical record)
-        |
-        v
-M013 production authority/descendant/recovery implementation
-(conditionally closed historical record)
-        |
-        v
-M014 production-boundary implementation
-(conditionally closed after production-path review)
-        |
-        v
-M015 final production-path and independent closure
+M016 notification replay polish and independent closure
         |
         v
 Strict native-only Tool Programs subsystem closure
@@ -119,22 +106,22 @@ Historical records remain traceability artifacts and must not be rewritten to co
 
 ## 5. Closure authority
 
-Until M015 closes:
+Until M016 closes:
 
 - the Tool Programs subsystem status is `active`;
-- M011, M012, M013, and M014 are `conditionally closed` historical implementation records;
-- M015 is the sole active strict-closure authority;
+- M011 through M015 are historical implementation or review records, with M011–M015 conditionally closed where later production findings transferred strict closure forward;
+- M016 is the sole active strict-closure authority;
 - mutation-capable, destructive, approval-sensitive, shell, patch, Git mutation, commit, push, and subagent tools remain prohibited from the programmable palette;
 - production remains `native_only`;
-- documentation may not claim accepted-decision authority, canonical contract convergence, monotonic replay, active-child restart reattachment, exactly-once session delivery, canonical child/output artifacts, full descendant resource convergence, or daemon failpoint closure without M015 evidence.
+- documentation may not claim strict append-before-mark notification convergence or strict subsystem closure without M016 evidence.
 
 The authoritative implementation and acceptance details are in:
 
-- `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`
+- `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md`
 
 The eventual independent closure record must be created at:
 
-- `plans/closure/tool-programs/015-status.md`
+- `plans/closure/tool-programs/016-status.md`
 
 The implementation pass must leave that closure record absent.
 
@@ -147,26 +134,27 @@ The implementation pass must leave that closure record absent.
 | 011 | conditionally closed, historical | Production ownership mechanics landed; strict closure transferred forward |
 | 012 | conditionally closed, historical | Broker failure and native-only improvements retained; strict closure transferred forward |
 | 013 | conditionally closed, historical | Grant persistence, CAS syntax, basic lineage, replay/result improvements retained; strict closure transferred forward |
-| 014 | conditionally closed, historical | Checkpoint loading, v35 lineage, result integrity, native-only enforcement, and other improvements retained; post-review production gaps owned by M015 |
-| 015 | closed | Implementation head `247ef50`; independent approval `230f435`; closure `plans/closure/tool-programs/015-status.md` |
+| 014 | conditionally closed, historical | Checkpoint loading, v35 lineage, result integrity, native-only enforcement, and other improvements retained; strict closure transferred forward |
+| 015 | conditionally closed, historical | Broad production-path closure retained; notification reconstruction defect transferred to M016 |
+| 016 | ready | Sole active handoff for semantic notification replay and independent final closure |
 
 ## 7. Completion definition
 
 The Tool Programs subsystem becomes strictly closed only when:
 
-1. all M015 C-01 through C-52 criteria are true in production paths;
-2. accepted authority derives from the actual direct-call permission/path-policy decision and no executable fallback remains;
-3. one frozen runtime contract snapshot is verified consistently from submission through nested Broker execution;
-4. restart cannot duplicate a completed call or child submission and cannot extend the original deadline;
-5. active child identity is persisted before waiting and recovered through scheduler/JobStore lineage;
-6. notification, replay, checkpoint, result, and artifact persistence failures fail closed;
-7. foreground, background notification, inspection, and restart consume one integrity-checked typed result with canonical artifact identities;
-8. descendant jobs, process groups, permits, leases, counters, and scheduler capacity converge after terminalization or restart;
-9. real daemon kill/restart failpoint tests pass through a public protocol boundary without shared in-memory objects;
-10. full targeted formatting, compilation, migration, static guard, and repository-standard bounded tests pass;
-11. the implementation pass leaves M015 at `closing` and does not create or approve its closure record;
-12. a separate reviewer creates `plans/closure/tool-programs/015-status.md` at a later commit with exact implementation head, test evidence, CI/status references when available, and criterion-by-criterion disposition;
+1. all M016 C-01 through C-37 criteria are true in production paths;
+2. the same logical notification event can be reconstructed after restart without timestamp-only collision;
+3. any different semantic event reusing the identity fails closed;
+4. append or semantic confirmation precedes mark-injected, which precedes acknowledgement;
+5. process A and process B share only durable state in the append-before-mark fixture;
+6. one and only one parent-session event exists after recovery;
+7. the notification reaches and remains in delivered state after repeated restart;
+8. notification persistence, query, serialization, and conflict failures remain typed;
+9. M015 authority, contract, replay, child, artifact, descendant, and native-only invariants remain green;
+10. required formatting, compilation, targeted tests, native harness, and static guards pass;
+11. the implementation pass leaves M016 at `closing` and does not create or approve its closure record;
+12. a separate reviewer creates `plans/closure/tool-programs/016-status.md` at a later commit with exact implementation head and independent evidence;
 13. no unresolved high or medium finding remains;
-14. roadmap, addendum, implementation plan, closure record, architecture documentation, and registry agree.
+14. roadmap, addendum, implementation plan, closure records, architecture documentation, and registry agree.
 
-No additional corrective milestone should be registered after M015 unless a new production-path defect is demonstrated.
+No additional corrective milestone should be registered after M016 unless a new production-path defect is demonstrated.
