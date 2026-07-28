@@ -2297,6 +2297,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         Some(scheduler),
     );
     let core = codegg::core::InprocCoreClient::with_deps(deps, config);
+    core.initialize_recovery().await?;
 
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();

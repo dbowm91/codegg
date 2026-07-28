@@ -499,6 +499,11 @@ pub struct PendingChildWait {
     pub instruction_sequence: u32,
     #[serde(default)]
     pub operation_config_digest: String,
+    /// Exact operands needed to re-enter the interrupted child instruction.
+    #[serde(default)]
+    pub operation_value: Option<ProgramValue>,
+    #[serde(default)]
+    pub config_value: Option<ProgramValue>,
 }
 
 impl InterpreterCheckpoint {
@@ -1262,6 +1267,7 @@ impl MeteredInterpreter {
                                     self.make_completed_call(seq, request.clone(), result.clone());
                                 broker.call_completed(&completed).await?;
                                 self.completed_calls.insert(seq, completed);
+                                hit_debug_failpoint("tool_program_after_calls_persist");
                                 self.commit_checkpoint(broker).await?;
                             }
                             result
@@ -2242,6 +2248,22 @@ impl MeteredInterpreter {
             .max()
             .map(|k| k + 1)
             .unwrap_or(0);
+        if let Some(pending) = &self.pending_child_wait {
+            let operation = pending.operation_value.clone().ok_or_else(|| {
+                InterpreterError::ReplayDivergence(
+                    "pending child checkpoint is missing its operation operand".into(),
+                )
+            })?;
+            let config = pending.config_value.clone().ok_or_else(|| {
+                InterpreterError::ReplayDivergence(
+                    "pending child checkpoint is missing its config operand".into(),
+                )
+            })?;
+            self.pc = self.pc.saturating_sub(1);
+            self.next_call_seq = pending.instruction_sequence;
+            self.stack.push(operation);
+            self.stack.push(config);
+        }
         Ok(())
     }
 
@@ -2353,6 +2375,25 @@ impl MeteredInterpreter {
         }
     }
 }
+
+#[cfg(debug_assertions)]
+fn hit_debug_failpoint(name: &str) {
+    if std::env::var("CODEGG_TEST_FAILPOINT").ok().as_deref() != Some(name) {
+        return;
+    }
+    let Some(path) = std::env::var_os("CODEGG_TEST_FAILPOINT_MARKER") else {
+        return;
+    };
+    if let Ok(file) = std::fs::File::create(path) {
+        let _ = file.sync_all();
+    }
+    loop {
+        std::thread::park_timeout(std::time::Duration::from_secs(1));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn hit_debug_failpoint(_name: &str) {}
 
 /// Validate a program result against a JSON schema.
 /// Returns Ok(()) if valid, or Err with a description of the mismatch.

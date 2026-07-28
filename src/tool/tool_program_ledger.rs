@@ -338,6 +338,16 @@ impl ToolProgramLedger {
             .and_then(|j| j.checkpoint)
     }
 
+    /// Checked production load. Recovery must distinguish an absent
+    /// checkpoint from a corrupt or unreadable journal.
+    pub fn load_latest_checkpoint_checked(
+        &self,
+        program_id: &str,
+    ) -> Result<Option<InterpreterCheckpoint>, ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        Ok(self.read_journal(program_id)?.checkpoint)
+    }
+
     /// Check if a call has been durably completed (C-20).
     pub fn is_call_completed(&self, program_id: &str, sequence: u32) -> bool {
         self.load_completed_calls(program_id)

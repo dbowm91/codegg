@@ -548,13 +548,62 @@ impl BrokerCallback for BrokerAdapter {
             relation_kind: Some("child_job".to_string()),
         };
 
-        // Submit and wait
-        let submitted = submission
-            .submit(Some(submission_key), new_job)
-            .await
-            .map_err(|e| {
-                InterpreterError::BrokerError(format!("child job submission failed: {}", e))
-            })?;
+        // On restart the pending checkpoint is authoritative: reattach by
+        // durable child identity instead of rebuilding a submission whose
+        // parent attempt necessarily belongs to the new daemon generation.
+        let submitted = if let Some(pending) = &checkpoint.pending_child_wait {
+            let child_id = codegg_core::jobs::JobId::new_unchecked(&pending.child_job_id);
+            let child = submission
+                .scheduler()
+                .store()
+                .get_job(&child_id)
+                .await
+                .map_err(|error| InterpreterError::BrokerError(error.to_string()))?
+                .ok_or_else(|| {
+                    InterpreterError::ReplayDivergence(
+                        "pending child job is missing from the durable store".into(),
+                    )
+                })?;
+            if child.parent_program_id.as_deref() != Some(self.program_id.as_str())
+                || child.parent_job_id.as_ref() != self.job_id.as_ref()
+                || child
+                    .parent_attempt_id
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref()
+                    != Some(pending.parent_attempt_id.as_str())
+                || child.parent_call_id.as_deref() != Some(pending.canonical_call_id.as_str())
+                || child
+                    .parent_instruction_sequence
+                    .is_some_and(|sequence| sequence != request.sequence)
+            {
+                return Err(InterpreterError::ReplayDivergence(format!(
+                    "pending child durable lineage does not match checkpoint \
+                     (program={:?}/{:?}, parent_job={:?}/{:?}, parent_attempt={:?}/{:?}, sequence={:?}/{})",
+                    child.parent_program_id,
+                    pending.parent_program_id,
+                    child.parent_job_id,
+                    self.job_id,
+                    child.parent_attempt_id,
+                    pending.parent_attempt_id,
+                    child.parent_instruction_sequence,
+                    request.sequence,
+                )));
+            }
+            crate::scheduler::submission::SubmittedJob {
+                job_id: child.job_id,
+                state: child.state,
+                workspace_id: child.workspace_id,
+                priority: child.priority,
+            }
+        } else {
+            submission
+                .submit(Some(submission_key), new_job)
+                .await
+                .map_err(|e| {
+                    InterpreterError::BrokerError(format!("child job submission failed: {}", e))
+                })?
+        };
 
         let parent_job_id = self
             .job_id
@@ -565,7 +614,7 @@ impl BrokerCallback for BrokerAdapter {
                     "child wait checkpoint requires parent job identity".into(),
                 )
             })?;
-        let parent_attempt_id = self.attempt_id.clone().ok_or_else(|| {
+        let current_parent_attempt_id = self.attempt_id.clone().ok_or_else(|| {
             InterpreterError::BrokerError(
                 "child wait checkpoint requires parent attempt identity".into(),
             )
@@ -574,7 +623,6 @@ impl BrokerCallback for BrokerAdapter {
             if pending.child_job_id != submitted.job_id.to_string()
                 || pending.parent_program_id != self.program_id
                 || pending.parent_job_id != parent_job_id
-                || pending.parent_attempt_id != parent_attempt_id
                 || pending.instruction_sequence != request.sequence
                 || pending.operation_config_digest != format!("sha256:{config_hash}")
             {
@@ -583,6 +631,11 @@ impl BrokerCallback for BrokerAdapter {
                 ));
             }
         }
+        let parent_attempt_id = checkpoint
+            .pending_child_wait
+            .as_ref()
+            .map(|pending| pending.parent_attempt_id.clone())
+            .unwrap_or(current_parent_attempt_id);
         let mut pending_checkpoint = checkpoint.clone();
         pending_checkpoint.pending_child_wait = Some(codegg_core::tool_program::PendingChildWait {
             child_job_id: submitted.job_id.to_string(),
@@ -594,9 +647,30 @@ impl BrokerCallback for BrokerAdapter {
             canonical_call_id: format!("call:{}:{}", self.program_id, request.sequence),
             instruction_sequence: request.sequence,
             operation_config_digest: format!("sha256:{config_hash}"),
+            operation_value: Some(codegg_core::tool_program::ProgramValue::String(
+                request.op.to_string(),
+            )),
+            config_value: Some(codegg_core::tool_program::ProgramValue::from_json(
+                match &request.config {
+                    codegg_core::tool_program::child_job::ChildJobConfig::Test(config) => {
+                        serde_json::to_value(config)
+                    }
+                    codegg_core::tool_program::child_job::ChildJobConfig::Build(config) => {
+                        serde_json::to_value(config)
+                    }
+                    codegg_core::tool_program::child_job::ChildJobConfig::Lint(config) => {
+                        serde_json::to_value(config)
+                    }
+                    codegg_core::tool_program::child_job::ChildJobConfig::Format(config) => {
+                        serde_json::to_value(config)
+                    }
+                }
+                .unwrap_or_default(),
+            )),
         });
         pending_checkpoint.refresh_semantic_digest();
         self.checkpoint(&pending_checkpoint).await?;
+        crate::test_failpoint::hit("tool_program_after_child_wait_checkpoint");
 
         let mut wait_timeout = effective_timeout + std::time::Duration::from_secs(30);
 
@@ -1221,15 +1295,40 @@ impl JobExecutor for ToolProgramExecutor {
         // without invoking the broker again.
         let ledger = crate::tool::tool_program_ledger::ToolProgramLedger::new(&ctx.workspace_root);
         let mut interpreter = MeteredInterpreter::new(compilation.ir.clone(), limits);
-        if let Ok(completed_calls) = ledger.load_completed_calls(&program_id) {
-            interpreter.load_completed_calls(completed_calls);
+        match ledger.load_completed_calls(&program_id) {
+            Ok(completed_calls) => interpreter.load_completed_calls(completed_calls),
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("durable call journal is corrupt: {error}"),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
         }
 
         // M014-C11/C-12: Load the latest valid checkpoint and restore
         // interpreter state before resumed execution. This includes
         // locals, stack, budgets, next call sequence, and pending child
         // wait identity.
-        if let Some(checkpoint) = ledger.load_latest_checkpoint(&program_id) {
+        let checkpoint = match ledger.load_latest_checkpoint_checked(&program_id) {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("durable checkpoint journal is corrupt: {error}"),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        if let Some(checkpoint) = checkpoint {
             let durable_deadline = ctx.job.deadline.map(|deadline| deadline.timestamp_millis());
             if checkpoint.original_deadline_millis != durable_deadline {
                 return ExecutorCompletion {
@@ -1425,6 +1524,76 @@ impl JobExecutor for ToolProgramExecutor {
             .with_grant(grant)
             .with_deadline(wall_deadline);
 
+        // A terminal result is the commit point. If the daemon died after
+        // that commit but before the attempt/notification transition, a new
+        // generation must converge from the verified record without running
+        // the interpreter or nested calls again.
+        let result_store =
+            crate::tool::tool_program_result::ToolProgramResultStore::new(&ctx.workspace_root);
+        match result_store.load(&program_id) {
+            Ok(Some(record)) => {
+                if execution_mode == "background" {
+                    if let Some(service) = &self.notification_service {
+                        if let Err(error) = service
+                            .record_terminal_result(
+                                &program_id,
+                                ctx.job_id().as_str(),
+                                execution_context.session_id.as_deref(),
+                                execution_context.agent_id.as_deref(),
+                                execution_context.turn_id.as_deref(),
+                                &record,
+                            )
+                            .await
+                        {
+                            return ExecutorCompletion {
+                                status: ExecutorStatus::Failed,
+                                summary: format!(
+                                    "terminal result recovered but durable notification failed: {error}"
+                                ),
+                                run_id: None,
+                                metrics: ExecutorMetrics {
+                                    elapsed_ms: started.elapsed().as_millis() as u64,
+                                    ..Default::default()
+                                },
+                            };
+                        }
+                    }
+                }
+                let status = match record.result.status {
+                    ProgramStatus::Completed => ExecutorStatus::Completed,
+                    ProgramStatus::Cancelled => ExecutorStatus::Cancelled,
+                    ProgramStatus::TimedOut | ProgramStatus::Stalled => ExecutorStatus::TimedOut,
+                    ProgramStatus::Failed
+                    | ProgramStatus::Incomplete
+                    | ProgramStatus::Recoverable => ExecutorStatus::Failed,
+                };
+                return ExecutorCompletion {
+                    status,
+                    summary: format!(
+                        "recovered committed Tool Program result {}",
+                        record.result_digest
+                    ),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("committed Tool Program result is corrupt: {error}"),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        }
+
         // Build run configuration
         let run_config = RunConfig {
             wall_deadline,
@@ -1453,7 +1622,6 @@ impl JobExecutor for ToolProgramExecutor {
                 },
             };
         }
-
         // M013-C-38: Only native backend is supported. The admission
         // gate in tool_program.rs rejects hosted policies, but we
         // enforce the invariant defensively here too.
@@ -1678,6 +1846,7 @@ impl JobExecutor for ToolProgramExecutor {
 
         if execution_mode == "background" {
             if let (Some(service), Some(record)) = (&self.notification_service, result_record) {
+                crate::test_failpoint::hit("tool_program_after_result_persist");
                 if let Err(error) = service
                     .record_terminal_result(
                         &program_id,

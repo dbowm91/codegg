@@ -190,6 +190,8 @@ async fn c14_pending_child_wait_restored() {
         canonical_call_id: String::new(),
         instruction_sequence: 0,
         operation_config_digest: String::new(),
+        operation_value: None,
+        config_value: None,
     };
 
     let checkpoint = InterpreterCheckpoint {

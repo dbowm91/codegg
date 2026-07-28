@@ -1151,6 +1151,7 @@ impl JobScheduler {
                 "failed to cancel descendants during request_cancel"
             );
         }
+        crate::test_failpoint::hit("tool_program_after_descendant_cancel");
         Ok(result)
     }
 

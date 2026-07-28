@@ -1863,6 +1863,7 @@ impl AgentLoop {
                 messages.push(Message::System {
                     content: std::sync::Arc::new(text),
                 });
+                crate::test_failpoint::hit("tool_program_after_session_append");
                 if let Err(error) = svc.acknowledge(&notification.notification_id).await {
                     tracing::error!(%error, notification_id = %notification.notification_id, "failed to acknowledge Tool Program notification");
                 }

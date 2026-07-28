@@ -53,6 +53,7 @@ pub mod security;
 pub mod shell;
 pub mod shell_session;
 pub mod skills;
+pub(crate) mod test_failpoint;
 pub mod test_runner;
 pub mod theme;
 pub mod tool;

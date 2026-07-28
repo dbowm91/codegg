@@ -212,6 +212,7 @@ impl JobSubmissionService {
         }
 
         let job = self.store.create_job(spec).await?;
+        crate::test_failpoint::hit("tool_program_after_job_persist");
         if let Err(error) = self.scheduler.enqueue_existing(job.clone()).await {
             // Durable creation can succeed even when queue admission/wake-up
             // fails. Cancel the record before returning so a transport retry

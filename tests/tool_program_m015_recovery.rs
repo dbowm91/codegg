@@ -97,6 +97,8 @@ fn pending_child_checkpoint_carries_reattachment_identity_and_deadline() {
         canonical_call_id: "call:program-parent:7".into(),
         instruction_sequence: 7,
         operation_config_digest: "sha256:config".into(),
+        operation_value: None,
+        config_value: None,
     });
     let encoded = serde_json::to_string(&checkpoint).unwrap();
     let restored: InterpreterCheckpoint = serde_json::from_str(&encoded).unwrap();

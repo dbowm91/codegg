@@ -478,6 +478,17 @@ impl WorkspaceRegistry {
                 return Ok(cached.clone());
             }
         }
+        // A freshly restarted daemon may receive registration before its
+        // optional eager hydration completes. Resolve the durable canonical
+        // root before attempting an insert so restart registration remains
+        // idempotent under the database uniqueness constraint.
+        if let Some(record) = self.store.load_by_canonical_root(&canonical_root).await? {
+            let id = record.id.clone();
+            let arc = Arc::new(record);
+            self.by_id.insert(id.as_str().to_string(), arc.clone());
+            self.by_root.insert(canonical_root, id);
+            return Ok(arc);
+        }
 
         let now = Utc::now();
         let record = WorkspaceRecord {

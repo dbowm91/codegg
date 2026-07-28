@@ -728,7 +728,13 @@ impl JobStore for InMemoryJobStore {
                 IdempotencyClass::NonIdempotent => policy.requeue_non_idempotent,
                 IdempotencyClass::Destructive => policy.requeue_destructive,
             };
-            if eligible && job.attempt_count < job.retry_policy.max_attempts {
+            let resumable_tool_program = matches!(job.kind, JobKind::ToolProgram)
+                && job.idempotency.is_retry_eligible()
+                && job.deadline.is_some_and(|deadline| deadline > now);
+            if eligible
+                && job.cancel_requested_at.is_none()
+                && (job.attempt_count < job.retry_policy.max_attempts || resumable_tool_program)
+            {
                 let updated = JobRecord {
                     state: JobState::Queued,
                     current_attempt_id: None,
@@ -741,7 +747,11 @@ impl JobStore for InMemoryJobStore {
                 requeued += 1;
             } else {
                 let updated = JobRecord {
-                    state: JobState::Failed,
+                    state: if job.cancel_requested_at.is_some() {
+                        JobState::Cancelled
+                    } else {
+                        JobState::Failed
+                    },
                     current_attempt_id: None,
                     terminal_at: Some(now),
                     updated_at: now,
@@ -892,9 +902,10 @@ impl JobStore for SqliteJobStore {
                 not_before, deadline, schedule_id,
                 time_created, time_updated, time_terminal,
                 cancel_requested_at, cancel_reason, labels_json,
-                parent_job_id, parent_attempt_id, parent_call_id
+                parent_job_id, parent_attempt_id, parent_call_id,
+                parent_program_id, parent_instruction_sequence, relation_kind
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, 0,
-                      ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?)
+                      ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(job_id.as_str())
@@ -916,6 +927,9 @@ impl JobStore for SqliteJobStore {
         .bind(spec.parent_job_id.as_ref().map(|id| id.as_str()))
         .bind(spec.parent_attempt_id.as_ref().map(|id| id.as_str()))
         .bind(spec.parent_call_id.as_deref())
+        .bind(spec.parent_program_id.as_deref())
+        .bind(spec.parent_instruction_sequence.map(i64::from))
+        .bind(spec.relation_kind.as_deref())
         .execute(&mut *tx)
         .await
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
@@ -979,7 +993,8 @@ impl JobStore for SqliteJobStore {
                    not_before, deadline, schedule_id,
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
-                   parent_job_id, parent_attempt_id, parent_call_id
+                   parent_job_id, parent_attempt_id, parent_call_id,
+                   parent_program_id, parent_instruction_sequence, relation_kind
             FROM job WHERE id = ?
             "#,
         )
@@ -1605,7 +1620,8 @@ impl JobStore for SqliteJobStore {
         for job_id in &touched {
             let job_row = sqlx::query(
                 r#"
-                SELECT state, attempt_count, retry_json, idempotency, current_attempt_id
+                SELECT state, kind, attempt_count, retry_json, idempotency,
+                       current_attempt_id, deadline, cancel_requested_at
                 FROM job WHERE id = ?
                 "#,
             )
@@ -1614,10 +1630,15 @@ impl JobStore for SqliteJobStore {
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
             let current_state: String = job_row.get("state");
+            let kind = JobKind::from_str_lossy(job_row.get::<String, _>("kind").as_str());
             let attempt_count: i64 = job_row.get("attempt_count");
             let retry_json: String = job_row.get("retry_json");
             let idempotency_str: String = job_row.get("idempotency");
             let current_attempt_id: Option<String> = job_row.get("current_attempt_id");
+            let deadline = job_row
+                .get::<Option<i64>, _>("deadline")
+                .and_then(chrono::DateTime::<Utc>::from_timestamp_millis);
+            let cancel_requested_at: Option<i64> = job_row.get("cancel_requested_at");
             let retry_policy: RetryPolicy = deserialize_retry(&retry_json)?;
             let idempotency = match idempotency_str.as_str() {
                 "read_only" => IdempotencyClass::ReadOnly,
@@ -1637,7 +1658,13 @@ impl JobStore for SqliteJobStore {
             if JobState::from_str_lossy(&current_state).is_terminal() {
                 continue;
             }
-            if eligible && (attempt_count as u32) < retry_policy.max_attempts {
+            let resumable_tool_program = matches!(kind, JobKind::ToolProgram)
+                && idempotency.is_retry_eligible()
+                && deadline.is_some_and(|deadline| deadline > now);
+            if eligible
+                && cancel_requested_at.is_none()
+                && ((attempt_count as u32) < retry_policy.max_attempts || resumable_tool_program)
+            {
                 sqlx::query(
                     r#"
                     UPDATE job SET state = 'queued', current_attempt_id = NULL,
@@ -1653,13 +1680,19 @@ impl JobStore for SqliteJobStore {
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
                 requeued += 1;
             } else {
+                let terminal_state = if cancel_requested_at.is_some() {
+                    "cancelled"
+                } else {
+                    "failed"
+                };
                 sqlx::query(
                     r#"
-                    UPDATE job SET state = 'failed', current_attempt_id = NULL,
+                    UPDATE job SET state = ?, current_attempt_id = NULL,
                                    time_updated = ?, time_terminal = ?
                     WHERE id = ?
                     "#,
                 )
+                .bind(terminal_state)
                 .bind(now.timestamp_millis())
                 .bind(now.timestamp_millis())
                 .bind(job_id)

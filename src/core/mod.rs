@@ -52,6 +52,24 @@ impl InprocCoreClient {
         }
     }
 
+    /// Initialize durable daemon state before serving requests.
+    ///
+    /// Every transport, including the hidden stdio transport used by local
+    /// process isolation, must run the same workspace hydration and job
+    /// generation recovery sequence.
+    pub async fn initialize_recovery(&self) -> Result<(), AppError> {
+        if let Some(daemon) = &self.daemon {
+            daemon
+                .hydrate_workspace_registry()
+                .await
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+            daemon.start_event_bridge();
+            daemon.recover_state().await;
+            let _ = daemon.recover_jobs().await;
+        }
+        Ok(())
+    }
+
     /// Legacy constructor for backward compatibility. Prefer `with_deps`.
     pub fn new(
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
