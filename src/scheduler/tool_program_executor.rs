@@ -1234,6 +1234,60 @@ impl JobExecutor for ToolProgramExecutor {
                 },
             };
         }
+        let frozen_contracts: Vec<crate::tool::tool_program_context::ContractEntry> =
+            match serde_json::from_str::<serde_json::Value>(&grant.contract_snapshot_json)
+                .ok()
+                .and_then(|value| value.get("contracts").cloned())
+                .and_then(|contracts| serde_json::from_value(contracts).ok())
+            {
+                Some(contracts) => contracts,
+                None => {
+                    return ExecutorCompletion {
+                        status: ExecutorStatus::Failed,
+                        summary: "missing or invalid frozen contract snapshot".into(),
+                        run_id: None,
+                        metrics: ExecutorMetrics {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        },
+                    };
+                }
+            };
+        let current_contracts = match crate::tool::tool_program_context::resolve_contract_snapshot(
+            &self.broker,
+            &allowed_tools,
+        ) {
+            Ok(contracts) => contracts,
+            Err(error) => {
+                return ExecutorCompletion {
+                    status: ExecutorStatus::Failed,
+                    summary: format!("runtime contract resolution failed: {error}"),
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                        ..Default::default()
+                    },
+                };
+            }
+        };
+        let frozen_digest =
+            crate::tool::tool_program_context::canonical_contract_digest(&frozen_contracts);
+        let current_digest =
+            crate::tool::tool_program_context::canonical_contract_digest(&current_contracts);
+        if frozen_contracts != current_contracts
+            || frozen_digest.as_deref() != Ok(grant.contract_digest.as_str())
+            || current_digest.as_deref() != Ok(grant.contract_digest.as_str())
+        {
+            return ExecutorCompletion {
+                status: ExecutorStatus::Failed,
+                summary: "runtime contract snapshot drift detected".into(),
+                run_id: None,
+                metrics: ExecutorMetrics {
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    ..Default::default()
+                },
+            };
+        }
         let contract_digest = grant.contract_digest.clone();
         let manifest_digest = crate::tool::tool_program_context::stable_digest(
             &serde_json::to_string(&serde_json::json!({
@@ -1538,8 +1592,19 @@ mod tests {
 
     fn sample_tool_program_job(program_id: &str, source_digest: &str) -> JobRecord {
         let now = chrono::Utc::now();
-        let execution_context =
-            codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-1", "test");
+        let execution_context = codegg_core::jobs::ToolProgramExecutionContext {
+            workspace_path_policy_id: "ws-1".into(),
+            principal_ref: Some("test-principal".into()),
+            authority_ref: Some("test-decision".into()),
+            policy_revision: Some("test-policy-v1".into()),
+            path_policy_revision: Some("test-path-v1".into()),
+            decision_outcome: Some("allowed".into()),
+            caller_class: Some("agent".into()),
+            maximum_effect_class: Some("read_only".into()),
+            decision_issued_at: Some(chrono::Utc::now().timestamp_millis()),
+            contract_snapshot_json: r#"{"contracts":[]}"#.into(),
+            ..codegg_core::jobs::ToolProgramExecutionContext::for_workspace("ws-1", "test")
+        };
         let authority_digest = crate::tool::tool_program_context::authority_digest(
             &execution_context,
             &[],
@@ -1553,7 +1618,8 @@ mod tests {
             source_digest,
             "",
             "",
-        );
+        )
+        .unwrap();
         let authority_grant_json = serde_json::to_string(&authority_grant).unwrap();
         JobRecord {
             job_id: JobId::new_unchecked("j-tp"),

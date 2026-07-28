@@ -312,23 +312,34 @@ impl BrokerAuthority {
             // already verified tool inclusion before reaching the broker.
         }
 
-        // M013-C-06: Contract version verification — compute a digest
-        // from the contract's stable identity fields and compare against
-        // the grant's contract_digest. Prevents contract substitution.
-        if !grant.contract_digest.is_empty() {
-            let contract_digest = crate::tool::tool_program_context::stable_digest(
-                &serde_json::to_string(&serde_json::json!({
-                    "name": contract.name,
-                    "implementation_id": contract.implementation_id,
-                    "implementation_version": contract.implementation_version,
-                    "effect_class": contract_effect,
-                }))
-                .unwrap_or_default(),
-            );
-            if contract_digest != grant.contract_digest {
+        // Verify the complete frozen snapshot with the one canonical digest
+        // algorithm used at submission and executor admission, then compare
+        // this exact runtime entry against its persisted counterpart.
+        if matches!(ctx.caller, ToolCaller::Program { .. }) {
+            let frozen: Vec<crate::tool::tool_program_context::ContractEntry> =
+                serde_json::from_str::<serde_json::Value>(&grant.contract_snapshot_json)
+                    .ok()
+                    .and_then(|value| value.get("contracts").cloned())
+                    .and_then(|contracts| serde_json::from_value(contracts).ok())
+                    .ok_or_else(|| "missing or invalid frozen contract snapshot".to_string())?;
+            let frozen_digest =
+                crate::tool::tool_program_context::canonical_contract_digest(&frozen)?;
+            if frozen_digest != grant.contract_digest {
                 return Err(format!(
-                    "contract version mismatch: grant_digest={}, computed={}",
-                    grant.contract_digest, contract_digest
+                    "contract snapshot digest mismatch: grant={}, computed={}",
+                    grant.contract_digest, frozen_digest
+                ));
+            }
+            let runtime = crate::tool::tool_program_context::contract_entry(contract)?;
+            let persisted = frozen
+                .iter()
+                .find(|entry| entry.tool_name == tool_name)
+                .ok_or_else(|| {
+                    format!("tool '{tool_name}' is absent from frozen contract snapshot")
+                })?;
+            if persisted != &runtime {
+                return Err(format!(
+                    "runtime contract drift for tool '{tool_name}': frozen={persisted:?}, runtime={runtime:?}"
                 ));
             }
         }
@@ -659,6 +670,7 @@ impl ToolBroker {
             decision_issued_at: None,
             decision_expires_at: None,
             decision_revoked_at: None,
+            program_contract_snapshot: None,
         };
         let tool = registry
             .get(tool_name)
@@ -1044,6 +1056,7 @@ mod tests {
                 source_digest: String::new(),
                 ir_digest: String::new(),
                 contract_digest: String::new(),
+                contract_snapshot_json: String::new(),
                 issued_at: chrono::Utc::now().timestamp_millis(),
                 expires_at: None,
                 revoked_at: None,
