@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: active — Milestone 015 closing; independent strict closure review pending
+Status: closed — Milestone 015 independently accepted
 
 Long-term references:
 
@@ -513,3 +513,5 @@ This subsystem is closed only when:
 | 011 | closed | `plans/implementation/tool-programs/011-production-correctness-and-ownership-closure.md` | `plans/closure/tool-programs/011-status.md` | Strict native closure accepted; live hosted-provider transport remains operational evidence |
 | 012 | closed | `plans/implementation/tool-programs/012-authority-recovery-and-delivery-corrective-closure.md` | `plans/closure/tool-programs/012-status.md` | Authority grants, broker failure mapping, transactional notifications, scheduler-owned descendant cancellation, replay identity binding, result convergence, hosted Path B, and process-level closure |
 | 013 | closed | `plans/implementation/tool-programs/013-production-authority-descendant-and-recovery-closure.md` | `plans/closure/tool-programs/013-status.md` | Production authority grants, 8-dimension broker scope verification, SQLite notification CAS, durable lineage, scheduler descendant cancellation, replay fingerprint v2, checkpoint restoration, journal concurrency safety, typed result convergence, native-only truthfulness |
+| 014 | conditionally closed, historical | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | `plans/closure/tool-programs/014-status.md` | Strict closure transferred to M015 |
+| 015 | closed | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | `plans/closure/tool-programs/015-status.md` | Implementation `247ef50`; independent approval `230f435`; no registered downstream plan unblocked |

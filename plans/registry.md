@@ -31,24 +31,25 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 015 closing | Implementation head `247ef50` is awaiting the separate closure review; M011–M014 remain historical conditional implementation records |
+| Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 015 closed | Implementation `247ef50`; independent approval `230f435`; closure record accepted |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 015 — final production-path and independent closure | closing | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | Implementation head `247ef50` passed the required local evidence set; independent closure review remains |
 
 ## Active closure work
 
-No active closure record exists for Tool Programs. M015 is `closing` at implementation head `247ef50`; a separate review commit creates `plans/closure/tool-programs/015-status.md`.
+No active Tool Programs closure work remains. M015 is closed by
+`plans/closure/tool-programs/015-status.md`.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 
-No registered downstream implementation plan is blocked on M015. Strict Tool Programs subsystem closure is blocked by M015 itself.
+No registered downstream implementation plan was blocked on M015 at closure,
+so no future plan was newly unblocked.
 
 ## Deferred unregistered product work
 
@@ -66,6 +67,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 015 — final production-path and independent closure | `plans/closure/tool-programs/015-status.md` | implementation `247ef50`; independent approval `230f435`; closure commit | Strict native-only Tool Programs closed; hosted execution and palette expansion remain deferred and unregistered |
 | Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; M015 owns final production-path and independent strict closure |
 | Programmatic tool execution and Tool Programs | 013 — production authority, descendant, delivery, and recovery implementation | `plans/closure/tool-programs/013-status.md` | implementation/closure head `58e87ff`; post-implementation reconciliation at `7b782da` | Historical conditional implementation record; strict closure transferred through M014 to M015 |
 | Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective implementation | `plans/closure/tool-programs/012-status.md` | `d056e42` implementation; later reviews transferred strict closure through M013/M014 to M015 | Historical conditional implementation record |
