@@ -43,7 +43,7 @@ pub fn current_version() -> String
 
 ### check_for_updates()
 
-Queries `https://api.github.com/repos/anomalyco/codegg/releases/latest` to get the latest release tag.
+Queries `https://api.github.com/repos/dbowm91/codegg/releases/latest` to get the latest release tag.
 
 ```rust
 pub async fn check_for_updates() -> Result<VersionInfo, AppError>

@@ -16,7 +16,7 @@ use std::time::Duration;
 use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 
 const ENDPOINT: &str = "https://en.wikipedia.org/w/api.php";
-const USER_AGENT: &str = "codegg-websearch/1.0 (https://github.com/anomalyco/codegg; research use)";
+const USER_AGENT: &str = "codegg-websearch/1.0 (https://github.com/dbowm91/codegg; research use)";
 
 pub struct WikipediaProvider {
     client: Client,

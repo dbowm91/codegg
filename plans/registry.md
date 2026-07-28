@@ -32,13 +32,13 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
-| Development verification and release | closed | `plans/subsystems/development-verification-release-roadmap.md` | Milestone 002 closed | — |
+| Development verification and release | closed | `plans/subsystems/development-verification-release-roadmap.md` | Milestone 003 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 003 — manual crates.io release ownership | ready | `plans/implementation/development-verification-release/003-manual-crates-io-release-ownership.md` | — |
+| Development verification and release | 004 — optional integration evidence cleanup and closure | ready | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | — |
 
 ## Active closure work
 
@@ -48,7 +48,7 @@ M017 implementation landed; `plans/closure/tool-programs/017-status.md` must rem
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Development verification and release | 004 — optional integration evidence cleanup and closure | blocked | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | Milestone 003 strict closure |
+| (none) | | | | |
 
 No registered downstream implementation plan is blocked on M017. Strict Tool Programs subsystem closure is blocked by M017 itself.
 
@@ -68,6 +68,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | this commit series | Unblocked M004 (optional integration evidence cleanup and closure) |
 | Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | this commit series | Unblocked M003 (manual crates.io release ownership) |
 | Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | implementation series starting at this commit | Unblocked M002 (canonical local verification contract) |
 | Programmatic tool execution and Tool Programs | 016 — notification replay polish implementation | `plans/closure/tool-programs/016-status.md` | implementation `f4101b9`; conditional review in the M017 registration series | Historical conditional record; M017 owns semantic confirmation, typed recovery errors, direct durable state evidence, roadmap synchronization, and final strict closure |

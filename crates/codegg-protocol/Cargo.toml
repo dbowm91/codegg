@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Core protocol types for codegg daemon/frontend communication"
 license = "MIT"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

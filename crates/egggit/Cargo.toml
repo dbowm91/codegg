@@ -5,6 +5,7 @@ edition = "2021"
 description = "Read-only git and worktree facts extracted from Codegg."
 license = "MIT"
 rust-version = "1.81"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

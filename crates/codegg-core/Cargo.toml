@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Core runtime, session, storage, state, and domain types for codegg"
 license = "MIT"
+publish = false
 
 [dependencies]
 codegg-config = { path = "../codegg-config" }

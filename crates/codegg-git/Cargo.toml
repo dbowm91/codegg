@@ -5,6 +5,7 @@ edition = "2021"
 description = "Typed Git operation model, argv parser, and risk classification for Codegg."
 license = "MIT"
 rust-version = "1.81"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -117,7 +117,7 @@ admission guarantee. See
 `architecture/scheduler.md`.
 
 ```bash
-git clone https://github.com/anomalyco/codegg
+git clone https://github.com/dbowm91/codegg
 cd codegg
 cargo install --path .
 

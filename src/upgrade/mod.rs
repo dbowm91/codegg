@@ -22,7 +22,7 @@ pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
         .map_err(|e| AppError::Upgrade(e.to_string()))?;
 
     let resp = client
-        .get("https://api.github.com/repos/anomalyco/codegg/releases/latest")
+        .get("https://api.github.com/repos/dbowm91/codegg/releases/latest")
         .header("User-Agent", "codegg")
         .send()
         .await

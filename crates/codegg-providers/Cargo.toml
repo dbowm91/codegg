@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "LLM provider implementations for codegg"
 license = "MIT"
+publish = false
 
 [dependencies]
 codegg-config = { path = "../codegg-config" }

@@ -28,7 +28,7 @@ use super::types::{SearchError, SearchHit, SearchProvider, Specificity};
 fn build_client() -> Client {
     Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("codegg-websearch/1.0 (+https://github.com/anomalyco/codegg)")
+        .user_agent("codegg-websearch/1.0 (+https://github.com/dbowm91/codegg)")
         .build()
         .unwrap_or_default()
 }

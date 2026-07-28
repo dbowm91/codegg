@@ -9,16 +9,13 @@ edition = "2021"
 description = "A lightweight, pure-Rust implementation of an AI coding agent"
 license = "MIT"
 authors = ["Anomalyco"]
-repository = "https://github.com/anomalyco/codegg"
-homepage = "https://github.com/anomalyco/codegg"
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
 readme = "README.md"
 keywords = ["ai", "coding", "agent", "llm", "claude"]
 categories = ["command-line-utilities", "artificial-intelligence"]
 rust-version = "1.81"
-
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/{ version }/{ name }-{ target }{ archive-suffix }"
-target = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+publish = false
 
 [[bin]]
 name = "codegg-lsp-test-server"

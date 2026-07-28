@@ -265,7 +265,7 @@ cargo run --features debug-logging
 
 ## Getting Help
 
-1. Check existing issues at https://github.com/anomalyco/codegg/issues
+1. Check existing issues at https://github.com/dbowm91/codegg/issues
 2. Enable debug logging and capture output
 3. Note your platform (`uname -a`)
 4. Include config (redact API keys)

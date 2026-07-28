@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Configuration schema, paths, loading, and validation for codegg"
 license = "MIT"
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
