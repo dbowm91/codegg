@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::child_job::{ChildJobRequest, ChildJobResult};
 use super::ir::{IrBinOp, IrCmpOp, IrInstruction, IrOp, IrProgram, IrUnaryOp};
@@ -441,6 +442,10 @@ impl Default for BudgetSnapshot {
 // ── Checkpoint ────────────────────────────────────────────────────
 
 /// Serializable interpreter state at a checkpoint boundary.
+///
+/// M014-C1: Extended to include bounded locals values, stack, control
+/// frames, pending child wait identity, original deadline, checkpoint
+/// sequence, and a SHA-256 digest over the complete semantic state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterpreterCheckpoint {
     pub pc: u32,
@@ -449,9 +454,39 @@ pub struct InterpreterCheckpoint {
     pub calls_completed: u32,
     pub bytes_used: u64,
     pub parallel_groups: u32,
-    pub locals_hash: String,
+    /// M014-C1: Bounded locals values (not just a hash). Limited to
+    /// a bounded count and size to prevent unbounded checkpoint growth.
+    pub locals: Vec<Option<ProgramValue>>,
+    /// M014-C1: Bounded stack snapshot for control-frame restoration.
+    pub stack: Vec<ProgramValue>,
+    /// M014-C1: Pending child wait identity, if the interpreter is
+    /// blocked waiting on a child job at this checkpoint.
+    pub pending_child_wait: Option<PendingChildWait>,
+    /// M014-C1: Original absolute deadline (millis since epoch),
+    /// preserved across restart so a recovered program cannot gain
+    /// wall time.
+    pub original_deadline_millis: Option<i64>,
+    /// M014-C1: Monotonically increasing checkpoint sequence.
+    pub checkpoint_sequence: u32,
+    /// M014-C1: Creation time (millis since epoch).
+    pub created_at_millis: i64,
+    /// M014-C1: SHA-256 digest over the complete semantic checkpoint.
+    pub semantic_digest: String,
     /// Completed calls for replay.
     pub completed_calls: Vec<CompletedCall>,
+    /// Legacy locals_hash retained for backward compatibility.
+    pub locals_hash: String,
+}
+
+/// M014-C1: Pending child wait state at a checkpoint boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingChildWait {
+    /// The child job ID being waited on.
+    pub child_job_id: String,
+    /// The expected result slot (call sequence) for the child result.
+    pub expected_result_slot: u32,
+    /// The child operation that was submitted.
+    pub child_op: String,
 }
 
 // ── Broker call types ─────────────────────────────────────────────
@@ -1496,6 +1531,28 @@ impl MeteredInterpreter {
 
         let mut completed_calls: Vec<_> = self.completed_calls.values().cloned().collect();
         completed_calls.sort_by_key(|call| call.sequence);
+
+        // M014-C1: Compute the semantic digest over the complete checkpoint
+        // state using deterministic serialization and SHA-256.
+        let semantic_material = serde_json::to_string(&serde_json::json!({
+            "pc": self.pc,
+            "steps": self.budget.steps,
+            "iterations": self.budget.iterations,
+            "calls_completed": self.budget.calls,
+            "bytes_used": self.budget.bytes,
+            "parallel_groups": self.budget.parallel_groups,
+            "locals": &self.locals,
+            "stack": &self.stack,
+            "next_call_seq": self.next_call_seq,
+            "terminated": self.terminated,
+            "completed_calls_count": completed_calls.len(),
+        }))
+        .unwrap_or_default();
+        let semantic_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(semantic_material.as_bytes())
+        );
+
         InterpreterCheckpoint {
             pc: self.pc,
             steps: self.budget.steps,
@@ -1503,8 +1560,18 @@ impl MeteredInterpreter {
             calls_completed: self.budget.calls,
             bytes_used: self.budget.bytes,
             parallel_groups: self.budget.parallel_groups,
-            locals_hash,
+            locals: self.locals.clone(),
+            stack: self.stack.clone(),
+            pending_child_wait: None, // Set by the executor when checkpointing during child wait
+            original_deadline_millis: self
+                .replay_fingerprint
+                .as_ref()
+                .and_then(|f| f.original_deadline_millis),
+            checkpoint_sequence: 0, // Set by the caller (ledger)
+            created_at_millis: chrono::Utc::now().timestamp_millis(),
+            semantic_digest,
             completed_calls,
+            locals_hash,
         }
     }
 
@@ -2044,17 +2111,54 @@ impl MeteredInterpreter {
         // ExecuteCall handler looks up each sequence in order.
     }
 
-    /// M013 C-23: Restore interpreter state from a durable checkpoint.
-    /// Restores program counter, budget counters, and completed calls.
-    /// The locals are reconstructed by re-execution; the checkpoint's
-    /// `locals_hash` is used for integrity verification.
-    pub fn restore_checkpoint(&mut self, checkpoint: InterpreterCheckpoint) {
+    /// M014-C1: Restore interpreter state from a durable checkpoint.
+    /// Restores program counter, budget counters, locals, stack,
+    /// completed calls, pending child wait, and original deadline.
+    /// Fails with a typed divergence if the checkpoint digest is invalid.
+    pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: InterpreterCheckpoint,
+    ) -> Result<(), InterpreterError> {
+        // M014-C1: Verify the semantic digest before restoring.
+        let expected_material = serde_json::to_string(&serde_json::json!({
+            "pc": checkpoint.pc,
+            "steps": checkpoint.steps,
+            "iterations": checkpoint.iterations,
+            "calls_completed": checkpoint.calls_completed,
+            "bytes_used": checkpoint.bytes_used,
+            "parallel_groups": checkpoint.parallel_groups,
+            "locals": &checkpoint.locals,
+            "stack": &checkpoint.stack,
+            "next_call_seq": checkpoint.completed_calls.iter()
+                .map(|c| c.sequence)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(0),
+            "terminated": false,
+            "completed_calls_count": checkpoint.completed_calls.len(),
+        }))
+        .unwrap_or_default();
+        let expected_digest = format!(
+            "sha256:{:x}",
+            sha2::Sha256::digest(expected_material.as_bytes())
+        );
+        if !checkpoint.semantic_digest.is_empty() && checkpoint.semantic_digest != expected_digest {
+            return Err(InterpreterError::ReplayDivergence(format!(
+                "checkpoint semantic digest mismatch: expected={}, got={}",
+                expected_digest, checkpoint.semantic_digest
+            )));
+        }
+
         self.pc = checkpoint.pc;
         self.budget.steps = checkpoint.steps;
         self.budget.iterations = checkpoint.iterations;
         self.budget.calls = checkpoint.calls_completed;
         self.budget.bytes = checkpoint.bytes_used;
         self.budget.parallel_groups = checkpoint.parallel_groups;
+        // M014-C1: Restore bounded locals values (not just the hash).
+        self.locals = checkpoint.locals;
+        // M014-C1: Restore the stack for control-frame continuity.
+        self.stack = checkpoint.stack;
         self.completed_calls = checkpoint
             .completed_calls
             .into_iter()
@@ -2067,6 +2171,7 @@ impl MeteredInterpreter {
             .max()
             .map(|k| k + 1)
             .unwrap_or(0);
+        Ok(())
     }
 
     /// M013 C-23: Compute the current locals hash for integrity

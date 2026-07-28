@@ -50,6 +50,9 @@ fn default_new_job(workspace_id: &WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -387,6 +390,9 @@ async fn schedule_occurrence_uniqueness_across_restarts() {
                     parent_job_id: None,
                     parent_attempt_id: None,
                     parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
                 })
                 .await
                 .map_err(MaterializerError::JobStore)?;

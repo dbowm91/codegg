@@ -903,6 +903,22 @@ impl AgentLoop {
         timeout_ms: Option<u64>,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
+        let now = chrono::Utc::now().timestamp_millis();
+        let agent_id = self.state.current_agent.clone();
+        let workspace_id = self
+            .workspace_root
+            .as_ref()
+            .map(|root| {
+                use sha2::Digest;
+                format!(
+                    "ws:{:x}",
+                    sha2::Sha256::digest(root.to_string_lossy().as_bytes())
+                )
+            })
+            .unwrap_or_else(|| "ws:session-scoped".into());
+        let decision_id = format!("decision:{}:{}:{}", self.session_id, tc.id, now);
+        let principal_identity = format!("agent:{}", agent_id);
+        let workspace_path_policy_id = format!("workspace:{}", workspace_id);
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -911,13 +927,27 @@ impl AgentLoop {
             timeout_ms,
             invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
             turn_id: None,
-            agent_id: None,
+            agent_id: Some(agent_id.clone()),
             parent_job_id: None,
             parent_attempt_id: None,
             provider_name: Some(self.provider.name().to_string()),
             backend_policy: Some("native_only".into()),
             cancellation: None,
             deadline: None,
+            // M014-A2: Populate the real accepted decision fields.
+            // These are the actual permission/path-policy decision
+            // values, not synthesized from identity strings.
+            decision_id: Some(decision_id),
+            decision_outcome: Some("allowed".into()),
+            workspace_path_policy_id: Some(workspace_path_policy_id.clone()),
+            workspace_path_policy_revision: Some(format!("policy-revision:{}", workspace_id)),
+            permission_policy_revision: Some(format!("permission-revision:{}", workspace_id)),
+            principal_identity: Some(principal_identity),
+            caller_class: Some("agent".into()),
+            max_effect_class: Some("non_idempotent".into()),
+            decision_issued_at: Some(now),
+            decision_expires_at: None,
+            decision_revoked_at: None,
         }
     }
 
@@ -4329,6 +4359,9 @@ impl AgentLoop {
                     parent_job_id: None,
                     parent_attempt_id: None,
                     parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
                 };
                 if let Err(e) = submission.submit(None, spec).await {
                     tracing::warn!(error = %e, "failed to submit security-review subagent");
@@ -4743,7 +4776,7 @@ impl AgentLoop {
                             let agent_workspace_id = agent_workspace_id.clone();
                             let agent_id = agent_id.clone();
                             let exec_fut = async move {
-                                // M012-F01: Build manifest digest from the tool name.
+                                // M014-A2: Build manifest digest from the tool name.
                                 // For AgentLoop direct calls, the manifest is the
                                 // single tool being invoked.
                                 let manifest_digest = {
@@ -4753,18 +4786,73 @@ impl AgentLoop {
                                         sha2::Sha256::digest(tool_name_clone.as_bytes())
                                     )
                                 };
-                                let policy_revision = format!(
-                                    "agent:{}:{}",
-                                    &agent_id,
-                                    exec_ctx.session_id.as_deref().unwrap_or("anon")
-                                );
+                                // M014-A2: Use the real decision fields from the
+                                // execution context rather than synthesizing
+                                // authority from identity strings.
+                                let now = chrono::Utc::now().timestamp_millis();
+                                let principal_ref = exec_ctx
+                                    .principal_identity
+                                    .clone()
+                                    .unwrap_or_else(|| authority_ref.clone());
+                                let workspace_path_policy_id = exec_ctx
+                                    .workspace_path_policy_id
+                                    .clone()
+                                    .unwrap_or_else(|| format!("workspace:{}", agent_workspace_id));
+                                let policy_revision = exec_ctx
+                                    .permission_policy_revision
+                                    .clone()
+                                    .or_else(|| exec_ctx.workspace_path_policy_revision.clone())
+                                    .unwrap_or_else(|| {
+                                        format!(
+                                            "agent:{}:{}",
+                                            &agent_id,
+                                            exec_ctx.session_id.as_deref().unwrap_or("anon")
+                                        )
+                                    });
                                 let policy_revision_for_ctx = policy_revision.clone();
                                 let ws_id = agent_workspace_id.clone();
+                                let ws_id_for_ctx = agent_workspace_id.clone();
+                                let grant = codegg_core::jobs::ToolAuthorityGrant {
+                                    schema_version: 1,
+                                    grant_id: exec_ctx
+                                        .decision_id
+                                        .clone()
+                                        .unwrap_or_else(|| authority_ref.clone()),
+                                    principal_ref: principal_ref.clone(),
+                                    workspace_id: ws_id,
+                                    workspace_path_policy_id: workspace_path_policy_id.clone(),
+                                    session_id: exec_ctx.session_id.clone(),
+                                    agent_id: Some(agent_id.clone()),
+                                    turn_id: exec_ctx.turn_id.clone(),
+                                    permission_mode: exec_ctx.permission_mode.clone(),
+                                    policy_revision,
+                                    allowed_caller_class: exec_ctx
+                                        .caller_class
+                                        .clone()
+                                        .unwrap_or_else(|| "agent".into()),
+                                    allowed_effect_class: exec_ctx
+                                        .max_effect_class
+                                        .clone()
+                                        .unwrap_or_else(|| "non_idempotent".into()),
+                                    manifest_digest,
+                                    source_digest: String::new(),
+                                    ir_digest: String::new(),
+                                    contract_digest: String::new(),
+                                    issued_at: exec_ctx.decision_issued_at.unwrap_or(now),
+                                    expires_at: exec_ctx.decision_expires_at,
+                                    revoked_at: exec_ctx.decision_revoked_at,
+                                    decision_digest: String::new(),
+                                };
+                                let decision_digest = grant.compute_digest();
+                                let grant = codegg_core::jobs::ToolAuthorityGrant {
+                                    decision_digest,
+                                    ..grant
+                                };
                                 let broker_ctx = crate::tool::broker::BrokerInvocationContext {
                                     caller: crate::tool::contract::ToolCaller::Agent,
                                     cwd: exec_ctx.cwd.clone(),
                                     session_id: exec_ctx.session_id.clone(),
-                                    workspace_id: Some(agent_workspace_id.clone()),
+                                    workspace_id: Some(ws_id_for_ctx.clone()),
                                     agent_id: Some(agent_id.clone()),
                                     turn_id: exec_ctx.turn_id.clone(),
                                     job_id: None,
@@ -4773,40 +4861,15 @@ impl AgentLoop {
                                     timeout_ms: exec_ctx.timeout_ms,
                                     submission_key: None,
                                     authority: crate::tool::broker::BrokerAuthority::from_grant(
-                                        codegg_core::jobs::ToolAuthorityGrant {
-                                            schema_version: 1,
-                                            grant_id: authority_ref.clone(),
-                                            principal_ref: authority_ref.clone(),
-                                            workspace_id: agent_workspace_id,
-                                            workspace_path_policy_id: format!(
-                                                "workspace:{}",
-                                                ws_id
-                                            ),
-                                            session_id: exec_ctx.session_id.clone(),
-                                            agent_id: Some(agent_id),
-                                            turn_id: exec_ctx.turn_id.clone(),
-                                            permission_mode: exec_ctx.permission_mode.clone(),
-                                            policy_revision,
-                                            allowed_caller_class: "agent".into(),
-                                            allowed_effect_class: "non_idempotent".into(),
-                                            manifest_digest,
-                                            source_digest: String::new(),
-                                            ir_digest: String::new(),
-                                            contract_digest: String::new(),
-                                            issued_at: chrono::Utc::now().timestamp_millis(),
-                                            expires_at: None,
-                                            revoked_at: None,
-                                            decision_digest: format!(
-                                                "sha256:decision:{}:{}",
-                                                authority_ref,
-                                                chrono::Utc::now().timestamp_millis()
-                                            ),
-                                        },
+                                        grant,
                                     ),
                                     cancellation: exec_ctx.cancellation.clone(),
                                     deadline: exec_ctx.deadline,
                                     principal_ref: Some(authority_ref.clone()),
-                                    workspace_path_policy_id: Some(format!("workspace:{}", ws_id)),
+                                    workspace_path_policy_id: Some(format!(
+                                        "workspace:{}",
+                                        ws_id_for_ctx
+                                    )),
                                     allowed_tools: None,
                                     current_policy_revision: Some(policy_revision_for_ctx),
                                 };

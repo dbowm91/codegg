@@ -31,20 +31,19 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 014 ready | M011–M013 are historical conditional implementation records; M014 owns real decision-derived authority, canonical contracts, complete checkpoint recovery, migration-safe lineage, recursive descendants, fail-closed delivery, canonical artifacts, daemon process evidence, and independent strict closure |
+| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 014 closing | M011–M013 are historical conditional implementation records; M014 owns real decision-derived authority, canonical contracts, complete checkpoint recovery, migration-safe lineage, recursive descendants, fail-closed delivery, canonical artifacts, daemon process evidence, and independent strict closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 014 — production-boundary and process-evidence closure | ready | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | M001–M013 implementation present; normal permission/path-policy, Broker, scheduler, SQLite session/job stores, RunStore, artifact store, managed process layer, and native daemon runtime available; no external provider required |
+| Programmatic tool execution and Tool Programs | 014 — production-boundary and process-evidence closure | closing | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | M001–M013 implementation present; normal permission/path-policy, Broker, scheduler, SQLite session/job stores, RunStore, artifact store, managed process layer, and native daemon runtime available; no external provider required |
 
 ## Active closure work
 
 | Subsystem | Milestone | Status | Closure record | Notes |
 |---|---|---|---|---|
-
-No Tool Programs closure record is active. M014 implementation must move to `closing` before an independent reviewer creates `plans/closure/tool-programs/014-status.md`.
+| Programmatic tool execution and Tool Programs | 014 — production-boundary and process-evidence closure | closing | `plans/closure/tool-programs/014-status.md` | Implementation landed; closure evidence being gathered by independent reviewer |
 
 ## Blocked work
 

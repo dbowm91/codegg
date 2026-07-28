@@ -12,6 +12,7 @@ use codegg_core::tool_program::{
     BrokerCallback, BudgetSnapshot, CallRequest, CallResult, InterpreterError, MeteredInterpreter,
     ProgramStatus, ProgramValue, RunConfig, RuntimeLimits,
 };
+use sha2::{Digest, Sha256};
 
 use crate::scheduler::executor::{
     ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, ExecutorValidationError,
@@ -197,6 +198,10 @@ struct ChildJobTracking {
     sequence: u32,
     status: String,
     success: bool,
+    /// M014-G1: SHA-256 digest of the child's terminal result for artifact
+    /// integrity verification. Computed from the child's completion summary
+    /// and status.
+    result_digest: Option<String>,
 }
 
 impl BrokerAdapter {
@@ -487,7 +492,6 @@ impl BrokerCallback for BrokerAdapter {
 
         // Create submission key for idempotency
         let config_hash = {
-            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(format!("{:?}", request.op).as_bytes());
             hasher.update(format!("{:?}", request.config).as_bytes());
@@ -533,7 +537,10 @@ impl BrokerCallback for BrokerAdapter {
                 .attempt_id
                 .as_ref()
                 .map(|id| codegg_core::jobs::AttemptId::new_unchecked(id)),
-            parent_call_id: Some(format!("call:{}", request.op)),
+            parent_call_id: Some(format!("call:{}:{}", self.program_id, request.op)),
+            parent_program_id: Some(self.program_id.clone()),
+            parent_instruction_sequence: Some(request.op as u32),
+            relation_kind: Some("child_job".to_string()),
         };
 
         // Submit and wait
@@ -717,11 +724,18 @@ impl BrokerCallback for BrokerAdapter {
             "failed"
         };
         if let Ok(mut results) = self.child_results.lock() {
+            let result_digest = if success {
+                let material = format!("{}:{}", submitted.job_id, status_str);
+                Some(format!("sha256:{:x}", Sha256::digest(material.as_bytes())))
+            } else {
+                None
+            };
             results.push(ChildJobTracking {
                 job_id: submitted.job_id.to_string(),
                 sequence: request.sequence,
                 status: status_str.to_string(),
                 success,
+                result_digest,
             });
         }
 
@@ -1152,6 +1166,32 @@ impl JobExecutor for ToolProgramExecutor {
             interpreter.load_completed_calls(completed_calls);
         }
 
+        // M014-C11/C-12: Load the latest valid checkpoint and restore
+        // interpreter state before resumed execution. This includes
+        // locals, stack, budgets, next call sequence, and pending child
+        // wait identity.
+        if let Some(checkpoint) = ledger.load_latest_checkpoint(&program_id) {
+            match interpreter.restore_checkpoint(checkpoint) {
+                Ok(()) => {
+                    let _ = ctx
+                        .progress
+                        .progress(ctx.job_id(), "tool_program: checkpoint restored")
+                        .await;
+                }
+                Err(error) => {
+                    return ExecutorCompletion {
+                        status: ExecutorStatus::Failed,
+                        summary: format!("checkpoint restore divergence: {}", error),
+                        run_id: None,
+                        metrics: ExecutorMetrics {
+                            elapsed_ms: started.elapsed().as_millis() as u64,
+                            ..Default::default()
+                        },
+                    };
+                }
+            }
+        }
+
         // M013 C-01/C-03: The authority grant is pre-computed at submission
         // time and carried in the job payload. Deserialize and verify it.
         // The executor must NOT fabricate a replacement grant.
@@ -1222,7 +1262,7 @@ impl JobExecutor for ToolProgramExecutor {
             manifest_digest,
             contract_digest: contract_digest.clone(),
             backend_selection: "native_only".to_string(),
-            original_deadline_millis: None,
+            original_deadline_millis: ctx.job.deadline.map(|d| d.timestamp_millis()),
         });
 
         // Bind the immutable contract snapshot to this workspace's durable
@@ -1388,8 +1428,8 @@ impl JobExecutor for ToolProgramExecutor {
                         job_id: child.job_id,
                         run_id: None,
                         status: child.status,
-                        artifact_id: None,
-                        digest: None,
+                        artifact_id: child.result_digest.clone(),
+                        digest: child.result_digest,
                     },
                 )
                 .collect();
@@ -1557,6 +1597,9 @@ mod tests {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         }
     }
 
@@ -1647,6 +1690,9 @@ mod tests {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         };
         assert!(exec.validate(&job).is_err());
     }

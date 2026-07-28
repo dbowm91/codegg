@@ -457,16 +457,16 @@ impl ToolProgramTool {
             &source_digest,
         );
 
-        // M013 C-01/C-03: Build the authority grant at submission time from
-        // the real permission/path-policy decision. Serialize it into the
-        // payload so the executor must verify rather than fabricate.
-        let contract_summary: Vec<(String, String)> = Vec::new(); // populated at execution when catalog is available
-        let contract_digest = crate::tool::tool_program_context::stable_digest(
-            &serde_json::to_string(&serde_json::json!({
-                "contracts": contract_summary,
-            }))
-            .unwrap_or_default(),
-        );
+        // M014-B2: Build the canonical contract snapshot from the real
+        // Broker catalog at submission time. The same digest is used at
+        // executor admission and every nested Broker call.
+        let broker = crate::tool::ToolRegistry::with_defaults();
+        let catalog_broker = crate::tool::broker::ToolBroker::new(&broker);
+        let contract_entries =
+            crate::tool::tool_program_context::resolve_contract_snapshot(&catalog_broker, &tools)
+                .unwrap_or_default();
+        let contract_digest =
+            crate::tool::tool_program_context::canonical_contract_digest(&contract_entries);
         let authority_grant = crate::tool::tool_program_context::build_authority_grant(
             Some(&context_record),
             workspace_id.as_str(),
@@ -514,6 +514,9 @@ impl ToolProgramTool {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         };
 
         let submitted = submission

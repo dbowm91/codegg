@@ -64,6 +64,9 @@ fn build_managed_process_spec(workspace: &WorkspaceId, argv: Vec<String>) -> New
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -94,6 +97,9 @@ fn build_subagent_spec(workspace: &WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 

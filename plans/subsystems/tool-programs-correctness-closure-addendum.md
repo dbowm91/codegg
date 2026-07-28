@@ -1,6 +1,6 @@
 # Tool Programs Correctness and Ownership Closure Addendum
 
-Status: active — Milestone 014 ready for implementation; Milestones 011–013 are historical conditionally closed implementation records
+Status: active — Milestone 014 closing (implementation landed; closure evidence in review)
 
 Canonical subsystem roadmap:
 

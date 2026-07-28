@@ -642,6 +642,9 @@ impl BashTool {
                     parent_attempt_id: None,
 
                     parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
                 },
             )
             .await
@@ -865,6 +868,9 @@ impl BashTool {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
             schedule_id: None,
             depends_on: vec![],
         };
@@ -1198,6 +1204,9 @@ impl BashTool {
                     parent_job_id: None,
                     parent_attempt_id: None,
                     parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
                     idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
                     not_before: None,
                     deadline: None,
@@ -1288,6 +1297,9 @@ impl BashTool {
                     parent_job_id: None,
                     parent_attempt_id: None,
                     parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
                     timeout: Some(timeout),
                     retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
                     idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,

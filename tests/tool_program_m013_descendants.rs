@@ -61,6 +61,9 @@ fn make_tool_program_job(
         parent_job_id,
         parent_attempt_id,
         parent_call_id,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 

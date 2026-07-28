@@ -15,10 +15,8 @@ use codegg_protocol::projection::dto::{ToolProgramCallPage, ToolProgramCallSumma
 use codegg_protocol::projection::limits::{
     MAX_PROJECTION_CALL_PAGE_SIZE, MAX_PROJECTION_TOOL_PROGRAM_CALLS,
 };
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Mutex;
 use thiserror::Error;
 
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
@@ -74,33 +72,57 @@ struct JournalDivergence {
     diverged_at: i64,
 }
 
+/// M014-C19: Cross-process lock guard for journal operations.
+enum LockGuard {
+    #[cfg(unix)]
+    Unix { _file: std::fs::File },
+    #[cfg(not(unix))]
+    None,
+}
+
 #[derive(Clone)]
 pub struct ToolProgramLedger {
     base_dir: PathBuf,
-    /// Per-program short-lived mutex used to serialize read-modify-write
-    /// cycles inside one process. Concurrent reservations/completions for
-    /// distinct sequences within the same program are funneled through
-    /// this lock so an in-flight write cannot lose another writer's update.
-    program_locks: std::sync::Arc<DashMap<String, std::sync::Arc<Mutex<()>>>>,
+    /// M014-C19: Lock directory for cross-process journal locking.
+    /// Each program gets a lock file in this directory; the lock is
+    /// acquired via `flock` (Unix) for true cross-process safety.
+    lock_dir: PathBuf,
 }
 
 impl ToolProgramLedger {
     pub fn new(workspace_root: &Path) -> Self {
-        Self {
-            base_dir: workspace_root.join(".codegg").join("tool_program_calls"),
-            program_locks: std::sync::Arc::new(DashMap::new()),
-        }
+        let base_dir = workspace_root.join(".codegg").join("tool_program_calls");
+        let lock_dir = base_dir.join("locks");
+        Self { base_dir, lock_dir }
     }
 
-    fn program_lock(&self, program_id: &str) -> std::sync::Arc<Mutex<()>> {
-        if let Some(existing) = self.program_locks.get(program_id) {
-            return existing.clone();
+    /// M014-C19: Acquire a cross-process lock for the given program.
+    /// Uses `flock` on Unix for true cross-process safety; falls back
+    /// to no lock on platforms without `flock` (single-process only).
+    fn acquire_lock(&self, program_id: &str) -> Result<Option<LockGuard>, ToolProgramLedgerError> {
+        validate_program_id(program_id)?;
+        std::fs::create_dir_all(&self.lock_dir)?;
+        let lock_path = self.lock_dir.join(format!("{}.lock", program_id));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            use std::os::unix::io::AsRawFd;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&lock_path)?;
+            nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockExclusive)
+                .map_err(|e| ToolProgramLedgerError::Io(std::io::Error::from(e)))?;
+            return Ok(Some(LockGuard::Unix { _file: file }));
         }
-        let new_lock = std::sync::Arc::new(Mutex::new(()));
-        self.program_locks
-            .entry(program_id.to_string())
-            .or_insert(new_lock)
-            .clone()
+
+        #[cfg(not(unix))]
+        {
+            Ok(Some(LockGuard::None))
+        }
     }
 
     /// Run the given read-modify-write cycle under the per-program lock so
@@ -109,10 +131,7 @@ impl ToolProgramLedger {
     where
         F: FnOnce(&mut JournalFile) -> Result<R, ToolProgramLedgerError>,
     {
-        let lock = self.program_lock(program_id);
-        let _guard = lock
-            .lock()
-            .map_err(|_| ToolProgramLedgerError::InvalidLedger("journal lock poisoned".into()))?;
+        let _guard = self.acquire_lock(program_id)?;
         let mut journal = self.read_journal(program_id)?;
         let result = f(&mut journal)?;
         self.write_journal(program_id, &journal)?;
@@ -309,6 +328,14 @@ impl ToolProgramLedger {
             .into_iter()
             .map(|call| (call.sequence, call))
             .collect())
+    }
+
+    /// M014-C11: Load the latest valid checkpoint for restart replay.
+    /// Returns `None` if no checkpoint exists.
+    pub fn load_latest_checkpoint(&self, program_id: &str) -> Option<InterpreterCheckpoint> {
+        self.read_journal(program_id)
+            .ok()
+            .and_then(|j| j.checkpoint)
     }
 
     /// Check if a call has been durably completed (C-20).

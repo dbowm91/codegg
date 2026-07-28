@@ -187,13 +187,20 @@ async fn f2_restore_checkpoint_sets_state() {
         calls_completed: 1,
         bytes_used: 2048,
         parallel_groups: 0,
-        locals_hash: "test-hash".into(),
+        locals: Vec::new(),
+        stack: Vec::new(),
+        pending_child_wait: None,
+        original_deadline_millis: None,
+        checkpoint_sequence: 1,
+        created_at_millis: 0,
+        semantic_digest: String::new(),
         completed_calls: completed.values().cloned().collect(),
+        locals_hash: "test-hash".into(),
     };
 
     // Restore into a new interpreter.
     let mut interp2 = MeteredInterpreter::new(ir, limits);
-    interp2.restore_checkpoint(checkpoint);
+    interp2.restore_checkpoint(checkpoint).unwrap();
 
     // Verify PC was restored.
     assert_eq!(interp2.pc(), 42, "PC must be restored from checkpoint");

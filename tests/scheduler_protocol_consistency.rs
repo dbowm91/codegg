@@ -45,6 +45,9 @@ fn build_managed_argv_job(workspace: &WorkspaceId, argv: Vec<String>) -> NewJob 
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -71,6 +74,9 @@ fn build_slow_job(workspace: &WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -538,6 +544,9 @@ async fn event_log_boundedness() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
     let _ = scheduler.submit(holder_spec).await;
     // Wait for the holder to be admitted.
@@ -567,6 +576,9 @@ async fn event_log_boundedness() {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         };
         let _ = scheduler.submit(spec).await;
     }
@@ -739,6 +751,9 @@ async fn invalid_payload_for_kind_is_rejected() {
                 parent_job_id: None,
                 parent_attempt_id: None,
                 parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
             },
         )
         .await

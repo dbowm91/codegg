@@ -105,6 +105,9 @@ impl TestHarness {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         };
 
         let key =
@@ -181,6 +184,9 @@ async fn disabled_scheduler_returns_typed_error() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let result = submission.submit(None, spec).await;
@@ -226,6 +232,9 @@ async fn python_payload_validates_mode() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let result = harness.submission.submit(None, spec).await;
@@ -279,6 +288,9 @@ async fn source_hash_mismatch_rejected_at_validation() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let result = executor.validate(&job);
@@ -334,6 +346,9 @@ async fn legacy_script_path_payload_rejected_without_source() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     // Validation passes (it only checks mode and hash)
@@ -484,6 +499,9 @@ async fn python_executor_cancelled_before_launch() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {
@@ -561,6 +579,9 @@ async fn python_executor_rejects_cwd_outside_workspace() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let ctx = codegg::scheduler::executor::JobExecutionContext {

@@ -251,6 +251,9 @@ impl JobStore for InMemoryJobStore {
             parent_job_id: spec.parent_job_id,
             parent_attempt_id: spec.parent_attempt_id,
             parent_call_id: spec.parent_call_id,
+            parent_program_id: spec.parent_program_id,
+            parent_instruction_sequence: spec.parent_instruction_sequence,
+            relation_kind: spec.relation_kind,
         };
         guard.jobs.insert(job_id.clone(), record.clone());
         Ok(record)
@@ -328,9 +331,6 @@ impl JobStore for InMemoryJobStore {
         let updated = JobRecord {
             state: JobState::Queued,
             updated_at: now,
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
             ..job
         };
         guard.jobs.insert(id.clone(), updated.clone());
@@ -388,9 +388,6 @@ impl JobStore for InMemoryJobStore {
             attempt_count: next_seq,
             current_attempt_id: Some(attempt_id.clone()),
             updated_at: now,
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
             ..job
         };
         guard.attempts.insert(attempt_id.clone(), attempt.clone());
@@ -573,9 +570,6 @@ impl JobStore for InMemoryJobStore {
                     cancel_reason: Some(reason.reason.clone()),
                     terminal_at: Some(now),
                     updated_at: now,
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(id.clone(), updated);
@@ -590,9 +584,6 @@ impl JobStore for InMemoryJobStore {
                     cancel_requested_at: Some(now),
                     cancel_reason: Some(reason.reason.clone()),
                     updated_at: now,
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(id.clone(), updated);
@@ -684,9 +675,6 @@ impl JobStore for InMemoryJobStore {
         let updated = JobRecord {
             state: JobState::Blocked,
             updated_at: now,
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
             ..job
         };
         guard.jobs.insert(id.clone(), updated.clone());
@@ -747,9 +735,6 @@ impl JobStore for InMemoryJobStore {
                     cancel_requested_at: None,
                     cancel_reason: None,
                     updated_at: now,
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(job_id.clone(), updated);
@@ -760,9 +745,6 @@ impl JobStore for InMemoryJobStore {
                     current_attempt_id: None,
                     terminal_at: Some(now),
                     updated_at: now,
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
                     ..job
                 };
                 guard.jobs.insert(job_id.clone(), updated);
@@ -783,22 +765,34 @@ impl JobStore for InMemoryJobStore {
         parent_job_id: &JobId,
     ) -> Result<Vec<JobSummary>, JobStoreError> {
         let guard = self.inner.lock().await;
+        // M014-E1: Recursive descendant enumeration via BFS. Finds all
+        // non-terminal descendants (children, grandchildren, etc.) of the
+        // given parent job.
         let mut summaries = Vec::new();
-        for job in guard.jobs.values() {
-            if job.parent_job_id.as_ref() == Some(parent_job_id) && !job.state.is_terminal() {
-                summaries.push(JobSummary {
-                    job_id: job.job_id.clone(),
-                    workspace_id: job.workspace_id.clone(),
-                    kind: job.kind.clone(),
-                    priority: job.priority.clone(),
-                    state: job.state.clone(),
-                    attempt_count: job.attempt_count,
-                    current_attempt_id: job.current_attempt_id.clone(),
-                    created_at: job.created_at,
-                    updated_at: job.updated_at,
-                    schedule_id: job.schedule_id.clone(),
-                    cancel_requested_at: job.cancel_requested_at,
-                });
+        let mut queue: Vec<JobId> = vec![parent_job_id.clone()];
+        let mut visited: std::collections::HashSet<JobId> = std::collections::HashSet::new();
+        visited.insert(parent_job_id.clone());
+        while let Some(current) = queue.pop() {
+            for job in guard.jobs.values() {
+                if job.parent_job_id.as_ref().is_some_and(|p| p == &current)
+                    && !job.state.is_terminal()
+                    && visited.insert(job.job_id.clone())
+                {
+                    summaries.push(JobSummary {
+                        job_id: job.job_id.clone(),
+                        workspace_id: job.workspace_id.clone(),
+                        kind: job.kind.clone(),
+                        priority: job.priority.clone(),
+                        state: job.state.clone(),
+                        attempt_count: job.attempt_count,
+                        current_attempt_id: job.current_attempt_id.clone(),
+                        created_at: job.created_at,
+                        updated_at: job.updated_at,
+                        schedule_id: job.schedule_id.clone(),
+                        cancel_requested_at: job.cancel_requested_at,
+                    });
+                    queue.push(job.job_id.clone());
+                }
             }
         }
         Ok(summaries)
@@ -946,6 +940,9 @@ impl JobStore for SqliteJobStore {
             parent_job_id: spec.parent_job_id,
             parent_attempt_id: spec.parent_attempt_id,
             parent_call_id: spec.parent_call_id,
+            parent_program_id: spec.parent_program_id,
+            parent_instruction_sequence: spec.parent_instruction_sequence,
+            relation_kind: spec.relation_kind,
         };
         Ok(record)
     }
@@ -1661,32 +1658,40 @@ impl JobStore for SqliteJobStore {
         })
     }
 
-    /// M012-F04/F06: Find all non-terminal direct descendants of a parent job.
+    /// M014-E1: Find all non-terminal descendants of a parent job recursively
+    /// (children, grandchildren, etc.) via iterative BFS using the
+    /// `parent_job_id` lineage column.
     async fn find_descendants(
         &self,
         parent_job_id: &JobId,
     ) -> Result<Vec<JobSummary>, JobStoreError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT j.id, j.workspace_id, j.kind, j.priority, j.state,
-                   j.attempt_count, j.current_attempt_id,
-                   j.time_created, j.time_updated, j.schedule_id,
-                   j.cancel_requested_at
-            FROM job j
-            WHERE j.parent_job_id = ?
-              AND j.state NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted')
-            ORDER BY j.time_created ASC
-            "#,
-        )
-        .bind(parent_job_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let mut summaries = Vec::new();
+        let mut queue: Vec<String> = vec![parent_job_id.as_str().to_string()];
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        visited.insert(parent_job_id.as_str().to_string());
+        while let Some(current) = queue.pop() {
+            let rows = sqlx::query(
+                r#"
+                SELECT j.id, j.workspace_id, j.kind, j.priority, j.state,
+                       j.attempt_count, j.current_attempt_id,
+                       j.time_created, j.time_updated, j.schedule_id,
+                       j.cancel_requested_at
+                FROM job j
+                WHERE j.parent_job_id = ?
+                  AND j.state NOT IN ('completed', 'failed', 'cancelled', 'timed_out', 'interrupted')
+                ORDER BY j.time_created ASC
+                "#,
+            )
+            .bind(&current)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
 
-        let summaries: Vec<JobSummary> = rows
-            .into_iter()
-            .map(|row| {
+            for row in rows {
                 let job_id: String = row.get("id");
+                if !visited.insert(job_id.clone()) {
+                    continue;
+                }
                 let workspace_id: String = row.get("workspace_id");
                 let kind: String = row.get("kind");
                 let priority: String = row.get("priority");
@@ -1697,8 +1702,8 @@ impl JobStore for SqliteJobStore {
                 let time_updated: i64 = row.get("time_updated");
                 let schedule_id: Option<String> = row.get("schedule_id");
                 let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
-                JobSummary {
-                    job_id: JobId::new_unchecked(job_id),
+                summaries.push(JobSummary {
+                    job_id: JobId::new_unchecked(job_id.clone()),
                     workspace_id: WorkspaceId::new_unchecked(workspace_id),
                     kind: JobKind::from_str_lossy(&kind),
                     priority: priority_from_str(&priority),
@@ -1712,9 +1717,10 @@ impl JobStore for SqliteJobStore {
                     schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
                     cancel_requested_at: cancel_requested_at
                         .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
-                }
-            })
-            .collect();
+                });
+                queue.push(job_id);
+            }
+        }
         Ok(summaries)
     }
 
@@ -1820,6 +1826,16 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
             .map(AttemptId::new_unchecked),
         parent_call_id: row
             .try_get::<Option<String>, _>("parent_call_id")
+            .unwrap_or(None),
+        parent_program_id: row
+            .try_get::<Option<String>, _>("parent_program_id")
+            .unwrap_or(None),
+        parent_instruction_sequence: row
+            .try_get::<Option<i64>, _>("parent_instruction_sequence")
+            .unwrap_or(None)
+            .map(|v| v as u32),
+        relation_kind: row
+            .try_get::<Option<String>, _>("relation_kind")
             .unwrap_or(None),
         labels,
     })

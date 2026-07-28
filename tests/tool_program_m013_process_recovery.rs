@@ -139,6 +139,9 @@ fn make_tool_program_job(program_id: &str) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 

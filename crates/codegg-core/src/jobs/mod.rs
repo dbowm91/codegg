@@ -1046,6 +1046,12 @@ pub struct NewJob {
     pub parent_job_id: Option<JobId>,
     pub parent_attempt_id: Option<AttemptId>,
     pub parent_call_id: Option<String>,
+    /// M014-D1: Parent program ID for Tool Program child lineage.
+    pub parent_program_id: Option<String>,
+    /// M014-D1: Parent instruction sequence for canonical child identity.
+    pub parent_instruction_sequence: Option<u32>,
+    /// M014-D1: Typed relation kind for child lineage.
+    pub relation_kind: Option<String>,
 }
 
 impl NewJob {
@@ -1093,6 +1099,12 @@ pub struct JobRecord {
     pub parent_job_id: Option<JobId>,
     pub parent_attempt_id: Option<AttemptId>,
     pub parent_call_id: Option<String>,
+    /// M014-D1: Parent program ID for Tool Program child lineage.
+    pub parent_program_id: Option<String>,
+    /// M014-D1: Parent instruction sequence for canonical child identity.
+    pub parent_instruction_sequence: Option<u32>,
+    /// M014-D1: Typed relation kind for child lineage.
+    pub relation_kind: Option<String>,
     /// Free-form metadata persisted alongside the job (tool name, run
     /// identifier, etc.). Not used by the queue state machine.
     #[serde(default)]

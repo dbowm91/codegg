@@ -58,6 +58,9 @@ fn make_child_job(parent_job_id: &JobId, call_id: &str, seq: u32) -> NewJob {
         parent_job_id: Some(parent_job_id.clone()),
         parent_attempt_id: Some(AttemptId::new_unchecked("parent-attempt-1")),
         parent_call_id: Some(call_id.into()),
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -94,6 +97,9 @@ fn make_parent_job() -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -134,6 +140,9 @@ async fn c12_new_job_carries_parent_fields() {
         parent_job_id: Some(JobId::new_unchecked("parent-job-1")),
         parent_attempt_id: Some(AttemptId::new_unchecked("parent-attempt-1")),
         parent_call_id: Some("parent-call-1".into()),
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
     assert_eq!(
         job.parent_job_id.as_ref().map(|j| j.as_str()),

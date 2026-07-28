@@ -22,6 +22,7 @@ use crate::tool::tool_program_result::ProgramResultRecord;
 use codegg_core::jobs::JobPayload;
 use codegg_protocol::projection::dto::NotificationClassification;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use sqlx::SqlitePool;
 use tokio::sync::RwLock;
@@ -98,6 +99,8 @@ pub enum NotificationStoreError {
     Conflict,
     #[error("store unavailable")]
     Unavailable,
+    #[error("storage error: {0}")]
+    Storage(String),
 }
 
 /// A durable notification record for a background tool program
@@ -276,7 +279,9 @@ impl ToolProgramNotificationService {
         let mut index = self.session_index.write().await;
         index.entry(session_id).or_default().push(nid);
         drop(index);
-        self.persist_record(&notification).await;
+        if let Err(error) = self.persist_record(&notification).await {
+            tracing::warn!(%error, notification_id = %notification.notification_id, "failed to persist Tool Program notification");
+        }
         // M013-C-11: If persist_record fails, the notification is still
         // in the in-memory cache and will be recovered by recover_from_pool
         // on restart. Log the failure for diagnostics.
@@ -330,7 +335,7 @@ impl ToolProgramNotificationService {
             failure_class,
             success,
             classification,
-            payload_digest: format!("{:x}", md5::compute(payload.as_bytes())),
+            payload_digest: format!("{:x}", Sha256::digest(payload.as_bytes())),
             program_handle: ProgramHandle {
                 program_id: program_id.to_string(),
                 job_id: job_id.to_string(),
@@ -674,7 +679,7 @@ impl ToolProgramNotificationService {
                 "{}|{}|{}|{}",
                 job.program_id, job.status, job.summary, job.success
             );
-            let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
+            let payload_digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
             let notification = ToolProgramNotification {
                 notification_id: job.program_id.clone(),
                 program_id: job.program_id.clone(),
@@ -720,12 +725,16 @@ impl ToolProgramNotificationService {
         recovered
     }
 
-    async fn persist_record(&self, notification: &ToolProgramNotification) {
-        let Some(pool) = &self.pool else { return };
-        let Ok(record_json) = serde_json::to_string(notification) else {
-            return;
+    async fn persist_record(
+        &self,
+        notification: &ToolProgramNotification,
+    ) -> Result<(), NotificationStoreError> {
+        let Some(pool) = &self.pool else {
+            return Ok(());
         };
-        let result = sqlx::query(
+        let record_json = serde_json::to_string(notification)
+            .map_err(|e| NotificationStoreError::Storage(e.to_string()))?;
+        sqlx::query(
             "INSERT INTO tool_program_notification (notification_id, program_id, job_id, session_id, agent_id, turn_id, state, record_json, claim_owner, claim_lease_until, created_at, updated_at, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(notification_id) DO UPDATE SET state = excluded.state, record_json = excluded.record_json, claim_owner = excluded.claim_owner, claim_lease_until = excluded.claim_lease_until, updated_at = excluded.updated_at, delivered_at = excluded.delivered_at",
         )
         .bind(&notification.notification_id)
@@ -742,10 +751,9 @@ impl ToolProgramNotificationService {
         .bind(notification.updated_at)
         .bind((notification.state == NotificationState::Delivered).then_some(notification.updated_at))
         .execute(pool)
-        .await;
-        if let Err(error) = result {
-            tracing::warn!(%error, notification_id = %notification.notification_id, "failed to persist Tool Program notification");
-        }
+        .await
+        .map_err(|e| NotificationStoreError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     async fn transition(
@@ -889,7 +897,9 @@ impl ToolProgramNotificationService {
             }
             notification.clone()
         };
-        self.persist_record(&updated).await;
+        if let Err(error) = self.persist_record(&updated).await {
+            tracing::warn!(%error, notification_id = %updated.notification_id, "failed to persist Tool Program notification transition");
+        }
         Ok(true)
     }
 
@@ -1026,7 +1036,7 @@ mod tests {
             "{}|{}|program {} finished|{}",
             program_id, status, program_id, success
         );
-        let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
+        let payload_digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
         ToolProgramNotification {
             notification_id: program_id.to_string(),
             program_id: program_id.to_string(),

@@ -44,6 +44,9 @@ fn build_test_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -70,6 +73,9 @@ fn build_build_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 

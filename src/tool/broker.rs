@@ -648,6 +648,17 @@ impl ToolBroker {
             backend_policy: None,
             cancellation: ctx.cancellation.clone(),
             deadline: ctx.deadline,
+            decision_id: None,
+            decision_outcome: None,
+            workspace_path_policy_id: None,
+            workspace_path_policy_revision: None,
+            permission_policy_revision: None,
+            principal_identity: None,
+            caller_class: None,
+            max_effect_class: None,
+            decision_issued_at: None,
+            decision_expires_at: None,
+            decision_revoked_at: None,
         };
         let tool = registry
             .get(tool_name)

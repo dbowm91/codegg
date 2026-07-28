@@ -17,6 +17,7 @@ use sha2::Digest;
 use thiserror::Error;
 
 const MAX_RESULT_BYTES: usize = 2 * 1024 * 1024;
+const SPILL_THRESHOLD_BYTES: usize = 100 * 1024;
 const MAX_PROGRAM_ID_BYTES: usize = 128;
 
 #[derive(Debug, Error)]
@@ -109,7 +110,7 @@ impl ToolProgramResultStore {
         mut result: ProgramResult,
         call_artifacts: Vec<ProgramArtifactHandle>,
         child_artifacts: Vec<ChildArtifactHandle>,
-        output_artifact: Option<String>,
+        mut output_artifact: Option<String>,
     ) -> Result<ProgramResultRecord, ToolProgramResultError> {
         validate_identity(program_id)?;
         if attempt_id.is_empty() || attempt_id.len() > MAX_PROGRAM_ID_BYTES {
@@ -118,6 +119,27 @@ impl ToolProgramResultStore {
         if let Some(error) = result.error_message.as_mut() {
             error.truncate(4096);
         }
+
+        // M014-G1: Automatically spill large outputs to the artifact store.
+        // If the output is large and no explicit output_artifact was
+        // provided, spill it to a canonical ctx:// handle.
+        if output_artifact.is_none() {
+            if let Some(output) = result.output.as_ref() {
+                let output_str = serde_json::to_string(output).unwrap_or_default();
+                if output_str.len() > SPILL_THRESHOLD_BYTES {
+                    let artifact_dir = self.base_dir.join("artifacts");
+                    std::fs::create_dir_all(&artifact_dir)?;
+                    let artifact_id =
+                        format!("ctx://artifact/{}/{}", program_id, uuid::Uuid::new_v4());
+                    let artifact_path = artifact_dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+                    std::fs::write(&artifact_path, &output_str)?;
+                    output_artifact = Some(artifact_id);
+                    // Clear the inline output to avoid duplication
+                    result.output = None;
+                }
+            }
+        }
+
         let mut record = ProgramResultRecord {
             schema_version: 2,
             program_id: program_id.to_string(),
@@ -289,7 +311,7 @@ fn compute_full_record_digest(
         "output_artifact": record.output_artifact,
     });
     let bytes = serde_json::to_vec(&projection)?;
-    Ok(format!("{:x}", Sha256::digest(&bytes)))
+    Ok(format!("sha256:{:x}", Sha256::digest(&bytes)))
 }
 
 use sha2::Sha256;

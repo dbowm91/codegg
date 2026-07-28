@@ -859,6 +859,9 @@ mod tests {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
         }
     }
 
@@ -914,6 +917,9 @@ mod tests {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
             depends_on: vec![],
             labels: std::collections::HashMap::new(),
         };
@@ -951,6 +957,9 @@ mod tests {
             parent_job_id: None,
             parent_attempt_id: None,
             parent_call_id: None,
+            parent_program_id: None,
+            parent_instruction_sequence: None,
+            relation_kind: None,
             terminal_at: None,
             cancel_requested_at: None,
             cancel_reason: None,

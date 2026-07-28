@@ -62,6 +62,11 @@ impl ToolBackendKind {
 /// Per-call context passed alongside an execution request.
 ///
 /// This is optional and additive; legacy callers can pass `None`.
+///
+/// M014-A2: The `decision_*` fields carry the actual accepted
+/// permission/path-policy decision from the agent loop's permission
+/// boundary. They are populated only after the direct invocation is
+/// accepted and must never be synthesized from identity strings.
 #[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
     pub backend: ToolBackendKind,
@@ -81,6 +86,30 @@ pub struct ToolExecutionContext {
     pub cancellation: Option<tokio_util::sync::CancellationToken>,
     /// Absolute parent deadline, when the caller is scheduler-owned.
     pub deadline: Option<chrono::DateTime<chrono::Utc>>,
+    // ── M014-A2: Real accepted permission/path-policy decision ──────
+    /// Opaque identifier of the accepted permission decision. Populated
+    /// by the agent loop after the permission boundary accepts the call.
+    pub decision_id: Option<String>,
+    /// Outcome of the accepted decision: "allowed" only for submission.
+    pub decision_outcome: Option<String>,
+    /// Canonical workspace path-policy identifier (not synthesized).
+    pub workspace_path_policy_id: Option<String>,
+    /// Revision of the workspace path policy at decision time.
+    pub workspace_path_policy_revision: Option<String>,
+    /// Revision of the permission policy at decision time.
+    pub permission_policy_revision: Option<String>,
+    /// Principal identity resolved by the permission boundary.
+    pub principal_identity: Option<String>,
+    /// Caller class resolved by the permission boundary (agent/program/etc).
+    pub caller_class: Option<String>,
+    /// Maximum effect class the caller is authorized for.
+    pub max_effect_class: Option<String>,
+    /// Issued-at timestamp (millis since epoch) of the decision.
+    pub decision_issued_at: Option<i64>,
+    /// Expiry timestamp (millis since epoch) of the decision, if any.
+    pub decision_expires_at: Option<i64>,
+    /// Revocation reference, if the decision has been revoked.
+    pub decision_revoked_at: Option<i64>,
 }
 
 impl ToolExecutionContext {
@@ -102,6 +131,17 @@ impl ToolExecutionContext {
             backend_policy: None,
             cancellation: None,
             deadline: None,
+            decision_id: None,
+            decision_outcome: None,
+            workspace_path_policy_id: None,
+            workspace_path_policy_revision: None,
+            permission_policy_revision: None,
+            principal_identity: None,
+            caller_class: None,
+            max_effect_class: None,
+            decision_issued_at: None,
+            decision_expires_at: None,
+            decision_revoked_at: None,
         }
     }
 }

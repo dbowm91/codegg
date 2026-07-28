@@ -37,6 +37,9 @@ fn test_spec(workspace_id: WorkspaceId) -> NewJob {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 
@@ -411,6 +414,9 @@ async fn payload_too_large_rejects_without_creating_job() {
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     };
 
     let err = h

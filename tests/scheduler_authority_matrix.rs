@@ -225,6 +225,9 @@ fn build_new_job(ws_id: &WorkspaceId, kind: JobKind, payload: JobPayload) -> New
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     }
 }
 

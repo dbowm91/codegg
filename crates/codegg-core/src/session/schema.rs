@@ -124,6 +124,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 34 {
         migrate_and_record(pool, 34).await?;
     }
+    if current_version < 35 {
+        migrate_and_record(pool, 35).await?;
+    }
 
     Ok(())
 }
@@ -170,6 +173,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             32 => migrate_v32(pool).await?,
             33 => migrate_v33(pool).await?,
             34 => migrate_v34(pool).await?,
+            35 => migrate_v35(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -222,6 +226,7 @@ async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             delivered_at INTEGER,
+            injection_key TEXT NOT NULL,
             UNIQUE(program_id, notification_id)
         )
         "#,
@@ -1710,6 +1715,27 @@ async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
+    Ok(())
+}
+
+/// M014-D1: Add typed lineage columns for Tool Program child job
+/// correlation (parent_program_id, parent_instruction_sequence,
+/// relation_kind). These columns are additive and nullable; existing
+/// rows are unaffected.
+async fn migrate_v35(pool: &SqlitePool) -> Result<(), StorageError> {
+    for col in &[
+        "parent_program_id",
+        "parent_instruction_sequence",
+        "relation_kind",
+    ] {
+        let _ = sqlx::query(&format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+            .execute(pool)
+            .await;
+    }
+    let _ =
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_parent_program ON job(parent_program_id)")
+            .execute(pool)
+            .await;
     Ok(())
 }
 

@@ -778,6 +778,9 @@ pub fn job_submit_from_dto(
         parent_job_id: None,
         parent_attempt_id: None,
         parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
     })
 }
 
