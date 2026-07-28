@@ -2617,6 +2617,67 @@ impl EventStore {
         Ok(())
     }
 
+    /// Append a session event exactly once by its durable event identity.
+    ///
+    /// A retry with the same serialized event is accepted. Reusing an event
+    /// ID for different content fails closed so an idempotency collision
+    /// cannot silently replace a parent-session insertion.
+    pub async fn append_idempotent(
+        &self,
+        event: &super::events::SessionEvent,
+    ) -> Result<(), StorageError> {
+        let meta = event.meta();
+        let event_type = event.event_type_tag();
+        let payload_json =
+            serde_json::to_string(event).map_err(|e| StorageError::Database(e.to_string()))?;
+        let created_at = meta.created_at.to_rfc3339();
+
+        let result = sqlx::query(
+            r#"
+            INSERT INTO session_events (id, session_id, created_at, event_type, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            "#,
+        )
+        .bind(&meta.id)
+        .bind(&meta.session_id)
+        .bind(&created_at)
+        .bind(event_type)
+        .bind(&payload_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        if result.rows_affected() == 1 {
+            return Ok(());
+        }
+
+        let existing: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT session_id, event_type, payload_json FROM session_events WHERE id = ?",
+        )
+        .bind(&meta.id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        match existing {
+            Some((session_id, stored_type, stored_payload))
+                if session_id == meta.session_id
+                    && stored_type == event_type
+                    && stored_payload == payload_json =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(StorageError::Database(format!(
+                "session event identity collision: {}",
+                meta.id
+            ))),
+            None => Err(StorageError::Database(format!(
+                "session event disappeared after idempotent append: {}",
+                meta.id
+            ))),
+        }
+    }
+
     pub async fn list_for_session(
         &self,
         session_id: &str,
@@ -2640,5 +2701,71 @@ impl EventStore {
                 })
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod event_store_idempotency_tests {
+    use super::*;
+    use crate::session::events::{EventMeta, SessionEvent, ToolProgramNotificationEvent};
+    use chrono::{TimeZone, Utc};
+
+    async fn store() -> EventStore {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE session_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        EventStore::new(pool)
+    }
+
+    fn notification(content: &str) -> SessionEvent {
+        SessionEvent::ToolProgramNotification(ToolProgramNotificationEvent {
+            meta: EventMeta {
+                id: "tp-event:inject-1".into(),
+                session_id: "session-1".into(),
+                created_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+            },
+            injection_key: "inject-1".into(),
+            notification_id: "notification-1".into(),
+            program_id: "program-1".into(),
+            content: content.into(),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn durable_parent_append_is_idempotent_across_store_instances() {
+        let first = store().await;
+        let second = EventStore::new(first.pool.clone());
+        let event = notification("completed");
+
+        first.append_idempotent(&event).await.unwrap();
+        second.append_idempotent(&event).await.unwrap();
+
+        let events = first.list_for_session("session-1").await.unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn durable_parent_append_rejects_identity_content_collision() {
+        let store = store().await;
+        store
+            .append_idempotent(&notification("completed"))
+            .await
+            .unwrap();
+
+        let error = store
+            .append_idempotent(&notification("different content"))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("identity collision"));
     }
 }

@@ -19,6 +19,22 @@ pub(crate) fn hit(name: &str) {
     }
 }
 
+/// Whether this debug process was explicitly launched as a cross-process
+/// recovery fixture. Both variables are process-owner capabilities; a
+/// protocol client cannot enable this mode.
+#[cfg(debug_assertions)]
+pub(crate) fn recovery_fixture_enabled() -> bool {
+    std::env::var_os("CODEGG_TEST_RECOVERY_FIXTURE").is_some()
+        && (std::env::var_os("CODEGG_TEST_FAILPOINT").is_none()
+            || std::env::var_os("CODEGG_TEST_FAILPOINT_MARKER").is_some())
+}
+
 #[cfg(not(debug_assertions))]
 #[inline]
 pub(crate) fn hit(_name: &str) {}
+
+#[cfg(not(debug_assertions))]
+#[inline]
+pub(crate) fn recovery_fixture_enabled() -> bool {
+    false
+}

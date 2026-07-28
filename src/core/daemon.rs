@@ -3348,6 +3348,19 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // Tool Programs are admitted only through the model-facing
+                // `tool_program` tool. That path receives the daemon-owned
+                // accepted permission decision and freezes the active
+                // ToolBroker catalog. A generic protocol client must not be
+                // able to supply either authority object in arbitrary JSON.
+                if new_job.kind == codegg_core::jobs::JobKind::ToolProgram
+                    && !crate::test_failpoint::recovery_fixture_enabled()
+                {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_job_submit".to_string(),
+                        message: "tool_program jobs must be submitted through the authorized tool_program invocation boundary".to_string(),
+                    });
+                }
                 let Some(submission) = self.deps.submission.clone() else {
                     return Ok(CoreResponse::Error {
                         code: "scheduler_unavailable".to_string(),

@@ -22,6 +22,19 @@ struct CoreClient {
 
 impl CoreClient {
     fn start(workspace: &Path, catalog: &Path, failpoint: Option<(&str, &Path)>) -> Self {
+        Self::start_with_fixture(workspace, catalog, failpoint, false)
+    }
+
+    fn start_recovery(workspace: &Path, catalog: &Path, failpoint: Option<(&str, &Path)>) -> Self {
+        Self::start_with_fixture(workspace, catalog, failpoint, true)
+    }
+
+    fn start_with_fixture(
+        workspace: &Path,
+        catalog: &Path,
+        failpoint: Option<(&str, &Path)>,
+        recovery_fixture: bool,
+    ) -> Self {
         let binary = PathBuf::from(env!("CARGO_BIN_EXE_codegg"));
         let mut command = Command::new(binary);
         command
@@ -31,6 +44,9 @@ impl CoreClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        if recovery_fixture {
+            command.env("CODEGG_TEST_RECOVERY_FIXTURE", "1");
+        }
         if let Some((name, marker)) = failpoint {
             command
                 .env("CODEGG_TEST_FAILPOINT", name)
@@ -63,15 +79,19 @@ impl CoreClient {
     }
 
     fn request(&mut self, payload: Value) -> Value {
+        let response = self.request_raw(payload);
+        assert_ne!(response["type"], "error", "core request failed: {response}");
+        response
+    }
+
+    fn request_raw(&mut self, payload: Value) -> Value {
         self.send(payload);
         let mut line = String::new();
         self.output
             .read_line(&mut line)
             .expect("core response must be readable");
         assert!(!line.is_empty(), "core exited before responding");
-        let response: Value = serde_json::from_str(&line).expect("core response must be JSON");
-        assert_ne!(response["type"], "error", "core request failed: {response}");
-        response
+        serde_json::from_str(&line).expect("core response must be JSON")
     }
 
     fn kill(mut self) {
@@ -242,7 +262,7 @@ fn recover_source_at(failpoint: &str, background: bool, source: &str, tools: Vec
     .unwrap();
     let program_id = format!("tp-m015-{}", failpoint.replace('_', "-"));
 
-    let mut first = CoreClient::start(&workspace, &catalog, Some((failpoint, &marker)));
+    let mut first = CoreClient::start_recovery(&workspace, &catalog, Some((failpoint, &marker)));
     let registered = first.request(json!({
         "type": "workspace_register",
         "root": workspace,
@@ -264,7 +284,7 @@ fn recover_source_at(failpoint: &str, background: bool, source: &str, tools: Vec
     wait_for(&marker);
     first.kill();
 
-    let mut second = CoreClient::start(&workspace, &catalog, None);
+    let mut second = CoreClient::start_recovery(&workspace, &catalog, None);
     let registered = second.request(json!({
         "type": "workspace_register",
         "root": workspace,
@@ -329,6 +349,45 @@ fn recover_source_at(failpoint: &str, background: bool, source: &str, tools: Vec
 }
 
 #[test]
+fn public_job_submit_cannot_fabricate_tool_program_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let catalog = temp.path().join("catalog");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname='fixture'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+
+    let mut core = CoreClient::start(&workspace, &catalog, None);
+    let registered = core.request(json!({
+        "type": "workspace_register",
+        "root": workspace,
+    }));
+    let workspace_id = registered["workspace"]["workspace_id"].as_str().unwrap();
+    let rejected = core.request_raw(submission(
+        &workspace,
+        workspace_id,
+        "tp-m015-forged-public-authority",
+        false,
+    ));
+    assert_eq!(rejected["type"], "error");
+    assert_eq!(rejected["code"], "invalid_job_submit");
+
+    let listed = core.request(json!({
+        "type": "job_list",
+        "query": {
+            "workspace_id": workspace_id,
+            "kinds": ["tool_program"],
+            "limit": 20,
+        }
+    }));
+    assert_eq!(listed["jobs"].as_array().unwrap().len(), 0);
+    core.stop();
+}
+
+#[test]
 fn accepted_authority_and_call_recover_after_job_persist_crash() {
     recover_at("tool_program_after_job_persist", false);
 }
@@ -365,7 +424,7 @@ fn corrupt_committed_state_is_rejected(failpoint: &str, relative: PathBuf, backg
     )
     .unwrap();
     let program_id = format!("tp-m015-corrupt-{}", failpoint.replace('_', "-"));
-    let mut first = CoreClient::start(&workspace, &catalog, Some((failpoint, &marker)));
+    let mut first = CoreClient::start_recovery(&workspace, &catalog, Some((failpoint, &marker)));
     let registered = first.request(json!({
         "type": "workspace_register",
         "root": workspace,
@@ -384,7 +443,7 @@ fn corrupt_committed_state_is_rejected(failpoint: &str, relative: PathBuf, backg
     first.kill();
     std::fs::write(workspace.join(relative), b"{corrupt").unwrap();
 
-    let mut second = CoreClient::start(&workspace, &catalog, None);
+    let mut second = CoreClient::start_recovery(&workspace, &catalog, None);
     let listed = second.request(json!({
         "type": "job_list",
         "query": {"workspace_id": workspace_id, "kinds": ["tool_program"], "limit": 10}
@@ -434,7 +493,7 @@ fn recursive_descendants_and_capacity_converge_after_cancel_crash() {
     )
     .unwrap();
     let program_id = "tp-m015-descendant-process";
-    let mut first = CoreClient::start(
+    let mut first = CoreClient::start_recovery(
         &workspace,
         &catalog,
         Some(("tool_program_after_descendant_cancel", &marker)),
@@ -483,7 +542,7 @@ fn recursive_descendants_and_capacity_converge_after_cancel_crash() {
     wait_for(&marker);
     first.kill();
 
-    let mut second = CoreClient::start(&workspace, &catalog, None);
+    let mut second = CoreClient::start_recovery(&workspace, &catalog, None);
     let listed = second.request(json!({
         "type": "job_list",
         "query": {"workspace_id": workspace_id, "limit": 20}

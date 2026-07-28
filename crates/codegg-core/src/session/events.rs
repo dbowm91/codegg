@@ -124,6 +124,18 @@ pub struct AgentMessageEvent {
     pub content: String,
 }
 
+/// Durable insertion of a background Tool Program result into its parent
+/// session. `injection_key` is the notification store's stable idempotency
+/// identity and is also used as the event ID.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolProgramNotificationEvent {
+    pub meta: EventMeta,
+    pub injection_key: String,
+    pub notification_id: String,
+    pub program_id: String,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessageEvent {
     pub meta: EventMeta,
@@ -256,6 +268,7 @@ pub enum SessionEvent {
     PlanUpdated(PlanUpdatedEvent),
     PlanItemUpdated(PlanItemUpdatedEvent),
     AgentMessage(AgentMessageEvent),
+    ToolProgramNotification(ToolProgramNotificationEvent),
     UserMessage(UserMessageEvent),
     ToolCallStarted(ToolCallStartedEvent),
     ToolCallFinished(ToolCallFinishedEvent),
@@ -281,6 +294,7 @@ impl SessionEvent {
             SessionEvent::PlanUpdated(_) => "plan_updated",
             SessionEvent::PlanItemUpdated(_) => "plan_item_updated",
             SessionEvent::AgentMessage(_) => "agent_message",
+            SessionEvent::ToolProgramNotification(_) => "tool_program_notification",
             SessionEvent::UserMessage(_) => "user_message",
             SessionEvent::ToolCallStarted(_) => "tool_call_started",
             SessionEvent::ToolCallFinished(_) => "tool_call_finished",
@@ -306,6 +320,7 @@ impl SessionEvent {
             SessionEvent::PlanUpdated(e) => &e.meta,
             SessionEvent::PlanItemUpdated(e) => &e.meta,
             SessionEvent::AgentMessage(e) => &e.meta,
+            SessionEvent::ToolProgramNotification(e) => &e.meta,
             SessionEvent::UserMessage(e) => &e.meta,
             SessionEvent::ToolCallStarted(e) => &e.meta,
             SessionEvent::ToolCallFinished(e) => &e.meta,

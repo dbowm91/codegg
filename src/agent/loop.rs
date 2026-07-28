@@ -1810,9 +1810,8 @@ impl AgentLoop {
         }
         // Claim each notification in deterministic order
         for notification in &pending {
-            // M012-F03: Skip notifications that were already injected
-            // before a restart. Recovery acknowledges them without
-            // re-injecting.
+            // A persisted injected identity means the parent-session event
+            // was durably appended before the notification state changed.
             if svc.is_injected(&notification.notification_id).await {
                 let _ = svc.acknowledge(&notification.notification_id).await;
                 continue;
@@ -1846,13 +1845,39 @@ impl AgentLoop {
                         )
                     }
                 };
-                // M012-F03: Mark as injected with a durable event identity
-                // before acknowledging, so recovery can detect the injection.
-                let event_id = format!(
-                    "tp-event:{}:{}",
-                    notification.program_id,
-                    chrono::Utc::now().timestamp_millis()
+                let Some(injection_key) = notification.injection_key.as_deref() else {
+                    tracing::error!(
+                        notification_id = %notification.notification_id,
+                        "Tool Program notification has no durable injection key"
+                    );
+                    continue;
+                };
+                let event_id = format!("tp-event:{injection_key}");
+                let Some(event_store) = self.event_store.as_ref() else {
+                    tracing::error!(
+                        notification_id = %notification.notification_id,
+                        "Tool Program notification cannot be injected without a durable session store"
+                    );
+                    continue;
+                };
+                let event = crate::session::events::SessionEvent::ToolProgramNotification(
+                    crate::session::events::ToolProgramNotificationEvent {
+                        meta: crate::session::events::EventMeta {
+                            id: event_id.clone(),
+                            session_id: self.session_id.clone(),
+                            created_at: chrono::Utc::now(),
+                        },
+                        injection_key: injection_key.to_string(),
+                        notification_id: notification.notification_id.clone(),
+                        program_id: notification.program_id.clone(),
+                        content: text.clone(),
+                    },
                 );
+                if let Err(error) = event_store.append_idempotent(&event).await {
+                    tracing::error!(%error, notification_id = %notification.notification_id, "failed to append durable parent-session notification event");
+                    continue;
+                }
+                crate::test_failpoint::hit("tool_program_after_session_append");
                 if let Err(error) = svc
                     .mark_injected(&notification.notification_id, &event_id)
                     .await
@@ -1863,7 +1888,6 @@ impl AgentLoop {
                 messages.push(Message::System {
                     content: std::sync::Arc::new(text),
                 });
-                crate::test_failpoint::hit("tool_program_after_session_append");
                 if let Err(error) = svc.acknowledge(&notification.notification_id).await {
                     tracing::error!(%error, notification_id = %notification.notification_id, "failed to acknowledge Tool Program notification");
                 }

@@ -317,6 +317,7 @@ impl TuiSessionState {
 
             // These events don't directly mutate TuiSessionState fields
             SessionEvent::AgentMessage(_)
+            | SessionEvent::ToolProgramNotification(_)
             | SessionEvent::UserMessage(_)
             | SessionEvent::PermissionRequested(_)
             | SessionEvent::PermissionResolved(_)
