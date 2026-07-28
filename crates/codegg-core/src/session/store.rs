@@ -2728,15 +2728,41 @@ mod event_store_idempotency_tests {
     }
 
     fn notification(content: &str) -> SessionEvent {
+        notification_with_timestamp(content, Utc.timestamp_millis_opt(1_700_000_000_000).unwrap())
+    }
+
+    fn notification_with_timestamp(content: &str, created_at: chrono::DateTime<Utc>) -> SessionEvent {
         SessionEvent::ToolProgramNotification(ToolProgramNotificationEvent {
             meta: EventMeta {
                 id: "tp-event:inject-1".into(),
                 session_id: "session-1".into(),
-                created_at: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
+                created_at,
             },
             injection_key: "inject-1".into(),
             notification_id: "notification-1".into(),
             program_id: "program-1".into(),
+            content: content.into(),
+        })
+    }
+
+    fn notification_with_fields(
+        id: &str,
+        session_id: &str,
+        injection_key: &str,
+        notification_id: &str,
+        program_id: &str,
+        content: &str,
+        created_at: chrono::DateTime<Utc>,
+    ) -> SessionEvent {
+        SessionEvent::ToolProgramNotification(ToolProgramNotificationEvent {
+            meta: EventMeta {
+                id: id.into(),
+                session_id: session_id.into(),
+                created_at,
+            },
+            injection_key: injection_key.into(),
+            notification_id: notification_id.into(),
+            program_id: program_id.into(),
             content: content.into(),
         })
     }
@@ -2767,5 +2793,218 @@ mod event_store_idempotency_tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("identity collision"));
+    }
+
+    // ── M016 Work Package A: reconstructed notification event collision ──
+
+    /// A reconstructed event with a different `created_at` but identical
+    /// semantic fields must be accepted as the same logical event.
+    /// This reproduces the post-M015 restart defect: process B reconstructs
+    /// the notification event with a fresh timestamp after process A
+    /// appended it but crashed before `mark_injected`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_with_timestamp_difference_is_accepted() {
+        let store = store().await;
+        let first = notification("completed");
+        let second = notification_with_timestamp(
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&first).await.unwrap();
+        store.append_idempotent(&second).await.unwrap();
+
+        let events = store.list_for_session("session-1").await.unwrap();
+        assert_eq!(events.len(), 1, "exactly one event must persist");
+    }
+
+    /// The stored event must remain authoritative — the retry must not
+    /// overwrite the original timestamp.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_preserves_stored_timestamp() {
+        let store = store().await;
+        let original_ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let retry_ts = Utc.timestamp_millis_opt(1_700_000_001_000).unwrap();
+
+        store
+            .append_idempotent(&notification_with_timestamp("completed", original_ts))
+            .await
+            .unwrap();
+        store
+            .append_idempotent(&notification_with_timestamp("completed", retry_ts))
+            .await
+            .unwrap();
+
+        let events = store.list_for_session("session-1").await.unwrap();
+        assert_eq!(events.len(), 1);
+        let stored = match &events[0] {
+            SessionEvent::ToolProgramNotification(e) => e,
+            _ => panic!("expected ToolProgramNotification event"),
+        };
+        assert_eq!(
+            stored.meta.created_at, original_ts,
+            "stored event must remain authoritative"
+        );
+    }
+
+    // ── Negative cases: semantic field mismatches must fail closed ──
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_session_id_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+        let retry = notification_with_fields(
+            "tp-event:inject-1",
+            "session-DIFFERENT",
+            "inject-1",
+            "notification-1",
+            "program-1",
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&retry).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "session-id mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_injection_key_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+        let retry = notification_with_fields(
+            "tp-event:inject-1",
+            "session-1",
+            "inject-DIFFERENT",
+            "notification-1",
+            "program-1",
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&retry).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "injection-key mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_notification_id_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+        let retry = notification_with_fields(
+            "tp-event:inject-1",
+            "session-1",
+            "inject-1",
+            "notification-DIFFERENT",
+            "program-1",
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&retry).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "notification-id mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_program_id_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+        let retry = notification_with_fields(
+            "tp-event:inject-1",
+            "session-1",
+            "inject-1",
+            "notification-1",
+            "program-DIFFERENT",
+            "completed",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&retry).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "program-id mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_content_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+        let retry = notification_with_fields(
+            "tp-event:inject-1",
+            "session-1",
+            "inject-1",
+            "notification-1",
+            "program-1",
+            "DIFFERENT CONTENT",
+            Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+        );
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&retry).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "content mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconstructed_notification_different_event_variant_fails_closed() {
+        let store = store().await;
+        let original = notification("completed");
+
+        // Store a different event variant with the same event ID.
+        let other = SessionEvent::AgentMessage(crate::session::events::AgentMessageEvent {
+            meta: EventMeta {
+                id: "tp-event:inject-1".into(),
+                session_id: "session-1".into(),
+                created_at: Utc.timestamp_millis_opt(1_700_000_001_000).unwrap(),
+            },
+            content: "completed".into(),
+        });
+
+        store.append_idempotent(&original).await.unwrap();
+        let error = store.append_idempotent(&other).await.unwrap_err();
+        assert!(
+            error.to_string().contains("collision"),
+            "event-variant mismatch must fail closed: {error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn malformed_stored_payload_fails_closed() {
+        let store = store().await;
+        // Insert a row with a malformed payload directly.
+        sqlx::query(
+            "INSERT INTO session_events (id, session_id, created_at, event_type, payload_json) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind("tp-event:inject-1")
+        .bind("session-1")
+        .bind("2024-01-01T00:00:00Z")
+        .bind("tool_program_notification")
+        .bind("{not valid json")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let error = store
+            .append_idempotent(&notification("completed"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("collision") || error.to_string().contains("deserialize"),
+            "malformed stored payload must fail closed: {error}"
+        );
     }
 }
