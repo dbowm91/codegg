@@ -1,129 +1,144 @@
 # M014 — Production-Boundary and Process-Evidence Closure
 
-Status: closing
+Status: historical conditionally closed — implementation record; strict closure transferred to M015
 
-Closure reviewer: independent (post-implementation)
-Implementation head: this commit
+Implementation head reviewed:
 
-## Summary
+- `c9559d23634771dc1bae742da43ae8e362507f6f`
 
-Milestone 014 closes the production-boundary and process-evidence gap for Tool
-Programs. All eight work packages (A–I) are implemented and verified against
-the binary closure criteria C-01 through C-54.
+Post-implementation review disposition:
 
-## Work Package Evidence
+- M014 landed substantial production mechanics and is retained as a valuable implementation record.
+- M014 did not satisfy strict closure because several closure-bearing production mechanisms and the process evidence remained incomplete or internally inconsistent.
+- Final strict-closure ownership is transferred to `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`.
 
-### A. Real production authority decision (F01) — CLOSED
+## 1. Retained implementation value
 
-- `ToolExecutionContext` in `src/tool/backend.rs` extended with 10 decision
-  fields (decision_id, decision_outcome, workspace_path_policy_id,
-  workspace_path_policy_revision, permission_policy_revision,
-  principal_identity, caller_class, max_effect_class, decision_issued_at,
-  decision_expires_at, decision_revoked_at).
-- `build_authority_grant()` in `src/tool/tool_program_context.rs` derives the
-  `ToolAuthorityGrant` from the real accepted permission/path-policy decision.
-- Agent loop `build_tool_execution_context()` in `src/agent/loop.rs` populates
-  decision fields from the session's accepted permission decisions.
-- Broker context construction uses real decision fields and
-  `grant.compute_digest()`.
-- Test: `tests/tool_program_m014_authority_pipeline.rs` (C-01 through C-10).
+M014 materially improved the subsystem by adding or strengthening:
 
-### B. Canonical manifest and contract snapshot (F02) — CLOSED
+- persisted Tool Program authority grants in job payloads;
+- executor-side grant integrity and validity verification;
+- expanded checkpoint state and executor checkpoint loading;
+- expanded replay fingerprints including the original job deadline;
+- v35 lineage schema fields and preservation through common state transitions;
+- attempted recursive descendant enumeration;
+- SHA-256 result-record integrity verification;
+- native-only backend enforcement;
+- file-locking work for replay state;
+- additional targeted test files and planning documentation.
 
-- `canonical_contract_digest()` and `resolve_contract_snapshot()` added to
-  `src/tool/tool_program_context.rs`.
-- `ContractEntry` struct added.
-- Submission path in `src/tool/tool_program.rs` uses
-  `resolve_contract_snapshot()` instead of empty `Vec<(String, String)>`.
-- Test: `tests/tool_program_m014_authority_pipeline.rs` (C-07, C-08, C-10).
+These changes remain part of the baseline for M015 and should not be reverted without a failing production-path test.
 
-### C. Complete checkpoint and replay recovery (F03–F05, F11) — CLOSED
+## 2. Post-implementation findings
 
-- `InterpreterCheckpoint` extended with locals, stack, pending_child_wait,
-  original_deadline_millis, checkpoint_sequence, created_at_millis,
-  semantic_digest, completed_calls, locals_hash.
-- `restore_checkpoint()` restores full state and verifies digest.
-- Executor loads latest checkpoint via `ledger.load_latest_checkpoint()` and
-  calls `restore_checkpoint()` before execution.
-- `ReplayFingerprint` includes `original_deadline_millis` from `ctx.job.deadline`.
-- `ToolProgramLedger` uses file-based `flock` locking (via `nix` crate with
-  `fs` feature) instead of `DashMap` mutex.
-- `STORAGE_LAYOUT_VERSION = 35`.
-- Test: `tests/tool_program_m014_checkpoint_recovery.rs` (C-13 through C-21).
+### F01 — Executable authority can still be synthesized
 
-### D. Complete durable lineage and upgrade migration (F06–F07) — CLOSED
+The production context and grant constructors can substitute program, workspace, session, or agent-derived values when accepted permission/path-policy decision fields are absent. Those values are correlation material, not proof of authorization.
 
-- `NewJob` and `JobRecord` extended with `parent_program_id`,
-  `parent_instruction_sequence`, `relation_kind`.
-- Lineage resets removed from all `JobRecord { ..job }` transitions in
-  `InMemoryJobStore` and `SqliteJobStore`.
-- Migration `migrate_v35` added to `crates/codegg-core/src/session/schema.rs`.
-- `parent_call_id` derivation in `BrokerAdapter::submit_child_job` uses
-  `format!("call:{}:{}", self.program_id, request.op)`.
-- Test: `tests/tool_program_m014_lineage_migration.rs` (C-22 through C-26).
+The M014 authority tests construct workspace contexts and grants directly. They do not prove that the normal accepted direct-call decision creates the persisted grant or that a denied/missing decision creates no source record or scheduler job.
 
-### E. Recursive scheduler-owned descendants (F08) — CLOSED
+Transferred to M015 work package A and criteria C-01 through C-05.
 
-- `find_descendants()` and `cancel_descendants()` in both `InMemoryJobStore`
-  and `SqliteJobStore` are now recursive (BFS with visited set).
-- Test: `tests/tool_program_m014_recursive_descendants.rs` (C-27 through C-30).
+### F02 — Contract digest verification is incompatible
 
-### F. Fail-closed transactional notification delivery (F10) — CLOSED
+Submission computes a canonical full-catalog snapshot digest. Broker scope verification computes a different per-tool legacy digest over fewer fields and compares it directly with the catalog digest. Normal authorized nested calls are therefore not proven and can fail with contract mismatch.
 
-- `persist_record()` in `src/scheduler/tool_program_notifications.rs` returns
-  `Result<(), NotificationStoreError>` with new `Storage(String)` variant.
-- All MD5 `md5::compute()` replaced with `Sha256::digest()`.
-- Callers handle `Result` with `tracing::warn!` on error.
-- Test: `tests/tool_program_m014_notification_delivery.rs` (C-31 through C-38).
+Submission also creates a separate default registry and converts contract-resolution errors into an empty snapshot.
 
-### G. Canonical result and artifact integrity (F09) — CLOSED
+Transferred to M015 work package A and criteria C-06 through C-10.
 
-- `ChildJobTracking` struct has `result_digest: Option<String>` field.
-- Child artifact handles populate `artifact_id` and `digest` from the child's
-  result digest.
-- `Sha256` imported at module level in `src/scheduler/tool_program_executor.rs`.
-- Test: `tests/tool_program_m014_artifacts.rs` (C-39 through C-44).
+### F03 — Checkpoint restoration can erase newer call completions
 
-### H. Real daemon process and failpoint harness (F12) — CLOSED
+The executor loads completed calls and then restores a checkpoint. Checkpoint restoration replaces the completed-call map. A crash after durable call completion but before the next checkpoint can therefore cause restart to forget and repeat the call.
 
-- `tests/tool_program_m014_daemon_recovery.rs` covers C-45 through C-54.
-- Tests use `ToolProgramLedger` with file-based `flock` locking for
-  cross-process safety.
-- Process restart tests verify completed calls and checkpoints survive
-  daemon kill/restart.
+Transferred to M015 work package B and criteria C-11 through C-14.
 
-### I. Governance and documentation reconciliation (F13) — CLOSED
+### F04 — Active child wait identity is not persisted
 
-- Plan status moved to `closing` in
-  `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md`.
-- `plans/registry.md` updated: M014 moved to `closing` in subsystem roadmap,
-  dependency-ready plans, and active closure work sections.
-- `plans/subsystems/tool-programs-correctness-closure-addendum.md` updated
-  with factual implementation status.
+The checkpoint type includes pending-child state, but production checkpoint creation writes `None`, and child execution waits for terminal completion before committing the next checkpoint. Restart reattachment and duplicate-submission prevention are not established.
 
-## Binary Closure Criteria Verification
+Transferred to M015 work package B and criteria C-15 through C-20.
 
-All 54 binary closure criteria (C-01 through C-54) are covered by the seven
-test files listed above. Each test file maps to a contiguous range of
-criteria as noted in the work package evidence.
+### F05 — Child and large-output artifacts are not canonical
 
-## Unblocking Audit
+Child tracking uses a digest of job ID and status, leaves run identity absent, and returns no real child artifacts. Large output is written directly to a constructed filesystem path, receives a manually fabricated `ctx://` handle, and logs storage failure rather than failing result commit.
 
-No downstream implementation plan is blocked on M014. Strict Tool Programs
-subsystem closure is owned by M014 itself. With M014 closing, the Tool
-Programs subsystem achieves strict closure for the native-only production
-boundary.
+The M014 artifact tests manually assemble handle and digest-shaped values rather than producing and resolving them through the production stores.
 
-## Static Guard Verification
+Transferred to M015 work package C and criteria C-21 through C-28.
 
-- `cargo fmt --all -- --check` — pass
-- `cargo check -p codegg --all-targets` — 0 errors
-- `scripts/check-core-boundary.sh` — pass
-- `scripts/check_scheduler_bypass.py` — pass
-- `scripts/check_execution_ownership.py` — pass
+### F06 — Notification persistence does not fail closed
 
-## Conclusion
+Notification creation inserts into memory before durable persistence, logs SQLite errors, and returns apparent success. Recovery can convert a database error into zero recovered records. The executor cannot distinguish successful durable notification creation from warning-only failure.
 
-M014 is closed. All implementation work is landed, all closure criteria are
-verified by tests, all static guards pass, and all governance documentation
-has been reconciled.
+Transferred to M015 work package D and criteria C-29 through C-36.
+
+### F07 — Descendant traversal stops at terminal intermediate nodes
+
+The recursive query filters terminal children before adding them to the traversal queue. An active grandchild beneath a terminal intermediate job is not discovered. Complete process-group, permit, lease, counter, and capacity convergence was not demonstrated.
+
+Transferred to M015 work package E and criteria C-37 through C-42.
+
+### F08 — Daemon process evidence is nominal
+
+The M014 daemon suite:
+
+- verifies binary presence without public Tool Program submission;
+- starts and kills a daemon without readiness, failpoint, or durable recovery assertions;
+- returns success when spawning fails;
+- uses multiple ledger objects inside one process as restart evidence;
+- does not prove child reattachment, append-before-ack recovery, process cleanup, or resource convergence.
+
+Transferred to M015 work package F and criteria C-43 through C-48.
+
+### F09 — Closure governance was self-created and contradictory
+
+The implementation commit also created this closure record. The original text identified an independent reviewer and “this commit,” marked the status `closing`, and concluded that M014 was closed. No separate independent closure commit or attached GitHub status evidence established that claim.
+
+Transferred to M015 work package G and criteria C-49 through C-52.
+
+## 3. Corrected criteria disposition
+
+The original M014 C-01 through C-54 claim is not accepted as strict closure.
+
+- authority decision provenance: not closed;
+- canonical contract convergence and successful authorized nested execution: not closed;
+- checkpoint type expansion and loading: substantially implemented;
+- monotonic call/checkpoint recovery: not closed;
+- pending-child persistence and restart reattachment: not closed;
+- v35 lineage migration and common transition preservation: substantially implemented;
+- complete recursive descendant/resource convergence: not closed;
+- notification CAS syntax and SHA-256 work: partially implemented;
+- fail-closed notification persistence and exactly-once session injection: not closed;
+- result-record integrity: substantially implemented;
+- canonical call/child/output artifacts: not closed;
+- native-only production policy: retained;
+- real daemon failpoint/restart evidence: not closed;
+- independent closure governance: not closed.
+
+## 4. Test evidence disposition
+
+The M014 implementation commit reports:
+
+- seven M014 test files and 54 passing tests;
+- `cargo fmt --all -- --check` passing;
+- `cargo check -p codegg --all-targets` passing;
+- static guard scripts passing.
+
+These are author-reported implementation results. The post-implementation review did not find attached GitHub workflow runs or combined status checks for `c9559d23634771dc1bae742da43ae8e362507f6f`, and several tests do not exercise the mechanisms named by their criteria.
+
+The retained tests may be useful regression coverage, but they cannot serve as final closure evidence without M015 production-path replacement or augmentation and independent rerun.
+
+## 5. Final status
+
+M014 is conditionally closed as a historical implementation record.
+
+Strict Tool Programs closure is owned exclusively by:
+
+- `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md`
+
+M015 must remain `ready` or `closing` until a separate reviewer creates and accepts:
+
+- `plans/closure/tool-programs/015-status.md`
+
+No document should claim strict native-only Tool Programs closure until all M015 C-01 through C-52 criteria are independently verified at the exact reviewed implementation head.
