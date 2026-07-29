@@ -234,10 +234,7 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
                     .with_allowed_paths((*allowed_paths).clone())
                     .with_deny_paths((*deny_paths).clone());
                 sandbox.enforce().map_err(|e| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("landlock enforcement failed: {e}"),
-                    )
+                    std::io::Error::other(format!("landlock enforcement failed: {e}"))
                 })
             });
         }
