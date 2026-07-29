@@ -553,9 +553,9 @@ mod tests {
 
     #[test]
     fn resolve_policy_portable_has_warnings() {
-        let decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
+        let _decision = resolve_policy(PythonExecutionMode::Analyze, "x = 1", &ws());
         // On non-Linux, should have portable fallback warnings
         #[cfg(not(target_os = "linux"))]
-        assert!(!decision.warnings.is_empty());
+        assert!(!_decision.warnings.is_empty());
     }
 }
