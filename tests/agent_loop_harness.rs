@@ -4042,7 +4042,7 @@ async fn test_live_dispatcher_passes_native_backend_in_context() {
     let tool_call = ToolCall {
         id: "call_native".to_string().into(),
         name: "record_provenance".to_string().into(),
-        arguments: serde_json::json!({"k": "v"}),
+        arguments: serde_json::json!({"value": "v"}),
     };
 
     let response1 = vec![
