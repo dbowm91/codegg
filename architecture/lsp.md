@@ -43,8 +43,8 @@ generic code.
 
 | Tier | Servers | Test surface |
 |------|---------|--------------|
-| Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server CI in `.github/workflows/lsp-real-server.yml` (`lsp-real-server-tests` feature) on opt-in triggers (`workflow_dispatch`, weekly schedule, push paths) |
-| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server CI in `.github/workflows/lsp-real-server.yml`, opt-in, with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.8 (LLVM apt, checksum-verified archive) |
+| Tier 1 | `rust-analyzer`, `basedpyright` / `pyright` | Real-server local opt-in via `cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke` |
+| Tier 2 | `gopls`, `typescript-language-server`, `clangd` | Real-server local opt-in with pinned versions: `gopls` v0.16.1 (Go 1.22.5), `typescript-language-server` 4.3.3 + `typescript` 5.5.4 (Node 20), `clangd` 18.1.8 (LLVM apt, checksum-verified archive) |
 
 Profile accessors:
 
@@ -58,9 +58,7 @@ Both tiers are data-driven through `LspCompatibilityProfile` (executable
 candidates, default args, root markers, readiness policy, restart
 policy, known limitations, observed capability overrides). Generic
 client code reads profile fields instead of branching on server IDs.
-Default CI remains network-free; Tier 2 jobs run only on opt-in
-triggers or path-triggered runs against `crates/egglsp/**`,
-`src/lsp/**`, or the workflow YAML itself.
+Default CI remains network-free. Real-server compatibility is run intentionally via local commands when LSP code changes or before a release.
 
 ## Components
 
@@ -1814,7 +1812,7 @@ This pass closes the gap between "implemented by commit message" and "verified b
 
 ### Support Tiers
 
-- **Pinned/CI-verified**: Servers with dedicated compatibility profiles tested in the real-server CI matrix (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd). These have pinned versions, root-marker expectations, and known limitations documented.
+- **Pinned/locally-verified**: Servers with dedicated compatibility profiles tested via local real-server smoke commands (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd). These have pinned versions, root-marker expectations, and known limitations documented.
 - **Discovery/launch definitions**: Additional server definitions in `server.rs` provide language-to-server mapping and launch configuration. These are best-effort and have not been verified against the pinned CI matrix.
 
 ### Platform Caveats
@@ -3125,21 +3123,27 @@ set). CI installs pinned versions on the Tier 2 matrix jobs.
 | `two_consecutive_restarts_use_monotonic_generations` | Generation 1 crash on `didOpen` → gen 2 hover crash → gen 3 recovers; generation map reaches 3; exactly 3 process starts; final state is `Ready` |
 | `generation_is_identical_across_health_and_exit_event` | Health snapshot generation matches the published process-exit generation; a stale gen-1 exit event injected after gen-2 is `Ready` is silently dropped and does not change the health snapshot (Pass 11 test-timing fix writes the gen-3 scenario only after gen-2 is observed) |
 
-### Real-Server CI
+### Real-Server Local Compatibility
 
-`.github/workflows/lsp-real-server.yml` runs one server per matrix job against `crates/egglsp/tests/real_server_smoke.rs` with the `lsp-real-server-tests` feature. Phase 4 extended the matrix from Tier 1 to Tier 1 + Tier 2 (5 jobs total: `rust-analyzer`, `basedpyright`, `gopls`, `typescript-language-server`, `clangd`). Pinned versions are recorded in the workflow:
+Real-server compatibility is run locally via documented opt-in commands. There is no automated CI workflow for real-server testing. Pinned versions for Tier 1 and Tier 2:
 
-| Job | Server | Pinned version | Toolchain |
-|-----|--------|----------------|-----------|
-| `rust-analyzer` | rust-analyzer | (latest via rust-toolchain) | `dtolnay/rust-toolchain@1.81.0` |
-| `basedpyright` | basedpyright | `1.13.1` | `dtolnay/rust-toolchain@1.81.0` |
-| `gopls` | gopls | `v0.16.1` | Go `1.22.5` |
-| `typescript-language-server` | typescript-language-server | `4.3.3` + `typescript@5.5.4` | Node `20` |
-| `clangd` | clangd | `18` (LLVM apt, checksum-verified LLVM 18.1.8 archive) | — |
+| Server | Pinned version | Installation |
+|--------|----------------|--------------|
+| `rust-analyzer` | (latest via rust-toolchain) | `rustup component add rust-analyzer` |
+| `basedpyright` | `1.13.1` | `npm install -g basedpyright@1.13.1` |
+| `gopls` | `v0.16.1` | `go install golang.org/x/tools/gopls@v0.16.1` (Go 1.22.5) |
+| `typescript-language-server` | `4.3.3` + `typescript@5.5.4` | `npm install -g typescript-language-server@4.3.3 typescript@5.5.4` (Node 20) |
+| `clangd` | `18.1.8` | Checksum-verified LLVM archive |
 
-Each matrix job runs only its own server test (e.g. `-- rust_analyzer` or `-- gopls`); artifact filenames are sanitized via the matrix job name and uploaded from `target/lsp-compatibility/` with a 30-day retention.
+Run real-server tests intentionally when LSP code changes or before a release:
 
-**Trigger policy** (Phase 4): the workflow runs on `workflow_dispatch`, weekly schedule, and push paths under `crates/egglsp/**`, `src/lsp/**`, or the workflow YAML itself. The push trigger was extended in Phase 4 to include `.github/workflows/lsp-real-server.yml` so workflow edits re-run the matrix. **Default CI remains network-free** — the push trigger fires only on changes to LSP source paths, and the rest of CI does not exercise real-server smoke jobs. Tier 1 jobs were unchanged in Phase 4.
+```bash
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer --nocapture
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- basedpyright --nocapture
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- gopls --nocapture
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- typescript --nocapture
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- clangd --nocapture
+```
 
 Phase 2 tests are parallel-safe (unique tempdir per test, per-process scenario/transcript paths). The harness does not require `--test-threads=1`; that flag was only needed by the pre-Phase-2 test layout.
 
@@ -3549,7 +3553,7 @@ handoff live in
 | Pass 7 | Code-action preview | `CodeActionSummary`, `CodeActionPreview` (lazy single-action resolution, command-only rejected via `LspError::CommandOnlyCodeAction`) |
 | Pass 8 | Formatting preview | `FormattingPreview` (sha256 before/after hashes, bounded 8KB unified diff, on-disk invariant check, raw TextEdit preservation) |
 | Pass 9 | LspTool adoption | Eight new operations exposed through `LspTool` dispatch: `declaration`, `implementation`, `documentHighlights`, `signatureHelp`, `completion`, `semanticTokens`, `codeActionSummaries`, `codeActionPreview` |
-| Pass 10 | Tier 2 CI matrix | gopls, typescript-language-server, clangd jobs in `.github/workflows/lsp-real-server.yml` with pinned versions |
+| Pass 10 | Tier 2 local matrix | gopls, typescript-language-server, clangd local opt-in with pinned versions |
 | Pass 11 | Docs + final verification | Architecture, skill guide, AGENTS.md, README updated; full suite green |
 | Pass 12 | Per-server shutdown results | Tier 2 shutdown failures classified as `KnownLimitation`; exact clangd pin (checksum-verified LLVM 18.1.8 archive); data-driven smoke expectations (no server-ID branches) |
 | Pass 13 | Architecture docs + final closure | LSP architecture documentation updated for Phase 4 closure: fail-closed unknown capability policy, effective capability snapshots, observed diagnostics integration, raw-edit formatting fidelity, per-file stale-base evidence, strict semantic-token modifier policy, real implementation fixtures, data-driven smoke expectations, per-server shutdown results, exact clangd pin |
@@ -3576,8 +3580,7 @@ handoff live in
 7. Real-server fixtures validate operation semantics, not just
    successful response parsing — on-disk hash comparison is the
    safety net for every mutation operation.
-8. Tier 2 CI remains opt-in (`workflow_dispatch` + weekly
-   schedule + push paths) and version-pinned.
+8. Tier 2 local opt-in commands are documented and version-pinned.
 9. Agent-facing context uses higher-level LSP evidence selectively
    and within bounded budgets (`MAX_DOCUMENT_HIGHLIGHTS=100`,
    `MAX_COMPLETION_CANDIDATES=200`, `MAX_SEMANTIC_TOKENS=1000`,
@@ -3655,7 +3658,7 @@ handoff live in
 
 - [x] Tier 2 versions are pinned (gopls v0.16.1, typescript-language-server 4.3.3 + typescript 5.5.4, clangd 18.1.8 checksum-verified)
 - [x] Default CI remains network-free (push trigger fires only on changes to LSP source paths)
-- [x] Compatibility artifacts upload (`target/lsp-compatibility/`, 30-day retention)
+- [x] Compatibility reports written to `target/lsp-compatibility/` during local real-server runs
 - [x] Documentation accurately scopes support (this file + skill guide + AGENTS.md + README)
 
 #### Pass 13 — Architecture docs + final closure
@@ -3822,7 +3825,7 @@ addresses the remaining Phase 4 evidence-integrity gaps:
 | Pass 6 | Edit-bearing TypeScript code action | The TypeScript fixture lands on the type-mismatch diagnostic at line 22 (`const x: string = 42;`) with a 20-character range; `code_action_min_edit_bearing = 1`. The harness requires edit-bearing actions; command-only results fail the check (not `KnownLimitation`). Only edit-bearing results pass. The typescript-language-server 4.3.3 empirically returns an edit-bearing quick-fix for this position, so the check passes without a known limitation. |
 | Pass 7 | Negotiated position encoding | `LspClient::position_encoding()` returns the live negotiated encoding (`PositionEncoding::{Utf8, Utf16, Utf32}`); `set_position_encoding()` records it during `initialize`. `LspCapabilityDetails.position_encoding` carries the negotiated value when the server advertises it. `LspCompatibilityReport.position_encoding` and `position_encoding_assumed` record the negotiated value and whether UTF-16 was assumed. Semantic-token bounds now use `client.position_encoding()` instead of assuming UTF-16. |
 | Pass 8 | Fixture-aware fallback requirements | `RealServerFixture::requirement_for(op)` derives `RequiredIfAdvertised` for operations the fixture opts into (implementation targets, rename expectation, format-preview request, code-action min-edit-bearing, type-hierarchy targets) and `Optional` otherwise. `populate_operation_matrix` uses this so the fallback records reflect fixture expectations and the closure detects advertised-but-unexercised coverage gaps. |
-| Pass 9 | Matrix manifest preservation | `update_matrix_manifest()` writes `target/lsp-compatibility/matrix-manifest.json` per server (commit SHA, `GITHUB_RUN_ID`, per-server artifact path + version + position encoding + record counts). The CI workflow `.github/workflows/lsp-real-server.yml` adds a `matrix-summary` job that downloads all per-server artifacts, verifies the manifest exists, and uploads it as `lsp-compat-matrix-manifest`. |
+| Pass 9 | Matrix manifest preservation | `update_matrix_manifest()` writes `target/lsp-compatibility/matrix-manifest.json` per server (commit SHA, per-server artifact path + version + position encoding + record counts). Historical CI aggregation was removed in Development Verification M004. |
 | Pass 10 | Regression + docs | All passes pass `cargo check` and the production integration suite (`production_protocol_stdio`, `production_semantic_stdio`, `production_service_stdio`, `supervisor_restart_stdio`, `empty_diagnostics_readiness`). Two pre-existing flaky unit tests (`smoke_harness_force_kills_hung_server` and rust-analyzer `typeHierarchy/prepare` against the installed version) remain red and are unrelated to this cleanup. This section, `AGENTS.md`, and `README.md` document the new evidence. |
 
 ### Phase 4 final closure definition (Pass 10)

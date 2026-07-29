@@ -228,13 +228,7 @@ Optional feature, plugin, example, LSP, audit, and cross-platform checks are not
 
 ### Real LSP tests
 
-Real-server compatibility tests live in a separate workflow (`lsp-real-server.yml`) and are **not part of routine PR validation**. The workflow triggers on:
-
-- **Manual dispatch** (`workflow_dispatch`)
-- **Weekly schedule** — Monday 6am UTC
-- **Push to `main`** touching `crates/egglsp/**`, `src/lsp/**`, or `.github/workflows/lsp-real-server.yml`
-
-Real-server tests must not be pulled into routine PR validation. They verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.
+Real-server compatibility tests are run locally as opt-in commands, not part of routine CI. There is no automated workflow for real-server testing. Tests verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.
 
 ### Session projection transport closure
 
@@ -268,9 +262,13 @@ The root `--all-features` flag enables the `lsp-real-server-tests` feature, whic
 2. **No subprocess launched** — skipped tests never spawn a language server process
 3. **CI does not install real servers** — the default `test` job does not set `CODEGG_RA_BIN` or similar env vars
 
-The separate `lsp-real-server.yml` workflow explicitly installs server binaries and runs with `--features lsp-real-server-tests` to exercise the real compatibility path.
+Local real-server smoke tests (requires installed servers):
 
-`scripts/verify.sh full` uses `--features server,plugins,lsp-test-support` instead of `--all-features` to avoid activating `lsp-real-server-tests`. Real-server tests remain opt-in.
+```bash
+cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer
+```
+
+`scripts/verify.sh full` uses `--features server,plugins,lsp-test-support` instead of `--all-features` to avoid activating `lsp-real-server-tests`. Real-server tests remain opt-in local commands.
 
 See `AGENTS.md` for the full test command catalog.
 

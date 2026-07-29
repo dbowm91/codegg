@@ -19,8 +19,8 @@
 #
 # Examples:
 #   scripts/capture-nextest-timing.sh
-#   scripts/capture-nextest-timing.sh ci-heavy
-#   scripts/capture-nextest-timing.sh ci-heavy --all-features
+#   scripts/capture-nextest-timing.sh timing
+#   scripts/capture-nextest-timing.sh timing --all-features
 #   scripts/capture-nextest-timing.sh default --top 10 -- -p codegg-core
 
 set -euo pipefail
