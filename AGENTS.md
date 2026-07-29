@@ -105,6 +105,7 @@ python3 scripts/check_tool_broker_boundary.py       # tool broker boundary guard
 scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
 scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
 python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
+python3 scripts/check-tokio-test-flavors.py --self-test # baseline-aware regression guard self-test
 python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
@@ -392,7 +393,7 @@ Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
-CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor annotations, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor guard self-test, tokio test-flavor baseline regression, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 

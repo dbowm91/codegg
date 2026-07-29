@@ -2838,7 +2838,7 @@ mod tests {
         assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn active_mode_python_command_routes() {
         std::env::remove_var("CODEGG_ROUTING_DISABLE");
         let mut cic = CommandIntentConfig::default();
@@ -2848,16 +2848,36 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "python3 -c 'print(42)'"});
-        let result = tool.execute(input).await.unwrap();
-        // Python command should execute via python3 -c
+        let error = tool
+            .execute(input)
+            .await
+            .expect_err("python routing must not bypass the scheduler");
         assert!(
-            result.contains("42"),
-            "python command must produce expected output: {}",
-            result
+            error.to_string().contains("requires scheduler admission"),
+            "python routing must return typed scheduler-unavailable error: {}",
+            error
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn scheduler_unavailable_python_returns_typed_error() {
+        std::env::remove_var("CODEGG_ROUTING_DISABLE");
+        let mut cic = CommandIntentConfig::default();
+        cic.route_safe_commands = Some(true);
+        cic.route_python = Some(RouteLevel::Active);
+        cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
+
+        let tool = BashTool::new().with_command_intent_config(cic);
+        let input = serde_json::json!({"command": "python3 -c 'import sys; print(sys.version)'"});
+        let error = tool
+            .execute(input)
+            .await
+            .expect_err("scheduler unavailability must not panic");
+        let msg = error.to_string();
         assert!(
-            result.contains("mode: active"),
-            "metadata must show active mode"
+            msg.contains("scheduler admission") || msg.contains("scheduler is disabled"),
+            "must return typed scheduler error without panic: {}",
+            msg
         );
     }
 

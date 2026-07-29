@@ -5,7 +5,8 @@ edition = "2021"
 description = "Token counting and context packing utilities extracted from Codegg."
 license = "MIT"
 rust-version = "1.81"
-publish = false
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
 
 [dependencies]
 thiserror = "2"

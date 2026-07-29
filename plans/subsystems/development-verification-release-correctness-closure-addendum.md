@@ -1,6 +1,6 @@
 # Development Verification and Release Correctness Closure Addendum
 
-Status: active
+Status: closing
 
 Parent roadmap:
 

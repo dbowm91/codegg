@@ -5,7 +5,8 @@ edition = "2021"
 description = "Deterministic security scanning primitives extracted from Codegg."
 license = "MIT"
 rust-version = "1.81"
-publish = false
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -15,7 +15,6 @@ readme = "README.md"
 keywords = ["ai", "coding", "agent", "llm", "claude"]
 categories = ["command-line-utilities", "artificial-intelligence"]
 rust-version = "1.81"
-publish = false
 
 [[bin]]
 name = "codegg-lsp-test-server"
@@ -168,15 +167,15 @@ ratatui-image = { version = "10", default-features = false, features = ["crosste
 image = { version = "0.25", optional = true, features = ["png", "jpeg", "gif", "webp"] }
 
 # Extracted tool crates
-codegg-config = { path = "crates/codegg-config" }
-codegg-protocol = { path = "crates/codegg-protocol" }
-codegg-providers = { path = "crates/codegg-providers" }
-eggsentry = { path = "crates/eggsentry" }
-eggcontext = { path = "crates/eggcontext" }
-egggit = { path = "crates/egggit" }
-egglsp = { path = "crates/egglsp" }
-codegg-core = { path = "crates/codegg-core" }
-codegg-git = { path = "crates/codegg-git" }
+codegg-config = { version = "=0.1.0", path = "crates/codegg-config" }
+codegg-protocol = { version = "=0.1.0", path = "crates/codegg-protocol" }
+codegg-providers = { version = "=0.1.0", path = "crates/codegg-providers" }
+eggsentry = { version = "=0.1.0", path = "crates/eggsentry" }
+eggcontext = { version = "=0.1.0", path = "crates/eggcontext" }
+egggit = { version = "=0.1.0", path = "crates/egggit" }
+egglsp = { version = "=0.1.0", path = "crates/egglsp" }
+codegg-core = { version = "=0.1.0", path = "crates/codegg-core" }
+codegg-git = { version = "=0.1.0", path = "crates/codegg-git" }
 eggsact = "1.1.4"
 
 [dev-dependencies]

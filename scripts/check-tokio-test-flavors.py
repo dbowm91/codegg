@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
-"""Check for bare #[tokio::test] annotations without explicit flavor.
+"""Baseline-aware regression guard for bare #[tokio::test] annotations.
 
-This script is a regression guard that ensures all tokio tests specify an
-explicit runtime flavor (`current_thread` or `multi_thread`). Bare
-`#[tokio::test]` uses the default multi-threaded runtime, which is
-unnecessary overhead for most tests.
+Ensures all new tokio tests specify an explicit runtime flavor. Historical
+bare tests are tracked in a checked-in baseline file.
 
 Exit codes:
-  0 — no bare tests found (or all are in allowlist)
-  1 — bare tests found (CI failure)
+  0 — no new violations and no stale baseline entries
+  1 — new bare tests found, stale entries, or malformed baseline
 
 Usage:
-    python3 scripts/check-tokio-test-flavors.py [--allowlist FILE] [--self-test]
+    python3 scripts/check-tokio-test-flavors.py [--self-test] [--emit-current]
 """
 
 import argparse
 import re
 import sys
-import textwrap
 from pathlib import Path
 
-# Files that are allowed to have bare #[tokio::test] (one per line)
-DEFAULT_ALLOWLIST = ""
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+DEFAULT_BASELINE = REPO_ROOT / "scripts" / "tokio-test-flavor-baseline.txt"
 
 SKIP_PATHS = {
     "target",
@@ -30,19 +28,17 @@ SKIP_PATHS = {
     "examples",
 }
 
-# Regex to match a bare #[tokio::test] without arguments.
-# This matches the exact string with flexible whitespace.
+# Match a bare #[tokio::test] without arguments (end of line)
 BARE_TOKIO_TEST_RE = re.compile(r"#\s*\[\s*tokio::test\s*\]$")
 
-# Regex to match a tokio::test with explicit flavor (NOT bare).
+# Match a tokio::test with explicit flavor (NOT bare)
 FLAVORED_TOKIO_TEST_RE = re.compile(r"#\s*\[\s*tokio::test\s*\(")
 
-# Regex to match cfg attributes that may precede #[tokio::test]
-CFG_LINE_RE = re.compile(r"^\s*#\[cfg\(")
+# Match a function definition
+FN_RE = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)")
 
 
 def find_rust_files(root: Path) -> list[Path]:
-    """Find all Rust source files, excluding build artifacts."""
     files = []
     for path in root.rglob("*.rs"):
         parts = path.relative_to(root).parts
@@ -52,98 +48,105 @@ def find_rust_files(root: Path) -> list[Path]:
     return sorted(files)
 
 
-def check_file(filepath: Path, allowlist: set[str]) -> list[dict]:
-    """Check a file for bare #[tokio::test] annotations.
+def extract_bare_test_identities(root: Path) -> list[str]:
+    """Find all bare #[tokio::test] and return stable identities."""
+    identities = []
+    for filepath in find_rust_files(root):
+        content = filepath.read_text(errors="replace")
+        lines = content.split("\n")
+        rel_path = str(filepath.relative_to(root))
 
-    Handles multiline patterns where #[cfg(...)] or #[cfg(all(...))]
-    may precede #[tokio::test]. Returns list of {line, line_number}
-    for bare tests.
-    """
-    content = filepath.read_text(errors="replace")
-    lines = content.split("\n")
-    results = []
-
-    rel_path = str(filepath)
-    if rel_path in allowlist:
-        return results
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-
-        # Check if this line is a bare #[tokio::test]
-        if BARE_TOKIO_TEST_RE.search(stripped):
-            # Look back to find preceding #[cfg(...)] lines
-            # The bare tokio::test is the violation line
-            results.append(
-                {
-                    "line": stripped,
-                    "line_number": i + 1,
-                }
-            )
-        elif FLAVORED_TOKIO_TEST_RE.search(stripped):
-            # This has explicit flavor — skip
-            pass
-
-        i += 1
-
-    return results
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if BARE_TOKIO_TEST_RE.search(stripped):
+                # Look ahead for the function name, skipping #[cfg(...)] and other attrs
+                fn_line = i + 1
+                while fn_line < len(lines):
+                    fn_stripped = lines[fn_line].strip()
+                    # Skip attribute lines, doc comments, and empty lines
+                    if fn_stripped.startswith("#[") or fn_stripped.startswith("//") or fn_stripped == "":
+                        fn_line += 1
+                        continue
+                    m = FN_RE.match(fn_stripped)
+                    if m:
+                        identities.append(f"{rel_path}::{m.group(1)}")
+                    else:
+                        # Malformed: bare tokio::test not followed by fn
+                        identities.append(f"{rel_path}::???UNRESOLVED_LINE_{i+1}")
+                    break
+                else:
+                    # EOF without function
+                    identities.append(f"{rel_path}::???UNRESOLVED_EOF_{i+1}")
+            i += 1
+    return sorted(identities)
 
 
-def load_allowlist(allowlist_path: Path | None) -> set[str]:
-    """Load allowlist from file."""
-    if allowlist_path is None:
-        # Use default allowlist
-        allowlist_text = DEFAULT_ALLOWLIST
-    else:
-        allowlist_text = allowlist_path.read_text()
+def load_baseline(path: Path) -> tuple[list[str], list[str]]:
+    """Load baseline and return (entries, errors)."""
+    if not path.exists():
+        return [], [f"baseline file not found: {path}"]
 
-    # Parse allowlist: one path per line, # for comments, blank lines ignored
-    allowlist = set()
-    for line in allowlist_text.split("\n"):
-        line = line.strip()
+    entries = []
+    errors = []
+    seen = set()
+
+    for lineno, raw in enumerate(path.read_text().splitlines(), 1):
+        line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        allowlist.add(line)
 
-    return allowlist
+        # Reject wildcards and directory suppressions
+        if "*" in line or line.endswith("/"):
+            errors.append(f"  line {lineno}: wildcard or directory suppression not allowed: {line}")
+            continue
+
+        # Validate format: must be path::function or path::???UNRESOLVED_*
+        if "::" not in line:
+            errors.append(f"  line {lineno}: missing '::' separator: {line}")
+            continue
+
+        if line in seen:
+            errors.append(f"  line {lineno}: duplicate entry: {line}")
+            continue
+
+        seen.add(line)
+        entries.append(line)
+
+    return sorted(entries), errors
 
 
 def run_self_test() -> int:
-    """Validate the script can detect both bare and non-bare patterns.
-
-    Returns 0 if all tests pass, 1 if any test fails.
-    """
+    """Validate the script can detect both bare and non-bare patterns."""
     test_cases = [
-        # (description, source_lines, expected_violations)
+        # (description, source_lines, expected_bare_identities)
         (
             "bare #[tokio::test] alone",
             ["#[tokio::test]", "async fn test1() {}"],
-            [1],
+            ["test.rs::test1"],
         ),
         (
-            "bare #[tokio::test] after blank lines",
+            "bare after blank lines",
             ["", "", "#[tokio::test]", "async fn test2() {}"],
-            [3],
+            ["test.rs::test2"],
         ),
         (
-            "bare #[tokio::test] after #[cfg(test)]",
+            "bare after #[cfg(test)]",
             ["#[cfg(test)]", "#[tokio::test]", "async fn test3() {}"],
-            [2],
+            ["test.rs::test3"],
         ),
         (
-            "bare #[tokio::test] after #[cfg(all(...))]",
+            "bare after #[cfg(all(...))]",
             ["#[cfg(all(test, feature = \"x\"))]", "#[tokio::test]", "async fn test4() {}"],
-            [2],
+            ["test.rs::test4"],
         ),
         (
-            "flavored #[tokio::test(flavor = \"current_thread\")]",
+            "flavored current_thread passes",
             ["#[tokio::test(flavor = \"current_thread\")]", "async fn test5() {}"],
             [],
         ),
         (
-            "flavored #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]",
+            "flavored multi_thread passes",
             ["#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]", "async fn test6() {}"],
             [],
         ),
@@ -155,17 +158,17 @@ def run_self_test() -> int:
                 "#[tokio::test]",
                 "async fn test8() {}",
             ],
-            [3],
+            ["test.rs::test8"],
         ),
         (
             "multiple bare tests",
             ["#[tokio::test]", "async fn test9() {}", "#[tokio::test]", "async fn test10() {}"],
-            [1, 3],
+            ["test.rs::test9", "test.rs::test10"],
         ),
         (
             "bare with extra whitespace",
             ["#[ tokio::test ]", "async fn test11() {}"],
-            [1],
+            ["test.rs::test11"],
         ),
         (
             "not a test attribute (#[tokio::main])",
@@ -179,28 +182,65 @@ def run_self_test() -> int:
 
     print("Running self-test...\n")
 
-    for desc, source_lines, expected_violations in test_cases:
-        # Write test content to temp file and check it
-        import tempfile
+    for desc, source_lines, expected in test_cases:
+        actual = []
+        lines = source_lines
+        for idx, line in enumerate(lines):
+            if BARE_TOKIO_TEST_RE.search(line.strip()):
+                fn_idx = idx + 1
+                while fn_idx < len(lines):
+                    fs = lines[fn_idx].strip()
+                    if fs.startswith("#[") or fs.startswith("//") or fs == "":
+                        fn_idx += 1
+                        continue
+                    m = FN_RE.match(fs)
+                    if m:
+                        actual.append(f"test.rs::{m.group(1)}")
+                    break
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".rs", delete=False) as f:
-            f.write("\n".join(source_lines))
-            temp_path = Path(f.name)
+        if actual == expected:
+            print(f"  PASS: {desc}")
+            passed += 1
+        else:
+            print(f"  FAIL: {desc}")
+            print(f"    Expected: {expected}")
+            print(f"    Got:      {actual}")
+            failed += 1
+
+    # Test baseline loading
+    print("\n  Baseline validation tests:")
+
+    import tempfile
+
+    for desc, content, expect_ok, expect_count in [
+        ("valid baseline", "a::b\nc::d\n", True, 2),
+        ("duplicate entry", "a::b\na::b\n", False, 0),
+        ("wildcard entry", "a::*\n", False, 0),
+        ("missing separator", "abc\n", False, 0),
+        ("comment lines", "# comment\na::b\n", True, 1),
+        ("empty lines", "\n\na::b\n\n", True, 1),
+    ]:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False
+        ) as f:
+            f.write(content)
+            temp_baseline = Path(f.name)
 
         try:
-            results = check_file(temp_path, set())
-            actual_line_numbers = [r["line_number"] for r in results]
-
-            if actual_line_numbers == expected_violations:
-                print(f"  PASS: {desc}")
+            entries, errors = load_baseline(temp_baseline)
+            ok = len(errors) == 0
+            if ok == expect_ok and (not expect_ok or len(entries) == expect_count):
+                print(f"    PASS: {desc}")
                 passed += 1
             else:
-                print(f"  FAIL: {desc}")
-                print(f"    Expected: {expected_violations}")
-                print(f"    Got:      {actual_line_numbers}")
+                print(f"    FAIL: {desc}")
+                print(f"      Expected ok={expect_ok}, got ok={ok}")
+                if expect_ok:
+                    print(f"      Expected {expect_count} entries, got {len(entries)}")
+                print(f"      Errors: {errors}")
                 failed += 1
         finally:
-            temp_path.unlink()
+            temp_baseline.unlink()
 
     print(f"\nSelf-test results: {passed} passed, {failed} failed")
 
@@ -214,13 +254,7 @@ def run_self_test() -> int:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Check for bare #[tokio::test] annotations"
-    )
-    parser.add_argument(
-        "--allowlist",
-        type=Path,
-        default=None,
-        help="Path to allowlist file (one path per line)",
+        description="Baseline-aware regression guard for bare #[tokio::test]"
     )
     parser.add_argument(
         "--self-test",
@@ -228,56 +262,75 @@ def main():
         help="Run self-test to validate detection logic",
     )
     parser.add_argument(
-        "paths",
-        nargs="*",
-        default=["."],
-        help="Paths to scan (default: current directory)",
+        "--emit-current",
+        action="store_true",
+        help="Print sorted current bare identities (for baseline generation)",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=DEFAULT_BASELINE,
+        help=f"Path to baseline file (default: {DEFAULT_BASELINE})",
     )
     args = parser.parse_args()
 
     if args.self_test:
         return run_self_test()
 
-    root = Path.cwd()
-    allowlist = load_allowlist(args.allowlist)
-    violations = []
+    # Find current bare identities
+    current = extract_bare_test_identities(REPO_ROOT)
 
-    for path_str in args.paths:
-        path = Path(path_str)
-        if not path.exists():
-            continue
+    if args.emit_current:
+        for ident in current:
+            print(ident)
+        return 0
 
-        if path.is_file() and path.suffix == ".rs":
-            results = check_file(path, allowlist)
-            for r in results:
-                violations.append({"file": str(path), **r})
-        elif path.is_dir():
-            for filepath in find_rust_files(path):
-                results = check_file(filepath, allowlist)
-                for r in results:
-                    violations.append({"file": str(filepath), **r})
+    # Load baseline
+    baseline, baseline_errors = load_baseline(args.baseline)
 
-    if violations:
-        print(f"Found {len(violations)} bare #[tokio::test] annotation(s):\n")
-        for v in violations:
-            rel_path = (
-                Path(v["file"]).relative_to(root)
-                if Path(v["file"]).is_relative_to(root)
-                else v["file"]
-            )
-            print(f"  {rel_path}:{v['line_number']}: {v['line']}")
-
-        print(
-            "\nAll tokio tests must specify an explicit flavor:"
-        )
-        print("  #[tokio::test(flavor = \"current_thread\")]  — for most tests")
-        print("  #[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]  — for concurrency")
-        print(
-            "\nAdd exceptions to scripts/check-tokio-test-flavors.py allowlist if needed."
-        )
+    if baseline_errors:
+        print("Baseline errors:")
+        for err in baseline_errors:
+            print(err)
         return 1
 
-    return 0
+    current_set = set(current)
+    baseline_set = set(baseline)
+
+    new_violations = sorted(current_set - baseline_set)
+    stale_baseline = sorted(baseline_set - current_set)
+
+    if not new_violations and not stale_baseline:
+        print(
+            f"Tokio flavor guard: {len(current)} bare tests in baseline, no new violations."
+        )
+        return 0
+
+    if new_violations:
+        print(f"NEW bare #[tokio::test] violations ({len(new_violations)}):")
+        for v in new_violations:
+            print(f"  {v}")
+        print()
+
+    if stale_baseline:
+        print(f"STALE baseline entries ({len(stale_baseline)}):")
+        for s in stale_baseline:
+            print(f"  {s}")
+        print()
+
+    if new_violations:
+        print(
+            "New bare tests must use explicit flavor:\n"
+            '  #[tokio::test(flavor = "current_thread")]  — for most tests\n'
+            '  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]  — for concurrency\n'
+        )
+    if stale_baseline:
+        print(
+            "Stale baseline entries must be removed from the baseline file.\n"
+            "Converted tests no longer need baseline entries.\n"
+        )
+
+    return 1
 
 
 if __name__ == "__main__":

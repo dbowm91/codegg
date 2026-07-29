@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Core protocol types for codegg daemon/frontend communication"
 license = "MIT"
-publish = false
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
+rust-version = "1.81"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

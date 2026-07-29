@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "LLM provider implementations for codegg"
 license = "MIT"
-publish = false
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
+rust-version = "1.81"
 
 [dependencies]
-codegg-config = { path = "../codegg-config" }
+codegg-config = { version = "=0.1.0", path = "../codegg-config" }
 async-trait = "0.1"
 bytes = "1"
 futures = "0.3"

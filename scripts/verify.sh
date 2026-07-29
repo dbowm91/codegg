@@ -9,7 +9,8 @@
 #
 # Resource policy:
 #   Broad Cargo commands use CARGO_BUILD_JOBS=1 and --test-threads=1.
-#   No optional external tools are required in either canonical mode.
+#   RUST_MIN_STACK=33554432 is exported for full workspace tests.
+#   Callers may override any env var before invoking this script.
 #
 # The script stops at the first failing command and returns its status.
 
@@ -17,6 +18,10 @@ set -euo pipefail
 
 # ── Resolve repository root from script location ────────────────────────────
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ── Broad-test resource contract (matches CI) ───────────────────────────────
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
+export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 usage() {
@@ -30,8 +35,10 @@ Modes:
   help    Print this message.
 
 Resource policy:
-  Both modes set CARGO_BUILD_JOBS=1. Full mode passes --test-threads=1
-  to broad workspace tests. No optional external tools are required.
+  Both modes set CARGO_BUILD_JOBS=1 and RUST_MIN_STACK=33554432 by default.
+  Full mode passes --test-threads=1 to broad workspace tests.
+  Callers may override via environment variables.
+  No optional external tools are required.
 EOF
 }
 
@@ -48,14 +55,17 @@ run_quick() {
     echo "==> python3 scripts/check_builtin_agents.py"
     (cd "$REPO_ROOT" && python3 scripts/check_builtin_agents.py)
 
+    echo "==> python3 scripts/check-tokio-test-flavors.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py --self-test)
+
     echo "==> python3 scripts/check-tokio-test-flavors.py"
     (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py)
 
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
 
-    echo "==> CARGO_BUILD_JOBS=1 cargo check --workspace --all-targets --locked"
-    (cd "$REPO_ROOT" && CARGO_BUILD_JOBS=1 cargo check --workspace --all-targets --locked)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
+    (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 
     echo "==> Quick verification passed."
 }
@@ -63,18 +73,19 @@ run_quick() {
 # ── Full tier ───────────────────────────────────────────────────────────────
 run_full() {
     echo "==> Full verification"
+    echo "==> Broad-test environment: CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS RUST_MIN_STACK=$RUST_MIN_STACK --test-threads=1"
 
     # Quick checks first
     run_quick
 
-    echo "==> CARGO_BUILD_JOBS=1 cargo clippy --workspace --all-targets --locked -- -D warnings"
-    (cd "$REPO_ROOT" && CARGO_BUILD_JOBS=1 cargo clippy --workspace --all-targets --locked -- -D warnings)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo clippy --workspace --all-targets --locked -- -D warnings"
+    (cd "$REPO_ROOT" && cargo clippy --workspace --all-targets --locked -- -D warnings)
 
-    echo "==> CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1"
-    (cd "$REPO_ROOT" && CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo test --workspace --locked -- --test-threads=1"
+    (cd "$REPO_ROOT" && cargo test --workspace --locked -- --test-threads=1)
 
-    echo "==> CARGO_BUILD_JOBS=1 cargo check -p codegg --locked --features server,plugins,lsp-test-support"
-    (cd "$REPO_ROOT" && CARGO_BUILD_JOBS=1 cargo check -p codegg --locked --features server,plugins,lsp-test-support)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check -p codegg --locked --features server,plugins,lsp-test-support"
+    (cd "$REPO_ROOT" && cargo check -p codegg --locked --features server,plugins,lsp-test-support)
 
     echo "==> Full verification passed."
 }

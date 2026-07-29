@@ -32,19 +32,19 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
-| Development verification and release | active | `plans/subsystems/development-verification-release-correctness-closure-addendum.md` | Milestone 005 ready | M001–M004 are historical conditional records; M005 owns green CI/local verification, scheduler-test correctness, crates.io release restoration, and evidence-faithful strict closure |
+| Development verification and release | closing | `plans/subsystems/development-verification-release-correctness-closure-addendum.md` | Milestone 005 closing | M001–M004 are historical conditional records; M005 implementation landed with Tokio baseline guard, scheduler test repair, unified resource contract, crates.io package graph, and RELEASING.md rewrite; awaiting independent reviewer for strict closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 005 — green verification and crates.io correctness closure | ready | `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md` | — |
+| Development verification and release | 005 — green verification and crates.io correctness closure | closing | `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md` | — |
 
 ## Active closure work
 
 M017 implementation landed; `plans/closure/tool-programs/017-status.md` must remain absent until a separate reviewer creates it.
 
-Development verification and release M005 has not started. `plans/closure/development-verification-release/005-status.md` must remain absent until implementation lands and a separate reviewer performs strict closure.
+Development verification and release M005 implementation landed. `plans/closure/development-verification-release/005-status.md` must remain absent until a separate reviewer performs strict closure.
 
 ## Blocked work
 

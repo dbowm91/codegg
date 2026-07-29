@@ -4,16 +4,18 @@ version = "0.1.0"
 edition = "2021"
 description = "Core runtime, session, storage, state, and domain types for codegg"
 license = "MIT"
-publish = false
+repository = "https://github.com/dbowm91/codegg"
+homepage = "https://github.com/dbowm91/codegg"
+rust-version = "1.81"
 
 [dependencies]
-codegg-config = { path = "../codegg-config" }
-codegg-git = { path = "../codegg-git" }
-codegg-protocol = { path = "../codegg-protocol" }
-codegg-providers = { path = "../codegg-providers" }
-egggit = { path = "../egggit" }
-egglsp = { path = "../egglsp" }
-eggsentry = { path = "../eggsentry" }
+codegg-config = { version = "=0.1.0", path = "../codegg-config" }
+codegg-git = { version = "=0.1.0", path = "../codegg-git" }
+codegg-protocol = { version = "=0.1.0", path = "../codegg-protocol" }
+codegg-providers = { version = "=0.1.0", path = "../codegg-providers" }
+egggit = { version = "=0.1.0", path = "../egggit" }
+egglsp = { version = "=0.1.0", path = "../egglsp" }
+eggsentry = { version = "=0.1.0", path = "../eggsentry" }
 
 anyhow = "1"
 base64 = "0.22"
