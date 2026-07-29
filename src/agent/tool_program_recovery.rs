@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(report.injected, 0);
         assert_eq!(report.recovered_via_event, 0);
         assert!(report.errors.is_empty(), "errors: {:?}", report.errors);
-        let _ = (&messages); // suppress unused-warnings under clippy
+        let _ = &messages; // suppress unused-warnings under clippy
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

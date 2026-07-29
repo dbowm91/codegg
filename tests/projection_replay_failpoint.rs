@@ -10,7 +10,7 @@ use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
 async fn duplicate_publish_returns_existing_event() {
     let pool = common::projection_replay::test_pool().await;
     let store = Arc::new(ProjectionReplayStore::new(pool));
-    let service = ProjectionReplayService::new(store.clone());
+    let _service = ProjectionReplayService::new(store.clone());
 
     let (desc, _) = store
         .get_or_create_session_stream("s1", "p1", None)

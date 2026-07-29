@@ -579,7 +579,7 @@ mod tests {
         let mut tabs = ProjectTabs::new();
         let a = tabs.add_and_activate(empty_tab("a"));
         let b = tabs.add_tab(empty_tab("b"));
-        let c = tabs.add_tab(empty_tab("c"));
+        let _c = tabs.add_tab(empty_tab("c"));
         // Set active to b, then remove b -> falls back to a (previous).
         tabs.set_active(&b);
         let removed = tabs.remove_tab(&b).expect("remove b");

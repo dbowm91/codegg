@@ -91,7 +91,7 @@ impl Widget for &SpinnerWidget {
         use ratatui::widgets::Paragraph;
 
         let text = if !self.label.is_empty() {
-            format!("{} {}", self.frame(), &self.label)
+            format!("{} {}", self.frame(), self.label)
         } else {
             self.frame().to_string()
         };

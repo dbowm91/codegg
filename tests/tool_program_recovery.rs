@@ -4,19 +4,10 @@
 //! completed calls are replayed and not repeated, and that
 //! generation recovery works correctly.
 
-use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
-
-use codegg_core::jobs::{
-    AttemptId, DaemonGeneration, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
-    JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
-};
 use codegg_core::tool_program::{
-    compile_program, BrokerCallback, BudgetSnapshot, CallRequest, CallResult, CompletedCall,
-    InterpreterError, MeteredInterpreter, ProgramResult, ProgramStatus, ProgramValue,
-    RuntimeLimits,
+    compile_program, BrokerCallback, BudgetSnapshot, CallRequest, CallResult, InterpreterError,
+    MeteredInterpreter, ProgramStatus, ProgramValue, RuntimeLimits,
 };
-use codegg_core::workspace::WorkspaceId;
 use futures::future::FutureExt;
 
 /// Broker that counts calls to detect replay.
@@ -514,7 +505,7 @@ emit(results)
     let compilation = compile_program(source).unwrap();
     let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
     // Checkpoint instructions add extra steps; increase budget
-    limits.max_steps = limits.max_steps * 3;
+    limits.max_steps *= 3;
     limits.max_dynamic_calls = 10;
 
     let mut interp1 = MeteredInterpreter::new(compilation.ir.clone(), limits.clone());
@@ -768,6 +759,7 @@ async fn call_sequence_numbering_monotonic() {
     };
 
     struct SeqBroker {
+        #[allow(dead_code)]
         sequences: std::sync::Mutex<Vec<u32>>,
     }
 

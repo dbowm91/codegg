@@ -15,6 +15,7 @@ use codegg_core::tool_program::{
 // ── Test broker ────────────────────────────────────────────────────
 
 /// Broker that returns configurable results and tracks all submissions.
+#[allow(dead_code)]
 struct MatrixBroker {
     results: std::sync::Mutex<Vec<ChildJobResult>>,
     submission_count: AtomicU32,

@@ -5313,14 +5313,14 @@ impl CoreDaemon {
                                 &request.scope_id,
                                 &resolved_project,
                                 resolved_workspace.as_deref(),
-                                &client_id,
+                                client_id,
                                 &request,
                             )
                             .await
                     }
                     ProjectionStreamKind::Project => {
                         service
-                            .subscribe_project(&request.scope_id, &client_id, &request)
+                            .subscribe_project(&request.scope_id, client_id, &request)
                             .await
                     }
                 };
@@ -6300,6 +6300,32 @@ fn eggpool_error_message(error: &crate::core::eggpool::EggpoolError) -> &'static
         crate::core::eggpool::EggpoolError::Rotation(_) => "Provider connection rotation failed",
         crate::core::eggpool::EggpoolError::Refresh(_) => "Provider connection refresh failed",
     }
+}
+
+/// M016: ensure a `session` row exists for `session_id` so the
+/// production inject loop's FK-constrained append to `session_events`
+/// can succeed even when the session row was never created via
+/// `SessionStore`. Used only by the recovery-fixture path.
+async fn ensure_session_row(pool: &sqlx::SqlitePool, session_id: &str) -> Result<(), String> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, '', '[]', 0, 0)",
+    )
+    .bind("recovery-fixture-project")
+    .execute(pool)
+    .await
+    .map_err(|error| format!("ensure recovery-fixture project: {error}"))?;
+    sqlx::query(
+        "INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, ?, '1', 0, 0)",
+    )
+    .bind(session_id)
+    .bind("recovery-fixture-project")
+    .bind("recovery-fixture")
+    .bind("/tmp/recovery-fixture")
+    .bind("Recovery Fixture")
+    .execute(pool)
+    .await
+    .map_err(|error| format!("ensure recovery-fixture session: {error}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -7406,30 +7432,4 @@ mod tests {
         // Note: do not remove OPENAI_API_KEY here to avoid racing
         // with other tests that also set it. The env var is process-global.
     }
-}
-
-/// M016: ensure a `session` row exists for `session_id` so the
-/// production inject loop's FK-constrained append to `session_events`
-/// can succeed even when the session row was never created via
-/// `SessionStore`. Used only by the recovery-fixture path.
-async fn ensure_session_row(pool: &sqlx::SqlitePool, session_id: &str) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, '', '[]', 0, 0)",
-    )
-    .bind("recovery-fixture-project")
-    .execute(pool)
-    .await
-    .map_err(|error| format!("ensure recovery-fixture project: {error}"))?;
-    sqlx::query(
-        "INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, ?, ?, ?, '1', 0, 0)",
-    )
-    .bind(session_id)
-    .bind("recovery-fixture-project")
-    .bind("recovery-fixture")
-    .bind("/tmp/recovery-fixture")
-    .bind("Recovery Fixture")
-    .execute(pool)
-    .await
-    .map_err(|error| format!("ensure recovery-fixture session: {error}"))?;
-    Ok(())
 }

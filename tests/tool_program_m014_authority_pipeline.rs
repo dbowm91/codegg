@@ -99,7 +99,7 @@ async fn c02_empty_context_grant_fails() {
         contract_digest: String::new(),
         contract_snapshot_json: String::new(),
         issued_at: now_millis(),
-        expires_at: Some(now_millis() + 3600_000),
+        expires_at: Some(now_millis() + 3_600_000),
         revoked_at: None,
         decision_digest: String::new(),
     };

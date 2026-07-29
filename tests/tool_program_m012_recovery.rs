@@ -17,11 +17,11 @@
 #![cfg(test)]
 
 use codegg::tool::tool_program_ledger::ToolProgramLedger;
-use codegg::tool::tool_program_result::{ToolProgramResultError, ToolProgramResultStore};
+use codegg::tool::tool_program_result::ToolProgramResultStore;
 use codegg_core::tool_program::{
     CallRequest, CompletedCall, ProgramResult, ProgramStatus, ReplayFingerprint,
 };
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {
     SystemTime::now()
@@ -137,9 +137,7 @@ async fn c21_replay_validates_fingerprints() {
 #[tokio::test(flavor = "current_thread")]
 async fn c21_replay_fingerprint_matching_succeeds() {
     // C-21: A completed call with a matching fingerprint replays successfully.
-    use codegg_core::tool_program::{
-        compile_program, MeteredInterpreter, RunConfig, RuntimeLimits,
-    };
+    use codegg_core::tool_program::{compile_program, MeteredInterpreter, RuntimeLimits};
 
     struct RecordingBroker {
         call_count: std::sync::atomic::AtomicU32,
@@ -217,9 +215,7 @@ async fn c21_replay_fingerprint_matching_succeeds() {
 #[tokio::test(flavor = "current_thread")]
 async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
     // C-21: A completed call with a mismatched fingerprint triggers ReplayDivergence.
-    use codegg_core::tool_program::{
-        compile_program, MeteredInterpreter, RunConfig, RuntimeLimits,
-    };
+    use codegg_core::tool_program::{compile_program, MeteredInterpreter, RuntimeLimits};
 
     struct NoopBroker;
 
@@ -288,9 +284,7 @@ async fn c21_replay_fingerprint_mismatch_triggers_divergence() {
 #[tokio::test(flavor = "current_thread")]
 async fn c21_legacy_call_without_fingerprint_is_accepted() {
     // C-21: A legacy call without a fingerprint is accepted for backward compatibility.
-    use codegg_core::tool_program::{
-        compile_program, MeteredInterpreter, RunConfig, RuntimeLimits,
-    };
+    use codegg_core::tool_program::{compile_program, MeteredInterpreter, RuntimeLimits};
 
     struct NoopBroker;
 

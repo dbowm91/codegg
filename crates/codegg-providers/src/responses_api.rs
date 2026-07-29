@@ -1992,7 +1992,7 @@ mod tests {
             HostedBackendPolicy::HostedPreferred,
         );
 
-        let normalized = adapter.reserve_call("c1", "read", "hash1").unwrap();
+        let _normalized = adapter.reserve_call("c1", "read", "hash1").unwrap();
         assert!(adapter.is_call_reserved("c1"));
         assert_eq!(adapter.reserved_call_count(), 1);
 

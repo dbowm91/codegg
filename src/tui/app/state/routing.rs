@@ -209,6 +209,7 @@ pub struct TabActivitySummary {
 }
 
 impl TabActivitySummary {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self::default()
     }
@@ -338,9 +339,7 @@ impl RoutingRegistry {
                 }
             }
         }
-        self.activity
-            .entry(tab_id)
-            .or_insert_with(TabActivitySummary::new);
+        self.activity.entry(tab_id).or_default();
     }
 
     /// Remove a session binding (on close, archive, or replacement).
@@ -363,9 +362,7 @@ impl RoutingRegistry {
     /// Mutable accessor for one tab's activity summary, creating an
     /// empty one if the tab is unknown.
     pub fn activity_mut(&mut self, tab_id: &ProjectTabId) -> &mut TabActivitySummary {
-        self.activity
-            .entry(tab_id.clone())
-            .or_insert_with(TabActivitySummary::new)
+        self.activity.entry(tab_id.clone()).or_default()
     }
 
     /// Read-only accessor for one tab's activity summary.

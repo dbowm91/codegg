@@ -22,20 +22,22 @@ use crate::tui::app::state::project_tabs::ProjectTabs;
 /// identity.
 pub fn snapshot_from_tabs(tabs: &ProjectTabs) -> PersistedSnapshot {
     let ordered = tabs.ordered();
-    let mut manifest = TuiWorkspaceManifest::default();
-    manifest.ordered_tabs = ordered
-        .iter()
-        .enumerate()
-        .map(|(idx, tab)| PersistedProjectTab {
-            project_id: tab.project_id.clone(),
-            workspace_id: tab.workspace_id.clone(),
-            session_id: tab.session_id.clone(),
-            label_hint: Some(bounded_label(&tab.label)),
-            selected_model_id: non_empty(tab.model.clone()),
-            selected_agent: non_empty(tab.agent.clone()),
-            order_key: Some(order_key_for(idx, &tab.tab_id)),
-        })
-        .collect();
+    let mut manifest = TuiWorkspaceManifest {
+        ordered_tabs: ordered
+            .iter()
+            .enumerate()
+            .map(|(idx, tab)| PersistedProjectTab {
+                project_id: tab.project_id.clone(),
+                workspace_id: tab.workspace_id.clone(),
+                session_id: tab.session_id.clone(),
+                label_hint: Some(bounded_label(&tab.label)),
+                selected_model_id: non_empty(tab.model.clone()),
+                selected_agent: non_empty(tab.agent.clone()),
+                order_key: Some(order_key_for(idx, &tab.tab_id)),
+            })
+            .collect(),
+        ..Default::default()
+    };
 
     if let Some(active) = tabs.active() {
         manifest.active_project_id = active.project_id.clone();

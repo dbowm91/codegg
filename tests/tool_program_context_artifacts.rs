@@ -9,7 +9,7 @@ use codegg::error::ToolError;
 use codegg::tool::broker::{BrokerInvocationContext, ToolBroker};
 use codegg::tool::contract::{
     ToolCachePolicy, ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass,
-    ToolTerminalStatus, ToolValue,
+    ToolTerminalStatus,
 };
 use codegg::tool::tool_program::{ProgramCallArtifact, ToolProgramTool};
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};

@@ -490,11 +490,7 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                 .add(Toast::info(&format!("[{}] {}", agent, message)));
             true
         }
-        AppEvent::SubagentCompleted {
-            agent,
-            result_summary: _,
-            ..
-        } => {
+        AppEvent::SubagentCompleted { agent, .. } => {
             tracing::debug!(target: "codegg::tui::events", agent = %agent, "SubagentCompleted");
             app.messages_state
                 .toasts

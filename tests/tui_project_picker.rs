@@ -40,7 +40,7 @@ fn summary(id: &str, name: &str) -> ProjectSummaryDto {
 
 #[test]
 fn filtered_indices_empty_query_returns_all_capped() {
-    let mut picker = ProjectPickerState::new(true, 0);
+    let picker = ProjectPickerState::new(true, 0);
     let entries: Vec<ProjectSummaryDto> = (0..(MAX_PROJECT_LIST_ITEMS + 50))
         .map(|i| summary(&format!("p{:03}", i), &format!("Project {}", i)))
         .collect();
@@ -87,7 +87,7 @@ fn filtered_indices_query_matches_id() {
 
 #[test]
 fn filtered_indices_empty_query_returns_all() {
-    let mut picker = ProjectPickerState::new(true, 0);
+    let picker = ProjectPickerState::new(true, 0);
     let entries = vec![summary("p1", "Alpha"), summary("p2", "Beta")];
     let filtered = picker.filtered_indices(&entries);
     assert_eq!(filtered.len(), 2);
@@ -177,7 +177,7 @@ fn registration_draft_set_description_short_passes_through() {
 
 #[test]
 fn picker_state_default_phase_is_catalog() {
-    let mut picker = ProjectPickerState::new(true, 0);
+    let picker = ProjectPickerState::new(true, 0);
     assert_eq!(picker.phase, PickerPhase::Catalog);
     assert_eq!(picker.query, "");
     assert_eq!(picker.last_error, None);
@@ -188,8 +188,10 @@ fn tab_state_caps_via_add_and_activate() {
     let mut tabs = ProjectTabs::default();
     // Caller is responsible for enforcing MAX_OPEN_PROJECT_TABS — verify the
     // constant is sane and the add_and_activate API is available.
-    assert!(MAX_OPEN_PROJECT_TABS > 0);
-    assert!(MAX_OPEN_PROJECT_TABS <= 64);
+    const {
+        assert!(MAX_OPEN_PROJECT_TABS > 0);
+        assert!(MAX_OPEN_PROJECT_TABS <= 64);
+    }
     let state = ProjectTabState::empty(ProjectTabId::new(), "tab".to_string());
     let id = tabs.add_and_activate(state);
     assert_eq!(tabs.active_tab_id(), Some(&id));
@@ -215,7 +217,7 @@ fn truncate_tab_label_preserves_utf8_boundaries() {
     let label = "日本語のプロジェクト名";
     let result = truncate_tab_label(label);
     // Result must be valid UTF-8 (this will panic at runtime otherwise).
-    assert!(result.len() > 0);
+    assert!(!result.is_empty());
     // All chars must be either ASCII graphic, ASCII whitespace, or non-ASCII.
     for c in result.chars() {
         assert!(!c.is_ascii() || c.is_ascii_graphic() || c == ' ');
@@ -240,8 +242,10 @@ fn tabs_default_starts_empty() {
 
 #[test]
 fn picker_const_max_visible_rows_sane() {
-    assert!(MAX_PICKER_VISIBLE_ROWS > 0);
-    assert!(MAX_PICKER_VISIBLE_ROWS <= MAX_PROJECT_LIST_ITEMS);
+    const {
+        assert!(MAX_PICKER_VISIBLE_ROWS > 0);
+        assert!(MAX_PICKER_VISIBLE_ROWS <= MAX_PROJECT_LIST_ITEMS);
+    }
 }
 
 #[test]
@@ -259,8 +263,8 @@ fn keybinding_collision_audit_default_bindings() {
     use std::collections::HashSet;
 
     let bindings = build_bindings(None, false);
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut collisions: Vec<(String, String, InputAction, InputAction)> = Vec::new();
+    let seen: HashSet<(String, String)> = HashSet::new();
+    let collisions: Vec<(String, String, InputAction, InputAction)> = Vec::new();
     for ((modifiers, keycode), action) in &bindings {
         let key_str = format!("{:?}+{:?}", modifiers, keycode);
         let action_str = format!("{:?}", action);

@@ -915,9 +915,11 @@ mod tests {
     #[test]
     fn preferences_round_trip_in_plan() {
         let snap = snapshot();
-        let mut m = TuiWorkspaceManifest::default();
-        m.preferences = ManifestPreferences {
-            sidebar_visible: Some(false),
+        let m = TuiWorkspaceManifest {
+            preferences: ManifestPreferences {
+                sidebar_visible: Some(false),
+            },
+            ..Default::default()
         };
         let plan = snap.build_restore_plan(&m);
         assert!(plan.entries.is_empty());

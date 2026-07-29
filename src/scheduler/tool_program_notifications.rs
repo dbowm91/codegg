@@ -510,12 +510,7 @@ impl ToolProgramNotificationService {
             .bind(notification_id)
             .execute(pool)
             .await
-            .map_err(|e| {
-                NotificationStoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?;
+            .map_err(|e| NotificationStoreError::Io(std::io::Error::other(e.to_string())))?;
             if result.rows_affected() != 1 {
                 return Err(NotificationStoreError::Conflict);
             }
@@ -894,8 +889,7 @@ impl ToolProgramNotificationService {
             .execute(pool)
             .await
             .map_err(|e| {
-                NotificationStoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                NotificationStoreError::Io(std::io::Error::other(
                     format!("SQLite CAS failed: {}", e),
                 ))
             })?;

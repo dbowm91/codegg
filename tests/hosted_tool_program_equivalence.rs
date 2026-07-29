@@ -32,6 +32,7 @@ fn grep_call(call_id: &str, pattern: &str, path: &str) -> ResponseItem {
 }
 
 /// A successful result for a read_file call.
+#[allow(dead_code)]
 fn read_file_result(call_id: &str, content: &str) -> ResponsesStreamEvent {
     ResponsesStreamEvent::OutputItemAdded {
         output_index: 0,

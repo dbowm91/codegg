@@ -7,12 +7,9 @@ use codegg_core::projection_replay::seam::{
 };
 use codegg_core::projection_replay::service::ProjectionReplayService;
 use codegg_core::projection_replay::store::ProjectionReplayStore;
-use codegg_protocol::core::{
-    CoreEvent, CoreRequest, CoreResponse, EventEnvelope, PROTOCOL_VERSION,
-};
+use codegg_protocol::core::{CoreEvent, CoreResponse, EventEnvelope, PROTOCOL_VERSION};
 use codegg_protocol::projection::replay::{
-    ProjectionAck, ProjectionCursor, ProjectionStreamId, ProjectionStreamKind,
-    ProjectionSubscriptionRequest,
+    ProjectionCursor, ProjectionStreamKind, ProjectionSubscriptionRequest,
 };
 
 async fn test_seam_and_service() -> (Arc<ProjectionPublicationSeam>, Arc<ProjectionReplayService>) {
@@ -25,7 +22,7 @@ async fn test_seam_and_service() -> (Arc<ProjectionPublicationSeam>, Arc<Project
 
 #[tokio::test]
 async fn projection_capabilities_returns_supported() {
-    let (seam, _service) = test_seam_and_service().await;
+    let (_seam, _service) = test_seam_and_service().await;
     // The capabilities response is purely data-driven, no daemon needed
     let resp = CoreResponse::ProjectionCapabilitiesResponse {
         supported: true,
@@ -48,7 +45,7 @@ async fn projection_capabilities_returns_supported() {
 
 #[tokio::test]
 async fn subscribe_session_creates_subscription() {
-    let (seam, service) = test_seam_and_service().await;
+    let (_seam, service) = test_seam_and_service().await;
 
     let req = ProjectionSubscriptionRequest {
         scope: ProjectionStreamKind::Session,
@@ -88,7 +85,7 @@ async fn subscribe_project_creates_subscription() {
 
 #[tokio::test]
 async fn resume_replays_persisted_events() {
-    let (seam, service) = test_seam_and_service().await;
+    let (_seam, service) = test_seam_and_service().await;
 
     // Publish some events first
     let env = EventEnvelope {

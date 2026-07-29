@@ -458,7 +458,9 @@ mod tests {
 
     #[test]
     fn max_open_project_tabs_is_reasonable() {
-        assert!(MAX_OPEN_PROJECT_TABS >= 8);
-        assert!(MAX_OPEN_PROJECT_TABS <= 64);
+        const {
+            assert!(MAX_OPEN_PROJECT_TABS >= 8);
+            assert!(MAX_OPEN_PROJECT_TABS <= 64);
+        }
     }
 }

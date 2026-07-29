@@ -7,11 +7,9 @@
 
 use codegg::provider::responses_api::{
     filter_artifacts_for_provider, minimize_input_items, validate_arguments, validate_call_count,
-    validate_result_size, ArtifactRef, CompletedHostedCall, ContinuationState, HostedBackendPolicy,
-    HostedCallIdentity, HostedProgramAdapter, HostedProgramEvent, HostedProgramMetadata,
-    HostedUsage, InputValidation, ResponseItem, ResponseObject, ResponsesRequest,
-    ResponsesStreamEvent, ResponsesTool, ResponsesTransport, ResponsesTransportConfig,
-    ResponsesUsage, MAX_NESTED_CALLS, MAX_RESULT_SIZE,
+    validate_result_size, ArtifactRef, HostedBackendPolicy, HostedProgramAdapter,
+    HostedProgramEvent, InputValidation, ResponseItem, ResponseObject, ResponsesStreamEvent,
+    ResponsesTransport, ResponsesTransportConfig, ResponsesUsage, MAX_RESULT_SIZE,
 };
 use codegg::provider::ProviderCapabilities;
 
@@ -27,7 +25,7 @@ fn openai_capabilities_host_full_support() {
     assert!(caps.can_host_programs());
     assert!(caps.full_hosted_support());
     assert!(caps.supports_output_schema);
-    assert!(caps.requires_fingerprint == false);
+    assert!(!caps.requires_fingerprint);
     assert!(caps.max_result_size.is_some());
     assert!(caps.max_tool_calls_per_program.is_some());
 }

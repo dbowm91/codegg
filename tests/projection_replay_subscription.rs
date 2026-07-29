@@ -171,7 +171,7 @@ async fn deliver_to_live_subscriptions() {
 async fn deliver_to_initializing_subscriptions_skipped() {
     let reg = SubscriptionRegistry::new(SubscriptionConfig::default());
     let sid = ProjectionStreamId::new("s1").unwrap();
-    let (sub, _rx) = reg
+    let (_sub, _rx) = reg
         .register("c1", &sid, ProjectionStreamKind::Session, 1)
         .unwrap();
     // Don't set live

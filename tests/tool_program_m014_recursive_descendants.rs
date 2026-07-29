@@ -108,7 +108,7 @@ async fn c27_parent_cancellation_cancels_recursive_descendants() {
         .create_job(make_job(Some(parent.job_id.clone())))
         .await
         .unwrap();
-    let grandchild = store
+    let _grandchild = store
         .create_job(make_job(Some(child.job_id.clone())))
         .await
         .unwrap();

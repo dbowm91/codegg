@@ -3,13 +3,9 @@
 //! Deterministic injection at storage, broker, checkpoint, heartbeat,
 //! worker, cancellation, and terminal-publication boundaries.
 
-use std::sync::Arc;
-
-use std::panic::AssertUnwindSafe;
-
 use codegg_core::tool_program::{
     compile_program, BrokerCallback, CallRequest, CallResult, InterpreterError, MeteredInterpreter,
-    ProgramResult, ProgramStatus, ProgramValue, RuntimeLimits,
+    ProgramStatus, ProgramValue, RuntimeLimits,
 };
 use futures::future::FutureExt;
 
@@ -501,7 +497,7 @@ async fn forged_source_hash_detected() {
 
 #[tokio::test]
 async fn forged_manifest_hash_detected() {
-    use codegg_core::tool_program::{compile_program, ProgramStore};
+    use codegg_core::tool_program::compile_program;
 
     let source = "emit(42)\n";
     let compilation = compile_program(source).unwrap();
@@ -514,9 +510,7 @@ async fn forged_manifest_hash_detected() {
 
 #[tokio::test]
 async fn forged_checkpoint_locals_hash_detected() {
-    use codegg_core::tool_program::{
-        compile_program, InterpreterCheckpoint, MeteredInterpreter, RuntimeLimits,
-    };
+    use codegg_core::tool_program::{compile_program, MeteredInterpreter, RuntimeLimits};
 
     let source = r#"
 x = 1
@@ -695,7 +689,7 @@ emit(result)
 #[tokio::test]
 async fn authority_digest_validated_at_admission() {
     // Verify that the executor validates authority_digest is non-empty
-    use codegg::scheduler::executor::{ExecutorKind, JobExecutor};
+    use codegg::scheduler::executor::JobExecutor;
     use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
 
     fn make_job(program_id: &str, source: &str) -> codegg_core::jobs::JobRecord {

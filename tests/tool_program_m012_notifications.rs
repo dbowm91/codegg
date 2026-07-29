@@ -216,7 +216,7 @@ async fn c11_delivered_not_recreated_by_recovery() {
 #[tokio::test(flavor = "current_thread")]
 async fn notification_store_error_enum_exists() {
     // Verify NotificationStoreError variants exist.
-    let _ = NotificationStoreError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+    let _ = NotificationStoreError::Io(std::io::Error::other("test"));
     let _ = NotificationStoreError::Serialization(
         serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
     );

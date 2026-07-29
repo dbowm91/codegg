@@ -588,9 +588,9 @@ impl JobExecutor for PythonJobExecutor {
         };
 
         // Verify source hash if present
-        if let Some(ref expected_hash) = ctx.job.payload.source_hash() {
+        if let Some(expected_hash) = ctx.job.payload.source_hash() {
             let actual = crate::python_script::source_store::compute_digest(&resolved_source);
-            if actual != *expected_hash {
+            if actual != expected_hash {
                 return failure_completion(
                     started,
                     ExecutorStatus::Failed,

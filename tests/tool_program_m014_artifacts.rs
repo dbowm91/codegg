@@ -197,7 +197,7 @@ async fn c42_result_record_is_authoritative() {
         calls_total: 0,
     };
 
-    let record = store
+    let _record = store
         .persist(
             program_id,
             attempt_id,

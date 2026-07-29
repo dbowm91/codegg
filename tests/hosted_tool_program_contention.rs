@@ -9,8 +9,7 @@
 use codegg::provider::responses_api::{
     validate_call_count, validate_result_size, HostedBackendPolicy, HostedProgramAdapter,
     HostedProgramEvent, InputValidation, ResponseItem, ResponseObject, ResponsesStreamEvent,
-    ResponsesTransport, ResponsesTransportConfig, DEFAULT_STREAM_IDLE_TIMEOUT, MAX_NESTED_CALLS,
-    MAX_RESULT_SIZE,
+    ResponsesTransport, ResponsesTransportConfig,
 };
 use codegg::provider::ProviderCapabilities;
 use std::time::Duration;

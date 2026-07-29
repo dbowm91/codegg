@@ -758,11 +758,7 @@ impl JobScheduler {
 
         let execution_timeout = job
             .deadline
-            .map(|deadline| {
-                (deadline - Utc::now())
-                    .to_std()
-                    .unwrap_or_else(|_| Duration::ZERO)
-            })
+            .map(|deadline| (deadline - Utc::now()).to_std().unwrap_or(Duration::ZERO))
             .or(job.timeout);
 
         self.store
@@ -888,7 +884,7 @@ impl JobScheduler {
                             &job_id_for_task,
                             CancelReason::new(
                                 "scheduler",
-                                &format!(
+                                format!(
                                     "parent attempt {} terminated: {}",
                                     attempt_id, completion.summary
                                 ),

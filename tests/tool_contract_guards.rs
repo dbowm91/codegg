@@ -8,9 +8,7 @@ use std::path::PathBuf;
 use async_trait::async_trait;
 use codegg::error::ToolError;
 use codegg::tool::broker::{BrokerError, BrokerInvocationContext, ToolBroker};
-use codegg::tool::contract::{
-    ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass, ToolTerminalStatus,
-};
+use codegg::tool::contract::{ToolCaller, ToolCallerPolicy, ToolContract, ToolEffectClass};
 use codegg::tool::program_manifest::{self, RejectionReason};
 use codegg::tool::{Tool, ToolCategory, ToolRegistry};
 use serde_json::json;

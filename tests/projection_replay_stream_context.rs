@@ -8,7 +8,6 @@ use codegg_core::projection_replay::seam::{
 use codegg_core::projection_replay::service::ProjectionReplayService;
 use codegg_core::projection_replay::store::ProjectionReplayStore;
 use codegg_protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
-use codegg_protocol::projection::replay::{ProjectionStreamId, ProjectionStreamKind};
 
 #[tokio::test]
 async fn session_stream_uses_canonical_non_empty_ids() {

@@ -20,7 +20,6 @@
 //! for the full specification.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::tui::app::state::manifest::{
@@ -343,7 +342,7 @@ pub fn serialize_manifest(
 #[cfg(unix)]
 fn sync_file(path: &Path) -> std::io::Result<()> {
     use std::fs::File;
-    use std::os::unix::fs::FileExt;
+
     let f = File::open(path)?;
     f.sync_all()
 }
@@ -397,7 +396,7 @@ pub fn load_manifest_from(path: &Path) -> ManifestLoadOutcome {
 /// Bound an io::Error or serde_json::Error reason string so we
 /// never surface unbounded text in the diagnostic. Reasons are
 /// truncated to 128 characters.
-fn bounded_reason(err: &(impl std::fmt::Display)) -> String {
+fn bounded_reason(err: &impl std::fmt::Display) -> String {
     let s = err.to_string();
     if s.len() <= 128 {
         s

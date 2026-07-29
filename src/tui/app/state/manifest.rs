@@ -456,8 +456,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_unsupported_major_version() {
-        let mut m = TuiWorkspaceManifest::default();
-        m.schema_version = MANIFEST_SCHEMA_VERSION + 1;
+        let mut m = TuiWorkspaceManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION + 1,
+            ..Default::default()
+        };
         let err = validate_manifest(&mut m).unwrap_err();
         assert!(matches!(err, ManifestDiagnostic::UnsupportedMajor { .. }));
     }

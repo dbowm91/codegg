@@ -867,7 +867,7 @@ fn format_structured_result(
 
     match &result.payload {
         Some(GitPayload::Status(status)) => {
-            output.push_str(&format!("Branch: {}\n", &status.branch));
+            output.push_str(&format!("Branch: {}\n", status.branch));
             output.push_str(&format!(
                 "HEAD: {}\n",
                 status.commit_hash.as_deref().unwrap_or("unknown")

@@ -114,6 +114,7 @@ impl BrokerCallback for SeededChaosBroker {
 }
 
 /// Broker that always panics.
+#[allow(dead_code)]
 struct AlwaysPanicBroker;
 
 #[async_trait::async_trait]
@@ -156,6 +157,7 @@ impl BrokerCallback for MalformedOutputBroker {
 }
 
 /// Broker that delays excessively (simulates stall).
+#[allow(dead_code)]
 struct StallBroker {
     stall_ms: u64,
 }

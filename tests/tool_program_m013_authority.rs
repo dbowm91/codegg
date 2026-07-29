@@ -12,7 +12,6 @@
 
 #![cfg(test)]
 
-use codegg_core::jobs::ToolAuthorityGrant;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {

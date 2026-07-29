@@ -106,9 +106,9 @@ async fn resume_at_high_water_returns_empty() {
     let service = setup_service_with_events(5).await;
 
     let store = service.store();
-    let desc = store.lookup_stream_by_id("stream-not-used").await.unwrap();
+    let _desc = store.lookup_stream_by_id("stream-not-used").await.unwrap();
 
-    let sid_str = "session-stream";
+    let _sid_str = "session-stream";
     let (desc_real, _) = store
         .get_or_create_session_stream("s1", "p1", None)
         .await

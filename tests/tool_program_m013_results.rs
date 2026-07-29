@@ -60,7 +60,7 @@ async fn h1_tampering_call_artifacts_changes_digest() {
     let attempt_id = "attempt-1";
 
     let result = make_completed_result();
-    let record_a = store
+    let _record_a = store
         .persist(
             program_id,
             attempt_id,

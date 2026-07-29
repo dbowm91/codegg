@@ -11,9 +11,8 @@ use codegg::scheduler::submission::{JobSubmissionError, JobSubmissionService, Su
 use codegg::scheduler::{JobScheduler, ResolvedSchedulerConfig};
 use codegg::tool::Tool;
 use codegg_core::jobs::{
-    AttemptCompletion, AttemptState, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind,
-    JobPayload, JobPriority, JobSource, JobState, JobStore, JobStoreQuery, NewJob, ResourceRequest,
-    RetryPolicy,
+    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
+    JobSource, JobState, JobStore, JobStoreQuery, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceId, WorkspaceRegistry};
 use codegg_core::workspace_services::{
@@ -135,8 +134,10 @@ async fn disabled_scheduler_returns_typed_error() {
         WorkspaceServicePolicy::default(),
     );
     let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
-    let mut config = ResolvedSchedulerConfig::default();
-    config.enabled = false;
+    let config = ResolvedSchedulerConfig {
+        enabled: false,
+        ..Default::default()
+    };
     let scheduler = JobScheduler::new(
         store.clone(),
         services.clone(),
@@ -246,7 +247,7 @@ async fn python_payload_validates_mode() {
 
 #[tokio::test]
 async fn source_hash_mismatch_rejected_at_validation() {
-    use codegg::scheduler::executor::{ExecutorKind, JobExecutor};
+    use codegg::scheduler::executor::JobExecutor;
     use codegg::scheduler::executors::PythonJobExecutor;
 
     let executor = PythonJobExecutor::new(None);
@@ -304,7 +305,7 @@ async fn source_hash_mismatch_rejected_at_validation() {
 
 #[tokio::test]
 async fn legacy_script_path_payload_rejected_without_source() {
-    use codegg::scheduler::executor::{ExecutorKind, JobExecutor};
+    use codegg::scheduler::executor::JobExecutor;
     use codegg::scheduler::executors::PythonJobExecutor;
 
     let executor = PythonJobExecutor::new(None);

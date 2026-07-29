@@ -71,10 +71,10 @@ impl ProjectionDigest {
             active_turn_status: active_turn.map(|t| t.status),
             message_count: active_turn.map(|t| t.messages.len()).unwrap_or(0),
             tool_count: active_turn.map(|t| t.tools.len()).unwrap_or(0),
-            pending_permissions: snapshot.primary_session.pending_permission_count as usize,
-            pending_questions: snapshot.primary_session.pending_question_count as usize,
+            pending_permissions: snapshot.primary_session.pending_permission_count,
+            pending_questions: snapshot.primary_session.pending_question_count,
             recent_turn_count: snapshot.recent_turns.len(),
-            active_subagents: snapshot.primary_session.active_subagents as usize,
+            active_subagents: snapshot.primary_session.active_subagents,
             agent_tree: active_turn
                 .map(|t| t.agent_tree.iter().map(|n| (n.task_id, n.status)).collect())
                 .unwrap_or_default(),

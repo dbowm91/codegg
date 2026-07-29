@@ -24,9 +24,11 @@ use std::collections::HashMap;
 /// Who is permitted to invoke a tool through the broker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ToolCallerPolicy {
     /// Only the agent loop (direct model-facing calls). Programs
     /// cannot call this tool.
+    #[default]
     DirectOnly,
     /// Both agent-loop direct calls and programmatic (Tool Program)
     /// calls are permitted.
@@ -36,18 +38,13 @@ pub enum ToolCallerPolicy {
     ProgrammaticOnly,
 }
 
-impl Default for ToolCallerPolicy {
-    fn default() -> Self {
-        Self::DirectOnly
-    }
-}
-
 // ─── Effect classification ────────────────────────────────────────
 
 /// Classifies the side-effect nature of a tool for caching,
 /// idempotency, and retry decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ToolEffectClass {
     /// Pure read; no observable state change. Safe to cache and
     /// retry.
@@ -64,16 +61,11 @@ pub enum ToolEffectClass {
     /// states differ.
     IdempotentMutating,
     /// Non-idempotent mutation; must not be retried automatically.
+    #[default]
     NonIdempotent,
     /// Executes external processes with side effects; retry
     /// classification depends on the specific command.
     ProcessExec,
-}
-
-impl Default for ToolEffectClass {
-    fn default() -> Self {
-        Self::NonIdempotent
-    }
 }
 
 impl ToolEffectClass {
@@ -98,17 +90,13 @@ impl ToolEffectClass {
 /// durable result or create new work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum IdempotencyClass {
     /// Duplicate submission keys return the same result.
     Idempotent,
     /// Each submission creates new work even with the same key.
+    #[default]
     NonIdempotent,
-}
-
-impl Default for IdempotencyClass {
-    fn default() -> Self {
-        Self::NonIdempotent
-    }
 }
 
 // ─── Retry policy ─────────────────────────────────────────────────
@@ -153,7 +141,7 @@ impl ToolRetryPolicy {
 // ─── Cache policy ─────────────────────────────────────────────────
 
 /// Controls broker-side result caching.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct ToolCachePolicy {
     /// Whether caching is enabled for this tool.
     pub enabled: bool,
@@ -161,16 +149,6 @@ pub struct ToolCachePolicy {
     pub ttl_secs: u64,
     /// Maximum cached entries per tool.
     pub max_entries: u32,
-}
-
-impl Default for ToolCachePolicy {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            ttl_secs: 0,
-            max_entries: 0,
-        }
-    }
 }
 
 // ─── Projection policy ────────────────────────────────────────────

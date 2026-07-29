@@ -7,8 +7,7 @@
 
 #![cfg(test)]
 
-use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use sha2::Digest;
 
 /// C-31: Notification persistence returns Result.
 /// Verify that persist_record returns Result<(), NotificationStoreError>
@@ -16,10 +15,10 @@ use std::sync::Arc;
 #[tokio::test(flavor = "current_thread")]
 async fn c31_persist_record_returns_result() {
     let temp = tempfile::tempdir().unwrap();
-    let db_path = temp.path().join("test.db");
+    let _db_path = temp.path().join("test.db");
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&"sqlite::memory:".to_string())
+        .connect("sqlite::memory:")
         .await
         .unwrap();
 
@@ -89,10 +88,10 @@ async fn c38_payload_digest_is_sha256() {
 #[tokio::test(flavor = "current_thread")]
 async fn c33_injection_key_uniqueness() {
     let temp = tempfile::tempdir().unwrap();
-    let db_path = temp.path().join("test.db");
+    let _db_path = temp.path().join("test.db");
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&"sqlite::memory:".to_string())
+        .connect("sqlite::memory:")
         .await
         .unwrap();
 
@@ -115,10 +114,10 @@ async fn c33_injection_key_uniqueness() {
 #[tokio::test(flavor = "current_thread")]
 async fn c34_idempotent_insertion() {
     let temp = tempfile::tempdir().unwrap();
-    let db_path = temp.path().join("test.db");
+    let _db_path = temp.path().join("test.db");
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(&"sqlite::memory:".to_string())
+        .connect("sqlite::memory:")
         .await
         .unwrap();
 

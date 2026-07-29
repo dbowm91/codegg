@@ -2,7 +2,7 @@ mod common;
 
 use std::sync::Arc;
 
-use codegg_core::projection_replay::retention::{MaintenanceReport, RetentionPolicy};
+use codegg_core::projection_replay::retention::RetentionPolicy;
 use codegg_core::projection_replay::store::ProjectionReplayStore;
 use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
 

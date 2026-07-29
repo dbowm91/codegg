@@ -31,10 +31,9 @@ mod common;
 use codegg::scheduler::tool_program_notifications::{
     NotificationState, ToolProgramNotificationService,
 };
-use codegg::tool::tool_program_result::{ToolProgramResultError, ToolProgramResultStore};
+use codegg::tool::tool_program_result::ToolProgramResultStore;
 use codegg_core::tool_program::{ProgramResult, ProgramStatus};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Helper to construct a ReplayFingerprint with all new M013-F1 fields.
 fn make_fingerprint(
@@ -256,10 +255,7 @@ async fn c29_recovery_path_through_durable_ledger() {
     // C-29: The durable ledger survives "restart" by loading completed calls
     // into a fresh interpreter with replay fingerprint verification.
     use codegg::tool::tool_program_ledger::ToolProgramLedger;
-    use codegg_core::tool_program::{
-        compile_program, CallRequest, CompletedCall, MeteredInterpreter, ReplayFingerprint,
-        RuntimeLimits,
-    };
+    use codegg_core::tool_program::{compile_program, MeteredInterpreter, RuntimeLimits};
 
     struct CountingBroker {
         count: std::sync::atomic::AtomicU32,
@@ -306,7 +302,7 @@ async fn c29_recovery_path_through_durable_ledger() {
     assert_eq!(interp.completed_calls().len(), 1);
 
     // Persist each completed call to the journal (the durable replay store)
-    for (_seq, call) in interp.completed_calls() {
+    for call in interp.completed_calls().values() {
         ledger.persist_call_completion(program_id, call).unwrap();
     }
 
@@ -341,8 +337,7 @@ async fn c29_fingerprint_mismatch_blocks_replay() {
     // proving that authority/manifest/workspace context is enforced across restarts.
     use codegg::tool::tool_program_ledger::ToolProgramLedger;
     use codegg_core::tool_program::{
-        compile_program, CallRequest, CompletedCall, MeteredInterpreter, ReplayFingerprint,
-        RuntimeLimits,
+        compile_program, CallRequest, CompletedCall, MeteredInterpreter, RuntimeLimits,
     };
 
     let temp = tempfile::tempdir().unwrap();
@@ -421,7 +416,7 @@ async fn c29_sqlite_restart_preserves_notification_state() {
     service1.record_notification(notification).await.unwrap();
 
     // Mark as injected (simulating session append before ack).
-    service1
+    let _ = service1
         .mark_injected("tp-restart-1", "evt-restart-1")
         .await;
 

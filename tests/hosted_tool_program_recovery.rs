@@ -7,7 +7,7 @@
 
 use codegg::provider::responses_api::{
     HostedBackendPolicy, HostedProgramAdapter, HostedProgramEvent, ResponseItem, ResponseObject,
-    ResponsesStreamEvent, ResponsesUsage,
+    ResponsesStreamEvent,
 };
 use codegg::provider::ProviderCapabilities;
 

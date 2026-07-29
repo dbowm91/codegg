@@ -111,6 +111,7 @@ pub struct BrokerInvocationContext {
 
 /// Authority proof attached to a broker invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum BrokerAuthority {
     /// No trusted permission decision accompanies the call.
     Unverified,
@@ -707,7 +708,7 @@ impl ToolBroker {
             Ok(structured) => {
                 // Steps 8-10: convert to typed value, validate, register artifacts
                 let value = self.normalize_result(tool_name, structured, elapsed_ms);
-                let value = self.validate_output(&contract, value)?;
+                let value = self.validate_output(contract, value)?;
                 let value = self
                     .register_artifacts(tool_name, value, &ctx, &invocation_id)
                     .await?;

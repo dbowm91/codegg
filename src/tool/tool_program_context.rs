@@ -8,7 +8,7 @@ pub fn stable_digest(value: &str) -> String {
 
 pub fn to_core_context(
     context: Option<&crate::tool::backend::ToolExecutionContext>,
-    workspace_id: &str,
+    _workspace_id: &str,
     program_id: &str,
 ) -> Result<codegg_core::jobs::ToolProgramExecutionContext, String> {
     let context = context.ok_or_else(|| "accepted permission decision is missing".to_string())?;

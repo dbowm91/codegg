@@ -110,13 +110,15 @@ impl ToolProgramLedger {
             use std::os::unix::io::AsRawFd;
             let file = std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(false)
                 .read(true)
                 .write(true)
                 .mode(0o600)
                 .open(&lock_path)?;
+            #[allow(deprecated)]
             nix::fcntl::flock(file.as_raw_fd(), nix::fcntl::FlockArg::LockExclusive)
                 .map_err(|e| ToolProgramLedgerError::Io(std::io::Error::from(e)))?;
-            return Ok(Some(LockGuard::Unix { _file: file }));
+            Ok(Some(LockGuard::Unix { _file: file }))
         }
 
         #[cfg(not(unix))]
@@ -407,10 +409,9 @@ impl ToolProgramLedger {
             journal.reservations.iter().find(|r| r.sequence == sequence)
         {
             serde_json::to_string(&reservation.request.input).ok()?
-        } else if let Some(completed) = journal.completed.iter().find(|c| c.sequence == sequence) {
-            serde_json::to_string(&completed.request.input).ok()?
         } else {
-            return None;
+            let completed = journal.completed.iter().find(|c| c.sequence == sequence)?;
+            serde_json::to_string(&completed.request.input).ok()?
         };
         Some(format!("sha256:{:x}", Sha256::digest(input_str.as_bytes())))
     }

@@ -10,7 +10,7 @@ use codegg_core::projection_replay::artifact_registry::{
     ArtifactRegistryError, ProjectionArtifactRegistry, RunStoreProjectionArtifactRegistry,
 };
 use codegg_core::projection_replay::artifacts::{
-    ArtifactContentType, ArtifactKind, ArtifactReadRequest, HandleRegistrar, HandleRegistry,
+    ArtifactContentType, ArtifactKind, ArtifactReadRequest, HandleRegistrar,
     ProjectionArtifactHandle,
 };
 

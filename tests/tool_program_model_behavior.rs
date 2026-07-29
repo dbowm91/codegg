@@ -22,6 +22,7 @@ struct BehaviorTrackingBroker {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CallEntry {
     tool_name: String,
     input: serde_json::Value,
@@ -35,6 +36,7 @@ impl BehaviorTrackingBroker {
         }
     }
 
+    #[allow(dead_code)]
     fn calls(&self) -> Vec<CallEntry> {
         self.call_log.lock().unwrap().clone()
     }
@@ -91,6 +93,7 @@ impl BrokerCallback for BehaviorTrackingBroker {
 }
 
 /// Returns empty/null output for specific tools.
+#[allow(dead_code)]
 struct EmptyOutputBroker;
 
 #[async_trait::async_trait]

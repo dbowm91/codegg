@@ -199,6 +199,7 @@ struct ChildJobTracking {
     #[allow(dead_code)]
     sequence: u32,
     status: String,
+    #[allow(dead_code)]
     success: bool,
     /// M014-G1: SHA-256 digest of the child's terminal result for artifact
     /// integrity verification. Computed from the child's completion summary
@@ -234,6 +235,7 @@ impl BrokerAdapter {
 
     /// M013-C-34: Return the tracked child job results for artifact handle
     /// construction. Consumes the tracking vector.
+    #[allow(private_interfaces)]
     pub fn take_child_results(&self) -> Vec<ChildJobTracking> {
         self.child_results
             .lock()
@@ -541,7 +543,7 @@ impl BrokerCallback for BrokerAdapter {
             parent_attempt_id: self
                 .attempt_id
                 .as_ref()
-                .map(|id| codegg_core::jobs::AttemptId::new_unchecked(id)),
+                .map(codegg_core::jobs::AttemptId::new_unchecked),
             parent_call_id: Some(format!("call:{}:{}", self.program_id, request.sequence)),
             parent_program_id: Some(self.program_id.clone()),
             parent_instruction_sequence: Some(request.sequence),
@@ -830,7 +832,6 @@ impl BrokerCallback for BrokerAdapter {
                 .into(),
                 command: command_str,
                 would_change: !success && !is_cancelled && !is_timed_out,
-                ..Default::default()
             }),
         };
 
@@ -1163,7 +1164,7 @@ impl JobExecutor for ToolProgramExecutor {
                     relative_path,
                 }
             }
-            (rel, len) => {
+            (_rel, _len) => {
                 return ExecutorCompletion {
                     status: ExecutorStatus::Failed,
                     summary: "missing durable tool-program source reference".into(),
@@ -1267,7 +1268,7 @@ impl JobExecutor for ToolProgramExecutor {
         let wall_deadline = ctx
             .job
             .deadline
-            .map(|d| {
+            .and_then(|d| {
                 let dur = d.signed_duration_since(chrono::Utc::now());
                 if dur.num_milliseconds() > 0 {
                     Some(
@@ -1278,7 +1279,6 @@ impl JobExecutor for ToolProgramExecutor {
                     None
                 }
             })
-            .flatten()
             .or_else(|| {
                 if limits.max_wall_time_ms > 0 {
                     Some(

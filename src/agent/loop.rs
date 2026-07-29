@@ -4782,7 +4782,7 @@ impl AgentLoop {
                                     .unwrap_or_else(|| {
                                         format!(
                                             "agent:{}:{}",
-                                            &agent_id,
+                                            agent_id,
                                             exec_ctx.session_id.as_deref().unwrap_or("anon")
                                         )
                                     });

@@ -7,8 +7,7 @@
 
 #![cfg(test)]
 
-use codegg_core::tool_program::{InterpreterCheckpoint, MeteredInterpreter, RuntimeLimits};
-use std::collections::HashMap;
+use codegg_core::tool_program::InterpreterCheckpoint;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_millis() -> i64 {

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// C-45: A real daemon process accepts a Tool Program through a public protocol
 /// boundary.
@@ -56,7 +56,7 @@ async fn c46_kill_and_restart_daemon() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("codegg"));
 
-    let mut child = tokio::process::Command::new(&binary)
+    let child = tokio::process::Command::new(&binary)
         .arg("--daemon")
         .arg("--standalone")
         .env("CODEGG_DAEMON_HOME", &daemon_home)
@@ -84,7 +84,7 @@ async fn c46_kill_and_restart_daemon() {
     assert!(status.is_ok(), "daemon process must terminate after kill");
 
     // Restart a fresh daemon against the same state
-    let mut child2 = tokio::process::Command::new(&binary)
+    let child2 = tokio::process::Command::new(&binary)
         .arg("--daemon")
         .arg("--standalone")
         .env("CODEGG_DAEMON_HOME", &daemon_home)
@@ -93,9 +93,9 @@ async fn c46_kill_and_restart_daemon() {
         .stderr(Stdio::piped())
         .spawn();
 
-    if child2.is_ok() {
+    if let Ok(mut child) = child2 {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        let _ = child2.unwrap().kill().await;
+        let _ = child.kill().await;
     }
 }
 

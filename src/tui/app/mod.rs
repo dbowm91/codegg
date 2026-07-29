@@ -3154,7 +3154,7 @@ impl App {
                 Style::default().fg(self.ui_state.theme.muted),
             ));
         }
-        for (i, (tid, label)) in labels
+        for (_i, (tid, label)) in labels
             .iter()
             .enumerate()
             .take(window_end)
@@ -3321,7 +3321,7 @@ impl App {
         }
 
         // Tool programs from projection snapshot
-        if let Some((_, ref snapshot)) = self.projection_client.active_snapshot() {
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
             let active_programs = snapshot
                 .tool_programs
                 .iter()
@@ -3423,7 +3423,7 @@ impl App {
         self.sidebar.set_plan(derived.plan.clone());
 
         // Populate tool programs from projection snapshot
-        if let Some((_, ref snapshot)) = self.projection_client.active_snapshot() {
+        if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
             use super::components::sidebar::SidebarToolProgram;
             self.sidebar.set_tool_programs(
                 snapshot

@@ -9,12 +9,11 @@ use codegg_core::jobs::{
     AttemptId, DaemonGeneration, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
     JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy,
 };
-use codegg_core::tool_program::{compile_program, ProgramStore};
+use codegg_core::tool_program::ProgramStore;
 use codegg_core::workspace::WorkspaceId;
 
 use codegg::scheduler::executor::{
-    ExecutorCompletion, ExecutorKind, ExecutorMetrics, ExecutorStatus, ExecutorValidationError,
-    JobExecutionContext, JobExecutor, NoopProgressSink,
+    ExecutorKind, ExecutorStatus, JobExecutionContext, JobExecutor, NoopProgressSink,
 };
 use codegg::scheduler::permit::ResourcePermitGuard;
 use codegg::scheduler::tool_program_executor::ToolProgramExecutor;

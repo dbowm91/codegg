@@ -22,8 +22,7 @@ use std::time::Duration;
 
 use codegg::tui::app::state::manifest::{
     validate_manifest, ManifestDiagnostic, ManifestLoadOutcome, PersistedProjectTab,
-    TuiWorkspaceManifest, MANIFEST_SCHEMA_VERSION, MAX_MANIFEST_BYTES, MAX_PERSISTED_LABEL_LEN,
-    MAX_PERSISTED_TABS,
+    TuiWorkspaceManifest, MAX_MANIFEST_BYTES, MAX_PERSISTED_LABEL_LEN, MAX_PERSISTED_TABS,
 };
 use codegg::tui::app::state::persistence::{
     load_manifest_from, ManifestPersistence, PersistedSnapshot,

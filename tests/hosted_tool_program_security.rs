@@ -8,8 +8,7 @@
 use codegg::provider::responses_api::{
     redact_fingerprint, redact_for_log, validate_arguments, validate_call_count,
     validate_result_size, HostedBackendPolicy, HostedProgramAdapter, HostedProgramEvent,
-    InputValidation, ResponseItem, ResponseObject, ResponsesStreamEvent, MAX_ARGUMENT_SIZE,
-    MAX_NESTED_CALLS, MAX_RESULT_SIZE,
+    InputValidation, ResponseItem, ResponsesStreamEvent, MAX_ARGUMENT_SIZE, MAX_RESULT_SIZE,
 };
 use codegg::provider::ProviderCapabilities;
 
@@ -321,7 +320,7 @@ fn same_call_across_programs_does_not_leak() {
         .unwrap();
 
     // Program 2 does NOT have the call
-    let mut adapter2 = HostedProgramAdapter::new(
+    let adapter2 = HostedProgramAdapter::new(
         "tp-program-b".to_string(),
         caps,
         HostedBackendPolicy::HostedPreferred,
@@ -469,7 +468,7 @@ fn reservation_isolation_between_adapters() {
         caps.clone(),
         HostedBackendPolicy::HostedPreferred,
     );
-    let mut adapter2 = HostedProgramAdapter::new(
+    let adapter2 = HostedProgramAdapter::new(
         "tp-iso-2".to_string(),
         caps,
         HostedBackendPolicy::HostedPreferred,

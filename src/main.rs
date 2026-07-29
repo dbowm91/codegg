@@ -1856,6 +1856,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // a non-blocking enqueue; the actual restore happens on the
     // TUI command channel.
     if !cli.no_session {
+        #[allow(clippy::result_large_err)]
         let _ = app
             .tui_cmd_tx
             .as_ref()

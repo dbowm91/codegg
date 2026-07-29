@@ -10,10 +10,9 @@
 #![cfg(test)]
 
 use codegg_core::tool_program::{
-    CallRequest, CallResult, CompletedCall, IrProgram, MeteredInterpreter, ProgramValue,
-    ReplayFingerprint, RuntimeLimits,
+    CallRequest, CallResult, IrProgram, MeteredInterpreter, ProgramValue, ReplayFingerprint,
+    RuntimeLimits,
 };
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

@@ -234,6 +234,7 @@ pub async fn persist_python_run(
 /// results safely. Use this instead of bash for Python one-off scripts,
 /// analysis, bulk transforms, and custom verification.
 pub struct PythonScriptTool {
+    #[allow(dead_code)]
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission_service: Option<Arc<JobSubmissionService>>,
 }
@@ -284,8 +285,7 @@ impl PythonScriptTool {
         submission: &Arc<JobSubmissionService>,
     ) -> Result<String, ToolError> {
         use codegg_core::jobs::{
-            DaemonGeneration, IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource,
-            NewJob, RetryPolicy,
+            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, RetryPolicy,
         };
 
         let workspace_root = request

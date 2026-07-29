@@ -359,7 +359,7 @@ fn stale_completion_after_tab_close_cannot_recreate_state() {
 #[test]
 fn foregrounding_tab_retrieves_pending_permission_summary() {
     let mut registry = RoutingRegistry::new();
-    let active = ProjectTabId::new();
+    let _active = ProjectTabId::new();
     let other = ProjectTabId::new();
     registry.register_open_session(other.clone(), "s_other".into());
     // Simulate two pending permissions arriving while tab is inactive.

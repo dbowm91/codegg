@@ -20,6 +20,7 @@ fn make_call_request(tool_name: &str, input: &str) -> CallRequest {
     }
 }
 
+#[allow(dead_code)]
 fn make_completed_call(sequence: u32, tool_name: &str, input: &str) -> CompletedCall {
     CompletedCall {
         sequence,
@@ -187,15 +188,12 @@ async fn g1_concurrent_reservations_do_not_lose_updates() {
 
     // All 16 reservations should result in either a reservation or a completion.
     // After reservation alone (no completion), we use is_call_completed check.
-    let mut total = 0;
     for seq in 0u32..16 {
         let reserved_or_completed = ledger.is_call_completed(program_id, seq) || {
             let _ = reservations_only.contains(&seq);
             true
         };
-        if reserved_or_completed {
-            total += 1;
-        }
+        let _ = reserved_or_completed;
     }
     // The point is no reservation was lost — verify by completing each sequence
     // and confirming all 16 are present in completions.

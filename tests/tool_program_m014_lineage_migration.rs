@@ -8,8 +8,8 @@
 #![cfg(test)]
 
 use codegg_core::jobs::{
-    AttemptId, DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobId, JobKind, JobPayload,
-    JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
+    DaemonGeneration, IdempotencyClass, InMemoryJobStore, JobKind, JobPayload, JobPriority,
+    JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy,
 };
 use codegg_core::workspace::WorkspaceId;
 use std::time::Duration;
@@ -92,10 +92,12 @@ async fn c21_typed_lineage_fields_preserved() {
 /// version. Verify STORAGE_LAYOUT_VERSION is bumped.
 #[tokio::test(flavor = "current_thread")]
 async fn c22_storage_layout_version_bumped() {
-    assert!(
-        codegg_core::storage::STORAGE_LAYOUT_VERSION >= 35,
-        "STORAGE_LAYOUT_VERSION must be >= 35 after M014 lineage migration"
-    );
+    const {
+        assert!(
+            codegg_core::storage::STORAGE_LAYOUT_VERSION >= 35,
+            "STORAGE_LAYOUT_VERSION must be >= 35 after M014 lineage migration"
+        );
+    }
 }
 
 /// C-23: Every JobStore create/read/update/retry/cancel/block/recover/finish

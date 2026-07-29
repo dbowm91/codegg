@@ -44,7 +44,7 @@ async fn restart_preserves_events_and_high_water() {
     // Phase 2: Simulate restart - create new service from same pool
     {
         let store = Arc::new(ProjectionReplayStore::new(pool.clone()));
-        let service = Arc::new(ProjectionReplayService::new(store.clone()));
+        let _service = Arc::new(ProjectionReplayService::new(store.clone()));
 
         // Verify high water survived restart
         let desc = store

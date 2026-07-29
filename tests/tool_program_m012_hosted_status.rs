@@ -66,7 +66,6 @@ async fn c29_tests_exercise_public_boundaries() {
 #[tokio::test(flavor = "current_thread")]
 async fn c30_all_m012_tests_compile_and_run() {
     // C-30: This test itself is evidence that M012 tests compile and run.
-    assert!(true);
 }
 
 /// M013 C-37/C-38: Non-native backend policy is rejected at execution level.

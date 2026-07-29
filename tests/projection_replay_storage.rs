@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use codegg_core::projection_replay::store::ProjectionReplayStore;
 use codegg_protocol::projection::event::{ProjectionEnvelope, ProjectionEvent};
-use codegg_protocol::projection::replay::{ProjectionStreamKind, MAX_REPLAY_EVENTS};
+use codegg_protocol::projection::replay::MAX_REPLAY_EVENTS;
 
 #[tokio::test]
 async fn session_stream_created_idempotently() {
