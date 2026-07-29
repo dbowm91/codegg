@@ -149,7 +149,9 @@ async fn e1_recursive_descendant_cancellation() {
         .await
         .unwrap();
 
-    // Cancel grandparent's descendants — this gets parent, not grandchild.
+    // Cancel grandparent's descendants — this cancels parent and grandchild
+    // because cancel_descendants walks the full descendant tree, not just
+    // direct children.
     let count = store
         .cancel_descendants(
             &grandparent.job_id,
@@ -158,11 +160,12 @@ async fn e1_recursive_descendant_cancellation() {
         .await
         .unwrap();
     assert_eq!(
-        count, 1,
-        "only direct non-terminal descendants are cancelled"
+        count, 2,
+        "all non-terminal descendants are cancelled recursively"
     );
 
-    // Now cancel parent's descendants (simulating recursive cancellation).
+    // Now cancel parent's descendants — grandchild was already cancelled
+    // above, so this should cancel 0.
     let count = store
         .cancel_descendants(
             &parent.job_id,
@@ -170,7 +173,10 @@ async fn e1_recursive_descendant_cancellation() {
         )
         .await
         .unwrap();
-    assert_eq!(count, 1, "grandchild cancelled");
+    assert_eq!(
+        count, 0,
+        "grandchild already cancelled by grandparent cascade"
+    );
 
     let remaining = store.find_descendants(&parent.job_id).await.unwrap();
     assert_eq!(remaining.len(), 0);

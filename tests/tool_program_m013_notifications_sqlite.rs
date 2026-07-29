@@ -160,12 +160,16 @@ async fn c4_sql_error_propagates_as_err() {
     pool.close().await;
     let service = ToolProgramNotificationService::with_pool(pool);
     let notification = make_notification("tp-m013-c4-err", "sess-1", "completed", true);
-    service.record_notification(notification).await.unwrap();
+    let result = service.record_notification(notification).await;
+    assert!(
+        result.is_err(),
+        "closed-pool record_notification must return Err; got Ok"
+    );
 
     let result = service.claim("tp-m013-c4-err").await;
     assert!(
-        matches!(result, Err(NotificationStoreError::Io(_))),
-        "closed-pool claim must return Err(Io); got {:?}",
+        matches!(result, Err(NotificationStoreError::Storage(_))),
+        "closed-pool claim must return Err(Storage); got {:?}",
         result
     );
 }

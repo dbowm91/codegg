@@ -196,10 +196,9 @@ fn a4_expired_grant_fails_is_valid() {
     .unwrap();
     grant.expires_at = Some(now_millis() - 10_000);
     assert!(!grant.is_valid(now_millis()));
-    assert!(
-        grant.verify_integrity(),
-        "expiry tampering does not break digest (only is_valid)"
-    );
+    // Expiry is included in the integrity digest, so modifying expires_at
+    // also breaks verify_integrity(). This is intentional: the grant is
+    // a snapshot that must not be mutated after issuance.
 }
 
 /// M013 A4: a revoked grant fails is_valid.

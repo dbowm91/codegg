@@ -18,7 +18,22 @@ use codegg_core::jobs::ToolAuthorityGrant;
 use serde_json::json;
 use std::path::PathBuf;
 
-fn make_test_grant() -> ToolAuthorityGrant {
+fn make_test_grant_with_snapshot(
+    registry: &ToolRegistry,
+    tool_names: &[&str],
+) -> ToolAuthorityGrant {
+    let mut entries = Vec::new();
+    for name in tool_names {
+        let contract = registry
+            .get(name)
+            .map(|t| t.contract(name, t.parameters()))
+            .unwrap();
+        entries.push(codegg::tool::tool_program_context::contract_entry(&contract).unwrap());
+    }
+    let snapshot_json =
+        codegg::tool::tool_program_context::canonical_contract_json(&entries).unwrap();
+    let contract_digest =
+        codegg::tool::tool_program_context::canonical_contract_digest(&entries).unwrap();
     let mut grant = ToolAuthorityGrant {
         schema_version: 1,
         grant_id: "test-grant".into(),
@@ -35,8 +50,8 @@ fn make_test_grant() -> ToolAuthorityGrant {
         manifest_digest: "test-manifest".into(),
         source_digest: String::new(),
         ir_digest: String::new(),
-        contract_digest: String::new(),
-        contract_snapshot_json: String::new(),
+        contract_digest,
+        contract_snapshot_json: snapshot_json,
         issued_at: 0,
         expires_at: None,
         revoked_at: None,
@@ -96,6 +111,7 @@ fn make_broker() -> (ToolBroker, ToolRegistry) {
 }
 
 fn program_ctx() -> BrokerInvocationContext {
+    let (_broker, registry) = make_broker();
     BrokerInvocationContext {
         caller: ToolCaller::Program {
             program_id: "prog-cache-test".to_string(),
@@ -110,7 +126,10 @@ fn program_ctx() -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant()),
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant_with_snapshot(
+            &registry,
+            &["read"],
+        )),
         cancellation: None,
         deadline: None,
         principal_ref: None,

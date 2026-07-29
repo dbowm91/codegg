@@ -45,6 +45,49 @@ fn make_test_grant() -> ToolAuthorityGrant {
     grant
 }
 
+fn make_test_grant_with_snapshot(
+    registry: &ToolRegistry,
+    tool_names: &[&str],
+) -> ToolAuthorityGrant {
+    let mut entries = Vec::new();
+    for name in tool_names {
+        let contract = registry
+            .get(name)
+            .map(|t| t.contract(name, t.parameters()))
+            .unwrap();
+        entries.push(codegg::tool::tool_program_context::contract_entry(&contract).unwrap());
+    }
+    let snapshot_json =
+        codegg::tool::tool_program_context::canonical_contract_json(&entries).unwrap();
+    let contract_digest =
+        codegg::tool::tool_program_context::canonical_contract_digest(&entries).unwrap();
+    let mut grant = ToolAuthorityGrant {
+        schema_version: 1,
+        grant_id: "test-grant".into(),
+        principal_ref: "test-principal".into(),
+        workspace_id: "test-ws".into(),
+        workspace_path_policy_id: "workspace:test-ws".into(),
+        session_id: None,
+        agent_id: None,
+        turn_id: None,
+        permission_mode: None,
+        policy_revision: "test-policy-v1".into(),
+        allowed_caller_class: "program".into(),
+        allowed_effect_class: "read_only".into(),
+        manifest_digest: "test-manifest".into(),
+        source_digest: String::new(),
+        ir_digest: String::new(),
+        contract_digest,
+        contract_snapshot_json: snapshot_json,
+        issued_at: 0,
+        expires_at: None,
+        revoked_at: None,
+        decision_digest: String::new(),
+    };
+    grant.decision_digest = grant.compute_digest();
+    grant
+}
+
 // ── Mock tools ────────────────────────────────────────────────────────────
 
 struct MockReadTool;
@@ -143,6 +186,7 @@ fn make_broker() -> (ToolBroker, ToolRegistry) {
 }
 
 fn program_ctx() -> BrokerInvocationContext {
+    let (_broker, registry) = make_broker();
     BrokerInvocationContext {
         caller: ToolCaller::Program {
             program_id: "prog-artifact-test".to_string(),
@@ -157,7 +201,10 @@ fn program_ctx() -> BrokerInvocationContext {
         permission_mode: None,
         timeout_ms: Some(5_000),
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant()),
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant_with_snapshot(
+            &registry,
+            &["read"],
+        )),
         cancellation: None,
         deadline: None,
         principal_ref: None,

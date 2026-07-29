@@ -74,6 +74,8 @@ fn init_repo(dir: &Path) {
         assert!(status.success(), "git {argv:?} failed");
     };
     run(&["init", "-q", "-b", "main"]);
+    run(&["config", "user.name", "Test"]);
+    run(&["config", "user.email", "test@example.com"]);
     fs_utils::write(&dir.join("README.md"), "hello\n");
     run(&["add", "README.md"]);
     run(&["commit", "-q", "-m", "initial"]);

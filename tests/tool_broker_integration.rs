@@ -20,6 +20,21 @@ use codegg::tool::{Tool, ToolCategory, ToolRegistry};
 use codegg_core::jobs::ToolAuthorityGrant;
 use serde_json::json;
 
+fn build_snapshot_for_tools(registry: &ToolRegistry, tool_names: &[&str]) -> (String, String) {
+    let mut entries = Vec::new();
+    for name in tool_names {
+        let contract = registry
+            .get(name)
+            .map(|t| t.contract(name, t.parameters()))
+            .unwrap();
+        entries.push(codegg::tool::tool_program_context::contract_entry(&contract).unwrap());
+    }
+    let snapshot_json =
+        codegg::tool::tool_program_context::canonical_contract_json(&entries).unwrap();
+    let digest = codegg::tool::tool_program_context::canonical_contract_digest(&entries).unwrap();
+    (snapshot_json, digest)
+}
+
 fn make_test_grant(caller: &str, effect: &str) -> ToolAuthorityGrant {
     let mut grant = ToolAuthorityGrant {
         schema_version: 1,
@@ -39,6 +54,40 @@ fn make_test_grant(caller: &str, effect: &str) -> ToolAuthorityGrant {
         ir_digest: String::new(),
         contract_digest: String::new(),
         contract_snapshot_json: String::new(),
+        issued_at: 0,
+        expires_at: None,
+        revoked_at: None,
+        decision_digest: String::new(),
+    };
+    grant.decision_digest = grant.compute_digest();
+    grant
+}
+
+fn make_test_grant_with_snapshot(
+    caller: &str,
+    effect: &str,
+    registry: &ToolRegistry,
+    tool_names: &[&str],
+) -> ToolAuthorityGrant {
+    let (snapshot_json, contract_digest) = build_snapshot_for_tools(registry, tool_names);
+    let mut grant = ToolAuthorityGrant {
+        schema_version: 1,
+        grant_id: "test-grant".into(),
+        principal_ref: "test-principal".into(),
+        workspace_id: "test-ws".into(),
+        workspace_path_policy_id: "workspace:test-ws".into(),
+        session_id: None,
+        agent_id: None,
+        turn_id: None,
+        permission_mode: None,
+        policy_revision: "test-policy-v1".into(),
+        allowed_caller_class: caller.into(),
+        allowed_effect_class: effect.into(),
+        manifest_digest: "test-manifest".into(),
+        source_digest: String::new(),
+        ir_digest: String::new(),
+        contract_digest,
+        contract_snapshot_json: snapshot_json,
         issued_at: 0,
         expires_at: None,
         revoked_at: None,
@@ -172,6 +221,7 @@ impl Tool for ProgrammaticTool {
             name: tool_name.to_string(),
             caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
             effect_class: ToolEffectClass::ReadOnly,
+            output_schema: Some(json!({"type": "string"})),
             ..ToolContract::legacy(tool_name, input_schema)
         }
     }
@@ -221,6 +271,40 @@ fn make_ctx_with_grant(
         authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant(
             allowed_caller_class,
             allowed_effect_class,
+        )),
+        cancellation: None,
+        deadline: None,
+        principal_ref: None,
+        workspace_path_policy_id: None,
+        allowed_tools: None,
+        current_policy_revision: None,
+    }
+}
+
+fn make_ctx_with_grant_snapshot(
+    caller: ToolCaller,
+    allowed_caller_class: &str,
+    allowed_effect_class: &str,
+    registry: &ToolRegistry,
+    tool_names: &[&str],
+) -> BrokerInvocationContext {
+    BrokerInvocationContext {
+        caller,
+        cwd: PathBuf::from("."),
+        session_id: Some("test-session".to_string()),
+        workspace_id: None,
+        agent_id: None,
+        turn_id: None,
+        job_id: None,
+        attempt_id: None,
+        permission_mode: None,
+        timeout_ms: Some(5_000),
+        submission_key: None,
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant_with_snapshot(
+            allowed_caller_class,
+            allowed_effect_class,
+            registry,
+            tool_names,
         )),
         cancellation: None,
         deadline: None,
@@ -302,12 +386,14 @@ async fn broker_caller_policy_allows_programmatic_on_direct_or_programmatic() {
             &registry,
             "programmatic",
             json!({}),
-            make_ctx_with_grant(
+            make_ctx_with_grant_snapshot(
                 ToolCaller::Program {
                     program_id: "test-program".to_string(),
                 },
                 "program",
                 "read_only",
+                &registry,
+                &["programmatic"],
             ),
         )
         .await
@@ -672,9 +758,11 @@ async fn broker_authorized_programmatic_caller_accepted() {
         permission_mode: None,
         timeout_ms: None,
         submission_key: None,
-        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant(
+        authority: codegg::tool::BrokerAuthority::from_grant(make_test_grant_with_snapshot(
             "program",
             "read_only",
+            &registry,
+            &["programmatic"],
         )),
         cancellation: None,
         deadline: None,
