@@ -122,6 +122,7 @@ pub struct ToolProgramExecutor {
     submission: Option<Arc<crate::scheduler::submission::JobSubmissionService>>,
     notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    artifact_store: Option<Arc<dyn crate::context::ContextArtifactStore>>,
 }
 
 impl ToolProgramExecutor {
@@ -131,6 +132,7 @@ impl ToolProgramExecutor {
             registry,
             submission: None,
             notification_service: None,
+            artifact_store: None,
         }
     }
 
@@ -149,6 +151,14 @@ impl ToolProgramExecutor {
         self.notification_service = Some(service);
         self
     }
+
+    pub fn with_artifact_store(
+        mut self,
+        store: Arc<dyn crate::context::ContextArtifactStore>,
+    ) -> Self {
+        self.artifact_store = Some(store);
+        self
+    }
 }
 
 impl Default for ToolProgramExecutor {
@@ -161,6 +171,7 @@ impl Default for ToolProgramExecutor {
             registry,
             submission: None,
             notification_service: None,
+            artifact_store: None,
         }
     }
 }
@@ -1260,6 +1271,8 @@ impl JobExecutor for ToolProgramExecutor {
         limits.max_stall_time_ms = 60_000; // 60s stall timeout
         limits.max_per_call_time_ms = 30_000; // 30s per-call timeout
         limits.max_retries = 2; // Up to 2 retries for transient errors
+        limits.max_bytes = 16 * 1024 * 1024; // 16 MiB value growth for spill tests
+        limits.max_value_growth = 16 * 1024 * 1024;
 
         // Save per-call timeout before moving limits
         let per_call_timeout_ms = limits.max_per_call_time_ms;
@@ -1496,7 +1509,9 @@ impl JobExecutor for ToolProgramExecutor {
         // Bind the immutable contract snapshot to this workspace's durable
         // artifact store for the lifetime of the attempt.
         let canonical_artifact_store: Arc<dyn crate::context::ContextArtifactStore> =
-            Arc::new(crate::context::FileArtifactStore::new(&ctx.workspace_root));
+            self.artifact_store.clone().unwrap_or_else(|| {
+                Arc::new(crate::context::FileArtifactStore::new(&ctx.workspace_root))
+            });
         let workspace_broker = self
             .broker
             .for_workspace_artifacts(canonical_artifact_store.clone());

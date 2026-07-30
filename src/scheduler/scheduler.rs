@@ -49,6 +49,9 @@ use crate::scheduler::snapshot::{SchedulerSnapshot, SnapshotCounts};
 use crate::scheduler::types::QueueEntry;
 use crate::scheduler::types::QueueRemovalReason;
 
+const EXECUTOR_CLEANUP_GRACE: Duration = Duration::from_secs(5);
+const SHUTDOWN_CLEANUP_GRACE: Duration = Duration::from_secs(5);
+
 /// Wake signal sent to the scheduler's main loop. Cheap; the loop
 /// uses a `Notify` to coalesce wakes and avoid spinning.
 #[derive(Debug, Clone, Copy)]
@@ -98,6 +101,7 @@ pub struct JobScheduler {
     executors: Arc<AsyncMutex<crate::scheduler::executor::ExecutorRegistry>>,
     admission: Arc<AdmissionController>,
     queue: Arc<AsyncMutex<FairJobQueue>>,
+    dispatch: AsyncMutex<()>,
     running: Arc<AsyncMutex<HashMap<AttemptId, RunningAttempt>>>,
     /// Recent in-process completions let daemon clients receive the same
     /// bounded executor projection that completed the work. Durable job and
@@ -151,6 +155,7 @@ impl JobScheduler {
             )),
             admission,
             queue,
+            dispatch: AsyncMutex::new(()),
             running,
             completions: Arc::new(AsyncMutex::new(HashMap::new())),
             running_per_workspace,
@@ -618,6 +623,10 @@ impl JobScheduler {
     /// The batch size is bounded by remaining capacity so we never
     /// over-admit.
     pub async fn admit_and_dispatch_batch(self: Arc<Self>) -> usize {
+        let _dispatch = self.dispatch.lock().await;
+        if self.shutdown.is_cancelled() {
+            return 0;
+        }
         let mut dispatched = 0;
         let max_batch = 4usize; // bounded; the loop above will run again
                                 // Inspect a small candidate window instead of treating a
@@ -625,7 +634,7 @@ impl JobScheduler {
                                 // an unrelated workspace make progress while the contended job is
                                 // requeued for the next reconciliation tick.
         for _ in 0..(max_batch * 2) {
-            if dispatched >= max_batch {
+            if dispatched >= max_batch || self.shutdown.is_cancelled() {
                 break;
             }
             match self.clone().try_dispatch_next().await {
@@ -837,20 +846,34 @@ impl JobScheduler {
                         metrics: Default::default(),
                     }
                 } else {
-                    let execution = executor.execute(ctx);
+                    let mut execution = Box::pin(executor.execute(ctx));
                     match execution_timeout {
-                        Some(timeout) => match tokio::time::timeout(timeout, execution).await {
-                            Ok(completion) => completion,
-                            Err(_) => {
-                                cancel_token.cancel();
-                                ExecutorCompletion {
-                                    status: ExecutorStatus::TimedOut,
-                                    summary: "scheduler execution deadline exceeded".into(),
-                                    run_id: None,
-                                    metrics: Default::default(),
+                        Some(timeout) => {
+                            match tokio::time::timeout(timeout, execution.as_mut()).await {
+                                Ok(completion) => completion,
+                                Err(_) => {
+                                    cancel_token.cancel();
+                                    match tokio::time::timeout(
+                                        EXECUTOR_CLEANUP_GRACE,
+                                        execution.as_mut(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(mut completion) => {
+                                            completion.status = ExecutorStatus::TimedOut;
+                                            completion
+                                        }
+                                        Err(_) => ExecutorCompletion {
+                                            status: ExecutorStatus::TimedOut,
+                                            summary: "scheduler execution deadline exceeded; executor cleanup did not finish"
+                                                .into(),
+                                            run_id: None,
+                                            metrics: Default::default(),
+                                        },
+                                    }
                                 }
                             }
-                        },
+                        }
                         None => execution.await,
                     }
                 };
@@ -1033,29 +1056,18 @@ impl JobScheduler {
     /// when the running attempts have been signalled and the main
     /// loop has exited.
     pub async fn shutdown(&self, mode: SchedulerShutdownMode) {
+        self.shutdown.cancel();
+        let _dispatch = self.dispatch.lock().await;
         match mode {
             SchedulerShutdownMode::ImmediateInterrupt => {
-                self.shutdown.cancel();
+                self.cancel_pending_and_running("shutdown immediate-interrupt")
+                    .await;
+                self.wait_for_running_cleanup(SHUTDOWN_CLEANUP_GRACE).await;
             }
             SchedulerShutdownMode::StopAcceptingAndCancelQueued => {
-                // Cancel queued.
-                let q = self.queue.lock().await;
-                let ids: Vec<JobId> = q
-                    .lanes()
-                    .values()
-                    .flat_map(|lq| lq.lanes.values())
-                    .flat_map(|l| l.entries.iter().map(|e| e.job_id.clone()))
-                    .collect();
-                drop(q);
-                for id in ids {
-                    let _ = self.request_cancel(&id, "shutdown stop-accepting").await;
-                }
-                // Cancel running.
-                let running = self.running.lock().await;
-                for ra in running.values() {
-                    ra.cancellation.cancel();
-                }
-                self.shutdown.cancel();
+                self.cancel_pending_and_running("shutdown stop-accepting")
+                    .await;
+                self.wait_for_running_cleanup(SHUTDOWN_CLEANUP_GRACE).await;
             }
             SchedulerShutdownMode::DrainQueuedUntil(deadline) => {
                 let deadline_at = Instant::now() + deadline;
@@ -1063,13 +1075,63 @@ impl JobScheduler {
                 {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                // After deadline, cancel any remaining.
-                let running = self.running.lock().await;
-                for ra in running.values() {
-                    ra.cancellation.cancel();
+                if self.running_total.load(Ordering::SeqCst) > 0 {
+                    let running = self.running.lock().await;
+                    for attempt in running.values() {
+                        attempt.cancellation.cancel();
+                    }
+                    drop(running);
+                    self.wait_for_running_cleanup(SHUTDOWN_CLEANUP_GRACE).await;
                 }
-                self.shutdown.cancel();
             }
+        }
+    }
+
+    async fn cancel_pending_and_running(&self, reason: &str) {
+        let mut ids = std::collections::HashSet::new();
+        {
+            let queue = self.queue.lock().await;
+            ids.extend(
+                queue
+                    .lanes()
+                    .values()
+                    .flat_map(|lane_queue| lane_queue.lanes.values())
+                    .flat_map(|lane| lane.entries.iter().map(|entry| entry.job_id.clone())),
+            );
+        }
+        let query = codegg_core::jobs::store::JobStoreQuery {
+            states: vec![JobState::Scheduled, JobState::Queued, JobState::Blocked],
+            workspace_id: None,
+            kinds: vec![],
+            limit: None,
+            session_id: None,
+        };
+        if let Ok(jobs) = self.store.list_jobs(query).await {
+            ids.extend(jobs.into_iter().map(|job| job.job_id));
+        }
+        for id in ids {
+            let _ = self.request_cancel(&id, reason).await;
+        }
+        let running = self.running.lock().await;
+        for attempt in running.values() {
+            attempt.cancellation.cancel();
+        }
+    }
+
+    async fn wait_for_running_cleanup(&self, cleanup_grace: Duration) {
+        let deadline = Instant::now() + cleanup_grace;
+        while self.running_total.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            tokio::select! {
+                _ = self.notify.notified() => {}
+                _ = tokio::time::sleep(remaining.min(Duration::from_millis(50))) => {}
+            }
+        }
+        if self.running_total.load(Ordering::SeqCst) > 0 {
+            tracing::warn!(
+                running = self.running_total.load(Ordering::SeqCst),
+                "scheduler shutdown cleanup deadline exceeded"
+            );
         }
     }
 

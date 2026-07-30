@@ -8,16 +8,6 @@
 //!
 //! All tests are Unix-only because process group management
 //! (`setsid`) and `kill` signalling are POSIX-specific.
-//!
-//! ## Known behaviour documented by these tests
-//!
-//! When a managed child dies quickly from SIGTERM, orphaned grandchild
-//! processes that trap SIGTERM can keep the stdout/stderr pipe
-//! write-ends open. This prevents `join_output` from returning and
-//! keeps the job in `Running` state even though the processes are
-//! dead. Tests that exercise SIGTERM→SIGKILL escalation deliberately
-//! make both child and grandchild ignore SIGTERM so the full
-//! escalation path is exercised.
 
 #![cfg(unix)]
 
@@ -206,14 +196,24 @@ fn is_pid_alive(pid: i32) -> bool {
     }
 }
 
+struct PidCleanup(Vec<i32>);
+
+impl Drop for PidCleanup {
+    fn drop(&mut self) {
+        for pid in &self.0 {
+            if is_pid_alive(*pid) {
+                unsafe {
+                    libc::kill(*pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+}
+
 /// Write a script that spawns a child + grandchild. Both write their
 /// PIDs to files. The child does NOT trap SIGTERM so it dies normally
 /// when the process group is signalled. The grandchild traps SIGTERM
 /// and sleeps forever — it can only be killed by SIGKILL.
-///
-/// NOTE: When the child exits quickly from SIGTERM, the grandchild
-/// keeps the stdout/stderr pipe open, causing `join_output` to hang.
-/// This is a known gap in the managed process service's cleanup.
 fn write_stubborn_grandchild_script(dir: &Path) -> PathBuf {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -360,7 +360,7 @@ async fn cancel_terminates_descendants() {
         pid_dir.to_string_lossy().to_string(),
     ];
 
-    let (scheduler, submission, _store, ws_id, _root) = setup_managed_argv().await;
+    let (scheduler, submission, store, ws_id, _root) = setup_managed_argv().await;
     let sched = scheduler.clone();
     let loop_handle = tokio::spawn(async move { sched.run().await });
 
@@ -374,6 +374,7 @@ async fn cancel_terminates_descendants() {
     let grandchild_pid =
         wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
     assert!(child_pid > 0 && grandchild_pid > 0);
+    let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
     assert!(is_pid_alive(child_pid));
     assert!(is_pid_alive(grandchild_pid));
@@ -385,36 +386,22 @@ async fn cancel_terminates_descendants() {
         .expect("cancel");
     assert_eq!(cancel_result.state, CancelOutcome::Requested);
 
-    // Wait for PIDs to die. The child dies from SIGTERM; the grandchild
-    // dies from SIGKILL (sent after the 250ms grace period).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let child_dead = !is_pid_alive(child_pid);
-        let grandchild_dead = !is_pid_alive(grandchild_pid);
-        if child_dead && grandchild_dead {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            // On some platforms, orphaned grandchild processes may survive
-            // the process-group kill due to platform-specific semantics.
-            // Send an explicit SIGKILL directly to the grandchild as a
-            // platform-correct fallback.
-            if is_pid_alive(grandchild_pid) {
-                unsafe {
-                    libc::kill(grandchild_pid, libc::SIGKILL);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            break;
-        }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while is_pid_alive(child_pid) || is_pid_alive(grandchild_pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "process cleanup failed: child alive={}, grandchild alive={}",
+            is_pid_alive(child_pid),
+            is_pid_alive(grandchild_pid)
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // Note: the job may stay "Running" because the orphaned grandchild
-    // keeps the stdout/stderr pipe open. This is a known gap. We verify
-    // PID death (the actual cleanup) rather than job state.
-    //
-    // Shutdown the scheduler which cancels in-flight executor tasks.
+    let job = wait_for_terminal(&store, &submitted.job_id, Duration::from_secs(5)).await;
+    assert_eq!(job.state, JobState::Cancelled);
+    assert!(!is_pid_alive(child_pid));
+    assert!(!is_pid_alive(grandchild_pid));
+
     scheduler
         .shutdown(SchedulerShutdownMode::ImmediateInterrupt)
         .await;
@@ -450,6 +437,7 @@ async fn sigterm_escalates_to_sigkill_for_stubborn_grandchild() {
     let grandchild_pid =
         wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
     assert!(child_pid > 0 && grandchild_pid > 0);
+    let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
     // Cancel — both ignore SIGTERM, so the managed process service
     // must send SIGTERM, wait 250ms, then send SIGKILL to the group.
@@ -506,20 +494,19 @@ async fn sigterm_escalates_to_sigkill_for_stubborn_grandchild() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn timeout_terminates_descendants() {
     let tmp = tempfile::tempdir().unwrap();
-    // Use the "both stubborn" variant so SIGKILL is guaranteed.
-    let script = write_both_stubborn_script(tmp.path());
+    let script = write_stubborn_grandchild_script(tmp.path());
     let pid_dir = tmp.path().to_path_buf();
     let argv = vec![
         script.to_string_lossy().to_string(),
         pid_dir.to_string_lossy().to_string(),
     ];
 
-    let (scheduler, submission, _store, ws_id, _root) = setup_managed_argv().await;
+    let (scheduler, submission, store, ws_id, _root) = setup_managed_argv().await;
     let sched = scheduler.clone();
     let loop_handle = tokio::spawn(async move { sched.run().await });
 
     // Use a short timeout (1s) to trigger the timeout path.
-    let _submitted = submission
+    let submitted = submission
         .submit(
             None,
             build_managed_argv_job_with_timeout(&ws_id, argv, Duration::from_millis(1000)),
@@ -531,48 +518,23 @@ async fn timeout_terminates_descendants() {
     let grandchild_pid =
         wait_for_pid_file(&pid_dir.join("grandchild.pid"), Duration::from_secs(5)).await;
     assert!(child_pid > 0 && grandchild_pid > 0);
+    let _cleanup = PidCleanup(vec![child_pid, grandchild_pid]);
 
-    // Wait for timeout to fire and SIGKILL to land.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let child_dead = !is_pid_alive(child_pid);
-        let grandchild_dead = !is_pid_alive(grandchild_pid);
-        if child_dead && grandchild_dead {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            // On macOS, orphaned grandchild processes may survive the
-            // process-group SIGKILL due to platform-specific orphaned
-            // process group semantics. Send an explicit SIGKILL directly
-            // to the grandchild as a platform-correct fallback.
-            if is_pid_alive(grandchild_pid) {
-                unsafe {
-                    libc::kill(grandchild_pid, libc::SIGKILL);
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            break;
-        }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while is_pid_alive(child_pid) || is_pid_alive(grandchild_pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timeout cleanup failed: child alive={}, grandchild alive={}",
+            is_pid_alive(child_pid),
+            is_pid_alive(grandchild_pid)
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    assert!(
-        !is_pid_alive(child_pid),
-        "child must be killed after timeout"
-    );
-    // The grandchild may need an explicit SIGKILL on macOS due to
-    // orphaned process group semantics. The important invariant is that
-    // the timeout triggered cleanup and the grandchild is now dead.
-    if is_pid_alive(grandchild_pid) {
-        unsafe {
-            libc::kill(grandchild_pid, libc::SIGKILL);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(
-        !is_pid_alive(grandchild_pid),
-        "grandchild must be killed after timeout"
-    );
+    let job = wait_for_terminal(&store, &submitted.job_id, Duration::from_secs(5)).await;
+    assert_eq!(job.state, JobState::TimedOut);
+    assert!(!is_pid_alive(child_pid));
+    assert!(!is_pid_alive(grandchild_pid));
 
     scheduler
         .shutdown(SchedulerShutdownMode::ImmediateInterrupt)

@@ -547,7 +547,7 @@ async fn attempt_executor_consistency() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn shutdown_releases_running_permits() {
+async fn immediate_shutdown_cancels_running_and_releases_permits() {
     let root = tempfile::tempdir().expect("temp workspace");
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
         .await
@@ -588,21 +588,33 @@ async fn shutdown_releases_running_permits() {
         .expect("submit");
     tokio::time::sleep(Duration::from_millis(200)).await;
     scheduler
-        .shutdown(codegg::scheduler::SchedulerShutdownMode::StopAcceptingAndCancelQueued)
+        .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
         .await;
-    let _ = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            if let Ok(Some(job)) = scheduler.store().get_job(&submitted.job_id).await {
-                if job.state.is_terminal() {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await;
+    let job = scheduler
+        .store()
+        .get_job(&submitted.job_id)
+        .await
+        .expect("get job")
+        .expect("job exists");
+    assert_eq!(job.state, JobState::Cancelled);
     let snap = scheduler.admission().snapshot();
     assert_eq!(snap.used_process, 0, "shutdown must release all permits");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn immediate_shutdown_cancels_durable_queued_jobs() {
+    let (scheduler, submission, workspace_id) = make_scheduler_env(1).await;
+    let submitted = submission
+        .submit(None, build_test_spec(workspace_id))
+        .await
+        .expect("submit");
+
+    scheduler
+        .shutdown(codegg::scheduler::SchedulerShutdownMode::ImmediateInterrupt)
+        .await;
+
+    let job = store_get_job(scheduler.store(), &submitted.job_id).await;
+    assert_eq!(job.state, JobState::Cancelled);
 }
 
 async fn store_get_job(

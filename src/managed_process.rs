@@ -5,7 +5,7 @@
 //! is rebuilt from an allowlist, output is drained without unbounded growth,
 //! and cancellation/timeout cleanup targets the whole process session on Unix.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
@@ -135,7 +135,7 @@ impl Default for OutputPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundedOutput {
     pub head: Vec<u8>,
-    pub tail: Vec<u8>,
+    pub tail: VecDeque<u8>,
     pub omitted_bytes: usize,
     pub total_bytes: usize,
     pub total_lines: usize,
@@ -147,7 +147,7 @@ impl BoundedOutput {
         let tail_cap = cap.saturating_sub(head_cap);
         Self {
             head: Vec::with_capacity(head_cap),
-            tail: Vec::with_capacity(tail_cap),
+            tail: VecDeque::with_capacity(tail_cap),
             omitted_bytes: 0,
             total_bytes: 0,
             total_lines: 0,
@@ -167,11 +167,9 @@ impl BoundedOutput {
         self.head.extend_from_slice(&bytes[..head_take]);
 
         if head_take < bytes.len() && tail_cap > 0 {
-            self.tail.extend_from_slice(&bytes[head_take..]);
-            if self.tail.len() > tail_cap {
-                let excess = self.tail.len() - tail_cap;
-                self.tail.drain(..excess);
-            }
+            self.tail.extend(&bytes[head_take..]);
+            let excess = self.tail.len().saturating_sub(tail_cap);
+            self.tail.drain(..excess);
         }
 
         self.omitted_bytes = self
@@ -192,7 +190,7 @@ impl BoundedOutput {
     pub fn as_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(self.retained_bytes());
         bytes.extend_from_slice(&self.head);
-        bytes.extend_from_slice(&self.tail);
+        bytes.extend(self.tail.iter().copied());
         bytes
     }
 
@@ -444,9 +442,8 @@ fn configure_process_session(_command: &mut Command) {}
 #[cfg(unix)]
 #[allow(unsafe_code)]
 async fn terminate_child(child: &mut Child) -> io::Result<ExitStatus> {
-    if let Some(pid) = child.id() {
-        // The child owns this process group because configure_process_session
-        // called setsid before exec. Negative pid addresses the group.
+    let pid = child.id();
+    if let Some(pid) = pid {
         unsafe {
             libc::kill(-(pid as i32), libc::SIGTERM);
         }
@@ -454,19 +451,15 @@ async fn terminate_child(child: &mut Child) -> io::Result<ExitStatus> {
         child.start_kill()?;
     }
 
-    match timeout(TERMINATION_GRACE, child.wait()).await {
-        Ok(status) => status,
-        Err(_) => {
-            if let Some(pid) = child.id() {
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
-            } else {
-                child.start_kill()?;
-            }
-            child.wait().await
+    sleep(TERMINATION_GRACE).await;
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
         }
+    } else {
+        child.start_kill()?;
     }
+    child.wait().await
 }
 
 #[cfg(not(unix))]
@@ -545,6 +538,23 @@ mod tests {
             result.stdout.omitted_bytes + result.stdout.retained_bytes(),
             100_000
         );
+    }
+
+    #[test]
+    fn bounded_output_retains_latest_tail_without_shifting() {
+        let mut output = BoundedOutput::with_capacity(64);
+        let bytes: Vec<u8> = (0..=255).cycle().take(1_000_000).collect();
+        for chunk in bytes.chunks(8192) {
+            output.append(chunk, 64);
+        }
+
+        assert_eq!(output.retained_bytes(), 64);
+        assert_eq!(output.head, bytes[..32]);
+        assert_eq!(
+            output.tail.iter().copied().collect::<Vec<_>>(),
+            bytes[bytes.len() - 32..]
+        );
+        assert_eq!(output.omitted_bytes, bytes.len() - 64);
     }
 
     #[tokio::test(flavor = "current_thread")]

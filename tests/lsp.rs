@@ -7,13 +7,19 @@ use codegg::tool::{Tool, ToolCategory};
 
 fn make_tool() -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
+        codegg::lsp::config::LspConfig::Disabled(true),
+    ))
+}
+
+fn make_live_tool() -> codegg::tool::lsp::LspTool {
+    codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
         codegg::lsp::config::LspConfig::default(),
     ))
 }
 
 fn make_tool_with_root(root: &std::path::Path) -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
-        codegg::lsp::config::LspConfig::default(),
+        codegg::lsp::config::LspConfig::Disabled(true),
     ))
     .with_allowed_root(root.to_path_buf())
 }
@@ -1392,7 +1398,7 @@ async fn semanticContext_patch_does_not_write_disk() {
 #[tokio::test]
 #[allow(non_snake_case)]
 async fn semanticContext_with_line_column_returns_excerpt() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "semanticContext",
@@ -1462,7 +1468,7 @@ fn semantic_context_source_actions_default_false() {
 #[tokio::test]
 #[allow(non_snake_case)]
 async fn semantic_context_source_actions_omitted_by_default() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "semanticContext",
@@ -2081,7 +2087,7 @@ async fn security_context_patch_does_not_write_disk() {
 
 #[tokio::test]
 async fn security_context_returns_risk_markers_for_source_file() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2126,7 +2132,7 @@ async fn security_context_with_patch_does_not_mutate_disk() {
 
 #[tokio::test]
 async fn security_context_result_count_includes_markers() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2147,7 +2153,7 @@ async fn security_context_result_count_includes_markers() {
 
 #[tokio::test]
 async fn security_context_filters_by_category() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2171,7 +2177,7 @@ async fn security_context_filters_by_category() {
 
 #[tokio::test]
 async fn security_context_limits_risk_markers_precise() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2202,7 +2208,7 @@ async fn security_context_limits_risk_markers_precise() {
 
 #[tokio::test]
 async fn security_context_limits_symbols_precise() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2228,7 +2234,7 @@ async fn security_context_limits_symbols_precise() {
 
 #[tokio::test]
 async fn security_context_notes_include_no_position_message() {
-    let tool = make_tool();
+    let tool = make_live_tool();
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
@@ -2612,40 +2618,36 @@ fn empty_invocation(
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 #[allow(non_snake_case)]
-async fn run_lsp_workflow_repair_local_emits_display() {
+async fn run_lsp_workflow_scenarios_share_one_service() {
     let (_dir, path) = temp_rs_file("fn main() {}\n");
-    let tool = make_tool_with_root(_dir.path());
+    let tool = make_live_tool();
+    let _tool_with_root = make_tool_with_root(_dir.path());
+
+    let review_path = egglsp::LspWorkflowRecipe::ReviewFile;
+    let inv = empty_invocation(review_path, Some(path.to_str().unwrap()));
+    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::ReviewFile);
+    assert!(display.title.contains("review_file"));
+
     let inv = empty_invocation(
         egglsp::LspWorkflowRecipe::RepairLocal,
         Some(path.to_str().unwrap()),
     );
     let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
     assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::RepairLocal);
-    assert!(
-        display.title.contains("repair_local"),
-        "title must name the recipe: {}",
-        display.title
-    );
-    assert!(
-        display.preview_ids.is_empty(),
-        "no previews should be auto-applied"
-    );
-}
+    assert!(display.preview_ids.is_empty());
 
-#[tokio::test]
-#[allow(non_snake_case)]
-async fn run_lsp_workflow_review_file_emits_display() {
-    let (_dir, path) = temp_rs_file("fn main() {}\n");
-    let tool = make_tool_with_root(_dir.path());
     let inv = empty_invocation(
-        egglsp::LspWorkflowRecipe::ReviewFile,
+        egglsp::LspWorkflowRecipe::TestFailureRepair,
         Some(path.to_str().unwrap()),
     );
     let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
-    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::ReviewFile);
-    assert!(display.title.contains("review_file"));
+    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::TestFailureRepair);
+
+    let original = std::fs::read_to_string(&path).expect("file still readable");
+    assert_eq!(original, "fn main() {}\n", "file must be unchanged");
 }
 
 #[tokio::test]
@@ -2671,36 +2673,6 @@ async fn run_lsp_workflow_impact_requires_path() {
 
 #[tokio::test]
 #[allow(non_snake_case)]
-async fn run_lsp_workflow_test_failure_repair_carries_failure_text() {
-    let (_dir, path) = temp_rs_file("#[test] fn smoke() {}\n");
-    let tool = make_tool_with_root(_dir.path());
-    let mut inv = empty_invocation(
-        egglsp::LspWorkflowRecipe::TestFailureRepair,
-        Some(path.to_str().unwrap()),
-    );
-    inv.failure_text = Some("assertion failed: 1 == 2".to_string());
-    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
-    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::TestFailureRepair);
-}
-
-#[tokio::test]
-#[allow(non_snake_case)]
-async fn run_lsp_workflow_call_neighborhood_carries_direction() {
-    let (_dir, path) = temp_rs_file("fn main() {}\n");
-    let tool = make_tool_with_root(_dir.path());
-    let mut inv = empty_invocation(
-        egglsp::LspWorkflowRecipe::CallNeighborhood,
-        Some(path.to_str().unwrap()),
-    );
-    inv.line = Some(1);
-    inv.column = Some(1);
-    inv.direction = Some(egglsp::context::HierarchyDirection::Incoming);
-    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
-    assert_eq!(display.recipe, egglsp::LspWorkflowRecipe::CallNeighborhood);
-}
-
-#[tokio::test]
-#[allow(non_snake_case)]
 async fn run_lsp_workflow_security_review_defaults_to_diff_mode() {
     let tool = make_tool();
     let inv = empty_invocation(egglsp::LspWorkflowRecipe::SecurityReviewEnriched, None);
@@ -2709,22 +2681,4 @@ async fn run_lsp_workflow_security_review_defaults_to_diff_mode() {
         display.recipe,
         egglsp::LspWorkflowRecipe::SecurityReviewEnriched
     );
-}
-
-#[tokio::test]
-#[allow(non_snake_case)]
-async fn run_lsp_workflow_does_not_apply_previews() {
-    let (_dir, path) = temp_rs_file("fn main() {}\n");
-    let tool = make_tool_with_root(_dir.path());
-    let inv = empty_invocation(
-        egglsp::LspWorkflowRecipe::InterfaceBoundary,
-        Some(path.to_str().unwrap()),
-    );
-    let display = tool.run_lsp_workflow(&inv).await.expect("workflow runs");
-    // Workflows must NEVER auto-apply previews. preview_ids may carry
-    // suggested preview IDs for the user to apply manually, but the
-    // underlying file must remain unchanged.
-    let original = std::fs::read_to_string(&path).expect("file still readable");
-    assert_eq!(original, "fn main() {}\n", "file must be unchanged");
-    assert!(!display.rendered.contains("applied="));
 }

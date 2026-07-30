@@ -130,7 +130,12 @@ async fn emit_constant_completes() {
     let job = sample_job("prog_emit", source);
     let ctx = make_ctx(job, false);
     let result = exec.execute(ctx).await;
-    assert_eq!(result.status, ExecutorStatus::Completed);
+    assert_eq!(
+        result.status,
+        ExecutorStatus::Completed,
+        "summary={}",
+        result.summary
+    );
     assert!(result.summary.contains("Completed"));
 }
 

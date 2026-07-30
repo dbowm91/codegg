@@ -293,10 +293,10 @@ async fn c10_empty_contract_snapshot_rejected() {
     let registry = codegg::tool::default_registry();
     let broker = codegg::tool::broker::ToolBroker::new(registry);
     let empty: Vec<String> = vec![];
-    let snapshot = codegg::tool::tool_program_context::resolve_contract_snapshot(&broker, &empty)
-        .expect("empty snapshot resolution should succeed");
+    let err = codegg::tool::tool_program_context::resolve_contract_snapshot(&broker, &empty)
+        .expect_err("empty tool list must be rejected");
     assert!(
-        snapshot.is_empty(),
-        "empty tool list must produce empty contract snapshot"
+        err.contains("at least one frozen runtime contract"),
+        "unexpected error: {err}"
     );
 }

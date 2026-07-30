@@ -6,6 +6,207 @@
 
 #![cfg(test)]
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use codegg::context::ContextArtifactStore;
+use codegg::scheduler::executor::{JobExecutionContext, NoopProgressSink};
+use codegg::scheduler::permit::ResourcePermitGuard;
+use codegg::scheduler::tool_program_executor::ToolProgramExecutor;
+use codegg::scheduler::{ExecutorStatus, JobExecutor};
+use codegg::tool::{
+    StructuredToolResult, Tool, ToolBroker, ToolCallerPolicy, ToolCategory, ToolContract,
+    ToolEffectClass, ToolExecutionContext, ToolRegistry,
+};
+use codegg_core::jobs::{
+    AttemptId, DaemonGeneration, IdempotencyClass, JobId, JobKind, JobPayload, JobPriority,
+    JobRecord, JobSource, JobState, ResourceRequest, RetryPolicy, ToolProgramExecutionContext,
+};
+use codegg_core::workspace::WorkspaceId;
+use serde_json::json;
+
+struct LargeStructuredOutputTool;
+
+#[async_trait::async_trait]
+impl Tool for LargeStructuredOutputTool {
+    fn name(&self) -> &str {
+        "large_structured_output"
+    }
+
+    fn description(&self) -> &str {
+        "Returns large structured output"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    async fn execute(&self, _input: serde_json::Value) -> Result<String, codegg::error::ToolError> {
+        Ok("large structured output".into())
+    }
+
+    async fn execute_structured(
+        &self,
+        _input: serde_json::Value,
+        _ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, codegg::error::ToolError> {
+        Ok(StructuredToolResult::with_value(
+            "large structured output".into(),
+            json!("x".repeat(400_000)),
+            true,
+            None,
+        ))
+    }
+
+    fn category(&self) -> ToolCategory {
+        ToolCategory::ReadOnly
+    }
+
+    fn contract(&self, name: &str, input_schema: serde_json::Value) -> ToolContract {
+        ToolContract {
+            name: name.into(),
+            caller_policy: ToolCallerPolicy::DirectOrProgrammatic,
+            effect_class: ToolEffectClass::ReadOnly,
+            idempotency: codegg::tool::IdempotencyClass::Idempotent,
+            output_schema: Some(json!({"type": "string"})),
+            ..ToolContract::legacy(name, input_schema)
+        }
+    }
+}
+
+struct FailingArtifactStore;
+
+#[async_trait::async_trait]
+impl ContextArtifactStore for FailingArtifactStore {
+    async fn put(&self, _artifact: codegg::context::ContextArtifact) -> anyhow::Result<()> {
+        anyhow::bail!("simulated artifact storage failure")
+    }
+
+    async fn get(&self, _handle: &str) -> anyhow::Result<Option<codegg::context::ContextArtifact>> {
+        Ok(None)
+    }
+
+    async fn list_recent(
+        &self,
+        _session_id: &str,
+        _limit: usize,
+    ) -> anyhow::Result<Vec<codegg::context::ContextArtifact>> {
+        Ok(Vec::new())
+    }
+}
+
+fn c41_executor_fixture(
+    workspace: &Path,
+    program_id: &str,
+    artifact_store: Arc<dyn ContextArtifactStore>,
+) -> (ToolProgramExecutor, JobExecutionContext) {
+    let source = "value = call({\"tool\": \"large_structured_output\"})\nemit(value)\n";
+    let source_ref = codegg::tool::tool_program_source::ToolProgramSourceStore::new(workspace)
+        .persist(source)
+        .unwrap();
+    let source_digest = codegg_core::tool_program::ProgramStore::digest_source(source);
+    let mut registry = ToolRegistry::with_defaults();
+    registry.register(LargeStructuredOutputTool);
+    let registry = Arc::new(registry);
+    let broker = Arc::new(ToolBroker::new(&registry));
+    let tools = vec!["large_structured_output".to_string()];
+    let contracts =
+        codegg::tool::tool_program_context::resolve_contract_snapshot(&broker, &tools).unwrap();
+    let contract_json =
+        codegg::tool::tool_program_context::canonical_contract_json(&contracts).unwrap();
+    let contract_digest =
+        codegg::tool::tool_program_context::canonical_contract_digest(&contracts).unwrap();
+    let now = chrono::Utc::now();
+    let execution_context = ToolProgramExecutionContext {
+        workspace_path_policy_id: "ws-1".into(),
+        principal_ref: Some("test-principal".into()),
+        authority_ref: Some("test-decision".into()),
+        policy_revision: Some("test-policy-v1".into()),
+        path_policy_revision: Some("test-path-v1".into()),
+        decision_outcome: Some("allowed".into()),
+        caller_class: Some("agent".into()),
+        maximum_effect_class: Some("read_only".into()),
+        decision_issued_at: Some(now.timestamp_millis()),
+        session_id: Some("session-c41".into()),
+        contract_snapshot_json: contract_json,
+        ..ToolProgramExecutionContext::for_workspace("ws-1", "test")
+    };
+    let authority_digest = codegg::tool::tool_program_context::authority_digest(
+        &execution_context,
+        &tools,
+        &source_digest,
+    );
+    let authority_grant = codegg::tool::tool_program_context::build_authority_grant(
+        Some(&execution_context),
+        "ws-1",
+        program_id,
+        &tools,
+        &source_digest,
+        "",
+        &contract_digest,
+    )
+    .unwrap();
+    let job = JobRecord {
+        job_id: JobId::new_unchecked(format!("job-{program_id}")),
+        workspace_id: WorkspaceId::new_unchecked("ws-1"),
+        session_id: execution_context.session_id.clone(),
+        turn_id: None,
+        kind: JobKind::ToolProgram,
+        source: JobSource::Interactive,
+        priority: JobPriority::Normal,
+        payload: JobPayload::ToolProgram {
+            program_id: program_id.into(),
+            invocation_key: format!("invocation-{program_id}"),
+            source_digest,
+            ir_digest: None,
+            authority_digest,
+            execution_context_json: Some(serde_json::to_string(&execution_context).unwrap()),
+            submission_key: format!("submission-{program_id}"),
+            execution_mode: "foreground".into(),
+            source_ref: Some(source_ref.relative_path),
+            source_length: Some(source_ref.length),
+            allowed_tools: tools,
+            authority_grant_json: Some(serde_json::to_string(&authority_grant).unwrap()),
+        },
+        resource_request: ResourceRequest::default(),
+        timeout: None,
+        retry_policy: RetryPolicy::no_retry(),
+        idempotency: IdempotencyClass::SafeRepeat,
+        state: JobState::Queued,
+        current_attempt_id: None,
+        attempt_count: 0,
+        not_before: None,
+        deadline: None,
+        schedule_id: None,
+        created_at: now,
+        updated_at: now,
+        terminal_at: None,
+        cancel_requested_at: None,
+        cancel_reason: None,
+        depends_on: vec![],
+        labels: HashMap::new(),
+        parent_job_id: None,
+        parent_attempt_id: None,
+        parent_call_id: None,
+        parent_program_id: None,
+        parent_instruction_sequence: None,
+        relation_kind: None,
+    };
+    let executor = ToolProgramExecutor::new(broker, registry).with_artifact_store(artifact_store);
+    let context = JobExecutionContext {
+        job,
+        attempt_id: AttemptId::new_unchecked(format!("attempt-{program_id}")),
+        daemon_generation: DaemonGeneration::new_unchecked("generation-c41"),
+        workspace_id: WorkspaceId::new_unchecked("ws-1"),
+        workspace_root: workspace.to_path_buf(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
+        progress: Arc::new(NoopProgressSink),
+        resources: ResourcePermitGuard::new_orphan(Default::default()),
+    };
+    (executor, context)
+}
+
 /// C-39: Call artifacts use canonical resolvable handles and verified content
 /// digests.
 #[tokio::test(flavor = "current_thread")]
@@ -128,49 +329,54 @@ async fn c40_child_artifacts_have_identity_and_digests() {
 #[tokio::test(flavor = "current_thread")]
 async fn c41_large_output_spills_through_canonical_store() {
     let temp = tempfile::tempdir().unwrap();
-    let store = codegg::tool::tool_program_result::ToolProgramResultStore::new(temp.path());
+    let artifact_store = Arc::new(codegg::context::InMemoryArtifactStore::new());
+    let (executor, context) = c41_executor_fixture(temp.path(), "tp-c41", artifact_store.clone());
 
-    let program_id = "tp-c41";
-    let attempt_id = "att-c41";
-
-    let large_output = "x".repeat(300_000);
-    let result = codegg_core::tool_program::ProgramResult {
-        status: codegg_core::tool_program::ProgramStatus::Completed,
-        output: Some(codegg_core::tool_program::ProgramValue::String(
-            large_output,
-        )),
-        error_message: None,
-        failure_class: None,
-        steps_used: 10,
-        iterations_used: 1,
-        bytes_used: 300_000,
-        calls_completed: 0,
-        calls_total: 0,
-    };
-
-    let record = store
-        .persist(
-            program_id,
-            attempt_id,
-            "native",
-            result,
-            vec![],
-            vec![],
-            None,
-        )
-        .expect("persist should succeed");
-
-    assert!(
-        record.output_artifact.is_some(),
-        "large output must be spilled to artifact store"
+    let completion = executor.execute(context).await;
+    assert_eq!(
+        completion.status,
+        ExecutorStatus::Completed,
+        "{completion:?}"
     );
+
+    let record = codegg::tool::tool_program_result::ToolProgramResultStore::new(temp.path())
+        .load("tp-c41")
+        .unwrap()
+        .expect("result record");
+    let handle = record
+        .output_artifact
+        .as_ref()
+        .expect("output artifact handle");
+    assert!(handle.starts_with("ctx://"));
+    let artifact = artifact_store
+        .get(handle)
+        .await
+        .unwrap()
+        .expect("spilled output artifact");
+    assert!(artifact.raw_bytes_len > 256_000);
+    let preview = serde_json::to_vec(&record.result.output).unwrap();
+    assert!(preview.len() < 4_096);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn c41_output_spill_failure_fails_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let (executor, context) = c41_executor_fixture(
+        temp.path(),
+        "tp-c41-failure",
+        Arc::new(FailingArtifactStore),
+    );
+
+    let completion = executor.execute(context).await;
+    assert_eq!(completion.status, ExecutorStatus::Failed);
+    assert!(completion
+        .summary
+        .contains("canonical output artifact persistence failed"));
     assert!(
-        record
-            .output_artifact
-            .as_ref()
+        codegg::tool::tool_program_result::ToolProgramResultStore::new(temp.path())
+            .load("tp-c41-failure")
             .unwrap()
-            .starts_with("ctx://artifact/"),
-        "spilled output must have a canonical ctx:// handle"
+            .is_none()
     );
 }
 

@@ -307,7 +307,6 @@ impl JobExecutor for ManagedArgvExecutor {
                 ctx.attempt_id.as_str(),
             ),
         );
-        request.timeout = ctx.job.timeout;
         request.cancellation = ctx.cancellation.clone();
 
         let output = match crate::managed_process::ManagedProcessService::run(request).await {

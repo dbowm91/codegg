@@ -5671,11 +5671,16 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     // ── securityContext preset tests ─────────────────────────────────────
 
-    #[tokio::test]
-    async fn security_context_no_preset_preserves_defaults() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
+    fn live_security_tool() -> LspTool {
+        LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        ))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_context_preset_scenarios_share_one_service() {
+        let tool = live_security_tool();
+
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -5686,15 +5691,8 @@ diff --git a/src/lib.rs b/src/lib.rs
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        // No preset → preset field should be null
         assert!(v["results"]["preset"].is_null());
-    }
 
-    #[tokio::test]
-    async fn security_context_preset_sets_categories() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -5707,18 +5705,11 @@ diff --git a/src/lib.rs b/src/lib.rs
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(v["results"]["preset"], "rust_cli");
-        // Notes should mention the preset
         let notes = v["results"]["notes"].as_array().unwrap();
         assert!(notes
             .iter()
             .any(|n| n.as_str().unwrap().contains("rust_cli")));
-    }
 
-    #[tokio::test]
-    async fn security_context_explicit_categories_override_preset() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -5739,13 +5730,24 @@ diff --git a/src/lib.rs b/src/lib.rs
                 "explicit categories should override preset"
             );
         }
+
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "unsafe_review"
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["results"]["preset"], "unsafe_review");
     }
 
     #[tokio::test]
     async fn security_context_invalid_preset_rejected() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        let tool = live_security_tool();
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -5760,25 +5762,6 @@ diff --git a/src/lib.rs b/src/lib.rs
             matches!(err, ToolError::Execution(ref m) if m.contains("unknown security_preset")),
             "expected unknown preset error, got: {err:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn security_context_preset_visible_in_output() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
-        let result = tool
-            .execute(json!({
-                "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
-                "line": 1,
-                "column": 1,
-                "security_preset": "unsafe_review"
-            }))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        assert_eq!(v["results"]["preset"], "unsafe_review");
     }
 
     #[test]
@@ -5974,7 +5957,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     // ── Phase 4: operation-level preset tests ──────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn security_context_dependency_review_omits_call_hierarchy_by_default() {
         let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
             crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
@@ -6141,11 +6124,27 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     // ── Call expansion operation-level tests ──────────────────────────
 
-    #[tokio::test]
-    async fn security_context_call_depth_zero_omits_call_expansion() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+    #[tokio::test(flavor = "current_thread")]
+    async fn security_context_call_expansion_scenarios_share_one_service() {
+        let tool = live_security_tool();
+
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "security_preset": "dependency_review"
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(v["results"]["preset"], "dependency_review");
+        assert!(
+            v["results"]["call_hierarchy"].is_null(),
+            "dependency_review should omit call_hierarchy by default"
+        );
+
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -6161,13 +6160,29 @@ diff --git a/src/lib.rs b/src/lib.rs
             v["results"]["call_expansion"].is_null(),
             "call_depth=0 should omit call_expansion"
         );
+
+        let result = tool
+            .execute(json!({
+                "operation": "securityContext",
+                "file_path": "src/tool/mod.rs",
+                "line": 1,
+                "column": 1,
+                "call_depth": 1
+            }))
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(
+            !v["results"]["call_expansion"].is_null(),
+            "call_depth=1 should produce call_expansion section"
+        );
+        assert_eq!(v["results"]["call_expansion"]["direction"], "both");
+        assert_eq!(v["results"]["call_expansion"]["depth"], 1);
     }
 
     #[tokio::test]
     async fn security_context_call_depth_requires_line_column() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        let tool = live_security_tool();
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -6184,9 +6199,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_depth_over_max_rejected() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        let tool = live_security_tool();
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -6205,9 +6218,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_direction_invalid_rejected() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        let tool = live_security_tool();
         let err = tool
             .execute(json!({
                 "operation": "securityContext",
@@ -6222,33 +6233,6 @@ diff --git a/src/lib.rs b/src/lib.rs
             matches!(err, ToolError::Execution(ref m) if m.contains("unsupported hierarchy direction")),
             "expected invalid direction error, got: {err:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn security_context_call_depth_one_with_position_returns_expansion_or_errors() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
-        let result = tool
-            .execute(json!({
-                "operation": "securityContext",
-                "file_path": "src/tool/mod.rs",
-                "line": 1,
-                "column": 1,
-                "call_depth": 1
-            }))
-            .await
-            .unwrap();
-        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
-        // call_expansion should be present (not null)
-        assert!(
-            !v["results"]["call_expansion"].is_null(),
-            "call_depth=1 should produce call_expansion section"
-        );
-        // Should have direction field
-        assert_eq!(v["results"]["call_expansion"]["direction"], "both");
-        // Should have depth field
-        assert_eq!(v["results"]["call_expansion"]["depth"], 1);
     }
 
     #[test]
@@ -6489,9 +6473,7 @@ diff --git a/src/lib.rs b/src/lib.rs
 
     #[tokio::test]
     async fn security_context_call_expansion_truncated_limit_field_present() {
-        let tool = LspTool::new(crate::lsp::service::LspService::new_arc(
-            crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-        ));
+        let tool = live_security_tool();
         let result = tool
             .execute(json!({
                 "operation": "securityContext",
