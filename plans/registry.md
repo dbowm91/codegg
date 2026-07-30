@@ -32,27 +32,33 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
-| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | M005 substantive implementation is conditionally accepted; M006 owns current-head local/hosted evidence, Tokio guard fail-closed completion, package inventory regeneration, release-guide correction, and independent strict closure |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 closing | M006 in-scope work (Tokio guard fail-closed completion, package inventory regeneration, RELEASING.md correction) landed; full verification blocked by pre-existing Tool Programs runtime test isolation failure and projection transport daemon-socket stack overflow documented at `plans/closure/development-verification-release/006-stop-condition.md`; M006 closure record must remain absent until those external blockers are cleared by their owning subsystems |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | — |
+| (none) | | | | |
+
+No dependency-ready implementation plan remains. M006 was the final
+dependency-ready plan under the DVR subsystem; its in-scope work has
+landed but its strict closure is blocked by external subsystem failures.
+The DVR subsystem cannot be formally closed until at least one corrective
+plan for the unrelated test failures is registered and executed.
 
 ## Active closure work
 
 M017 implementation landed; `plans/closure/tool-programs/017-status.md` must remain absent until a separate reviewer creates it.
 
-Development verification and release M006 has not started. `plans/closure/development-verification-release/006-status.md` must remain absent until M006 implementation lands and a separate reviewer performs strict closure.
+Development verification and release M006 in-scope work has landed. The closure record at `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` is the authoritative description of the gap until the unrelated test failures (Tool Programs runtime test isolation, projection transport daemon-socket stack overflow) are corrected by their owning subsystems and `scripts/verify.sh full` exits zero.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| (none) | | | | |
+| Development verification and release | 006 — final evidence and release documentation closure | blocked | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Pre-existing `tests/tool_program_runtime.rs` integration failures (Tool Programs subsystem) and projection transport daemon-socket stack overflow under `--test-threads=1`; both documented at `plans/closure/development-verification-release/006-stop-condition.md`. Corrective plans must be registered by the owning subsystems before M006 strict closure is possible. |
 
-No registered downstream implementation plan is blocked on M017. Strict Tool Programs subsystem closure is blocked by M017 itself.
+No registered downstream implementation plan is blocked on M017 or M006.
 
 ## Deferred unregistered product work
 
@@ -71,6 +77,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
 | Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through current reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because current-head hosted evidence is absent, package inventory/release documentation are inaccurate, and Tokio guard fail-closed coverage remains incomplete |
+| Development verification and release | 006 — final evidence and release documentation closure | — | M006 in-scope work landed at reviewed head `d58a37a6` plus M006 corrections (Tokio guard + inventory + RELEASING.md); stop condition recorded at `plans/closure/development-verification-release/006-stop-condition.md` | Pre-existing unrelated test failures block `scripts/verify.sh full`; corrective plans must be registered by the owning Tool Programs and projection transport subsystems before strict closure |
 | Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained, but strict subsystem closure transferred through M005 to M006 |
 | Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; automated release removal retained, with final release-contract closure transferred through M005 to M006 |
 | Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained, with final verification evidence transferred through M005 to M006 |
