@@ -32,19 +32,19 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-correctness-closure-addendum.md` | Milestone 017 closing | M016 is conditionally closed at implementation `f4101b9`; M017 implementation landed with semantic confirmation, typed errors, direct durable evidence, and roadmap convergence; awaiting independent reviewer for strict closure |
-| Development verification and release | closing | `plans/subsystems/development-verification-release-correctness-closure-addendum.md` | Milestone 005 closing | M001–M004 are historical conditional records; M005 implementation landed with Tokio baseline guard, scheduler test repair, unified resource contract, crates.io package graph, and RELEASING.md rewrite; awaiting independent reviewer for strict closure |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | M005 substantive implementation is conditionally accepted; M006 owns current-head local/hosted evidence, Tokio guard fail-closed completion, package inventory regeneration, release-guide correction, and independent strict closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 005 — green verification and crates.io correctness closure | closing | `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md` | — |
+| Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | — |
 
 ## Active closure work
 
 M017 implementation landed; `plans/closure/tool-programs/017-status.md` must remain absent until a separate reviewer creates it.
 
-Development verification and release M005 implementation landed. `plans/closure/development-verification-release/005-status.md` must remain absent until a separate reviewer performs strict closure.
+Development verification and release M006 has not started. `plans/closure/development-verification-release/006-status.md` must remain absent until M006 implementation lands and a separate reviewer performs strict closure.
 
 ## Blocked work
 
@@ -70,10 +70,11 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
-| Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained, but strict subsystem closure transferred to M005 because required quick/full verification still failed and planning state overclaimed closure |
-| Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; automated release removal retained, but strict closure transferred to M005 because implementation disabled crates.io publication instead of establishing the approved manual crates.io path |
-| Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained, but strict closure transferred to M005 because quick failed, full was not proven, and the local stack bound diverged from CI |
-| Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | `986d516` with amendment `6730213` | Historical conditional record; one-job contraction retained, but strict closure transferred to M005 because the required Tokio guard and workspace test command were known nonzero |
+| Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through current reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because current-head hosted evidence is absent, package inventory/release documentation are inaccurate, and Tokio guard fail-closed coverage remains incomplete |
+| Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained, but strict subsystem closure transferred through M005 to M006 |
+| Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; automated release removal retained, with final release-contract closure transferred through M005 to M006 |
+| Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained, with final verification evidence transferred through M005 to M006 |
+| Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | `986d516` with amendment `6730213` | Historical conditional record; one-job contraction retained, with final green/evidence closure transferred through M005 to M006 |
 | Programmatic tool execution and Tool Programs | 016 — notification replay polish implementation | `plans/closure/tool-programs/016-status.md` | implementation `f4101b9`; conditional review in the M017 registration series | Historical conditional record; M017 owns semantic confirmation, typed recovery errors, direct durable state evidence, roadmap synchronization, and final strict closure |
 | Programmatic tool execution and Tool Programs | 015 — final production-path implementation and review | `plans/closure/tool-programs/015-status.md` | implementation `247ef50`; independent approval `230f435`; original closure `9bd9d0b`; post-closure reconciliation in the M016 registration series | Historical conditional record; strict closure transferred through M016 to M017 |
 | Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; strict closure transferred through M015/M016 to M017 |
