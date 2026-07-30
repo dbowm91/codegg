@@ -12,10 +12,14 @@ Source subsystem roadmap:
 - `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md`
 
 Repository baseline reviewed: `d58a37a6160f18a5b336ca7bbc0e32e0f057b755`
-Reviewed head (with M006 in-scope work applied): same SHA + M006 corrections
-to `scripts/check-tokio-test-flavors.py`, `scripts/tests/test_check_tokio_test_flavors.py`,
+Reviewed head (with M006 in-scope work applied): `80e0919fb8a567eea8914c31cb2b9c0b6743efd4`
+on `main`, with M006 corrections to `scripts/check-tokio-test-flavors.py`,
+`scripts/tests/test_check_tokio_test_flavors.py`,
 `plans/closure/development-verification-release/005-package-inventory.md`,
 `plans/closure/development-verification-release/006-package-inventory.md`,
+`plans/registry.md`,
+`plans/subsystems/development-verification-release-final-evidence-closure-addendum.md`,
+`plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md`,
 and `RELEASING.md`.
 
 ## 1. Why this milestone is blocked
@@ -44,7 +48,7 @@ failures into M006.
 
 | Field | Value |
 |---|---|
-| Commit SHA | `d58a37a6160f18a5b336ca7bbc0e32e0f057b755` (with M006 in-scope work uncommitted) |
+| Commit SHA | `80e0919fb8a567eea8914c31cb2b9c0b6743efd4` (M006 in-scope work committed) |
 | Command | `scripts/verify.sh full` (and the underlying `cargo test --workspace --locked -- --test-threads=1`) |
 | Failing test binary | `tests/tool_program_runtime.rs` |
 | Exit code | 101 |
@@ -74,6 +78,7 @@ identical failures.
 
 | Field | Value |
 |---|---|
+| Commit SHA | `80e0919fb8a567eea8914c31cb2b9c0b6743efd4` (M006 in-scope work committed) |
 | Command | `cargo test --workspace --locked -- --test-threads=1` (running the full lib test binary, not a focused subset) |
 | Failing test | `core::transport::daemon_socket::daemon_socket_integration_tests::socket_consecutive_subscriptions_yield_distinct_identities_and_isolation` |
 | Exit code | 101 (SIGABRT after stack overflow) |
