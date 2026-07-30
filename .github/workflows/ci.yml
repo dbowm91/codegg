@@ -31,6 +31,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Configure git identity for tests
+        run: |
+          git config --global user.name "CI Test"
+          git config --global user.email "ci@test.example.com"
+
       - name: Validate agent TOML schema
         run: python3 scripts/generate_builtin_agents.py --check
 
