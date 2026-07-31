@@ -38,6 +38,7 @@ The server module (`src/server/`) provides an Axum-based HTTP server with WebSoc
 | `routes/permission.rs` | Permission submission and pending queries |
 | `routes/question.rs` | Question submission and pending queries |
 | `routes/health.rs` | Health check route (standalone, not wired to main router) |
+| `scope.rs` | Request scope and path extraction utilities |
 
 ## Entry Point
 

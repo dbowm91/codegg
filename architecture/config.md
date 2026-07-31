@@ -153,7 +153,7 @@ Example: If global config has `api_key` and project config has `base_url`, the m
 
 ### merge_configs() behavior
 
-`merge_configs()` at `src/config/paths.rs:164-284` uses different merge strategies per field type:
+`merge_configs()` at `crates/codegg-config/src/paths.rs:164` uses different merge strategies per field type:
 
 - **Field-by-field merging**: `provider` (via `ProviderConfig::merge()`), `server` (via `ServerConfig::merge()`), `watcher` (manual field merge)
 - **Key replacement**: `agent`, `mcp`, `commands`, `mode` (insert overwrites existing keys)

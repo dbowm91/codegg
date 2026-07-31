@@ -61,11 +61,11 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 
 ### Tool Layer — Capabilities and Execution
 
-The tool layer defines the ~38 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
+The tool layer defines the ~30 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Tool | Built-in tools (~38 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Tool | Built-in tools (~30 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
 | Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
@@ -117,7 +117,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| LSP | Language Server Protocol client — 39 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
+| LSP | Language Server Protocol client — 41 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
 | MCP | Model Context Protocol client — local/remote server connections, OAuth auth, auto-reconnection | `mcp/` | [mcp.md](mcp.md) |
 | Search Backend | Wrapper between `websearch`/`webfetch` tools and eggsearch MCP server, with legacy in-tree fallback | `search_backend/` | [search_backend.md](search_backend.md) |
 | Plugin | WASM plugin system (Wasmtime), manifest parsing, hook system, built-in plugins, install/registry, lifecycle/policy | `plugin/` | [plugin.md](plugin.md) |
@@ -293,11 +293,11 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Exec](exec.md) — Non-interactive execution mode
 
 ### Tools and Capabilities
-- [Tool](tool.md) — Tool trait, registry, ~38 built-in tools, backend abstraction
+- [Tool](tool.md) — Tool trait, registry, ~30 built-in tools, backend abstraction
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
 - [Preflight](preflight.md) — Harness-side validation before mutations
 - [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
-- [LSP](lsp.md) — Language Server Protocol (39 servers, egglsp authoritative)
+- [LSP](lsp.md) — Language Server Protocol (41 servers, egglsp authoritative)
 - [MCP](mcp.md) — Model Context Protocol client
 - [Search Backend](search_backend.md) — Web search/fetch with eggsearch backend
 - [Plugin](plugin.md) — WASM plugin system (Wasmtime)
@@ -321,7 +321,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Error](error.md) — Centralized error handling
 
 ### Providers and Config
-- [Provider](provider.md) — LLM provider implementations (16 auto-registered)
+- [Provider](provider.md) — LLM provider implementations (20 auto-registered)
 - [Protocol](protocol.md) — Shared request/response envelopes
 - [Config](config.md) — Configuration loading and validation
 - [Model Profile & Task State](model_profile_task_state.md) — Model behavioral profiles, todo/task state
@@ -390,7 +390,7 @@ codegg/
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # ~38 built-in tools
+│   ├── tool/                   # ~30 built-in tools
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade
@@ -412,12 +412,12 @@ codegg/
 │   ├── eggsentry/              # Security scanning
 │   ├── eggcontext/             # Token counting
 │   └── egglsp-test-server/     # Fake LSP server for tests
-├── tests/                      # Integration tests (75 files)
+├── tests/                      # Integration tests (162 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # 9 built-in agent TOML definitions
 │   └── prompts/               # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (67 docs)
+├── architecture/               # Architecture documentation (69 docs)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
 └── examples/                   # Plugin SDKs and examples

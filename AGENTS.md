@@ -72,7 +72,7 @@ Changes to server/plugin modules need `--all-features` testing. LSP integration 
 
 ## Test Resource Budget
 
-The workspace test matrix is large (~1,219 async tests across 94 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
+The workspace test matrix is large (~409 tests across 162 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
 
 The canonical local entry points are `scripts/verify.sh quick` and `scripts/verify.sh full`. When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
@@ -230,7 +230,7 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 
 - **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
 - **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 33**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- **STORAGE_LAYOUT_VERSION = 35**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
 - **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
 - See `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
@@ -285,7 +285,7 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
-- **~39 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools plus the `tool_program` foreground model tool.
+- **~30 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools plus the `tool_program` foreground model tool.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
@@ -310,7 +310,7 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **41 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops, not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
@@ -384,7 +384,7 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 
 ## Architecture Docs
 
-`architecture/` has 67 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+`architecture/` has 69 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 

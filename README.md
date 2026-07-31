@@ -97,7 +97,7 @@ location:
 `init_legacy_project_store(root)` retains backward compat for the legacy
 `<root>/.codegg/sessions.db` path, and `migrate_legacy_project_database`
 imports those legacy databases into the catalog idempotently. Storage
-layout marker is now `STORAGE_LAYOUT_VERSION = 32`. See
+layout marker is now `STORAGE_LAYOUT_VERSION = 35`. See
 `architecture/workspace_services.md` for the full contract.
 
 ### Scheduler-owned execution

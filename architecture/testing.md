@@ -1,6 +1,6 @@
 # Testing Architecture
 
-Codegg's test suite contains ~1,219 async tests across 94 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The canonical verification commands use limited parallelism:
+Codegg's test suite contains ~409 tests across 162 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The canonical verification commands use limited parallelism:
 
 ```bash
 scripts/verify.sh quick    # cheap sanity for ordinary iteration
