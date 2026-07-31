@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestones 001–002 closed; Milestone 003 next; later milestones dependency-gated
+Status: active — Milestones 001–003 closed; Milestones 004–005 ready; later milestones dependency-gated
 
 Long-term references:
 
@@ -191,10 +191,10 @@ M001 prompt compiler and agent registry correctness                 [closed]
 M002 resolved capability and tool surface                          [closed]
         |
         v
-M003 bounded nested delegation                                     [ready after M002]
+M003 bounded nested delegation                                     [closed]
         |\
-        | +--> M004 specialized security runtime                   [blocked by M003]
-        | +--> M005 specialized research runtime                   [blocked by M003]
+        | +--> M004 specialized security runtime                   [ready]
+        | +--> M005 specialized research runtime                   [ready]
         |             \                                             /
         |              +----------------+---------------------------+
         v                               v

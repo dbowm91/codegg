@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 004 — Specialized Security-Review Runtime
 
-Status: blocked — requires Milestone 003 closure
+Status: ready for handoff
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

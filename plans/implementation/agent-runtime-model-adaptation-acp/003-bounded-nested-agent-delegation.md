@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 003 — Bounded Nested Agent Delegation
 
-Status: active
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/003-status.md`
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 
