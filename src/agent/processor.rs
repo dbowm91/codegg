@@ -1,4 +1,6 @@
-use crate::provider::{ChatEvent, ContentPart, Message, ToolCall};
+use crate::provider::{
+    ChatEvent, ContentPart, Message, ReasoningVisibility, ToolCall, MAX_REASONING_BYTES,
+};
 
 pub struct EventProcessor {
     accumulated_text: String,
@@ -33,7 +35,14 @@ impl EventProcessor {
                 self.accumulated_text.push_str(&text);
             }
             ChatEvent::ReasoningDelta(reasoning) => {
-                self.accumulated_reasoning.push_str(&reasoning);
+                if self.accumulated_reasoning.len() < MAX_REASONING_BYTES {
+                    let remaining = MAX_REASONING_BYTES - self.accumulated_reasoning.len();
+                    let mut bounded = reasoning.as_str();
+                    while bounded.len() > remaining {
+                        bounded = &bounded[..bounded.len().saturating_sub(1)];
+                    }
+                    self.accumulated_reasoning.push_str(bounded);
+                }
             }
             ChatEvent::ToolCall(tc) => {
                 self.tool_calls.push(tc);
@@ -113,7 +122,10 @@ impl EventProcessor {
     }
 
     pub fn to_assistant_message(&self) -> Option<Message> {
-        if self.accumulated_text.is_empty() && self.tool_calls.is_empty() {
+        if self.accumulated_text.is_empty()
+            && self.accumulated_reasoning.is_empty()
+            && self.tool_calls.is_empty()
+        {
             return None;
         }
 
@@ -122,6 +134,13 @@ impl EventProcessor {
         if !self.accumulated_text.is_empty() {
             content.push(ContentPart::Text {
                 text: self.accumulated_text.clone().into(),
+            });
+        }
+
+        if !self.accumulated_reasoning.is_empty() {
+            content.push(ContentPart::Reasoning {
+                text: self.accumulated_reasoning.clone().into(),
+                visibility: ReasoningVisibility::Private,
             });
         }
 

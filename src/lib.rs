@@ -12,6 +12,7 @@ pub use codegg_core::{
     worktree,
 };
 
+pub mod acp;
 pub mod agent;
 pub mod auth;
 pub mod background_task_migration;

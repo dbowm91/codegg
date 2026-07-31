@@ -25,6 +25,7 @@
 
 pub mod lsp_executor;
 pub mod policy;
+pub mod runtime;
 pub mod sandbox;
 pub mod service;
 pub mod ssrf;

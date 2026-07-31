@@ -1,0 +1,26 @@
+schema_version = 1
+
+[adapter]
+id = "openai-frontier"
+version = 1
+priority = 10
+description = "OpenAI frontier and Codex models"
+
+[[match]]
+provider = ["openai"]
+model_regex = "(?i)(gpt|o[134]|codex)"
+
+[profile]
+prompt_profile = "frontier_reasoning"
+family = "openai"
+context_window = 128000
+max_output_tokens = 16384
+tool_call_reliability = "high"
+instruction_adherence = "high"
+patch_reliability = "high"
+supports_late_system_messages = true
+
+[tools]
+format = "openai_function"
+tool_choice = "auto"
+

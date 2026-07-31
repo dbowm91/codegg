@@ -40,6 +40,19 @@ impl ContextCacheStats {
         entry.call_count += 1;
     }
 
+    /// Record usage under a bounded, compound context identity. The caller
+    /// supplies fingerprints rather than user content, so distinct models,
+    /// adapters, compilers, and tool surfaces cannot contaminate one another.
+    pub fn record_usage_with_identity(
+        &mut self,
+        identity: &super::plan::CacheIdentity,
+        input_tokens: usize,
+        cached_tokens: Option<usize>,
+        output_tokens: usize,
+    ) {
+        self.record_usage(&identity.key(), input_tokens, cached_tokens, output_tokens);
+    }
+
     /// Get the rolling cache hit rate for a model (0.0 - 1.0).
     pub fn cache_hit_rate(&self, model_key: &str) -> f64 {
         self.entries

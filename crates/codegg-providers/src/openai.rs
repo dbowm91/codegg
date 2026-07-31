@@ -133,6 +133,7 @@ impl OpenAiProvider {
                                     "image_url": {"url": image_url.url}
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!(""),
                         })
                         .collect();
                     let content_val = if parts.len() == 1

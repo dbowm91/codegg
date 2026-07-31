@@ -75,6 +75,7 @@ impl AnthropicProvider {
                                     }
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!({"type": "text", "text": ""}),
                         })
                         .collect();
                     messages.push(json!({"role": "user", "content": parts}));
@@ -100,6 +101,7 @@ impl AnthropicProvider {
                                     }
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!({"type": "text", "text": ""}),
                         })
                         .collect();
 

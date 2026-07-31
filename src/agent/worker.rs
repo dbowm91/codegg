@@ -991,12 +991,19 @@ async fn execute_agent_task(
 
     let denied: std::collections::BTreeSet<String> = request.denied_tools.iter().cloned().collect();
     let disabled = std::collections::BTreeSet::new();
-    let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry(
+    let adapter = codegg_core::model_profile::resolve_adapter(None, &profile.resolved_model);
+    let wire_to_canonical: std::collections::BTreeMap<_, _> = adapter
+        .tool_aliases
+        .iter()
+        .map(|(canonical, wire)| (wire.clone(), canonical.clone()))
+        .collect();
+    let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry_with_aliases(
         &tool_registry,
         &denied,
         &disabled,
         agent_name == "plan",
         None,
+        &wire_to_canonical,
     )
     .map_err(|error| format!("invalid subagent tool surface: {error:?}"))?;
     let mut available_tools: Vec<String> = surface

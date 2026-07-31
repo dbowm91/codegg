@@ -55,6 +55,7 @@ impl GoogleProvider {
                                     }
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!(""),
                         })
                         .collect();
                     contents.push(json!({"role": "user", "parts": parts}));

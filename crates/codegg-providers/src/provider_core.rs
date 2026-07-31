@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -201,12 +202,48 @@ pub enum Message {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentPart {
-    Text { text: Arc<String> },
-    Image { image_url: ImageUrl },
+    Text {
+        text: Arc<String>,
+    },
+    Image {
+        image_url: ImageUrl,
+    },
+    /// Provider-private reasoning that may be sent back to a compatible
+    /// model, but must never be treated as visible assistant text.
+    Reasoning {
+        #[serde(skip)]
+        text: Arc<String>,
+        visibility: ReasoningVisibility,
+    },
 }
+
+impl fmt::Debug for ContentPart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Text { text } => f.debug_struct("Text").field("text", text).finish(),
+            Self::Image { image_url } => f
+                .debug_struct("Image")
+                .field("image_url", image_url)
+                .finish(),
+            Self::Reasoning { text, visibility } => f
+                .debug_struct("Reasoning")
+                .field("bytes", &text.len())
+                .field("content", &"<private>")
+                .field("visibility", visibility)
+                .finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReasoningVisibility {
+    Private,
+}
+
+pub const MAX_REASONING_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageUrl {

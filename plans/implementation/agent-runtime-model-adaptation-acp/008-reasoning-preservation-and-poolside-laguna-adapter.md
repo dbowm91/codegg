@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 008 — Reasoning Preservation and Poolside Laguna Adapter
 
-Status: blocked — requires Milestone 007 closure
+Status: implemented
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

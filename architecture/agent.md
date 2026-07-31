@@ -1033,6 +1033,25 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
 
 The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and `base_prompt_parts()` (used in `load_agent_prompt()` for production paths). It is appended after the role contract, giving subagents explicit guidance on response format.
 
+### Specialized research runtime
+
+When the resolved agent has `runtime_kind = research`, `DefaultTurnRuntime`
+builds a deterministic, bounded research plan before starting the ordinary
+agent loop. Quick lookups create no children; direct repository/spec questions
+use one investigator role; multi-source questions use at most two non-overlapping
+source scouts and one claim verifier. The plan is advisory evidence scope —
+the existing task tool, scheduler, permission checker, cancellation path, and
+agent loop remain authoritative.
+
+Research services are rooted from the daemon's explicit
+`ExecutionContext.workspace_root`; the production session registry never uses
+the process cwd to establish research identity. Child results use bounded
+source/evidence/claim records, source locators are normalized and deduplicated,
+and final reports must reference collected evidence and source records. Unknown
+citation references are rejected, conflicts and unresolved questions remain
+explicit, retrieved text is treated as untrusted data, and the built-in
+research agent denies shell, filesystem mutation, terminal, and commit tools.
+
 ---
 
 ## 10. Background Tasks (`task.rs`)

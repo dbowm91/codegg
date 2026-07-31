@@ -81,31 +81,26 @@ static BUILTIN_PROMPTS: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(||
 });
 
 pub fn select_provider_prompt(model_id: &str) -> &'static str {
-    let id = model_id.to_lowercase();
-    if id.starts_with("gpt-4")
-        || id.starts_with("o1")
-        || id.starts_with("o3")
-        || id.starts_with("o4")
+    let id = model_id.to_ascii_lowercase();
+    match codegg_core::model_profile::resolve_adapter(None, model_id)
+        .adapter_id
+        .as_str()
     {
-        include_str!("prompts/beast.txt")
-    } else if id.starts_with("codex") || id.contains("/codex") {
-        include_str!("prompts/codex.txt")
-    } else if id.starts_with("gpt") {
-        include_str!("prompts/gpt.txt")
-    } else if id.starts_with("gemini") || id.starts_with("gemini-2") {
-        include_str!("prompts/gemini.txt")
-    } else if id.contains("claude")
-        || id.contains("sonnet")
-        || id.contains("opus")
-        || id.contains("haiku")
-    {
-        include_str!("prompts/anthropic.txt")
-    } else if id.starts_with("trinity") || id.contains("/trinity") {
-        include_str!("prompts/trinity.txt")
-    } else if id.starts_with("kimi") || id.contains("/kimi") {
-        include_str!("prompts/kimi.txt")
-    } else {
-        include_str!("prompts/default.txt")
+        "openai-frontier"
+            if id.starts_with("gpt-4")
+                || id.starts_with("o1")
+                || id.starts_with("o3")
+                || id.starts_with("o4") =>
+        {
+            include_str!("prompts/beast.txt")
+        }
+        "openai-frontier" if id.contains("codex") => include_str!("prompts/codex.txt"),
+        "openai-frontier" => include_str!("prompts/gpt.txt"),
+        "google-long-context" => include_str!("prompts/gemini.txt"),
+        "anthropic-frontier" => include_str!("prompts/anthropic.txt"),
+        "local-strict" if id.contains("kimi") => include_str!("prompts/kimi.txt"),
+        "local-strict" if id.contains("trinity") => include_str!("prompts/trinity.txt"),
+        _ => include_str!("prompts/default.txt"),
     }
 }
 
@@ -406,6 +401,8 @@ pub fn load_agent_prompt(agent: &Agent, config: &Config, model_id: &str) -> Stri
 fn base_prompt_parts(agent: &Agent, model_id: &str) -> Vec<String> {
     let mut parts = Vec::new();
     parts.push(select_provider_prompt(model_id).to_string());
+    let adapter = codegg_core::model_profile::resolve_adapter(None, model_id);
+    parts.extend(adapter.prompt_fragments.iter().cloned());
 
     if let Some(prompt) = &agent.system_prompt {
         parts.push(prompt.clone());

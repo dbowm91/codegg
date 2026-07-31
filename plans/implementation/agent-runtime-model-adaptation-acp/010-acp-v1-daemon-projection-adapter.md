@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 010 — ACP v1 Daemon and Projection Adapter
 
-Status: blocked — requires Milestones 003, 006, and 009 closure
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/010-status.md`
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

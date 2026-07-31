@@ -255,7 +255,8 @@ types only.
 | `codegg::protocol::projection` consumers | Forward and backward compatible via `ProjectionCapabilities`; unknown optional variants tolerated. |
 | Existing `CoreResponse` / `CoreEvent` consumers | Unchanged; projection events are additive. |
 | `TuiMessage` / remote TUI | Unchanged this milestone; durable migration is Milestone 2. |
-| Web / observer / ACP adapters | Not yet present; deferred to Milestones 2–4. |
+| Web / observer adapters | Not yet present; deferred to later frontend milestones. |
+| ACP v1 | `codegg acp` is implemented as a thin stdio adapter over native daemon sessions and canonical projections; see [acp.md](acp.md). |
 
 ## 11. Security classification
 
@@ -302,9 +303,11 @@ cargo fmt -- --check
 - **Milestone 3** owns the visibility / redaction pipeline, the
   full authorization seam, and bounded artifact read APIs. It
   consumes the `VisibilityClass` tag introduced here.
-- **Milestone 4** owns frontend adoption (local / remote TUI and
-  ACP), migration of `TuiMessage::StateSnapshot` to the new
-  contract, and reference second-frontend compatibility tests.
+- **Milestone 4** owns remaining frontend adoption (local / remote TUI
+  and future observer clients), migration of `TuiMessage::StateSnapshot`
+  to the new contract, and reference second-frontend compatibility tests.
+  ACP v1 is already implemented by the agent-runtime/ACP subsystem and
+  must remain a projection consumer rather than a second runtime.
 
 ## 14. M2 daemon integration summary
 

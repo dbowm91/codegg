@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 004 — Specialized Security-Review Runtime
 
-Status: ready for handoff
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/004-status.md`
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

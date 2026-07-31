@@ -14,12 +14,27 @@ impl<'a> ModelProfileResolver<'a> {
 
     pub fn resolve(&self, model: &str) -> ResolvedModelProfile {
         let base = if let Some(cfg) = self.find_config_override(model) {
-            let built_in = infer_builtin_profile(model);
+            let built_in = super::adapter::resolve_adapter(None, model).profile;
             apply_config_override(built_in, cfg)
         } else {
-            infer_builtin_profile(model)
+            super::adapter::resolve_adapter(None, model).profile
         };
         base
+    }
+
+    /// Resolve the declarative adapter and apply the legacy bounded profile override.
+    /// Callers that need tool/request adaptation should retain the returned adapter instead
+    /// of resolving the profile a second time.
+    pub fn resolve_adapter(
+        &self,
+        provider: Option<&str>,
+        model: &str,
+    ) -> super::adapter::ResolvedModelAdapter {
+        let mut adapter = super::adapter::resolve_adapter(provider, model);
+        if let Some(cfg) = self.find_config_override(model) {
+            adapter.profile = apply_config_override(adapter.profile, cfg);
+        }
+        adapter
     }
 
     fn find_config_override(&self, model: &str) -> Option<&ModelProfileConfig> {
@@ -103,51 +118,7 @@ pub fn apply_config_override(
 }
 
 pub fn infer_builtin_profile(model: &str) -> ResolvedModelProfile {
-    let id = model.to_lowercase();
-
-    if id.contains("minimax") {
-        return fast_executor_tool_fragile(model, "minimax");
-    }
-
-    if id.contains("gpt")
-        || id.contains("o1")
-        || id.contains("o3")
-        || id.contains("o4")
-        || id.contains("codex")
-    {
-        return frontier_reasoning(model, "openai");
-    }
-
-    if id.contains("claude") || id.contains("sonnet") || id.contains("opus") || id.contains("haiku")
-    {
-        return frontier_reasoning(model, "anthropic");
-    }
-
-    if id.contains("gemini") {
-        return long_context_planner(model, "google");
-    }
-
-    if id.contains("deepseek") {
-        return frontier_executor(model, "deepseek");
-    }
-
-    if id.contains("qwen") || id.contains("qwq") {
-        return local_or_open_executor(model, "qwen");
-    }
-
-    if id.contains("kimi") {
-        return frontier_executor(model, "kimi");
-    }
-
-    if id.contains("ollama")
-        || id.contains("lmstudio")
-        || id.contains("localhost")
-        || id.contains("local")
-    {
-        return local_strict(model, "local");
-    }
-
-    default_profile(model)
+    super::adapter::resolve_adapter(None, model).profile
 }
 
 fn frontier_reasoning(model: &str, family: &str) -> ResolvedModelProfile {
