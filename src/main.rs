@@ -281,6 +281,8 @@ enum Commands {
         #[command(subcommand)]
         command: AuthSubcommand,
     },
+    /// Run an ACP v1 agent over newline-delimited JSON-RPC on stdio.
+    Acp,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -449,7 +451,7 @@ async fn main() -> Result<(), AppError> {
             // Fallback to no-op subscriber if we can't create the file, to avoid stdout/stderr flood in TUI
             tracing_subscriber::registry().init();
         }
-    } else if matches!(cli.command, Some(Commands::CoreStdio)) {
+    } else if matches!(cli.command, Some(Commands::CoreStdio) | Some(Commands::Acp)) {
         // core-stdio reserves stdout for the JSONL protocol.  Keep tracing
         // on stderr so a diagnostic can never corrupt a response frame.
         tracing_subscriber::fmt()
@@ -501,6 +503,9 @@ async fn main() -> Result<(), AppError> {
             }
             Commands::Auth { command } => {
                 cmd_auth(command.clone())?;
+            }
+            Commands::Acp => {
+                codegg::acp::run().await?;
             }
             Commands::Validate { config } => {
                 cmd_validate(config.as_deref()).await?;
