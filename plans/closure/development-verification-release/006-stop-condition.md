@@ -121,12 +121,16 @@ independently:
 | Leaf package `cargo publish --dry-run` | one command per leaf crate | exit 0 for all 7 leaves |
 | Dependent package `cargo publish --dry-run` | one command per dependent crate | exit 101 with "no matching package" — expected registry-sequencing |
 | `RELEASING.md` first-vs-subsequent paths | document inspection | distinguishes initial name availability from ownership, queries just-published names |
+| Hosted `verify` for `80e0919` (M006 in-scope work commit) | GitHub Actions run 30587211454 | M006 in-scope steps all `success`: agent TOML schema, builtin agents match source, Tokio guard self-test, Tokio guard regression guard, codegg-core boundary guard, formatting, workspace check, workspace clippy. Only `Workspace tests` failed, on the pre-existing `tests/tool_program_runtime.rs` integration failures. URL: `https://github.com/dbowm91/codegg/actions/runs/30587211454`. |
+| Hosted `verify` for `2f94608` (M006 stop-condition record) | GitHub Actions run 30587244426 | Same M006 in-scope steps `success`; `Workspace tests` failed identically on `tests/tool_program_runtime.rs`. URL: `https://github.com/dbowm91/codegg/actions/runs/30587244426`. |
 
 The pre-existing test failures in section 2 do not regress any of
 those items. M006 in-scope work is fully landed; what is missing is
 the strict-closure evidence from `scripts/verify.sh full` exit 0 and
-the hosted `verify` run, both of which are blocked by the unrelated
-failures.
+a successful hosted `verify` job, both of which are blocked by the
+unrelated failures. The hosted runs above prove that every M006-owned
+CI step succeeds on the implementation head; only the externally
+owned workspace-test failures block the run.
 
 ## 4. Proposed next plan boundaries
 
