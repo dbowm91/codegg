@@ -14,7 +14,7 @@ Repository baseline reviewed: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 
 Implementation commits:
 
-- `f749daf8` — host-side security-review runtime preparation, bounded evidence contract, and planning closure
+- `193db6de` — host-side security-review runtime preparation, bounded evidence contract, and planning closure
 
 ## 1. Executive finding
 
