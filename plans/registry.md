@@ -31,33 +31,34 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Programmatic tool execution and Tool Programs | active | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 ready | M017 production implementation is conditionally accepted; M018 owns the stale `tests/tool_program_runtime.rs` frozen-contract fixture, preservation of empty/mismatch rejection, bounded Tool Programs regression evidence, and final independent Tool Programs closure |
-| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 blocked | M006 in-scope work landed; M018 is registered as the first owning corrective handoff for the Tool Programs workspace-test failures. The projection-transport daemon-socket stack overflow remains a separately reported blocker but no projection plan is registered until the canonical full gate is rerun after M018 |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 conditionally closed | Fixture and Tool Programs evidence are green; independent review remains, and the canonical full gate is blocked by an unrelated codegg-core migration assertion |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 blocked | M018 cleared the Tool Programs runtime failure. The rerun reaches a separate codegg-core migration assertion (`STORAGE_LAYOUT_VERSION` 35 vs test expectation 33); no projection failure reproduced and no projection plan is registered |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | ready | `plans/implementation/tool-programs/018-runtime-fixture-contract-alignment-and-dvr-unblock.md` | M017 implementation landed; DVR M006 stop-condition evidence at `plans/closure/development-verification-release/006-stop-condition.md` |
+| Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | conditionally closed | `plans/implementation/tool-programs/018-runtime-fixture-contract-alignment-and-dvr-unblock.md` | Focused and adjacent Tool Programs evidence green; full gate blocked by unrelated codegg-core migration assertion |
 
-M018 is the sole dependency-ready handoff. It must clear the deterministic
-Tool Programs runtime fixture failures and rerun the canonical full gate.
-A projection-transport plan may be registered only if that independent
-failure remains reproducible after M018 lands.
+M018 was the sole dependency-ready handoff and cleared the deterministic Tool
+Programs runtime fixture failures. No future implementation plan is unblocked:
+DVR M006 remains blocked by the separate codegg-core migration assertion and
+requires a successful hosted `verify` run. The previously reported projection
+failure did not reproduce in the M018 rerun, so no projection plan is registered.
 
 ## Active closure work
 
 M017 production implementation landed and is conditionally accepted. `plans/closure/tool-programs/017-status.md` must remain absent; strict Tool Programs closure transferred to M018.
 
-M018 has not started. `plans/closure/tool-programs/018-status.md` must remain absent until implementation lands and a separate reviewer performs strict closure.
+M018 implementation has landed. `plans/closure/tool-programs/018-status.md` records conditional closure pending independent review.
 
-Development verification and release M006 in-scope work has landed. `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` remains authoritative until Tool Programs M018 lands, the canonical full gate is rerun, and any remaining projection-owned failure is separately resolved.
+Development verification and release M006 in-scope work has landed. `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` remains authoritative until the separate codegg-core migration assertion is reconciled and a hosted `verify` run is green.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Development verification and release | 006 — final evidence and release documentation closure | blocked | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Tool Programs runtime fixture failures are now owned by ready plan M018. A projection-transport daemon-socket stack overflow was also reported under `--test-threads=1`; its next plan remains intentionally unregistered until M018 removes the deterministic Tool Programs failures and `scripts/verify.sh full` is rerun. |
+| Development verification and release | 006 — final evidence and release documentation closure | blocked | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | M018 cleared the Tool Programs fixture failures. The canonical full gate now fails in `codegg-core` provider-connection migration coverage because the test expects layout 33 while the current constant is 35; hosted green verification is still required. |
 
 No registered downstream implementation plan is blocked on M018 beyond DVR M006.
 
@@ -77,9 +78,10 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | `plans/closure/tool-programs/018-status.md` | implementation and verification on this branch | Conditional closure: fixture and adjacent evidence green; unrelated codegg-core migration assertion blocks canonical full gate |
 | Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence implementation | — | implementation landed before reviewed head `9686338` | Conditionally accepted production implementation; strict closure transferred to M018 after canonical workspace verification exposed stale M005-era runtime fixtures with empty frozen contract sets |
 | Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because final-head hosted evidence, package inventory, release documentation, and Tokio guard closure were incomplete |
-| Development verification and release | 006 — final evidence and release documentation closure | — | M006 in-scope implementation `80e0919`; hosted evidence update `9686338` | In-scope work landed; strict closure blocked. Tool Programs failures are now owned by M018, while the reported projection-transport stack issue awaits re-evaluation after M018 |
+| Development verification and release | 006 — final evidence and release documentation closure | — | M006 in-scope implementation `80e0919`; hosted evidence update `9686338` | In-scope work landed; strict closure blocked by the current codegg-core migration assertion after M018 cleared Tool Programs. The projection failure did not reproduce. |
 | Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained, but strict subsystem closure transferred through M005 to M006 |
 | Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; automated release removal retained, with final release-contract closure transferred through M005 to M006 |
 | Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained, with final verification evidence transferred through M005 to M006 |

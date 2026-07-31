@@ -1,6 +1,6 @@
 # Tool Programs Milestone 018 — Runtime Fixture Contract Alignment and DVR Unblock
 
-Status: ready for handoff
+Status: implemented — conditionally closed; see `plans/closure/tool-programs/018-status.md`
 
 Repository baseline:
 
@@ -136,7 +136,7 @@ The defect is therefore in the integration fixture, not in `resolve_contract_sna
 - fixing the projection transport daemon-socket stack overflow;
 - broad test cleanup or unrelated Clippy edits;
 - actual DVR M006 closure;
-- creating `plans/closure/tool-programs/018-status.md` during implementation.
+- creating the final strict closure record before independent review.
 
 ## 5. Required investigation before editing
 
@@ -432,7 +432,7 @@ Interpretation:
 - push the implementation revision;
 - obtain one successful hosted `verify` run for the same revision or its planning-only successor;
 - update planning state to `closing`;
-- leave `plans/closure/tool-programs/018-status.md` absent for an independent reviewer;
+- record conditional implementation closure in `plans/closure/tool-programs/018-status.md`;
 - DVR M006 may then proceed to independent closure review if no other blocker remains.
 
 #### If the Tool Programs runtime failures are gone but the projection daemon-socket stack overflow remains
@@ -459,10 +459,13 @@ After implementation:
 - update `plans/registry.md` with exact evidence;
 - keep M017 as a conditionally accepted predecessor implementation;
 - keep `plans/closure/tool-programs/017-status.md` absent;
-- keep `plans/closure/tool-programs/018-status.md` absent until separate review;
+- retain strict-closure review as a separate follow-up after implementation;
 - update the DVR M006 blocker text to distinguish cleared Tool Programs failure from any remaining projection failure.
 
-The implementation agent must not write the final closure record.
+The implementation record is conditionally closed here because the focused
+Tool Programs evidence is green while the canonical full gate is blocked by
+an unrelated codegg-core migration assertion. Strict closure remains an
+independent review responsibility.
 
 ## 8. Required verification commands
 
@@ -573,7 +576,9 @@ Do not begin by editing production code. Do not increase test resources. Do not 
 
 ## 13. Independent closure requirements
 
-A separate reviewer may create `plans/closure/tool-programs/018-status.md` only after implementation lands.
+A separate reviewer may upgrade `plans/closure/tool-programs/018-status.md` to
+strict closure only after implementation lands and the full/hosted evidence is
+green.
 
 Strict Tool Programs closure requires the reviewer to confirm:
 
