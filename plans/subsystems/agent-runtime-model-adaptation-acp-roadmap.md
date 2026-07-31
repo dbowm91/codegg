@@ -210,7 +210,7 @@ M008 reasoning preservation and Poolside Laguna vertical slice      [closed]
 M009 context-plan and cache convergence                            [closed]
         |
         v
-M010 ACP v1 daemon/projection adapter                              [blocked by M003/M006/M009]
+M010 ACP v1 daemon/projection adapter                              [ready]
         |
         v
 M011 integration evidence and closure                              [blocked by M004-M010]
