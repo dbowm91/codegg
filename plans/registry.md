@@ -31,7 +31,7 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | M011 closed | M001–M011 closed; Phase 9 durable AgentRun/worktree/team work remains deferred |
+| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M012 ready | M011 strict closure superseded by `plans/closure/agent-runtime-model-adaptation-acp/011-corrective-status.md`; M013–M017 retain explicit predecessor blockers |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 implemented; strict review pending | Focused fixture correction is green. Existing `018-status.md` is provisional implementation evidence rather than independent strict closure; Provider M006 owns repeated-run isolation proof and full/hosted gate completion |
 | Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | Provider Connections M006 is closed with exact green local/hosted evidence; DVR owns its remaining independent closure review |
 
@@ -39,17 +39,24 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
+| Agent runtime, model adaptation, and ACP | 012 — ACP turn lifecycle and correlation correctness | ready | `plans/implementation/agent-runtime-model-adaptation-acp/012-acp-turn-lifecycle-and-correlation-correctness.md` | Existing daemon/session-projection/ACP foundations are present; no external blocker |
 | Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |
 
-Agent-runtime M011 is closed after its cross-milestone integration evidence
-and documentation reconciliation. Durable AgentRun/worktree/team
-authorization remains outside this roadmap's completed scope.
+Agent-runtime M011 is conditionally closed after a post-closure production-path
+audit invalidated the strict disposition. M012 is the only dependency-ready
+handoff in the corrective addendum. M013–M017 must not be implemented out of
+order.
 
 Provider Connections M006 is closed. DVR M006 is ready for its independently
 owned closure review. Tool Programs M018 remains conditionally closed pending
 its separately owned strict review.
 
 ## Active closure work
+
+Agent-runtime M011 historical implementation evidence remains useful, but
+`plans/closure/agent-runtime-model-adaptation-acp/011-corrective-status.md`
+now governs disposition. Strict closure requires completion and independent
+review of M012–M017.
 
 M017 production implementation remains conditionally accepted. `plans/closure/tool-programs/017-status.md` remains absent; final Tool Programs verification responsibility transferred to M018.
 
@@ -66,7 +73,11 @@ blocker record is resolved and retained for traceability.
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| Agent runtime, model adaptation, and ACP | 013 — specialized runtime finalization and research coordination | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/013-specialized-runtime-finalization-and-research-coordination.md` | Requires M012 strict closure |
+| Agent runtime, model adaptation, and ACP | 014 — canonical prompt and context-plan convergence | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/014-canonical-prompt-and-context-plan-convergence.md` | Requires M013 strict closure |
+| Agent runtime, model adaptation, and ACP | 015 — adapter-driven reasoning safety | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/015-adapter-driven-reasoning-safety.md` | Requires M014 strict closure |
+| Agent runtime, model adaptation, and ACP | 016 — descendant admission, cancellation, and execution context | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/016-descendant-admission-cancellation-and-execution-context.md` | Requires M015 strict closure |
+| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | Requires M012–M016 strict closure records |
 
 ## Newly dependency-ready work
 
@@ -91,16 +102,16 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | `plans/closure/agent-runtime-model-adaptation-acp/011-status.md` | closure commit | Roadmap scope closed; durable AgentRun/worktree/team authorization remains deferred |
-| Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | `plans/closure/agent-runtime-model-adaptation-acp/009-status.md` | implementation and closure commit | M010 promoted to ready; M011 remains blocked on M010 |
-| Agent runtime, model adaptation, and ACP | 010 — ACP v1 daemon/projection adapter | `plans/closure/agent-runtime-model-adaptation-acp/010-status.md` | implementation and closure commit | M011 promoted to ready after dependency audit |
-| Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | `plans/closure/agent-runtime-model-adaptation-acp/008-status.md` | implementation and closure commit | M009 promoted to ready; M010/M011 retain their stated predecessor blockers |
-| Agent runtime, model adaptation, and ACP | 006 — progress, loop, and tool recovery controller | `plans/closure/agent-runtime-model-adaptation-acp/006-status.md` | implementation and closure commit | M007 was ready at that closure; M008–M011 retained predecessor blockers |
-| Agent runtime, model adaptation, and ACP | 007 — declarative model-adapter registry | `plans/closure/agent-runtime-model-adaptation-acp/007-status.md` | implementation and closure commit | M008 promoted to ready; M009–M011 retain their stated predecessor blockers |
-| Agent runtime, model adaptation, and ACP | 005 — specialized research runtime | `plans/closure/agent-runtime-model-adaptation-acp/005-status.md` | `e3db48c` implementation; closure commit | M006 and M007 were ready at that closure; M008–M011 retained predecessor blockers |
-| Agent runtime, model adaptation, and ACP | 004 — specialized security-review runtime | `plans/closure/agent-runtime-model-adaptation-acp/004-status.md` | implementation/closure commit | M005 remains ready; M011 remains blocked on M005–M010 |
-| Agent runtime, model adaptation, and ACP | 001 — prompt compilation and agent registry correctness | `plans/closure/agent-runtime-model-adaptation-acp/001-status.md` | `3cb6c0e` implementation | M002 promoted to ready; broad workspace-lib gate has an unrelated macOS socket-fixture stack overflow |
-| Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | `plans/closure/agent-runtime-model-adaptation-acp/003-status.md` | `b893462` implementation | M004 and M005 promoted to ready; final durable AgentRun/restart/worktree scope remains deferred |
+| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | `plans/closure/agent-runtime-model-adaptation-acp/011-corrective-status.md` | conditionally closed at reviewed head `7d8657e` | Strict closure withdrawn; M012 ready and M013–M017 registered through corrective addendum |
+| Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | `plans/closure/agent-runtime-model-adaptation-acp/009-status.md` | implementation and closure commit | Historical implementation retained; M014 owns corrective prompt/context identity convergence |
+| Agent runtime, model adaptation, and ACP | 010 — ACP v1 daemon/projection adapter | `plans/closure/agent-runtime-model-adaptation-acp/010-status.md` | implementation and closure commit | Historical implementation retained; M012 owns lifecycle/correlation correctness |
+| Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | `plans/closure/agent-runtime-model-adaptation-acp/008-status.md` | implementation and closure commit | Historical implementation retained; M015 owns UTF-8 and adapter-authority correction |
+| Agent runtime, model adaptation, and ACP | 006 — progress, loop, and tool recovery controller | `plans/closure/agent-runtime-model-adaptation-acp/006-status.md` | implementation and closure commit | Historical implementation retained |
+| Agent runtime, model adaptation, and ACP | 007 — declarative model-adapter registry | `plans/closure/agent-runtime-model-adaptation-acp/007-status.md` | implementation and closure commit | Historical implementation retained; M015 owns typed request-transform authority |
+| Agent runtime, model adaptation, and ACP | 005 — specialized research runtime | `plans/closure/agent-runtime-model-adaptation-acp/005-status.md` | `e3db48c` implementation; closure commit | Historical preparation/types retained; M013 owns host coordination and finalization |
+| Agent runtime, model adaptation, and ACP | 004 — specialized security-review runtime | `plans/closure/agent-runtime-model-adaptation-acp/004-status.md` | implementation/closure commit | Historical preparation retained; M013 owns authoritative finalization |
+| Agent runtime, model adaptation, and ACP | 001 — prompt compilation and agent registry correctness | `plans/closure/agent-runtime-model-adaptation-acp/001-status.md` | `3cb6c0e` implementation | Historical implementation retained; M014 owns complete block/fingerprint convergence |
+| Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | `plans/closure/agent-runtime-model-adaptation-acp/003-status.md` | `b893462` implementation | Historical functional delegation retained; M016 owns atomic admission and lineage cancellation |
 | Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | `plans/closure/tool-programs/018-status.md` | implementation `4235442`; merged at `c0aa785` | Provisional conditional implementation evidence only. Independent strict review, repeated-run isolation proof, and green full/hosted verification remain owned through Provider M006 |
 | Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence implementation | — | implementation landed before reviewed head `9686338` | Conditionally accepted production implementation; strict closure transferred to M018 after canonical workspace verification exposed stale M005-era runtime fixtures with empty frozen contract sets |
 | Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because final-head hosted evidence, package inventory, release documentation, and Tokio guard closure were incomplete |
