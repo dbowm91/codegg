@@ -1,6 +1,6 @@
 # Provider Connections Storage Verification Reconciliation Addendum
 
-Status: active — Milestone 006 ready for handoff
+Status: closed; see `plans/closure/provider-connections/006-status.md`
 
 Canonical subsystem roadmap:
 
@@ -75,7 +75,7 @@ Observed facts:
 4. Provider migration/lifecycle storage is historically associated with version 33.
 5. Later global migrations advance the shared schema through versions 34 and 35.
 6. The provider test invokes the global migration function twice and asserts literal 33 before exercising CRUD.
-7. Hosted workflow run `30599468088`, job `91058839160`, fails in `Workspace tests`; M006 must bind the exact hosted failure from the logs during implementation.
+7. Hosted workflow run `30599468088`, job `91058839160`, failed in `Workspace tests`; M006 replaced it with green run `30603541350`, job `91071065732`, for implementation SHA `139c832c986106f31304d845860a66b17ba17099`.
 
 The expected correction is a test-contract reconciliation, not a production migration change. Investigation remains mandatory because a version mismatch can also signal a real migration defect.
 
@@ -135,21 +135,21 @@ Provider Connections M006
         +--> DVR M006 independent closure review
 ```
 
-M006 is dependency-ready against `c0aa7852685b916cd11f7dd807198e1d82729366`.
+M006 closed at `139c832c986106f31304d845860a66b17ba17099` after local and hosted verification passed.
 
 ## 6. Closure authority
 
-Until M006 is independently closed:
+After M006 closure:
 
-- Provider Connections status is `active`;
+- Provider Connections status is `closed`;
 - M001–M005 remain historical accepted production milestones;
-- M006 is the sole dependency-ready implementation handoff;
+- DVR M006 is the dependency-ready downstream handoff;
 - Tool Programs M018 remains implementation-complete but not independently strictly closed;
 - the existing M018 status record is provisional conditional implementation evidence;
-- DVR M006 remains blocked;
-- `plans/closure/provider-connections/006-status.md` must remain absent during implementation;
+- DVR M006 is no longer blocked by Provider Connections;
+- `plans/closure/provider-connections/006-status.md` records the accepted closure;
 - `plans/closure/development-verification-release/006-status.md` must remain absent;
-- no implementation agent may convert M018, Provider M006, or DVR M006 to strict `closed`.
+- Tool Programs M018 remains conditionally closed pending its separately owned strict review.
 
 ## 7. Strict M006 completion requirements
 

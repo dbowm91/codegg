@@ -27,20 +27,22 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-connections-storage-verification-reconciliation-addendum.md` | Milestone 006 ready | Historical M001–M005 production closure remains accepted. M006 owns the stale global storage-layout assertion, Tool Programs repeated-run isolation evidence, exact revision binding, and canonical local/hosted verification unblock |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-connections-storage-verification-reconciliation-addendum.md` | Milestone 006 closed | Closure: `plans/closure/provider-connections/006-status.md` |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 implemented; strict review pending | Focused fixture correction is green. Existing `018-status.md` is provisional implementation evidence rather than independent strict closure; Provider M006 owns repeated-run isolation proof and full/hosted gate completion |
-| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 blocked | M018 cleared the deterministic Tool Programs runtime failures. Provider Connections M006 must reconcile the current 35-vs-33 storage assertion, bind exact evidence, and produce green full/hosted verification before DVR closure review |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | Provider Connections M006 is closed with exact green local/hosted evidence; DVR owns its remaining independent closure review |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Provider connections and Eggpool | 006 — storage layout assertion and verification reconciliation | ready | `plans/implementation/provider-connections/006-storage-layout-assertion-and-verification-reconciliation.md` | Tool Programs M018 executable correction landed at `4235442` and merged at `c0aa785`; canonical verification now reaches the provider migration assertion |
+| Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |
 
-Provider Connections M006 is the sole dependency-ready handoff. It must determine whether the provider migration failure is a stale test expectation or a real migration defect, make only the smallest truthful correction, prove Tool Programs repeated-run isolation, restore independent closure ownership, replace evidence placeholders with exact revisions, and rerun the canonical local and hosted gates. No additional corrective plan should be registered until M006 reports its final implementation result.
+Provider Connections M006 is closed. DVR M006 is ready for its independently
+owned closure review. Tool Programs M018 remains conditionally closed pending
+its separately owned strict review.
 
 ## Active closure work
 
@@ -48,17 +50,21 @@ M017 production implementation remains conditionally accepted. `plans/closure/to
 
 M018 implementation has landed. `plans/closure/tool-programs/018-status.md` is retained as provisional conditional implementation evidence, not independent strict approval. Strict M018 disposition remains pending Provider M006 verification evidence and a separate reviewer.
 
-Provider Connections M006 is ready for implementation. `plans/closure/provider-connections/006-status.md` must remain absent until implementation lands and a separate reviewer performs closure.
+Provider Connections M006 is closed by `plans/closure/provider-connections/006-status.md` after a separate post-implementation review pass.
 
-Development verification and release M006 in-scope work has landed. `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` remains authoritative until Provider M006 is implemented, full and hosted verification are green, and independent closure reviews are completed.
+Development verification and release M006 in-scope work has landed and its
+Provider Connections dependency is satisfied. Its closure record remains
+absent until DVR performs its own independent closure review. The historical
+blocker record is resolved and retained for traceability.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Development verification and release | 006 — final evidence and release documentation closure | blocked | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 must reconcile `migration_is_idempotent_and_store_crud_is_revision_safe` against the canonical `STORAGE_LAYOUT_VERSION`, close the Tool Programs repeated-run isolation question, replace unresolved evidence placeholders, and produce one green local full gate plus one green hosted `verify` job. |
+| — | — | — | — | No registered blocker remains for the Provider Connections handoff; DVR M006 is ready. |
 
-No other correctness handoff is dependency-ready. The previously reported projection stack failure did not reproduce after M018 and remains unregistered unless it reappears reproducibly after Provider M006 removes the current deterministic blocker.
+The previously reported projection stack failure did not reproduce after M018
+and remains unregistered unless it reappears reproducibly.
 
 ## Deferred unregistered product work
 

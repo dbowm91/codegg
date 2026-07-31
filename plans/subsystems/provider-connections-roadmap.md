@@ -1,6 +1,6 @@
 # Provider Connections and Eggpool Roadmap
 
-Status: closed; see `plans/closure/provider-connections/005-status.md`.
+Status: closed; see `plans/closure/provider-connections/006-status.md`.
 
 Long-term references:
 
