@@ -31,7 +31,7 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | Milestone 005 ready | M001–M004 closed; later milestones remain predecessor-gated |
+| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | Milestone 005 active | M001–M004 closed; later milestones remain predecessor-gated |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 implemented; strict review pending | Focused fixture correction is green. Existing `018-status.md` is provisional implementation evidence rather than independent strict closure; Provider M006 owns repeated-run isolation proof and full/hosted gate completion |
 | Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | Provider Connections M006 is closed with exact green local/hosted evidence; DVR owns its remaining independent closure review |
 
@@ -39,7 +39,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 005 — specialized research runtime | ready | `plans/implementation/agent-runtime-model-adaptation-acp/005-specialized-research-runtime.md` | M003 strict closure accepted; runtime-assets M004 and session-projections M012 are closed |
+| Agent runtime, model adaptation, and ACP | 005 — specialized research runtime | active | `plans/implementation/agent-runtime-model-adaptation-acp/005-specialized-research-runtime.md` | M003 strict closure accepted; runtime-assets M004 and session-projections M012 are closed |
 | Agent runtime, model adaptation, and ACP | 006 — progress, loop, and tool recovery controller | ready | `plans/implementation/agent-runtime-model-adaptation-acp/006-progress-loop-and-tool-recovery-controller.md` | M002 closure accepted; M003 descendant integration is now available |
 | Agent runtime, model adaptation, and ACP | 007 — declarative model-adapter registry | ready | `plans/implementation/agent-runtime-model-adaptation-acp/007-declarative-model-adapter-registry.md` | M001 and M002 strict closures accepted |
 | Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |
