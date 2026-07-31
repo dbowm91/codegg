@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestones 005–009 closed; Milestones 010–011 dependency-gated
+Status: active — Milestones 005–010 closed; M011 ready
 
 Long-term references:
 
@@ -210,10 +210,10 @@ M008 reasoning preservation and Poolside Laguna vertical slice      [closed]
 M009 context-plan and cache convergence                            [closed]
         |
         v
-M010 ACP v1 daemon/projection adapter                              [ready]
+M010 ACP v1 daemon/projection adapter                              [closed]
         |
         v
-M011 integration evidence and closure                              [blocked by M004-M010]
+M011 integration evidence and closure                              [ready]
 ```
 
 M004 and M005 may proceed in parallel after M003 if they use the same accepted specialized-runtime hook and report envelope contracts. M006 may begin after M002 but cannot close until descendant recovery/cancellation paths from M003 are represented.
