@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestones 001–003 closed; Milestones 004–005 ready; later milestones dependency-gated
+Status: active — Milestone 004 closed; Milestone 005 ready; later milestones dependency-gated
 
 Long-term references:
 

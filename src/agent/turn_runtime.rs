@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::schema::Config;
 use crate::error::AppError;
-use crate::provider::ChatRequest;
+use crate::provider::{ChatRequest, ResponseFormat};
 
 /// Task-aware metadata for assembling LSP context for a single turn.
 ///
@@ -277,6 +277,59 @@ impl TurnRuntime for DefaultTurnRuntime {
             .unwrap_or_else(|| {
                 crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone())
             });
+
+        // SecurityReview is a host-owned preparation stage layered over the
+        // ordinary AgentLoop. It supplies bounded deterministic evidence and
+        // turns the same evidence into task-aware LSP context. Provider
+        // streaming, tools, permissions, cancellation, and scheduling remain
+        // owned by the normal loop below.
+        let mut lsp_context_input = lsp_context_input;
+        let security_bundle = if selected_agent.runtime_kind
+            == Some(crate::agent::AgentRuntimeKind::SecurityReview)
+        {
+            let (bundle, _host_report) = crate::security::runtime::prepare_security_review(
+                crate::security::runtime::SecurityReviewInput {
+                    workspace_root: execution.workspace_root.clone(),
+                    base: None,
+                    active_file: None,
+                },
+            )
+            .await
+            .map_err(|error| {
+                AppError::Other(anyhow::anyhow!("security review scope failed: {error}"))
+            })?;
+
+            let mut security_context = lsp_context_input.take().unwrap_or_default();
+            security_context.security_review_mode = true;
+            security_context.review_mode = true;
+            security_context.changed_files = bundle
+                .targets
+                .iter()
+                .map(|target| target.file_path.clone())
+                .collect();
+            security_context.hunks = bundle
+                .targets
+                .iter()
+                .enumerate()
+                .map(|(index, target)| egglsp::hunk_context::HunkDescriptor {
+                    id: format!("security-target-{index}"),
+                    file_path: target.file_path.to_string_lossy().into_owned(),
+                    old_range: None,
+                    new_range: target.line.map(|line| egglsp::hunk_context::HunkLineRange {
+                        start_line: line.saturating_sub(1),
+                        end_line: line.saturating_sub(1),
+                    }),
+                    header: None,
+                    added_lines: 0,
+                    removed_lines: 0,
+                    context_lines: 0,
+                })
+                .collect();
+            lsp_context_input = Some(security_context);
+            Some(bundle)
+        } else {
+            None
+        };
         let denied = std::collections::BTreeSet::new();
         let disabled = model_profile
             .disabled_tools
@@ -328,6 +381,9 @@ impl TurnRuntime for DefaultTurnRuntime {
         );
         let mut system = compiled_prompt.text;
         system.push_str(&memory_context);
+        if let Some(bundle) = security_bundle.as_ref() {
+            system.push_str(&bundle.prompt_context());
+        }
 
         // Goal context
         let goal_context = if let Some(ref p) = pool {
@@ -410,7 +466,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             temperature: None,
             top_p: None,
             max_tokens: None,
-            response_format: None,
+            response_format: security_bundle
+                .as_ref()
+                .map(|_| ResponseFormat::JsonSchema {
+                    name: "security_review_report".to_string(),
+                    schema: crate::security::runtime::report_schema(),
+                    strict: true,
+                }),
             thinking_budget: None,
             reasoning_effort: None,
         };
