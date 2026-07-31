@@ -12,7 +12,7 @@ Source subsystem roadmap:
 - `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md`
 
 Repository baseline reviewed: `d58a37a6160f18a5b336ca7bbc0e32e0f057b755`
-Reviewed head (with M006 in-scope work applied): `80e0919fb8a567eea8914c31cb2b9c0b6743efd4`
+Reviewed head (with M006 in-scope work and M018 fixture correction applied): pending M018 commit
 on `main`, with M006 corrections to `scripts/check-tokio-test-flavors.py`,
 `scripts/tests/test_check_tokio_test_flavors.py`,
 `plans/closure/development-verification-release/005-package-inventory.md`,
@@ -74,28 +74,23 @@ The failure is **not** introduced by M006. Confirmed by re-running the
 test binary against `d58a37a6` with the M006 working tree stashed:
 identical failures.
 
-### 2.2 Daemon socket stack overflow under `--test-threads=1`
+### 2.2 Current codegg-core migration assertion
 
 | Field | Value |
 |---|---|
 | Commit SHA | `80e0919fb8a567eea8914c31cb2b9c0b6743efd4` (M006 in-scope work committed) |
 | Command | `cargo test --workspace --locked -- --test-threads=1` (running the full lib test binary, not a focused subset) |
-| Failing test | `core::transport::daemon_socket::daemon_socket_integration_tests::socket_consecutive_subscriptions_yield_distinct_identities_and_isolation` |
-| Exit code | 101 (SIGABRT after stack overflow) |
-| Minimal failure output | `thread '...' has overflowed its stack / fatal runtime error: stack overflow, aborting` |
-| Owning subsystem | Projection transport (M005–M012) |
-| M006 scope? | **No** — projection transport is explicitly outside M006's ownership boundary |
+| Failing test | `provider_connections::tests::migration_is_idempotent_and_store_crud_is_revision_safe` |
+| Exit code | 101 |
+| Minimal failure output | `assertion left == right failed; left: 35; right: 33` |
+| Owning subsystem | codegg-core provider-connection/storage migration |
+| M006 scope? | **No** — storage/provider migration is explicitly outside M006's ownership boundary |
 
-The test passes when run in isolation
-(`cargo test --lib <path-to-test> -- --test-threads=1` returns 0). It only
-fails when the full lib test binary runs to completion with all other
-tests in the same process. The test resource contract calls for
-`RUST_MIN_STACK=33554432` (32 MiB) but even that is not enough when
-many daemon socket test processes are interleaved. This is a test
-isolation issue in the projection-transport subsystem and is unrelated
-to verification/release machinery.
-
-The failure is **not** introduced by M006.
+The failure reproduces in isolation with:
+`cargo test -p codegg-core provider_connections::tests::migration_is_idempotent_and_store_crud_is_revision_safe -- --test-threads=1`.
+The repository currently declares `STORAGE_LAYOUT_VERSION = 35`, while this
+test still asserts 33. This is unrelated to verification/release machinery and
+is not introduced by M018.
 
 ## 3. Why M006 in-scope work is still complete and shippable
 
@@ -149,20 +144,20 @@ is a separate, narrowly owned corrective plan.
 - Acceptance: `cargo test --test tool_program_runtime -- --test-threads=1`
   exits 0 against the same head.
 
-### Proposed Plan Boundary B — Projection transport daemon-socket stack isolation
+### Proposed Plan Boundary B — codegg-core migration assertion reconciliation
 
-- Owning subsystem: Projection transport (M005–M012)
-- Scope: either reduce per-test resource consumption in
-  `src/core/transport/daemon_socket_integration_tests.rs`, raise the
-  per-thread stack for the affected tests above the `RUST_MIN_STACK`
-  default, or split the affected test into multiple smaller tests.
-- Excludes: any change to production transport semantics or to
-  `scripts/verify.sh` resource limits.
+- Owning subsystem: codegg-core provider connections/storage
+- Scope: reconcile the migration test assertion with the current storage
+  layout contract and run the focused/core/full evidence needed by DVR M006.
+- Excludes: Tool Programs, verification resource changes, and unrelated storage
+  migrations.
 - Acceptance: `cargo test --workspace --locked -- --test-threads=1`
-  no longer aborts on the same head.
+  no longer fails on the stale layout-version assertion.
 
-Neither boundary belongs to M006. A separate reviewer should create
-the corrective implementation plans when ready.
+Neither boundary belongs to M006. A separate owner should create the
+corrective implementation plan when ready. The previously reported projection
+transport stack behavior did not reproduce in the M018 canonical rerun, so no
+projection plan is registered.
 
 ## 5. Registry and planning implications
 

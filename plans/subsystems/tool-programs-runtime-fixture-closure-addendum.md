@@ -1,6 +1,6 @@
 # Tool Programs Runtime Fixture and Verification Closure Addendum
 
-Status: active
+Status: conditionally closed — M018 implementation complete; independent review remains
 
 Canonical subsystem roadmap:
 
@@ -136,13 +136,16 @@ M018 is dependency-ready against repository baseline `9686338ad6aa8b0ff5ebfe8b07
 
 ## 6. Closure authority
 
-Until M018 closes:
+After the M018 implementation pass:
 
 - M017 remains a conditionally accepted production implementation;
 - `plans/closure/tool-programs/017-status.md` remains absent;
-- M018 is the sole active Tool Programs closure authority;
-- `plans/closure/tool-programs/018-status.md` must be created only by a separate reviewer;
-- Tool Programs documentation may not claim complete verification closure while the runtime integration target fails;
+- M018 is the sole Tool Programs closure record for this corrective handoff;
+- `plans/closure/tool-programs/018-status.md` records conditional closure because the
+  focused Tool Programs evidence is green but the canonical full gate is blocked by an
+  unrelated codegg-core migration assertion;
+- Tool Programs documentation may claim fixture-contract closure, but not complete DVR
+  verification closure;
 - DVR M006 remains blocked.
 
 ## 7. Strict M018 closure requirements
@@ -168,6 +171,6 @@ M018 may close only when:
 |---|---|---|
 | 001–016 | historical closed/conditionally closed records | Foundations and corrective implementations retained |
 | 017 | conditionally accepted implementation | Production semantic recovery corrections retained; strict closure transferred to M018 after workspace verification exposed stale runtime fixtures |
-| 018 | ready for handoff | Sole active Tool Programs closure owner and first DVR M006 unblock step |
+| 018 | conditionally closed | `tests/tool_program_runtime.rs` and adjacent Tool Programs evidence are green; the full gate is blocked by the unrelated codegg-core migration assertion recorded in the M018 closure record |
 
 No projection-transport plan is registered in this addendum. The repository must first remove the deterministic Tool Programs failures and rerun the canonical full gate. Only then may the next single dependency-ready handoff be registered if the projection failure remains reproducible.

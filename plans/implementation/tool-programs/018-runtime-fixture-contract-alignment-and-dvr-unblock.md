@@ -1,6 +1,6 @@
 # Tool Programs Milestone 018 — Runtime Fixture Contract Alignment and DVR Unblock
 
-Status: ready for handoff
+Status: implemented — conditionally closed; see `plans/closure/tool-programs/018-status.md`
 
 Repository baseline:
 
