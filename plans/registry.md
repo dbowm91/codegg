@@ -31,7 +31,7 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | M010 closed; M011 ready | M001–M010 closed |
+| Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | M011 closed | M001–M011 closed; Phase 9 durable AgentRun/worktree/team work remains deferred |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 implemented; strict review pending | Focused fixture correction is green. Existing `018-status.md` is provisional implementation evidence rather than independent strict closure; Provider M006 owns repeated-run isolation proof and full/hosted gate completion |
 | Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | Provider Connections M006 is closed with exact green local/hosted evidence; DVR owns its remaining independent closure review |
 
@@ -41,8 +41,9 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |
 
-Agent-runtime M010 is closed. M011 is dependency-ready because M004 through
-M010 are strictly closed and its predecessor blocker is resolved.
+Agent-runtime M011 is closed after its cross-milestone integration evidence
+and documentation reconciliation. Durable AgentRun/worktree/team
+authorization remains outside this roadmap's completed scope.
 
 Provider Connections M006 is closed. DVR M006 is ready for its independently
 owned closure review. Tool Programs M018 remains conditionally closed pending
@@ -71,7 +72,6 @@ blocker record is resolved and retained for traceability.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | ready | `plans/implementation/agent-runtime-model-adaptation-acp/011-integration-evidence-and-closure.md` | M004 through M010 strict closure accepted |
 
 The previously reported projection stack failure did not reproduce after M018
 and remains unregistered unless it reappears reproducibly.
@@ -91,6 +91,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | `plans/closure/agent-runtime-model-adaptation-acp/011-status.md` | closure commit | Roadmap scope closed; durable AgentRun/worktree/team authorization remains deferred |
 | Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | `plans/closure/agent-runtime-model-adaptation-acp/009-status.md` | implementation and closure commit | M010 promoted to ready; M011 remains blocked on M010 |
 | Agent runtime, model adaptation, and ACP | 010 — ACP v1 daemon/projection adapter | `plans/closure/agent-runtime-model-adaptation-acp/010-status.md` | implementation and closure commit | M011 promoted to ready after dependency audit |
 | Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | `plans/closure/agent-runtime-model-adaptation-acp/008-status.md` | implementation and closure commit | M009 promoted to ready; M010/M011 retain their stated predecessor blockers |

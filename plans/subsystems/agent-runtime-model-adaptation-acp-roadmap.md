@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestones 005–010 closed; M011 ready
+Status: closed — Milestones 001–011 closed
 
 Long-term references:
 
@@ -70,22 +70,19 @@ It does not own:
 
 ## 2. Current-state summary
 
-The repository already contains most required building blocks, but several are split across parallel paths:
+The implementation is now converged on the target path:
 
-- built-in agents are generated from `assets/agents/*.toml`, and user/project agents are loaded from native files;
-- `AgentRuntimeKind` identifies standard, security, research, compaction, title, and summary behavior;
-- `assemble_system_prompt_with_profile` contains the strongest harness, role, planning, web, research, and model-profile contracts;
-- production root turns use `load_agent_prompt_with_snapshot` / `load_agent_prompt_with_context` instead of the profile-aware compiler;
-- descendant turns construct a thinner request directly in `src/agent/worker.rs`;
-- file-based agent overlays replace existing entries in the primary resolver despite documented merge semantics;
-- descendant requests carry depth and parent metadata, but child loops are not installed with a functional descendant spawner;
-- read-only inference removes `task`, preventing read-only specialists from delegating to narrower children;
-- security and research runtime kinds are resolved but not dispatched into host-side specialized workflows;
-- `DoomLoopDetector` detects repeated identical calls but not equivalent errors, short cycles, repeated no-progress results, missing-tool narration, or malformed-call repetition;
-- context blocks, cache metrics, artifact projection, compaction, and tool-palette policy exist, but the cache-aware packer remains primarily observational and production prompts concatenate stable and volatile material;
-- model profiles are selected with hard-coded model-name substring logic and cannot declare tool aliases, argument aliases, message transforms, reasoning preservation, or serving requirements;
-- provider-neutral assistant messages cannot retain reasoning between tool calls for models that require interleaved reasoning history;
-- session projections and replay are suitable ACP inputs, but no ACP protocol implementation exists.
+- built-in and file-based agents resolve through generated assets and the
+  canonical registry with bounded overlays and source-aware diagnostics;
+- root and descendant turns use the same prompt compiler, model-adapter
+  resolver, tool-surface resolver, and provider-facing context plan;
+- shared bounded delegation, specialized security/research preparation,
+  observable recovery, Laguna reasoning round trips, and compound cache
+  identity are integrated with ordinary daemon ownership;
+- ACP v1 is a thin stdio adapter over singleton-daemon sessions and
+  canonical projections, with no independent runtime or durable state;
+- the remaining long-term durable AgentRun/worktree/team authorization work
+  remains owned by the broader Phase 9 roadmap and is not claimed here.
 
 The roadmap corrects these seams without redesigning already-closed runtime-assets, session-projection, provider-connection, or tool-program subsystems.
 
