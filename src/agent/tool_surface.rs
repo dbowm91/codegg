@@ -155,6 +155,24 @@ impl ResolvedToolSurface {
         plan_mode: bool,
         parent_ceiling: Option<AgentCapabilitySet>,
     ) -> Result<Self, SurfaceError> {
+        Self::from_registry_with_aliases(
+            registry,
+            denied,
+            disabled,
+            plan_mode,
+            parent_ceiling,
+            &BTreeMap::new(),
+        )
+    }
+
+    pub fn from_registry_with_aliases(
+        registry: &crate::tool::ToolRegistry,
+        denied: &BTreeSet<String>,
+        disabled: &BTreeSet<String>,
+        plan_mode: bool,
+        parent_ceiling: Option<AgentCapabilitySet>,
+        wire_to_canonical_aliases: &BTreeMap<String, String>,
+    ) -> Result<Self, SurfaceError> {
         let definitions = registry
             .list()
             .into_iter()
@@ -171,13 +189,14 @@ impl ResolvedToolSurface {
             .into_iter()
             .find(|tool| tool.name() == "task")
             .is_some_and(|tool| tool.has_functional_backend());
-        Self::resolve(
+        Self::resolve_with_aliases(
             definitions,
             denied,
             disabled,
             plan_mode,
             has_functional_spawner,
             parent_ceiling,
+            wire_to_canonical_aliases,
         )
     }
 

@@ -216,8 +216,9 @@ impl TurnRuntime for DefaultTurnRuntime {
         let provider = base_provider.clone_box();
 
         // ── Model profile / task-state policy ────────────────────────
-        let model_profile =
-            crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
+        let resolved_adapter = crate::model_profile::ModelProfileResolver::new(&config)
+            .resolve_adapter(Some(&provider_name), &model_name);
+        let model_profile = resolved_adapter.profile.clone();
         let task_state_policy = model_profile.task_state_policy.clone();
 
         // ── Tool registry ────────────────────────────────────────────
@@ -355,12 +356,18 @@ impl TurnRuntime for DefaultTurnRuntime {
             .unwrap_or_default()
             .into_iter()
             .collect();
-        let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry(
+        let wire_to_canonical: std::collections::BTreeMap<_, _> = resolved_adapter
+            .tool_aliases
+            .iter()
+            .map(|(canonical, wire)| (wire.clone(), canonical.clone()))
+            .collect();
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry_with_aliases(
             &tool_registry,
             &denied,
             &disabled,
             plan_mode,
             None,
+            &wire_to_canonical,
         )
         .map_err(|error| anyhow::anyhow!("invalid turn tool surface: {error:?}"))?;
         let mut available_tools: Vec<String> = surface
