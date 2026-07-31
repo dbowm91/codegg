@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 009 — Context Plan and Cache Convergence
 
-Status: blocked — requires Milestones 001, 002, and 007 closure
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/009-status.md`
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

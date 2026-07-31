@@ -5,6 +5,7 @@ pub mod cache_stats;
 pub mod effective_cost;
 pub mod handle;
 pub mod packer;
+pub mod plan;
 pub mod policy;
 pub mod projection;
 pub mod read_tool;
@@ -21,6 +22,9 @@ pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
 pub use effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
+pub use plan::{
+    CacheIdentity, ContextPlan, ContextPlanDiagnostics, ContextPlanMode, PlannedMessage,
+};
 pub use policy::{
     decide_policy, detect_palette_starvation, reduce_tool_palette, ContextPolicyDecision,
     ContextPolicyDecisionKind, ToolPaletteReduction,

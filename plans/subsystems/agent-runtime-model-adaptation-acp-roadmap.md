@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestones 005–008 closed; Milestone 009 ready; later milestones dependency-gated
+Status: active — Milestones 005–009 closed; Milestones 010–011 dependency-gated
 
 Long-term references:
 
@@ -207,7 +207,7 @@ M007 declarative model-adapter registry and build generation        [closed]
 M008 reasoning preservation and Poolside Laguna vertical slice      [closed]
         |
         v
-M009 context-plan and cache convergence                            [ready]
+M009 context-plan and cache convergence                            [closed]
         |
         v
 M010 ACP v1 daemon/projection adapter                              [blocked by M003/M006/M009]

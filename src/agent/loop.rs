@@ -111,37 +111,26 @@ impl AgentLoop {
     /// Mirrors the pre-Phase5 inline builder at the InitialRequest site (system extract,
     /// synthetic profile text, ledger frame + control, build_all with Nones for goal/memory/todo/artifacts).
     fn build_packer_candidates(&self, request: &ChatRequest) -> Vec<crate::context::ContextBlock> {
-        let model_key = request.model.clone();
-        let builder = crate::context::ContextBlockBuilder::new(&self.session_id, &model_key);
-
-        let system_text = request
+        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
+        let compiler = request
             .messages
             .iter()
-            .find_map(|m| {
-                if let crate::provider::Message::System { content } = m {
-                    Some(content.as_str())
-                } else {
-                    None
+            .find_map(|message| match message {
+                Message::System { content } => {
+                    Some(crate::context::stable_hash_hex(content.as_bytes()))
                 }
+                _ => None,
             })
-            .unwrap_or("");
-
-        let definitions = request.tools.as_deref().unwrap_or(&[]);
-        let frame = self.context_ledger.to_context_frame();
-        let control_text = frame.to_control_text();
-
-        builder.build_all(
-            system_text,
-            &format!("model: {}", request.model),
-            definitions,
-            &frame,
-            None,
-            None,
-            None,
-            Some(&control_text),
-            None,
-            0,
+            .unwrap_or_else(|| crate::context::stable_hash_hex(""));
+        crate::context::ContextPlan::from_request(
+            request,
+            self.provider.name(),
+            &adapter.fingerprint,
+            &compiler,
+            crate::context::ContextPlanMode::Observation,
         )
+        .map(|plan| plan.packing_blocks())
+        .unwrap_or_default()
     }
 
     /// Pure computation of the pack result for the current request (no mutation).
@@ -650,8 +639,9 @@ impl AgentLoop {
             processor.cached_tokens(),
         );
 
+        let cache_key = self.context_plan_cache_key.as_deref().unwrap_or(model);
         self.context_cache_stats.record_usage(
-            model,
+            cache_key,
             usage.input_tokens,
             usage.cached_input_tokens,
             usage.output_tokens,
@@ -659,10 +649,11 @@ impl AgentLoop {
 
         tracing::debug!(
             model = %model,
+            cache_key = %cache_key,
             input_tokens = usage.input_tokens,
             cached_input_tokens = ?usage.cached_input_tokens,
             output_tokens = usage.output_tokens,
-            cache_hit_rate = self.context_cache_stats.cache_hit_rate(model),
+            cache_hit_rate = self.context_cache_stats.cache_hit_rate(cache_key),
             "updated context cache stats"
         );
 
@@ -1468,6 +1459,8 @@ pub struct AgentLoop {
     context_packer_config: crate::config::schema::ContextPackerConfig,
     context_policy_config: crate::config::schema::ContextPolicyConfig,
     context_cache_stats: crate::context::ContextCacheStats,
+    /// Compound identity of the last provider-facing context plan.
+    context_plan_cache_key: Option<String>,
     /// Full profile-filtered tool palette for the current run (source of truth for policy reductions).
     /// Captured once after model-profile filter at start of run(); reductions derive from this, not from
     /// the (possibly previously reduced) request.tools. Enables non-cumulative, restorable palettes.
@@ -1724,12 +1717,44 @@ impl AgentLoop {
             context_packer_config,
             context_policy_config,
             context_cache_stats: crate::context::ContextCacheStats::new(),
+            context_plan_cache_key: None,
             base_request_tools: Vec::new(),
             context_policy_runtime: ContextPolicyRuntimeState::default(),
             runtime_asset_pin: None,
             tool_broker,
             notification_service: None,
         }
+    }
+
+    /// Build and apply the canonical provider-facing plan. Full mode is
+    /// intentionally lossless; palette reduction has already been decided by
+    /// the bounded policy and is represented by the request's tool surface.
+    fn apply_context_plan(
+        &mut self,
+        request: &mut ChatRequest,
+    ) -> Result<crate::context::ContextPlan, AppError> {
+        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
+        let compiler = request
+            .messages
+            .iter()
+            .find_map(|message| match message {
+                Message::System { content } => {
+                    Some(crate::context::stable_hash_hex(content.as_bytes()))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| crate::context::stable_hash_hex(""));
+        let plan = crate::context::ContextPlan::from_request(
+            request,
+            self.provider.name(),
+            &adapter.fingerprint,
+            &compiler,
+            crate::context::ContextPlanMode::Full,
+        )
+        .map_err(|error| AppError::Agent(AgentError::Invalid(error)))?;
+        plan.apply_to_request(request);
+        self.context_plan_cache_key = Some(plan.cache_key());
+        Ok(plan)
     }
 
     /// Retain the asset identity captured at agent-run start. The value is
@@ -3236,6 +3261,7 @@ impl AgentLoop {
             &mut request.messages,
             &model_profile,
         );
+        self.apply_context_plan(&mut request)?;
         self.context_tracker.add_messages(&request.messages);
 
         // Phase 5: replaced the inline observation block with a call to the shared helper.
@@ -3628,6 +3654,11 @@ impl AgentLoop {
                     _ => {}
                 }
             }
+
+            // The plan is the final provider-facing source after hooks and
+            // history hardening. It preserves chronology while pinning the
+            // compound cache identity for the usage event below.
+            self.apply_context_plan(&mut request)?;
 
             let events = match self.stream_with_retry(&request).await {
                 Ok(events) => events,
