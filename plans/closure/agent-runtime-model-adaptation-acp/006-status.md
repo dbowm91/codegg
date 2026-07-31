@@ -14,7 +14,7 @@ Repository baseline reviewed: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 
 Implementation commits:
 
-- `8c2f673` — bounded progress controller, loop integration, permission-authority separation, tests, and planning closure
+- `cf40dc3` — bounded progress controller, loop integration, permission-authority separation, tests, and planning closure
 
 ## 1. Executive finding
 
