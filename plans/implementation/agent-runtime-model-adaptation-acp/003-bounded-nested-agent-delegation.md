@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 003 — Bounded Nested Agent Delegation
 
-Status: blocked — requires Milestone 002 closure
+Status: active
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

@@ -454,6 +454,7 @@ mod tests {
             subagent: Some(SubagentConfig {
                 max_concurrent: Some(5),
                 max_depth: Some(3),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -534,6 +535,51 @@ mod tests {
             "Task 2 should not be created when depth > max_depth (error before queueing), got: {:?}",
             task2_in_store
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_duplicate_delegation_identity_is_rejected_before_queueing() {
+        let pool = create_test_pool().await;
+        let (provider_registry, _) = create_test_provider_registry();
+        let agent = create_test_agent("test-agent", "test/model", None);
+        let config = Config {
+            subagent: Some(SubagentConfig {
+                max_concurrent: Some(2),
+                max_depth: Some(3),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let session_store = Arc::new(codegg::session::SessionStore::new(pool.clone()));
+        let subagent_pool = SubAgentPool::new(
+            &config,
+            vec![agent],
+            provider_registry,
+            session_store,
+            Some(pool),
+        )
+        .await;
+        let spawner = subagent_pool.spawner();
+        let request = SubAgentRequest {
+            task_id: 41,
+            prompt: "same work".into(),
+            agent: "test-agent".into(),
+            parent_id: Some("parent".into()),
+            denied_tools: vec![],
+            allowed_paths: vec![],
+            description: "same description".into(),
+            depth: 0,
+            max_tool_calls: None,
+            parent_model: None,
+        };
+        assert!(spawner.send_async(request.clone()).await.is_ok());
+        let mut duplicate = request;
+        duplicate.task_id = 42;
+        let error = spawner
+            .send_async(duplicate)
+            .await
+            .expect_err("duplicate identity must not enqueue twice");
+        assert!(error.contains("duplicate delegation identity"));
     }
 
     /// Test 5: Denied-tool filtering.
@@ -803,6 +849,7 @@ mod tests {
             subagent: Some(SubagentConfig {
                 max_concurrent: Some(2),
                 max_depth: Some(3),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -1073,6 +1120,7 @@ mod tests {
             subagent: Some(SubagentConfig {
                 max_concurrent: Some(2),
                 max_depth: Some(3),
+                ..Default::default()
             }),
             ..Default::default()
         };

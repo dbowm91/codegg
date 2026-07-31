@@ -39,7 +39,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | ready | `plans/implementation/agent-runtime-model-adaptation-acp/003-bounded-nested-agent-delegation.md` | M002 strict closure accepted; runtime-assets M004 and session-projections M012 are closed |
+| Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | active | `plans/implementation/agent-runtime-model-adaptation-acp/003-bounded-nested-agent-delegation.md` | M002 strict closure accepted; runtime-assets M004 and session-projections M012 are closed |
 | Agent runtime, model adaptation, and ACP | 006 — progress, loop, and tool recovery controller | ready | `plans/implementation/agent-runtime-model-adaptation-acp/006-progress-loop-and-tool-recovery-controller.md` | M002 closure accepted; nested-agent integration remains gated on M003 |
 | Agent runtime, model adaptation, and ACP | 007 — declarative model-adapter registry | ready | `plans/implementation/agent-runtime-model-adaptation-acp/007-declarative-model-adapter-registry.md` | M001 and M002 strict closures accepted |
 | Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |

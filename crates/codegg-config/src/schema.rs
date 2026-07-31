@@ -985,8 +985,18 @@ pub struct CompactionConfig {
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
 #[serde(default)]
 pub struct SubagentConfig {
+    /// Whether task delegation is available to agents that explicitly allow it.
+    pub enabled: Option<bool>,
     pub max_concurrent: Option<usize>,
     pub max_depth: Option<usize>,
+    /// Optional target allowlist. An empty list preserves the legacy
+    /// first-level behavior and permits every resolved target.
+    pub allowed_agents: Option<Vec<String>>,
+    pub denied_agents: Option<Vec<String>>,
+    pub max_direct_children: Option<usize>,
+    pub max_active_descendants: Option<usize>,
+    pub max_total_child_tool_calls: Option<usize>,
+    pub wall_clock_timeout_secs: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default, PartialEq)]
@@ -3053,6 +3063,33 @@ mod tests {
             path: Some(path.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn subagent_delegation_bounds_deserialize_additively() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "subagent": {
+                    "enabled": true,
+                    "max_concurrent": 2,
+                    "max_depth": 3,
+                    "allowed_agents": ["general", "explore"],
+                    "denied_agents": ["build"],
+                    "max_direct_children": 4,
+                    "max_active_descendants": 5,
+                    "max_total_child_tool_calls": 40,
+                    "wall_clock_timeout_secs": 90
+                }
+            }"#,
+        )
+        .expect("delegation config should deserialize");
+        let subagent = config.subagent.expect("subagent config");
+        assert_eq!(subagent.enabled, Some(true));
+        assert_eq!(subagent.max_depth, Some(3));
+        assert_eq!(subagent.max_direct_children, Some(4));
+        assert_eq!(subagent.max_active_descendants, Some(5));
+        assert_eq!(subagent.max_total_child_tool_calls, Some(40));
+        assert_eq!(subagent.wall_clock_timeout_secs, Some(90));
     }
 
     #[test]

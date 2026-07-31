@@ -291,7 +291,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             plan_mode,
             None,
         )
-        .map_err(|error| format!("invalid turn tool surface: {error:?}"))?;
+        .map_err(|error| anyhow::anyhow!("invalid turn tool surface: {error:?}"))?;
         let mut available_tools: Vec<String> = surface
             .tools
             .iter()
