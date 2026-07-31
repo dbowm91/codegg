@@ -46,7 +46,7 @@ provider probe limits, and preserves the last-good catalog on failure.
 Operator flow: connect → select → rotate → refresh → disable → delete
 (tombstone) → restore → purge after all reference blockers clear.
 
-### Provider Trait (`src/provider/mod.rs:74-87`)
+### Provider Trait (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 #[async_trait]
@@ -74,7 +74,7 @@ Key methods:
 - `discover_models()` - Override point for dynamic model discovery (default calls `models()`)
 - `ping()` - Health check (default implementation calls `models()`)
 
-### ChatRequest (`src/provider/mod.rs:111-123`)
+### ChatRequest (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub struct ChatRequest {
@@ -91,7 +91,7 @@ pub struct ChatRequest {
 }
 ```
 
-### Message Types (`src/provider/mod.rs:125-142`)
+### Message Types (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,7 +104,7 @@ pub enum Message {
 }
 ```
 
-### ContentPart (`src/provider/mod.rs:144-149`)
+### ContentPart (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +115,7 @@ pub enum ContentPart {
 }
 ```
 
-### ChatEvent (`src/provider/mod.rs:156-170`)
+### ChatEvent (`crates/codegg-providers/src/provider_core.rs`)
 
 The streaming response is a stream of `ChatEvent` values:
 
@@ -136,7 +136,7 @@ pub enum ChatEvent {
 }
 ```
 
-### ModelInfo (`src/provider/mod.rs:236-246`)
+### ModelInfo (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub struct ModelInfo {
@@ -151,7 +151,7 @@ pub struct ModelInfo {
 }
 ```
 
-### ModelVariant (`src/provider/mod.rs:226-234`)
+### ModelVariant (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub struct ModelVariant {
@@ -163,7 +163,7 @@ pub struct ModelVariant {
 }
 ```
 
-### TokenUsage (`src/provider/mod.rs:189-196`)
+### TokenUsage (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub struct TokenUsage {
@@ -175,7 +175,7 @@ pub struct TokenUsage {
 }
 ```
 
-### ToolDefinition (`src/provider/mod.rs:198-224`)
+### ToolDefinition (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub struct ToolDefinition {
@@ -195,7 +195,7 @@ Methods for converting to provider-specific formats:
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<ChatEvent, ProviderError>> + Send>>;
 ```
 
-## ProviderRegistry (`src/provider/mod.rs:248-277`)
+## ProviderRegistry (`crates/codegg-providers/src/provider_core.rs`)
 
 The registry manages all available providers:
 
@@ -214,7 +214,7 @@ impl ProviderRegistry {
 
 ### Registration Functions
 
-#### `register_builtin()` (`src/provider/mod.rs:279-326`)
+#### `register_builtin()` (`crates/codegg-providers/src/provider_core.rs`)
 
 Registers 15 providers based on environment variables. Each provider is only registered if the corresponding API key environment variable is set. Providers are independent - adding one via config does NOT disable others; each provider checks its own config key.
 
@@ -236,11 +236,11 @@ Registers 15 providers based on environment variables. Each provider is only reg
 | `VENICE_API_KEY` | Venice |
 | `MINIMAX_API_KEY` | MiniMax |
 
-#### `register_builtin_with_config()` (`src/provider/mod.rs:390-537`)
+#### `register_builtin_with_config()` (`crates/codegg-providers/src/provider_core.rs`)
 
-Registers 16 providers from config file, with fallback to environment variables. This function:
+Registers 17 providers from config file, with fallback to environment variables. This function:
 
-1. Registers 16 providers: the same 15 as `register_builtin()` plus `opencode_go`, each checking config first then env var
+1. Registers 17 providers: the same 15 as `register_builtin()` plus `opencode_go` and `generalcompute`, each checking config first then env var
 2. **Per-provider independence**: Each provider is checked independently against the config map. Adding one provider (e.g., `anthropic`) via config does NOT suppress or disable other providers that fall back to env vars. This is a per-provider fallback, not a global toggle.
 3. Only calls `register_builtin()` if registry is still empty after config-based registration
 
@@ -248,7 +248,7 @@ Config-only providers (SAP AI Core, Zenmux, Kilo, Vercel AI Gateway) are NOT aut
 
 ## Provider Implementations
 
-### 1. Anthropic (`src/provider/anthropic.rs`)
+### 1. Anthropic (`crates/codegg-providers/src/anthropic.rs`)
 
 Direct implementation using Anthropic's Messages API.
 
@@ -266,7 +266,7 @@ Direct implementation using Anthropic's Messages API.
 - `claude-3-5-sonnet-20241022` (200K ctx, 8K output)
 - `claude-3-5-haiku-20241022` (200K ctx, 8K output)
 
-### 2. OpenAI (`src/provider/openai.rs`)
+### 2. OpenAI (`crates/codegg-providers/src/openai.rs`)
 
 Full implementation with `OpenAiConfig` for customization.
 
@@ -286,7 +286,7 @@ Full implementation with `OpenAiConfig` for customization.
 - `OpenAiConfig::mistral(api_key)` - Mistral specific settings
 - `OpenAiConfig::cerebras(api_key)` - Cerebras specific settings
 
-### 3. Google (`src/provider/google.rs`)
+### 3. Google (`crates/codegg-providers/src/google.rs`)
 
 Uses Google's Generative Language API.
 
@@ -301,7 +301,7 @@ Uses Google's Generative Language API.
 - `gemini-2.5-flash` (1M ctx, 65K output)
 - `gemini-2.0-flash` (1M ctx, 8K output)
 
-### 4. Azure (`src/provider/azure.rs`)
+### 4. Azure (`crates/codegg-providers/src/azure.rs`)
 
 Azure OpenAI Service implementation.
 
@@ -314,7 +314,7 @@ Azure OpenAI Service implementation.
 - `gpt-4.1` (1M ctx, 32K output)
 - `gpt-4o` (128K ctx, 16K output)
 
-### 5. Vertex (`src/provider/vertex.rs`)
+### 5. Vertex (`crates/codegg-providers/src/vertex.rs`)
 
 Google Cloud Vertex AI implementation. Wraps `OpenAiCompatibleProvider`.
 
@@ -322,7 +322,7 @@ Google Cloud Vertex AI implementation. Wraps `OpenAiCompatibleProvider`.
 - Base URL: `https://{project_id}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/us-central1/endpoints/openapi`
 - Uses Bearer token authentication
 
-### 6. Bedrock (`src/provider/bedrock.rs`)
+### 6. Bedrock (`crates/codegg-providers/src/bedrock.rs`)
 
 Amazon AWS Bedrock implementation.
 
@@ -338,7 +338,7 @@ Amazon AWS Bedrock implementation.
 - `anthropic.claude-3-5-sonnet-20241022-v2:0` (200K ctx)
 - `meta.llama3-1-405b-instruct-v1:0` (128K ctx)
 
-### 7. OpenRouter (`src/provider/openrouter.rs`)
+### 7. OpenRouter (`crates/codegg-providers/src/openrouter.rs`)
 
 OpenRouter aggregator. Adds `HTTP-Referer` and `X-Title` headers.
 
@@ -347,7 +347,7 @@ OpenRouter aggregator. Adds `HTTP-Referer` and `X-Title` headers.
 - `openai/gpt-4.1` (1M ctx)
 - `google/gemini-2.5-pro` (1M ctx)
 
-### 8. OpenAI Compatible (`src/provider/openai_compatible.rs`)
+### 8. OpenAI Compatible (`crates/codegg-providers/src/openai_compatible.rs`)
 
 Generic OpenAI-compatible API provider. Used as base for many providers.
 
@@ -388,13 +388,13 @@ methods exist:
 
 #### Auth path through the resolver
 
-`register_builtin_with_config` (`src/provider/mod.rs:501`) wires the user
+`register_builtin_with_config` (`crates/codegg-providers/src/provider_core.rs`) wires the user
 credential store into registration by calling
 `CredentialStore::at_default_location()` once and threading
 `Arc<CredentialStore>` into each registration helper. The helpers are:
 
 - `resolve_provider_credential(provider_id, cfg, env_var, store)` — a single
-  helper in `src/provider/mod.rs` that builds a `ResolverContext` and calls
+  helper in `crates/codegg-providers/src/provider_core.rs` that builds a `ResolverContext` and calls
   `AuthResolver::resolve`. Returns the full `ResolvedAuth` (not just the
   secret) so the caller can inspect the source.
 - `register_credential_provider(...)` — factories that accept a `Credential`
@@ -435,7 +435,7 @@ These `tracing::debug!` / `tracing::warn!` lines log only
 lines that touch auth must follow the same rule — see
 `architecture/auth.md` for the security policy.
 
-### 9. Copilot (`src/provider/copilot.rs`)
+### 9. Copilot (`crates/codegg-providers/src/copilot.rs`)
 
 GitHub Copilot implementation. Wraps `OpenAiCompatibleProvider`.
 
@@ -449,7 +449,7 @@ GitHub Copilot implementation. Wraps `OpenAiCompatibleProvider`.
 - `copilot/o3-mini` (200K ctx, 100K output)
 - `copilot/claude-sonnet-4` (200K ctx)
 
-### 10. Cloudflare (`src/provider/cloudflare.rs`)
+### 10. Cloudflare (`crates/codegg-providers/src/cloudflare.rs`)
 
 Cloudflare Workers AI. Wraps `OpenAiCompatibleProvider`.
 
@@ -461,7 +461,7 @@ Cloudflare Workers AI. Wraps `OpenAiCompatibleProvider`.
 - `@cf/meta/llama-3.1-8b-instruct` (128K ctx)
 - `@cf/qwen/qwen1.5-14b-chat-awq` (32K ctx)
 
-### 11. GitLab (`src/provider/gitlab.rs`)
+### 11. GitLab (`crates/codegg-providers/src/gitlab.rs`)
 
 GitLab AI gateway. Wraps `OpenAiCompatibleProvider`.
 
@@ -473,7 +473,7 @@ GitLab AI gateway. Wraps `OpenAiCompatibleProvider`.
 - `gitlab/claude-sonnet-4` (200K ctx)
 - `gitlab/gpt-4o` (128K ctx)
 
-### 12. Codegg Zen (`src/provider/opencode_zen.rs`)
+### 12. Codegg Zen (`crates/codegg-providers/src/opencode_zen.rs`)
 
 Codegg's own Zen service implementation. Not based on OpenAiCompatible.
 
@@ -487,7 +487,7 @@ Codegg's own Zen service implementation. Not based on OpenAiCompatible.
 - `nemotron-3-super-free` (128K ctx, 32K output) - Free
 - `qwen3.6-plus-free` (128K ctx, 32K output) - Free
 
-### 13. Additional Providers (`src/provider/additional.rs`)
+### 13. Additional Providers (`crates/codegg-providers/src/additional.rs`)
 
 Factory functions for additional OpenAI-compatible providers. All
 OpenAI-compatible factories take a `Credential` (preserving
@@ -521,7 +521,7 @@ minimax-M2.7 / 2.5 / 2.1 series.
 
 ## FallbackProvider with Circuit Breaker
 
-### FallbackProvider (`src/provider/fallback.rs:8-31`)
+### FallbackProvider (`crates/codegg-providers/src/fallback.rs:8-31`)
 
 ```rust
 pub struct FallbackProvider {
@@ -542,7 +542,7 @@ pub struct FallbackProvider {
 6. If not retryable: returns error immediately
 7. If all fail: returns last error
 
-### Circuit Breaker (`src/resilience/circuit.rs:44-186`)
+### Circuit Breaker (`crates/codegg-providers/src/circuit.rs:42`)
 
 ```rust
 pub struct CircuitBreaker {
@@ -570,7 +570,7 @@ pub enum CircuitState {
 
 ## Model Discovery and Catalog
 
-### ModelCatalog (`src/provider/catalog.rs:5-109`)
+### ModelCatalog (`crates/codegg-providers/src/catalog.rs:5-109`)
 
 ```rust
 pub struct ModelCatalog {
@@ -586,7 +586,7 @@ pub struct ModelCatalog {
 - 1-hour cache TTL
 - `merge()` method to combine models from multiple sources
 
-### Embedded Models (`src/provider/models.rs:3-46`)
+### Embedded Models (`crates/codegg-providers/src/models.rs:3-46`)
 
 ```rust
 pub fn embedded_models() -> Vec<ModelInfo>
@@ -598,7 +598,7 @@ Returns free tier models:
 - Nemotron 3 Super Free - opencode_zen
 - Qwen3.6 Plus Free - opencode_zen
 
-### ModelDiscoveryService (`src/provider/discovery.rs:9-265`)
+### ModelDiscoveryService (`crates/codegg-providers/src/discovery.rs:9-265`)
 
 ```rust
 pub struct ModelDiscoveryService {
@@ -616,7 +616,7 @@ pub struct ModelDiscoveryService {
 - Calls `provider.discover_models()` on each provider
 - Handles database persistence
 
-### ProviderCache (`src/provider/cache.rs:15-83`)
+### ProviderCache (`crates/codegg-providers/src/cache.rs:15-83`)
 
 Simple in-memory cache for provider responses.
 
@@ -630,11 +630,11 @@ pub struct ProviderCache {
 - TTL per entry
 - `evict_expired()` method to remove expired entries
 
-## SSE Parsing (`src/provider/sse_parser.rs`)
+## SSE Parsing (`crates/codegg-providers/src/sse_parser.rs`)
 
 Handles parsing of Server-Sent Events from various providers.
 
-### SseParser (`src/provider/sse_parser.rs:16-382`)
+### SseParser (`crates/codegg-providers/src/sse_parser.rs:16-382`)
 
 ```rust
 pub struct SseParser {
@@ -661,7 +661,7 @@ The parser preserves state across chunks via special markers in the buffer:
 - `\n__TC__:{json}` - Queued tool calls
 - `\n__OAI_STATE__:{json}` - OpenAI tool state for multi-part tool calls
 
-## Text Tool Parser (`src/provider/text_tool_parser.rs`)
+## Text Tool Parser (`crates/codegg-providers/src/text_tool_parser.rs`)
 
 Parses plain text responses as potential tool calls via regex patterns.
 
@@ -715,7 +715,7 @@ pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>>
 | Google | `{"name": ..., "description": ..., "parameters": ...}` wrapped in `function_declarations` |
 | Bedrock | `{"toolSpec": {"name": ..., "description": ..., "inputSchema": {"json": ...}}}` |
 
-## HTTP Client Configuration (`src/provider/mod.rs:46-56`)
+## HTTP Client Configuration (`crates/codegg-providers/src/provider_core.rs`)
 
 ```rust
 pub fn create_http_client() -> reqwest::Client {
@@ -804,25 +804,25 @@ that behavior.
 
 | File | Purpose |
 |------|---------|
-| `crates/codegg-providers/src/provider/mod.rs` | Provider trait, registry, core types, registration |
-| `crates/codegg-providers/src/provider/anthropic.rs` | Anthropic API implementation |
-| `crates/codegg-providers/src/provider/openai.rs` | OpenAI API implementation |
-| `crates/codegg-providers/src/provider/google.rs` | Google Generative AI implementation |
-| `crates/codegg-providers/src/provider/azure.rs` | Azure OpenAI implementation |
-| `crates/codegg-providers/src/provider/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
-| `crates/codegg-providers/src/provider/bedrock.rs` | AWS Bedrock with SigV4 signing |
-| `crates/codegg-providers/src/provider/openrouter.rs` | OpenRouter aggregator |
-| `crates/codegg-providers/src/provider/openai_compatible.rs` | Generic OpenAI-compatible provider |
-| `crates/codegg-providers/src/provider/copilot.rs` | GitHub Copilot |
-| `crates/codegg-providers/src/provider/cloudflare.rs` | Cloudflare Workers AI |
-| `crates/codegg-providers/src/provider/gitlab.rs` | GitLab AI |
-| `crates/codegg-providers/src/provider/opencode_zen.rs` | Codegg Zen service |
-| `crates/codegg-providers/src/provider/additional.rs` | Additional provider factories |
-| `crates/codegg-providers/src/provider/fallback.rs` | Fallback provider with circuit breaker |
-| `crates/codegg-providers/src/provider/catalog.rs` | Model catalog with live fetch |
-| `crates/codegg-providers/src/provider/discovery.rs` | Model discovery service with DB cache |
-| `crates/codegg-providers/src/provider/models.rs` | Embedded model definitions |
-| `crates/codegg-providers/src/provider/sse_parser.rs` | SSE parsing for streaming responses |
-| `crates/codegg-providers/src/provider/text_tool_parser.rs` | Text-based tool call parsing |
-| `crates/codegg-providers/src/provider/cache.rs` | Provider response cache |
+| `crates/codegg-providers/crates/codegg-providers/src/provider_core.rs` | Provider trait, registry, core types, registration |
+| `crates/codegg-providers/crates/codegg-providers/src/anthropic.rs` | Anthropic API implementation |
+| `crates/codegg-providers/crates/codegg-providers/src/openai.rs` | OpenAI API implementation |
+| `crates/codegg-providers/crates/codegg-providers/src/google.rs` | Google Generative AI implementation |
+| `crates/codegg-providers/crates/codegg-providers/src/azure.rs` | Azure OpenAI implementation |
+| `crates/codegg-providers/crates/codegg-providers/src/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
+| `crates/codegg-providers/crates/codegg-providers/src/bedrock.rs` | AWS Bedrock with SigV4 signing |
+| `crates/codegg-providers/crates/codegg-providers/src/openrouter.rs` | OpenRouter aggregator |
+| `crates/codegg-providers/crates/codegg-providers/src/openai_compatible.rs` | Generic OpenAI-compatible provider |
+| `crates/codegg-providers/crates/codegg-providers/src/copilot.rs` | GitHub Copilot |
+| `crates/codegg-providers/crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI |
+| `crates/codegg-providers/crates/codegg-providers/src/gitlab.rs` | GitLab AI |
+| `crates/codegg-providers/crates/codegg-providers/src/opencode_zen.rs` | Codegg Zen service |
+| `crates/codegg-providers/crates/codegg-providers/src/additional.rs` | Additional provider factories |
+| `crates/codegg-providers/crates/codegg-providers/src/fallback.rs` | Fallback provider with circuit breaker |
+| `crates/codegg-providers/crates/codegg-providers/src/catalog.rs` | Model catalog with live fetch |
+| `crates/codegg-providers/crates/codegg-providers/src/discovery.rs` | Model discovery service with DB cache |
+| `crates/codegg-providers/crates/codegg-providers/src/models.rs` | Embedded model definitions |
+| `crates/codegg-providers/crates/codegg-providers/src/sse_parser.rs` | SSE parsing for streaming responses |
+| `crates/codegg-providers/crates/codegg-providers/src/text_tool_parser.rs` | Text-based tool call parsing |
+| `crates/codegg-providers/crates/codegg-providers/src/cache.rs` | Provider response cache |
 | `crates/codegg-providers/src/circuit.rs` | Circuit breaker implementation |
