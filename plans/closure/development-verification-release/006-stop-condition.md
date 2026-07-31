@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 006 — Stop Condition
 
-Status: **blocked**
+Status: **resolved; superseded by Provider Connections M006 closure**
 
 Source implementation plan:
 
@@ -12,17 +12,26 @@ Source subsystem roadmap:
 - `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md`
 
 Repository baseline reviewed: `d58a37a6160f18a5b336ca7bbc0e32e0f057b755`
-Reviewed head (with M006 in-scope work and M018 fixture correction applied): pending M018 commit
-on `main`, with M006 corrections to `scripts/check-tokio-test-flavors.py`,
+Reviewed head (with M006 in-scope work and M018 fixture correction applied):
+`139c832c986106f31304d845860a66b17ba17099`, with M006 corrections to `scripts/check-tokio-test-flavors.py`,
 `scripts/tests/test_check_tokio_test_flavors.py`,
 `plans/closure/development-verification-release/005-package-inventory.md`,
 `plans/closure/development-verification-release/006-package-inventory.md`,
 `plans/registry.md`,
 `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md`,
 `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md`,
-and `RELEASING.md`.
+and `RELEASING.md`. Provider Connections M006 subsequently reconciled the
+storage-layout assertion and supplied the final green evidence recorded below.
 
-## 1. Why this milestone is blocked
+Resolution evidence: local `scripts/verify.sh full` passed on the reviewed
+head; hosted GitHub Actions `verify` run `30603541350`, job `91071065732`,
+passed for the exact same executable revision.
+
+## 1. Historical blocker (resolved)
+
+The following sections preserve the original stop-condition evidence for
+traceability. They are no longer an active blocker: Provider Connections M006
+reconciled the storage assertion and supplied green local and hosted evidence.
 
 M006's exit conditions require `scripts/verify.sh full` to exit zero on the
 final implementation SHA. Running `scripts/verify.sh full` on the M006

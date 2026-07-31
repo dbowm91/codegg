@@ -1,6 +1,6 @@
 # Provider Connections Milestone 006 — Storage Layout Assertion and Verification Reconciliation
 
-Status: active
+Status: closed; see `plans/closure/provider-connections/006-status.md`
 
 Repository baseline:
 
