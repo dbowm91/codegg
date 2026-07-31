@@ -19,7 +19,7 @@ Implementation commits:
 - `5fdb9da` — context-plan and cache convergence
 - `1f553c1` — ACP v1 daemon/projection adapter
 - `37b11758` — M010 documentation and readiness reconciliation
-- `30f788d3` — this record and final roadmap/documentation reconciliation
+- `297bf2e2` — closure record and final roadmap/documentation reconciliation
 
 ## 1. Executive finding
 
