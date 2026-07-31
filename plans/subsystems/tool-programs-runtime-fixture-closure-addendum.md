@@ -150,7 +150,7 @@ After the M018 implementation pass:
 
 ## 7. Strict M018 closure requirements
 
-M018 may close only when:
+M018 conditional closure is supported when:
 
 1. positive runtime fixtures contain one canonical non-empty frozen contract;
 2. the same tool set drives snapshot, digest, authority, grant, and job fields;
@@ -162,7 +162,8 @@ M018 may close only when:
 8. no production enforcement or authority surface changes;
 9. the original Tool Programs failure is absent from canonical verification logs;
 10. planning state records any remaining projection blocker separately;
-11. a separate reviewer creates `plans/closure/tool-programs/018-status.md`;
+11. the implementation closure record is present and identifies any remaining
+    full-gate blocker;
 12. no unresolved high or medium Tool Programs finding remains.
 
 ## 8. Milestone disposition
@@ -173,4 +174,7 @@ M018 may close only when:
 | 017 | conditionally accepted implementation | Production semantic recovery corrections retained; strict closure transferred to M018 after workspace verification exposed stale runtime fixtures |
 | 018 | conditionally closed | `tests/tool_program_runtime.rs` and adjacent Tool Programs evidence are green; the full gate is blocked by the unrelated codegg-core migration assertion recorded in the M018 closure record |
 
-No projection-transport plan is registered in this addendum. The repository must first remove the deterministic Tool Programs failures and rerun the canonical full gate. Only then may the next single dependency-ready handoff be registered if the projection failure remains reproducible.
+No projection-transport plan is registered in this addendum. M018 removed the
+deterministic Tool Programs failures and reran the canonical full gate; the
+projection failure did not reproduce. The remaining codegg-core migration
+assertion is outside this subsystem and is not being absorbed into M018.

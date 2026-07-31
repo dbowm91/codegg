@@ -52,7 +52,7 @@ M017 production implementation landed and is conditionally accepted. `plans/clos
 
 M018 implementation has landed. `plans/closure/tool-programs/018-status.md` records conditional closure pending independent review.
 
-Development verification and release M006 in-scope work has landed. `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` remains authoritative until Tool Programs M018 lands, the canonical full gate is rerun, and any remaining projection-owned failure is separately resolved.
+Development verification and release M006 in-scope work has landed. `plans/closure/development-verification-release/006-status.md` must remain absent. The blocker record at `plans/closure/development-verification-release/006-stop-condition.md` remains authoritative until the separate codegg-core migration assertion is reconciled and a hosted `verify` run is green.
 
 ## Blocked work
 
