@@ -3,7 +3,7 @@ use crate::error::ProviderError;
 use crate::sse_parser::parse_openai_buffer;
 use crate::{
     assistant_text_content_value, create_http_client, openai_tool_arguments_value, ChatRequest,
-    ContentPart, EventStream, Message, ModelInfo, Provider, MAX_BUFFER_SIZE,
+    ContentPart, EventStream, Message, ModelInfo, Provider, ReasoningVisibility, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures::stream::unfold;
@@ -98,6 +98,7 @@ impl OpenAiCompatibleProvider {
                                     "image_url": {"url": image_url.url}
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!(""),
                         })
                         .collect();
                     let content_val = if parts.len() == 1
@@ -148,6 +149,22 @@ impl OpenAiCompatibleProvider {
                         assistant_msg["tool_calls"] = serde_json::json!(tool_calls_json);
                     }
 
+                    // Laguna's OpenAI-compatible contract requires the
+                    // provider-private reasoning_content field on the next
+                    // assistant turn. Other models must not receive it.
+                    if request.model.to_ascii_lowercase().contains("laguna") {
+                        if let Some(reasoning) = content.iter().find_map(|part| match part {
+                            ContentPart::Reasoning { text, visibility }
+                                if *visibility == ReasoningVisibility::Private =>
+                            {
+                                Some(text.as_str())
+                            }
+                            _ => None,
+                        }) {
+                            assistant_msg["reasoning_content"] = json!(reasoning);
+                        }
+                    }
+
                     messages.push(assistant_msg);
                 }
                 Message::Tool {
@@ -174,6 +191,11 @@ impl OpenAiCompatibleProvider {
             "stream": true,
             "tools": tools_json,
         });
+        if request.model.to_ascii_lowercase().contains("laguna") {
+            body["chat_template_kwargs"] = json!({
+                "enable_thinking": request.thinking_budget != Some(0),
+            });
+        }
         let has_tools = request
             .tools
             .as_ref()

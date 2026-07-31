@@ -1,0 +1,28 @@
+schema_version = 1
+
+[adapter]
+id = "google-long-context"
+version = 1
+priority = 10
+description = "Gemini long-context models"
+
+[[match]]
+provider = ["google", "gemini"]
+model_regex = "(?i)gemini"
+
+[profile]
+prompt_profile = "long_context_planner"
+family = "google"
+context_window = 512000
+max_output_tokens = 16384
+tool_call_reliability = "high"
+instruction_adherence = "high"
+patch_reliability = "high"
+supports_late_system_messages = true
+max_parallel_tools = 8
+
+[tools]
+format = "gemini_function"
+tool_choice = "auto"
+max_parallel = 8
+

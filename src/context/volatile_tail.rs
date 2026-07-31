@@ -210,6 +210,7 @@ pub fn estimate_message_tokens(msg: &Message) -> usize {
             .iter()
             .map(|p| match p {
                 ContentPart::Text { text } => estimate_tokens(text.as_ref()),
+                ContentPart::Reasoning { text, .. } => estimate_tokens(text.as_ref()),
                 _ => 10, // image placeholder
             })
             .sum(),
@@ -221,6 +222,7 @@ pub fn estimate_message_tokens(msg: &Message) -> usize {
                 .iter()
                 .map(|p| match p {
                     ContentPart::Text { text } => estimate_tokens(text.as_ref()),
+                    ContentPart::Reasoning { text, .. } => estimate_tokens(text.as_ref()),
                     _ => 10,
                 })
                 .sum();

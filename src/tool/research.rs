@@ -15,9 +15,7 @@
 //! a clear "research service not configured" error.
 
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
 use serde_json::json;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::error::ToolError;
@@ -28,11 +26,6 @@ use crate::tool::{Tool, ToolCategory};
 /// Default `ResearchService` for the no-provider case. The agent loop
 /// may override this by calling [`ResearchTool::set_service`] after
 /// constructing the registry.
-static DEFAULT_SERVICE: Lazy<Arc<ResearchService>> = Lazy::new(|| {
-    let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    Arc::new(ResearchService::new(project_root))
-});
-
 pub struct ResearchTool {
     service: Arc<ResearchService>,
     timeout_secs: u64,
@@ -46,15 +39,25 @@ impl ResearchTool {
         }
     }
 
-    /// Build a tool that uses the lazily-initialized default service
-    /// rooted at the current working directory. Used by
-    /// `ToolRegistry::with_defaults()` when no explicit service is
-    /// provided.
+    /// Build a test/legacy tool rooted at the process cwd.
+    ///
+    /// Daemon turns must use [`Self::for_execution`] so workspace identity is
+    /// explicit. Keeping this constructor available preserves the standalone
+    /// tool and unit-test API without allowing it to leak into turn setup.
     pub fn with_default_service() -> Self {
         Self {
-            service: DEFAULT_SERVICE.clone(),
+            service: Arc::new(ResearchService::new(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            )),
             timeout_secs: 600,
         }
+    }
+
+    /// Construct a research tool from daemon-owned workspace context.
+    pub fn for_execution(execution: &codegg_core::workspace::ExecutionContext) -> Self {
+        Self::new(Arc::new(ResearchService::new(
+            execution.workspace_root.clone(),
+        )))
     }
 
     pub fn with_timeout(mut self, secs: u64) -> Self {

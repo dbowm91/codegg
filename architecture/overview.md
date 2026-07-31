@@ -73,6 +73,9 @@ The tool layer defines the ~30 built-in tools the agent can invoke, the backend 
 | Git Network | Network operations (fetch/pull/push/remote), env hardening, URL credential redaction | `git_network_ops.rs`, `git_network_policy.rs` | [git.md](git.md) |
 | Git Recovery | In-progress operation detection, continue/abort/skip with cross-operation misuse protection | `git_recovery.rs`, `git_run_store.rs` | [git.md](git.md) |
 | Git Mutation Projector | Formats git mutation results for TUI and model consumption | `git_mutation_projector.rs` | [git.md](git.md) |
+| Tool Programs | Durable program domain, storage, call ledger — restricted-Python programs with broker adapter, child-job composition, lineage tracking, replay, corrective closure (M006-M017) | `tool_program.rs`, `tool_program_context.rs`, `tool_program_ledger.rs`, `tool_program_result.rs`, `tool_program_source.rs`, `program_cache.rs`, `program_manifest.rs` | [tool_programs.md](tool_programs.md) |
+| Tool Broker | Single canonical execution boundary for all production tool calls — ordered policy pipeline, typed results, direct + programmatic paths (M011/M012) | `broker.rs`, `contract.rs` | [tool_broker.md](tool_broker.md) |
+| Tool Program Language | Restricted-Python language specification — parse-only pipeline, fail-closed, bounded execution, deterministic IR | `crates/codegg-core/src/tool_program/` | [tool_program_language.md](tool_program_language.md) |
 
 ### TUI Layer — User Interface
 
@@ -101,6 +104,10 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
 | Bus | Event bus publish/subscribe (45 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
+| Projection | Session projection contract — frontend-neutral derived view, deterministic canonical reducer, scoped subscriptions, durable replay (M1-M2) | `projection/` (codegg-protocol), `projection_replay/` (codegg-core) | [projection.md](projection.md) |
+| Project Catalog | Daemon-owned project catalog — list, get, register, archive, restore; path-independent identity, lifecycle management | `project_catalog.rs`, `project_storage.rs` (codegg-core) | [project_catalog.md](project_catalog.md) |
+| Identity | Typed domain identity foundation — opaque string newtypes with UUIDv4, validated parsing, lexical contract | `identity.rs` (codegg-core) | [identity.md](identity.md) |
+| Project Identity Storage | Durable logical-project and repository authority — workspace/session binding, reconciliation, migration | `project_storage.rs` (codegg-core) | [project_identity_storage.md](project_identity_storage.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` | [exec.md](exec.md) |
 
 ### Provider Layer — LLM Backends
@@ -174,15 +181,15 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Item | Count | Source |
 |------|-------|--------|
 | Tools (default registry) | ~38 | `src/tool/mod.rs:with_options()` |
-| LSP servers | 39 | `crates/egglsp/src/server.rs` |
+| LSP servers | 40 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
-| Database tables | 49 | `crates/codegg-core/src/session/schema.rs` |
-| DB migrations | 32 | `crates/codegg-core/src/migration.rs` |
-| Integration tests | 99 | `tests/` |
-| Architecture docs | 67 | `architecture/` |
+| Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
+| DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
+| Integration tests | 160 | `tests/` |
+| Architecture docs | 69 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
@@ -206,7 +213,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (19+, 23 migrations)                                       │
+│ Tables (52+, 35 migrations)                                       │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
@@ -301,6 +308,9 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [MCP](mcp.md) — Model Context Protocol client
 - [Search Backend](search_backend.md) — Web search/fetch with eggsearch backend
 - [Plugin](plugin.md) — WASM plugin system (Wasmtime)
+- [Tool Programs](tool_programs.md) — Durable program domain, storage, call ledger (M006-M017)
+- [Tool Broker](tool_broker.md) — Single canonical execution boundary for tool calls
+- [Tool Program Language](tool_program_language.md) — Restricted-Python language specification
 
 ### User Interface
 - [TUI](tui.md) — Ratatui terminal UI, async commands, state management
@@ -319,6 +329,10 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Storage](storage.md) — SQLite initialization, connection pooling
 - [Bus](bus.md) — Event bus, permission/question registries
 - [Error](error.md) — Centralized error handling
+- [Projection](projection.md) — Session projection contract, deterministic reducer
+- [Project Catalog](project_catalog.md) — Daemon-owned project catalog service
+- [Identity](identity.md) — Typed domain identity foundation
+- [Project Identity Storage](project_identity_storage.md) — Project/repository identity, binding, reconciliation
 
 ### Providers and Config
 - [Provider](provider.md) — LLM provider implementations (20 auto-registered)

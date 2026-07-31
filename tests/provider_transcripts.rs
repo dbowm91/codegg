@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use codegg::provider::{ChatRequest, ContentPart, Message, ToolCall, ToolDefinition};
+    use codegg::provider::{
+        ChatRequest, ContentPart, Message, ReasoningVisibility, ToolCall, ToolDefinition,
+    };
     use std::sync::Arc;
 
     fn make_chat_request(messages: Vec<Message>) -> ChatRequest {
@@ -588,6 +590,99 @@ mod tests {
         let args: serde_json::Value =
             serde_json::from_str(func.get("arguments").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(args.get("value").unwrap().as_str().unwrap(), "test");
+    }
+
+    #[test]
+    fn laguna_two_round_history_preserves_private_reasoning_and_aliases() {
+        use codegg::provider::openai_compatible::{
+            OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+        };
+
+        let provider = OpenAiCompatibleProvider::new(
+            "local",
+            "Laguna",
+            OpenAiCompatibleConfig {
+                credential: codegg::auth::Credential::api_key("test-key"),
+                base_url: "http://localhost:8000/v1".to_string(),
+                auth_header: "Authorization".to_string(),
+                extra_headers: Vec::new(),
+                models: Vec::new(),
+                tool_choice: codegg::provider::openai_compatible::ToolChoice::Auto,
+            },
+        );
+        let private_reasoning = |text: &str| ContentPart::Reasoning {
+            text: text.to_string().into(),
+            visibility: ReasoningVisibility::Private,
+        };
+        let request = ChatRequest {
+            messages: vec![
+                Message::User {
+                    content: vec![text_content("Run uname")],
+                },
+                Message::Assistant {
+                    content: vec![private_reasoning("round one plan")],
+                    tool_calls: vec![tc("call-1", "shell", serde_json::json!({"cmd": "uname"}))],
+                },
+                tool_msg("call-1", "Darwin"),
+                Message::Assistant {
+                    content: vec![private_reasoning("round two conclusion")],
+                    tool_calls: vec![],
+                },
+            ],
+            model: "poolside/Laguna-M.1".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+        let body = provider.build_body(&request);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[1]["reasoning_content"], "round one plan");
+        assert_eq!(messages[3]["reasoning_content"], "round two conclusion");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(messages[1]["tool_calls"][0]["function"]["name"], "shell");
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"]["arguments"],
+            "{\"cmd\":\"uname\"}"
+        );
+    }
+
+    #[test]
+    fn generic_openai_compatible_requests_do_not_emit_private_reasoning() {
+        use codegg::provider::openai_compatible::{
+            OpenAiCompatibleConfig, OpenAiCompatibleProvider,
+        };
+        let provider = OpenAiCompatibleProvider::new(
+            "local",
+            "Generic",
+            OpenAiCompatibleConfig {
+                credential: codegg::auth::Credential::api_key("test-key"),
+                base_url: "http://localhost:8000/v1".to_string(),
+                auth_header: "Authorization".to_string(),
+                extra_headers: Vec::new(),
+                models: Vec::new(),
+                tool_choice: codegg::provider::openai_compatible::ToolChoice::Auto,
+            },
+        );
+        let request = ChatRequest {
+            messages: vec![Message::Assistant {
+                content: vec![ContentPart::Reasoning {
+                    text: "must stay private".to_string().into(),
+                    visibility: ReasoningVisibility::Private,
+                }],
+                tool_calls: vec![],
+            }],
+            model: "qwen3".to_string(),
+            ..make_chat_request(Vec::new())
+        };
+        let message = &provider.build_body(&request)["messages"][0];
+        assert!(message.get("reasoning_content").is_none());
+        assert_eq!(message["content"], "");
     }
 
     #[test]

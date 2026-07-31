@@ -1,0 +1,32 @@
+schema_version = 1
+
+[adapter]
+id = "local-strict"
+version = 1
+priority = 5
+description = "Local and open-weight models"
+
+[[match]]
+provider = ["local", "ollama", "lmstudio", "vllm", "sglang"]
+model_regex = "(?i)(local|ollama|qwen|qwq|deepseek|kimi)"
+
+[profile]
+prompt_profile = "local_strict"
+family = "local"
+context_window = 32000
+max_output_tokens = 4096
+tool_call_reliability = "medium"
+instruction_adherence = "medium"
+patch_reliability = "medium"
+supports_late_system_messages = false
+prefers_user_control_messages = true
+prefers_small_patches = true
+requires_explicit_tool_contract = true
+requires_post_tool_continue_nudge = true
+max_parallel_tools = 1
+
+[tools]
+format = "openai_function"
+tool_choice = "auto"
+max_parallel = 1
+require_structured_calls = true

@@ -183,6 +183,13 @@ pub trait Tool: Send + Sync {
         true
     }
 
+    /// Whether the registered implementation has a functional execution
+    /// backend for this turn.  Most native tools are always callable; task
+    /// overrides this because its default store has no child spawner.
+    fn has_functional_backend(&self) -> bool {
+        true
+    }
+
     /// Return the tool's contract metadata.
     ///
     /// The default implementation builds a conservative legacy
@@ -341,7 +348,16 @@ impl ToolRegistry {
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
-        registry.register(crate::tool::research::ResearchTool::with_default_service());
+        let research_tool = options
+            .workspace_root
+            .as_ref()
+            .map(|root| {
+                crate::tool::research::ResearchTool::new(std::sync::Arc::new(
+                    crate::research::service::ResearchService::new(root.clone()),
+                ))
+            })
+            .unwrap_or_else(crate::tool::research::ResearchTool::with_default_service);
+        registry.register(research_tool);
 
         // Evidence/search wrapper tools — only register when evidence backend
         // is enabled AND backend mode is "eggsearch" (these tools require

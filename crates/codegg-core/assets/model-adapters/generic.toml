@@ -1,0 +1,26 @@
+schema_version = 1
+
+[adapter]
+id = "generic"
+version = 1
+priority = -1000
+description = "Conservative fallback for unknown models"
+
+[[match]]
+
+[profile]
+prompt_profile = "default"
+family = "default"
+context_window = 128000
+max_output_tokens = 8192
+tool_call_reliability = "medium"
+instruction_adherence = "medium"
+patch_reliability = "medium"
+supports_late_system_messages = true
+max_parallel_tools = 1
+
+[tools]
+format = "openai_function"
+tool_choice = "auto"
+max_parallel = 1
+

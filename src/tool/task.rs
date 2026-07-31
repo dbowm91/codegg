@@ -368,6 +368,7 @@ pub struct TaskTool {
     parent_model: Option<String>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     workspace_root: Option<std::path::PathBuf>,
+    parent_allowed_paths: Vec<String>,
 }
 
 impl TaskTool {
@@ -386,6 +387,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            parent_allowed_paths: Vec::new(),
         }
     }
 
@@ -403,6 +405,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            parent_allowed_paths: Vec::new(),
         }
     }
 
@@ -423,6 +426,12 @@ impl TaskTool {
     ) -> Self {
         self.submission = Some(submission);
         self.workspace_root = Some(workspace_root);
+        self
+    }
+
+    /// Restrict descendant path requests to the scope inherited by this task.
+    pub fn with_parent_allowed_paths(mut self, paths: Vec<String>) -> Self {
+        self.parent_allowed_paths = paths;
         self
     }
 
@@ -495,6 +504,10 @@ impl Tool for TaskTool {
         ToolCategory::Mutating
     }
 
+    fn has_functional_backend(&self) -> bool {
+        self.spawner.is_some() || self.submission.is_some()
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
 
@@ -521,10 +534,7 @@ impl Tool for TaskTool {
 
             let agent = input["agent"].as_str().unwrap_or("general").to_string();
 
-            let mut denied_tools = self.denied_tools.clone();
-            if !denied_tools.contains(&"task".to_string()) {
-                denied_tools.push("task".to_string());
-            }
+            let denied_tools = self.denied_tools.clone();
 
             let allowed_paths: Vec<String> = input["allowed_paths"]
                 .as_array()
@@ -534,6 +544,23 @@ impl Tool for TaskTool {
                         .collect()
                 })
                 .unwrap_or_default();
+
+            let allowed_paths = if self.parent_allowed_paths.is_empty() {
+                allowed_paths
+            } else if allowed_paths.is_empty() {
+                self.parent_allowed_paths.clone()
+            } else {
+                if allowed_paths.iter().any(|requested| {
+                    !self.parent_allowed_paths.iter().any(|parent| {
+                        requested == parent || requested.starts_with(&format!("{parent}/"))
+                    })
+                }) {
+                    return Err(ToolError::Execution(
+                        "child allowed_paths exceed the parent path scope".to_string(),
+                    ));
+                }
+                allowed_paths
+            };
 
             if let (Some(submission), Some(workspace_root)) =
                 (self.submission.clone(), self.workspace_root.clone())

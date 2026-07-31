@@ -1,0 +1,61 @@
+schema_version = 1
+
+[adapter]
+id = "poolside-laguna-agentic"
+version = 1
+priority = 40
+description = "Poolside Laguna agentic models with preserved reasoning and vLLM/SGLang requirements"
+
+[[match]]
+provider = ["local", "vllm", "sglang", "openai", "openai-compatible", "poolside"]
+model_regex = "(?i)laguna-(m|xs|s)"
+exclude_regex = "(?i)(base|embed)"
+
+[profile]
+prompt_profile = "local_strict"
+family = "poolside-laguna"
+context_window = 128000
+max_output_tokens = 16384
+tool_call_reliability = "high"
+instruction_adherence = "high"
+patch_reliability = "high"
+supports_late_system_messages = false
+prefers_user_control_messages = true
+requires_explicit_tool_contract = true
+requires_post_tool_continue_nudge = true
+max_parallel_tools = 1
+
+[tools]
+format = "openai_function"
+tool_choice = "auto"
+max_parallel = 1
+require_structured_calls = true
+
+[tools.rename]
+bash = "shell"
+
+[tools.arguments.shell]
+command = "cmd"
+
+[prompt]
+fragments = []
+control_role = "user"
+
+[recovery]
+malformed_tool_retry = 1
+no_action_turn_limit = 2
+restore_full_palette_on_missing_tool = true
+
+[server_requirements]
+tool_call_parser = "poolside_v1"
+reasoning_parser = "poolside_v1"
+auto_tool_choice = true
+
+[[transforms]]
+op = "set_request_field"
+field = "reasoning_content"
+
+[[transforms]]
+op = "set_thinking_parameter"
+field = "enable_thinking"
+value = "true"

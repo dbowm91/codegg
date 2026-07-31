@@ -14,7 +14,8 @@ src/context/
 ├── block.rs          # ContextBlock, ContextBlockKind, CacheClass, Lossiness
 ├── block_builder.rs  # ContextBlockBuilder — constructs blocks from runtime state
 ├── packer.rs         # pack() algorithm — sort by tier/priority, budget enforcement
-├── cache_stats.rs    # ContextCacheStats — per-model cache hit rate tracking
+├── plan.rs            # ContextPlan — canonical provider-facing request plan
+├── cache_stats.rs    # ContextCacheStats — bounded compound-identity tracking
 ├── tool_hash.rs      # tool_definitions_hash — deterministic toolset identity
 ├── usage_normalize.rs # NormalizedProviderUsage — provider-agnostic token normalization
 ├── effective_cost.rs  # EffectiveCostAnalysis — diagnostic-only cost recommendations
@@ -154,7 +155,8 @@ The `stable_prefix_tokens` and `volatile_tokens` fields allow callers to verify 
 
 ## ContextCacheStats (`cache_stats.rs`)
 
-Tracks per-model cache hit rates across turns:
+Tracks cache hit rates across turns under either a legacy key or the plan's
+bounded compound identity:
 
 ```rust
 pub struct CacheStatsEntry {
@@ -168,7 +170,8 @@ pub struct CacheStatsEntry {
 }
 ```
 
-- `record_usage(model_key, input_tokens, cached_tokens, output_tokens)` — called after each provider response.
+- `record_usage(model_key, input_tokens, cached_tokens, output_tokens)` — compatibility API.
+- `record_usage_with_identity(identity, input_tokens, cached_tokens, output_tokens)` — production API keyed by provider/model/adapter/compiler/tool-surface/mode.
 - `cache_hit_rate(model_key)` — returns `total_cached / total_input` (0.0–1.0).
 - `models()` — lists all tracked model keys.
 
@@ -176,14 +179,22 @@ Stats are session-local and in-memory. They allow the packer (and diagnostics) t
 
 **Note on cached-token telemetry**: Cached-token values are only reported by providers that support prompt caching (currently OpenAI and Anthropic). Other providers may report zero or omit cached tokens entirely. Cache stats for non-caching providers will show 0% hit rates, which is expected.
 
-## Agent Loop Integration (`src/agent/loop.rs`)
+## ContextPlan and Agent Loop Integration (`src/context/plan.rs`, `src/agent/loop.rs`)
+
+`ContextPlan` is the provider-facing source of truth. It is built after
+prompt/profile setup, palette policy, compaction, plugin transforms, and
+history hardening, and is applied immediately before every provider call.
+Full mode is lossless: `PlannedMessage.sequence` preserves chronological
+transcript order, including assistant tool calls and matching tool results.
+Tier lists are diagnostic/cache metadata and never reconstruct or reorder the
+provider message list. Diagnostics expose counts and hashes only.
 
 The packer is invoked via `observe_context_pack` (which calls the private `compute_context_pack_result` / `build_packer_candidates`) at these phases during a turn: InitialRequest, AfterToolResults, AfterCompaction, BeforeProviderCall, BeforeFinalization.
 
-1. **Build candidates**: `build_packer_candidates` (via `ContextBlockBuilder::build_all()` + transcript frame) constructs blocks from the current system prompt, model profile, tool definitions, context frame, goal, memory, todo, and control text. (Transcript messages User/Assistant/ToolResult are not yet emitted as live blocks; the packer sorts volatile blocks by priority/id only.)
+1. **Build candidates**: `build_packer_candidates` derives diagnostic candidates from the same `ContextPlan` used for the provider request, including ordered volatile transcript blocks.
 2. **Compute budget**: `ContextPackBudget` uses configured `max_stable_prefix_tokens` + `max_volatile_tokens` as total, minus reserved output (10K) and emergency margin (4K).
 3. **Pack**: `packer::pack(candidates, budget)` sorts and enforces budget (global tier/priority/id sort; no chronological transcript order preservation yet).
-4. **Observe only**: Diagnostics are logged (enriched with phase, tool hash, cache hit rate, slow-changing tokens, top omitted). No mutation occurs. The `observe_context_pack` helper never mutates the request.
+4. **Observe diagnostics**: The diagnostic packer may sort candidates for cost comparison, but never mutates or supplies the provider request. The request is supplied by `ContextPlan::apply_to_request`.
 
 ### Provider Usage Recording
 
@@ -197,9 +208,12 @@ The packer is invoked via `observe_context_pack` (which calls the private `compu
 
 This replaces the previous inline recording in `stream_once`, ensuring normalization is applied and the single recording point is easy to audit. Each successful provider response with usage increments `call_count` by one.
 
-## Observation Mode (Only Effective Mode)
+## Observation and Full Modes
 
-Active mutation is disabled for this pass. `observe_only` is forced internally; requesting `observe_only=false` emits a warning and runs as observe-only. No code path can replace system prompt content with packed frame text (the "Current session context:" replacement branch is removed).
+Full mode is the default provider mode and is lossless. Observation mode remains
+available for cost diagnostics. Legacy active context-packer mutation still
+warns; optional active behavior is limited to the conservative tool-palette
+policy with full-surface recovery.
 
 Observation/diagnostics are the only effective mode. Diagnostics run at multiple phases (InitialRequest, BeforeProviderCall, AfterToolResults, AfterCompaction, BeforeFinalization) via the private `observe_context_pack` helper (which calls `compute_context_pack_result` / `build_packer_candidates` internally). The helper never mutates the request.
 

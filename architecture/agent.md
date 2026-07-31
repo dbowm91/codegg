@@ -17,7 +17,7 @@ src/agent/
 ├── team.rs         # Team, TeamMessage, AgentRole - multi-agent coordination
 ├── teams.rs        # TeamManager, SharedTaskList, team tools (team_create, send_message, etc.)
 ├── mention.rs      # @mention parsing and agent filtering
-├── prompt.rs       # System prompt assembly, instruction file loading
+├── prompt.rs       # Canonical prompt compiler and instruction loading
 ├── task.rs         # BackgroundTask, BackgroundScheduler
 └── prompts/        # Provider-specific system prompts
     ├── anthropic.txt
@@ -29,6 +29,25 @@ src/agent/
     ├── kimi.txt
     └── trinity.txt
 ```
+
+### Canonical prompt compilation
+
+`PromptCompiler` is the single production entry point for system prompts.
+Root turns and descendant turns provide the same typed inputs: the resolved
+agent, model profile, capability names, plan-mode state, explicit execution
+identity, and (when available) the immutable `ProjectAssetSnapshot` and its
+pin. The compiler sorts capability metadata, emits deterministic prompt
+content, and records a versioned fingerprint. Its block result is retained
+for the future context-plan/cache contract while current provider requests
+use the flattened text.
+
+Agent files merge by default and may use `replace = true` for full
+replacement. Native TOML agents may use `extends = "<resolved-agent>"`;
+missing bases and self-inheritance fail closed. Resolution order is built-in,
+inheritance, global file, project file, config, then the runtime safety
+envelope. Remote instruction URLs are not fetched during compilation and are
+not inserted as placeholder content; a bounded asset-refresh owner must
+resolve them before they become effective instructions.
 
 ---
 
@@ -1013,6 +1032,25 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
 ```
 
 The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and `base_prompt_parts()` (used in `load_agent_prompt()` for production paths). It is appended after the role contract, giving subagents explicit guidance on response format.
+
+### Specialized research runtime
+
+When the resolved agent has `runtime_kind = research`, `DefaultTurnRuntime`
+builds a deterministic, bounded research plan before starting the ordinary
+agent loop. Quick lookups create no children; direct repository/spec questions
+use one investigator role; multi-source questions use at most two non-overlapping
+source scouts and one claim verifier. The plan is advisory evidence scope —
+the existing task tool, scheduler, permission checker, cancellation path, and
+agent loop remain authoritative.
+
+Research services are rooted from the daemon's explicit
+`ExecutionContext.workspace_root`; the production session registry never uses
+the process cwd to establish research identity. Child results use bounded
+source/evidence/claim records, source locators are normalized and deduplicated,
+and final reports must reference collected evidence and source records. Unknown
+citation references are rejected, conflicts and unresolved questions remain
+explicit, retrieved text is treated as untrusted data, and the built-in
+research agent denies shell, filesystem mutation, terminal, and commit tools.
 
 ---
 

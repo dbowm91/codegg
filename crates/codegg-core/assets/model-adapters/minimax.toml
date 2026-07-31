@@ -1,0 +1,39 @@
+schema_version = 1
+
+[adapter]
+id = "minimax-fast-executor"
+version = 1
+priority = 20
+description = "MiniMax models with conservative tool control"
+
+[[match]]
+provider = ["minimax"]
+model_regex = "(?i)minimax"
+exclude_regex = "(?i)-base($|/)"
+
+[profile]
+prompt_profile = "fast_executor"
+family = "minimax"
+context_window = 128000
+max_output_tokens = 8192
+tool_call_reliability = "medium"
+instruction_adherence = "medium"
+patch_reliability = "medium"
+supports_late_system_messages = false
+prefers_user_control_messages = true
+prefers_small_patches = true
+requires_explicit_tool_contract = true
+requires_post_tool_continue_nudge = true
+max_parallel_tools = 2
+
+[tools]
+format = "anthropic_tool"
+tool_choice = "auto"
+max_parallel = 2
+require_structured_calls = true
+
+[tools.rename]
+bash = "shell"
+
+[tools.arguments.shell]
+command = "cmd"

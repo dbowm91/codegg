@@ -764,6 +764,7 @@ mod tests {
             subagent: Some(crate::schema::SubagentConfig {
                 max_concurrent: Some(7),
                 max_depth: Some(3),
+                ..Default::default()
             }),
             templates: Some(templates),
             snapshot_config: Some(crate::schema::SnapshotConfig {

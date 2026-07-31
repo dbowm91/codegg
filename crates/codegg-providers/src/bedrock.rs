@@ -57,6 +57,7 @@ impl BedrockProvider {
                                     }
                                 })
                             }
+                            ContentPart::Reasoning { .. } => json!(""),
                         })
                         .collect();
                     messages.push(json!({"role": "user", "content": parts}));

@@ -160,6 +160,13 @@ Example: If global config has `api_key` and project config has `base_url`, the m
 - **Concatenation**: `instructions` (appended to list)
 - **Simple override**: all other fields via `merge_option!` macro (schema, version, log_level, model, small_model, medium_model, auto_route_models, default_agent, username, share, autoupdate, disabled_providers, enabled_providers, permission, compaction, subagent, skills, templates, layout, tools, formatter, lsp, snapshot, snapshot_config, plugin, enterprise, experimental, keybinds, vim_mode, hooks, notifications, catalog)
 
+The optional `[subagent]` section bounds nested delegation. `enabled` is a
+global kill switch; `allowed_agents`/`denied_agents` constrain targets;
+`max_depth`, `max_direct_children`, `max_active_descendants`,
+`max_concurrent`, `max_total_child_tool_calls`, and
+`wall_clock_timeout_secs` bound the shared pool. Agents must still explicitly
+grant `task = "allow"`; prompts cannot enable delegation by themselves.
+
 ## Components
 
 ### schema.rs - Config Definitions

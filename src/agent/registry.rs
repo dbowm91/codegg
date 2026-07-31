@@ -16,6 +16,8 @@ use super::{
 /// An explicit `Some(false)` on `hidden` should override a base `Some(true)`.
 #[derive(Debug, Clone, Default)]
 pub struct AgentSpec {
+    /// Optional built-in or previously resolved agent to inherit from.
+    pub extends: Option<String>,
     pub name: Option<String>,
     pub role: Option<String>,
     pub description: Option<String>,
@@ -68,6 +70,7 @@ impl AgentSpec {
             .map_err(AgentError::Invalid)?;
 
         Ok(AgentSpec {
+            extends: None,
             name: Some(cfg.name.clone().unwrap_or_else(|| name.to_string())),
             role: cfg.role.clone(),
             description: cfg.description.clone(),
@@ -95,6 +98,7 @@ impl AgentSpec {
     /// Used to capture the base agent's state before merging overlays.
     pub fn from_agent(agent: &Agent) -> Self {
         AgentSpec {
+            extends: None,
             name: Some(agent.name.clone()),
             role: agent.role.clone(),
             description: Some(agent.description.clone()),
@@ -127,6 +131,7 @@ impl AgentSpec {
         }
 
         AgentSpec {
+            extends: overlay.extends.clone().or_else(|| self.extends.clone()),
             name: overlay.name.clone().or_else(|| self.name.clone()),
             role: overlay.role.clone().or_else(|| self.role.clone()),
             description: overlay
@@ -431,6 +436,26 @@ impl AgentRegistry {
                     let path = PathBuf::from(file_agent.source.clone());
                     let replace = file_agent.overlay.replace.unwrap_or(false);
                     let disable = file_agent.overlay.disable.unwrap_or(false);
+                    let inherited = file_agent
+                        .spec
+                        .extends
+                        .as_deref()
+                        .map(|base_name| {
+                            if base_name == name {
+                                return Err(AgentError::Invalid(format!(
+                                    "agent '{name}' cannot extend itself"
+                                )));
+                            }
+                            resolved
+                                .get(base_name)
+                                .map(|base| base.agent.clone())
+                                .ok_or_else(|| {
+                                    AgentError::Invalid(format!(
+                                        "agent '{name}' extends missing base '{base_name}'"
+                                    ))
+                                })
+                        })
+                        .transpose()?;
 
                     if disable {
                         // Remove agent from resolution
@@ -447,9 +472,10 @@ impl AgentRegistry {
                     }
 
                     if let Some(existing) = resolved.get_mut(&name) {
-                        let base_spec = super::registry::AgentSpec::from_agent(&existing.agent);
+                        let base_agent = inherited.as_ref().unwrap_or(&existing.agent);
+                        let base_spec = super::registry::AgentSpec::from_agent(base_agent);
                         let merged_spec = base_spec.merge_overlay(&file_agent.spec, replace);
-                        let merged_agent = merged_spec.resolve(&existing.agent)?;
+                        let merged_agent = merged_spec.resolve(base_agent)?;
                         let diag_severity = if replace {
                             AgentDiagnosticSeverity::Warning
                         } else {
@@ -474,7 +500,15 @@ impl AgentRegistry {
                         resolved.insert(
                             name.clone(),
                             ResolvedAgent {
-                                agent: file_agent.agent,
+                                agent: inherited
+                                    .as_ref()
+                                    .map(|base| {
+                                        super::registry::AgentSpec::from_agent(base)
+                                            .merge_overlay(&file_agent.spec, replace)
+                                            .resolve(base)
+                                    })
+                                    .transpose()?
+                                    .unwrap_or(file_agent.agent),
                                 sources: vec![AgentSource {
                                     kind: AgentSourceKind::GlobalFile,
                                     path: Some(path),
@@ -500,6 +534,26 @@ impl AgentRegistry {
                     let path = PathBuf::from(file_agent.source.clone());
                     let replace = file_agent.overlay.replace.unwrap_or(false);
                     let disable = file_agent.overlay.disable.unwrap_or(false);
+                    let inherited = file_agent
+                        .spec
+                        .extends
+                        .as_deref()
+                        .map(|base_name| {
+                            if base_name == name {
+                                return Err(AgentError::Invalid(format!(
+                                    "agent '{name}' cannot extend itself"
+                                )));
+                            }
+                            resolved
+                                .get(base_name)
+                                .map(|base| base.agent.clone())
+                                .ok_or_else(|| {
+                                    AgentError::Invalid(format!(
+                                        "agent '{name}' extends missing base '{base_name}'"
+                                    ))
+                                })
+                        })
+                        .transpose()?;
 
                     if disable {
                         resolved.remove(&name);
@@ -515,9 +569,10 @@ impl AgentRegistry {
                     }
 
                     if let Some(existing) = resolved.get_mut(&name) {
-                        let base_spec = super::registry::AgentSpec::from_agent(&existing.agent);
+                        let base_agent = inherited.as_ref().unwrap_or(&existing.agent);
+                        let base_spec = super::registry::AgentSpec::from_agent(base_agent);
                         let merged_spec = base_spec.merge_overlay(&file_agent.spec, replace);
-                        let merged_agent = merged_spec.resolve(&existing.agent)?;
+                        let merged_agent = merged_spec.resolve(base_agent)?;
                         let diag_severity = if replace {
                             AgentDiagnosticSeverity::Warning
                         } else {
@@ -542,7 +597,15 @@ impl AgentRegistry {
                         resolved.insert(
                             name.clone(),
                             ResolvedAgent {
-                                agent: file_agent.agent,
+                                agent: inherited
+                                    .as_ref()
+                                    .map(|base| {
+                                        super::registry::AgentSpec::from_agent(base)
+                                            .merge_overlay(&file_agent.spec, replace)
+                                            .resolve(base)
+                                    })
+                                    .transpose()?
+                                    .unwrap_or(file_agent.agent),
                                 sources: vec![AgentSource {
                                     kind: AgentSourceKind::ProjectFile,
                                     path: Some(path),
@@ -1396,5 +1459,40 @@ mod tests {
             spec.permission,
             Some(HashMap::from([("read".into(), "allow".into())]))
         );
+    }
+
+    #[test]
+    fn project_agent_can_extend_builtin_without_losing_safety_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agents_dir = tmp.path().join(".codegg/agents");
+        std::fs::create_dir_all(&agents_dir).unwrap();
+        std::fs::write(
+            agents_dir.join("rust-security-review.toml"),
+            r#"schema_version = 1
+name = "rust-security-review"
+extends = "security-review"
+description = "Rust-focused review"
+prompt = "Prioritize unsafe Rust and FFI boundaries."
+"#,
+        )
+        .unwrap();
+
+        let registry =
+            AgentRegistry::load_with_project_root(&Config::default(), Some(tmp.path())).unwrap();
+        let resolved = registry.get("rust-security-review").unwrap();
+        assert_eq!(resolved.agent.description, "Rust-focused review");
+        assert_eq!(
+            resolved.agent.runtime_kind,
+            Some(AgentRuntimeKind::SecurityReview)
+        );
+        assert!(resolved
+            .agent
+            .permissions
+            .get("write")
+            .is_some_and(|value| value == "deny"));
+        assert!(resolved
+            .sources
+            .iter()
+            .any(|source| { source.kind == AgentSourceKind::ProjectFile }));
     }
 }
