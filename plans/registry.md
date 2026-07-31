@@ -31,7 +31,7 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | Milestones 005–007 closed; M008 ready | M001–M007 closed; later milestones remain predecessor-gated |
+| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-roadmap.md` | Milestones 005–008 closed; M009 ready | M001–M008 closed; later milestones remain predecessor-gated |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/tool-programs-runtime-fixture-closure-addendum.md` | Milestone 018 implemented; strict review pending | Focused fixture correction is green. Existing `018-status.md` is provisional implementation evidence rather than independent strict closure; Provider M006 owns repeated-run isolation proof and full/hosted gate completion |
 | Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 006 ready | Provider Connections M006 is closed with exact green local/hosted evidence; DVR owns its remaining independent closure review |
 
@@ -41,7 +41,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Development verification and release | 006 — final evidence and release documentation closure | ready | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Provider Connections M006 closed at `139c832c`; local full and hosted `verify` evidence are green |
 
-Agent-runtime M005, M006, and M007 are closed. M008 is now dependency-ready;
+Agent-runtime M005 through M008 are closed. M009 is now dependency-ready;
 later milestones remain registered below with precise predecessor blockers and
 must not be implemented out of order.
 
@@ -66,7 +66,6 @@ blocker record is resolved and retained for traceability.
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/009-context-plan-and-cache-convergence.md` | Requires M001, M002, and M007 closure; final reasoning integration requires M008 closure |
 | Agent runtime, model adaptation, and ACP | 010 — ACP v1 daemon/projection adapter | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/010-acp-v1-daemon-projection-adapter.md` | Requires M003, M006, and M009 strict closure |
 | Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | blocked | `plans/implementation/agent-runtime-model-adaptation-acp/011-integration-evidence-and-closure.md` | Requires M004 through M010 strict closure |
 
@@ -74,7 +73,7 @@ blocker record is resolved and retained for traceability.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | ready | `plans/implementation/agent-runtime-model-adaptation-acp/008-reasoning-preservation-and-poolside-laguna-adapter.md` | M007 strict closure accepted |
+| Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | ready | `plans/implementation/agent-runtime-model-adaptation-acp/009-context-plan-and-cache-convergence.md` | M001, M002, M007, and M008 strict closure accepted |
 
 The previously reported projection stack failure did not reproduce after M018
 and remains unregistered unless it reappears reproducibly.
@@ -94,6 +93,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 
 | Subsystem | Milestone | Closure record | Closed/reviewed at commit | Follow-up |
 |---|---|---|---|---|
+| Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | `plans/closure/agent-runtime-model-adaptation-acp/008-status.md` | implementation and closure commit | M009 promoted to ready; M010/M011 retain their stated predecessor blockers |
 | Agent runtime, model adaptation, and ACP | 006 — progress, loop, and tool recovery controller | `plans/closure/agent-runtime-model-adaptation-acp/006-status.md` | implementation and closure commit | M007 was ready at that closure; M008–M011 retained predecessor blockers |
 | Agent runtime, model adaptation, and ACP | 007 — declarative model-adapter registry | `plans/closure/agent-runtime-model-adaptation-acp/007-status.md` | implementation and closure commit | M008 promoted to ready; M009–M011 retain their stated predecessor blockers |
 | Agent runtime, model adaptation, and ACP | 005 — specialized research runtime | `plans/closure/agent-runtime-model-adaptation-acp/005-status.md` | `e3db48c` implementation; closure commit | M006 and M007 were ready at that closure; M008–M011 retained predecessor blockers |

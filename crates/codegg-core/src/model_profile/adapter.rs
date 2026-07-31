@@ -101,6 +101,43 @@ pub struct ServerRequirements {
     pub reasoning_parser: Option<String>,
     pub auto_tool_choice: Option<bool>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServingMetadata {
+    pub tool_call_parser: Option<String>,
+    pub reasoning_parser: Option<String>,
+    pub auto_tool_choice: bool,
+}
+
+pub fn serving_requirement_diagnostics(
+    adapter: &ResolvedModelAdapter,
+    serving: &ServingMetadata,
+) -> Vec<String> {
+    let mut diagnostics = Vec::new();
+    if let Some(required) = &adapter.server_requirements.tool_call_parser {
+        if serving.tool_call_parser.as_deref() != Some(required.as_str()) {
+            diagnostics.push(format!(
+                "{} requires tool-call parser '{}'; configured {:?}",
+                adapter.adapter_id, required, serving.tool_call_parser
+            ));
+        }
+    }
+    if let Some(required) = &adapter.server_requirements.reasoning_parser {
+        if serving.reasoning_parser.as_deref() != Some(required.as_str()) {
+            diagnostics.push(format!(
+                "{} requires reasoning parser '{}'; configured {:?}",
+                adapter.adapter_id, required, serving.reasoning_parser
+            ));
+        }
+    }
+    if adapter.server_requirements.auto_tool_choice == Some(true) && !serving.auto_tool_choice {
+        diagnostics.push(format!(
+            "{} requires automatic tool choice to be enabled",
+            adapter.adapter_id
+        ));
+    }
+    diagnostics
+}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestTransform {
@@ -477,5 +514,30 @@ mod tests {
     fn explicit_provider_controls_match() {
         let a = resolve_adapter(Some("anthropic"), "claude-sonnet");
         assert_eq!(a.adapter_id, "anthropic-frontier");
+    }
+
+    #[test]
+    fn laguna_adapter_preserves_reasoning_and_reports_server_requirements() {
+        let a = resolve_adapter(Some("local"), "poolside/Laguna-M.1");
+        assert_eq!(a.adapter_id, "poolside-laguna-agentic");
+        assert_eq!(a.tool_aliases["bash"], "shell");
+        assert_eq!(a.argument_aliases["shell"]["command"], "cmd");
+        assert_eq!(a.max_parallel_tools, Some(1));
+        let diagnostics = serving_requirement_diagnostics(
+            &a,
+            &ServingMetadata {
+                tool_call_parser: Some("wrong".into()),
+                reasoning_parser: None,
+                auto_tool_choice: false,
+            },
+        );
+        assert_eq!(diagnostics.len(), 3);
+        assert!(diagnostics.iter().any(|d| d.contains("reasoning parser")));
+    }
+
+    #[test]
+    fn laguna_base_models_are_not_matched() {
+        let a = resolve_adapter(Some("local"), "poolside/Laguna-base");
+        assert_ne!(a.adapter_id, "poolside-laguna-agentic");
     }
 }

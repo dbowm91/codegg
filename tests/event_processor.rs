@@ -201,6 +201,35 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_is_private_and_attached_to_the_same_assistant_round() {
+        let mut processor = EventProcessor::new();
+        processor.process(reasoning_delta("plan round one"));
+        processor.process(text_delta("I will inspect the project."));
+        processor.process(tool_call("tc1", "list", serde_json::json!({"path": "."})));
+
+        let Message::Assistant {
+            content,
+            tool_calls,
+        } = processor
+            .to_assistant_message()
+            .expect("reasoning alone must produce an assistant history message")
+        else {
+            panic!("expected assistant message");
+        };
+        assert_eq!(tool_calls[0].id.as_ref(), "tc1");
+        assert!(matches!(
+            &content[0],
+            ContentPart::Text { text } if text.as_ref() == "I will inspect the project."
+        ));
+        assert!(matches!(
+            &content[1],
+            ContentPart::Reasoning { text, visibility }
+                if text.as_ref() == "plan round one"
+                    && *visibility == codegg::provider::ReasoningVisibility::Private
+        ));
+    }
+
+    #[test]
     fn test_event_processor_to_tool_messages() {
         let mut processor = EventProcessor::new();
 
