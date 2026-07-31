@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestone 005 closed; Milestones 006–007 ready; later milestones dependency-gated
+Status: active — Milestones 005–006 closed; Milestone 007 ready; later milestones dependency-gated
 
 Long-term references:
 
@@ -198,7 +198,7 @@ M003 bounded nested delegation                                     [closed]
         |             \                                             /
         |              +----------------+---------------------------+
         v                               v
-M006 progress, loop, and tool recovery controller                  [blocked by M002; integrates M003]
+M006 progress, loop, and tool recovery controller                  [closed]
         |
         v
 M007 declarative model-adapter registry and build generation       [blocked by M001/M002]

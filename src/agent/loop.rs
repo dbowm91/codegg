@@ -19,6 +19,9 @@ use crate::agent::compaction::{
     ResolvedCompactionConfig,
 };
 use crate::agent::processor::EventProcessor;
+use crate::agent::progress_recovery::{
+    ActionClass, ProgressObservation, RecoveryAction, RecoveryController, RecoveryDecision,
+};
 use crate::agent::router::ModelRouter;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
@@ -26,7 +29,7 @@ use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
 use crate::config::schema::Config;
 use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::model_profile::policy::push_control_instruction;
-use crate::permission::{DoomLoopDetector, PermissionChecker, PermissionResult};
+use crate::permission::{PermissionChecker, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
@@ -1148,9 +1151,6 @@ impl AgentLoop {
             }
         }
 
-        self.doom_detector.record_tool_call(&tc.name, &tc.arguments);
-        let doom_loop = self.doom_detector.is_doom_loop();
-
         let path = extract_path_from_tool_call(tc);
         let bash_command = extract_bash_command(tc);
         let git_subcommand = extract_git_subcommand(tc);
@@ -1200,15 +1200,7 @@ impl AgentLoop {
 
         match perm_result {
             PermissionResult::Allow => {
-                if doom_loop {
-                    ToolPermissionOutcome::Denied {
-                        tool_id: tc.id.to_string(),
-                        message: format!(
-                            "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
-                            tc.name
-                        ),
-                    }
-                } else if let Some(sensitive) = sensitive_match {
+                if let Some(sensitive) = sensitive_match {
                     // Escalate: sensitive paths always require user confirmation
                     let reason = sensitive
                         .reason
@@ -1329,15 +1321,6 @@ impl AgentLoop {
                     && is_path_within_working_directory(req.path.as_deref())
                     && sensitive_match.is_none()
                 {
-                    if doom_loop {
-                        return ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
-                                tc.name
-                            ),
-                        };
-                    }
                     return ToolPermissionOutcome::Allowed(tc.clone());
                 }
 
@@ -1375,17 +1358,7 @@ impl AgentLoop {
                     }
                 }
                 if allowed {
-                    if doom_loop {
-                        ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied: potential doom loop detected (repeated identical tool calls)",
-                                tc.name
-                            ),
-                        }
-                    } else {
-                        ToolPermissionOutcome::Allowed(tc.clone())
-                    }
+                    ToolPermissionOutcome::Allowed(tc.clone())
                 } else {
                     ToolPermissionOutcome::Denied {
                         tool_id: tc.id.to_string(),
@@ -1451,7 +1424,8 @@ pub struct AgentLoop {
     tool_registry: ToolRegistry,
     hook_registry: Option<Arc<crate::hooks::HookRegistry>>,
     context_tracker: ContextTracker,
-    doom_detector: DoomLoopDetector,
+    progress_recovery: RecoveryController,
+    recovery_parallel_limit: Option<usize>,
     steering: AtomicBool,
     follow_up_tx: mpsc::UnboundedSender<String>,
     follow_up_rx: mpsc::UnboundedReceiver<String>,
@@ -1702,14 +1676,8 @@ impl AgentLoop {
             tool_registry,
             hook_registry,
             context_tracker,
-            doom_detector: DoomLoopDetector::new(
-                50,
-                config
-                    .permission
-                    .as_ref()
-                    .and_then(|p| p.doomloop_threshold)
-                    .unwrap_or(20),
-            ),
+            progress_recovery: RecoveryController::default(),
+            recovery_parallel_limit: None,
             steering: AtomicBool::new(false),
             follow_up_tx,
             follow_up_rx,
@@ -1899,6 +1867,13 @@ impl AgentLoop {
     }
 
     fn max_parallel_tools(&self) -> usize {
+        if let Some(limit) = self.recovery_parallel_limit {
+            return self.max_parallel_tools_unconstrained().min(limit.max(1));
+        }
+        self.max_parallel_tools_unconstrained()
+    }
+
+    fn max_parallel_tools_unconstrained(&self) -> usize {
         if let Some(ref policy) = self.execution_policy {
             return policy.max_parallel_tools;
         }
@@ -3249,6 +3224,8 @@ impl AgentLoop {
         self.base_request_tools = filtered;
         // Reset per-run policy runtime (defensive; new AgentLoop instances also start defaulted).
         self.context_policy_runtime = ContextPolicyRuntimeState::default();
+        self.progress_recovery = RecoveryController::default();
+        self.recovery_parallel_limit = None;
         // Gated effective-cost driven tool palette reduction (prototype). Applies only to
         // the per-request payload (request.tools), never to ToolRegistry. Decision may reduce
         // before the InitialRequest observe so diagnostics reflect the sent palette.
@@ -3697,6 +3674,59 @@ impl AgentLoop {
             }
 
             if tool_calls.is_empty() {
+                if indicates_more_work(processor.text()) && processor.text().trim().len() >= 10 {
+                    let narration = ProgressObservation {
+                        action: ActionClass::NarrationOnly,
+                        canonical_tool: None,
+                        wire_tool: None,
+                        argument_fingerprint: Some(
+                            crate::agent::progress_recovery::fingerprint(&processor.text()).1,
+                        ),
+                        result_fingerprint: None,
+                        result_size: crate::agent::progress_recovery::ResultSizeClass::Empty,
+                        error_class: None,
+                        new_evidence: false,
+                        state_changed: false,
+                        child_advanced: false,
+                        selected_surface_fingerprint: None,
+                        batch_id: self.progress_recovery.next_batch(),
+                    };
+                    match self.progress_recovery.observe(narration) {
+                        RecoveryDecision::Recover { action, incident } => {
+                            let instruction = match action {
+                                RecoveryAction::Nudge | RecoveryAction::Correct => "Recovery nudge: narration described intended work without a structured action. Emit exactly one valid structured tool call, or state the concrete blocker.",
+                                RecoveryAction::RestoreBasePalette => {
+                                    request.tools = Some(self.base_request_tools.clone());
+                                    "Recovery correction: the authorized base tool surface is restored. Emit one structured tool call."
+                                }
+                                RecoveryAction::ConstrainParallelism => {
+                                    self.recovery_parallel_limit = Some(1);
+                                    "Recovery correction: emit one structured tool call now."
+                                }
+                                RecoveryAction::Replan => "Recovery replan: state a short observable plan and then emit the next structured tool call.",
+                                RecoveryAction::Stall => unreachable!(),
+                            };
+                            push_control_instruction(
+                                &mut request.messages,
+                                &model_profile,
+                                instruction,
+                            );
+                            tracing::info!(incident = ?incident.kind, action = ?action, "narration recovery action");
+                            processor.reset();
+                            continue;
+                        }
+                        RecoveryDecision::Stalled(report) => {
+                            crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                                message: format!(
+                                    "Agent stalled: {}. {}",
+                                    report.evidence, report.suggested_user_action
+                                ),
+                            });
+                            break;
+                        }
+                        RecoveryDecision::Progress | RecoveryDecision::Continue => {}
+                    }
+                }
                 let bootstrap_allowed = self
                     .execution_policy
                     .as_ref()
@@ -3929,6 +3959,89 @@ impl AgentLoop {
                 self.state.tool_call_count += tool_calls.len();
             }
 
+            // Recovery observes one provider batch as one logical action. It
+            // receives only bounded fingerprints and classifications; raw
+            // arguments/results remain in the normal model context and are
+            // never copied into recovery diagnostics.
+            let recovery_batch = self.progress_recovery.next_batch();
+            let mut recovery_stalled = false;
+            for tc in &tool_calls {
+                let output = tool_results
+                    .iter()
+                    .find(|(id, _)| id == tc.id.as_ref())
+                    .map(|(_, output)| output.as_str())
+                    .unwrap_or("Error: missing tool result");
+                let observation = ProgressObservation {
+                    action: if tc.name.trim().is_empty() {
+                        ActionClass::MalformedCall
+                    } else {
+                        ActionClass::StructuredCall
+                    },
+                    canonical_tool: Some(tc.name.to_string()),
+                    wire_tool: Some(tc.name.to_string()),
+                    argument_fingerprint: Some(
+                        crate::agent::progress_recovery::fingerprint(
+                            &crate::agent::progress_recovery::normalize_json(&tc.arguments),
+                        )
+                        .1,
+                    ),
+                    result_fingerprint: Some(
+                        crate::agent::progress_recovery::fingerprint(&output).1,
+                    ),
+                    result_size: crate::agent::progress_recovery::result_size_class(output),
+                    error_class: crate::agent::progress_recovery::classify_error(output),
+                    new_evidence: false,
+                    state_changed: is_file_modifying_tool(&tc.name)
+                        && tool_result_is_success(output),
+                    child_advanced: tc.name.as_ref() == "task" && tool_result_is_success(output),
+                    selected_surface_fingerprint: None,
+                    batch_id: recovery_batch,
+                };
+                match self.progress_recovery.observe(observation) {
+                    RecoveryDecision::Progress => self.recovery_parallel_limit = None,
+                    RecoveryDecision::Recover { action, incident } => {
+                        let instruction = match action {
+                            RecoveryAction::Nudge => format!(
+                                "Recovery nudge: the observable {} pattern has not produced progress. Use a different structured action or report the concrete blocker.",
+                                format!("{:?}", incident.kind).to_lowercase()
+                            ),
+                            RecoveryAction::Correct => "Recovery correction: use the canonical tool name and valid schema from the currently available tool surface; do not retry the same failing call.".to_string(),
+                            RecoveryAction::RestoreBasePalette => {
+                                request.tools = Some(self.base_request_tools.clone());
+                                "Recovery correction: the available palette was restored to the authorized base surface. Choose one available structured tool and continue.".to_string()
+                            }
+                            RecoveryAction::ConstrainParallelism => {
+                                self.recovery_parallel_limit = Some(1);
+                                "Recovery correction: issue one structured tool call at a time until observable progress resumes.".to_string()
+                            }
+                            RecoveryAction::Replan => "Recovery replan: provide a short plan grounded only in the latest tool result, then execute the next concrete structured action.".to_string(),
+                            RecoveryAction::Stall => unreachable!(),
+                        };
+                        push_control_instruction(
+                            &mut request.messages,
+                            &model_profile,
+                            &instruction,
+                        );
+                        tracing::info!(incident = ?incident.kind, action = ?action, "agent recovery action");
+                    }
+                    RecoveryDecision::Stalled(report) => {
+                        recovery_stalled = true;
+                        tracing::warn!(incident = ?report.incident, attempts = report.attempted_recoveries, evidence = %report.evidence, "agent stalled after bounded recovery");
+                        crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
+                            message: format!(
+                                "Agent stalled: {}. {}",
+                                report.evidence, report.suggested_user_action
+                            ),
+                        });
+                        break;
+                    }
+                    RecoveryDecision::Continue => {}
+                }
+            }
+            if recovery_stalled {
+                break;
+            }
+
             // Auto-invoke security-review subagent if triggered by high-risk tools or sensitive paths
             if just_executed_tools {
                 let high_risk_findings: Vec<_> = self
@@ -3957,27 +4070,6 @@ impl AgentLoop {
                     .collect();
                 if !high_risk_findings.is_empty() || !sensitive_edits.is_empty() {
                     self.maybe_spawn_security_review(&high_risk_findings, &sensitive_edits, false);
-                }
-            }
-
-            if tool_results
-                .iter()
-                .any(|(_, out)| tool_result_is_success(out))
-            {
-                if let Some(doom_tool) = self.doom_detector.current_doom_tool() {
-                    let doom_tool_owned = doom_tool.to_string();
-                    let dominated =
-                        tool_calls
-                            .iter()
-                            .zip(tool_results.iter())
-                            .any(|(tc, (_, out))| {
-                                tc.name.as_str() == doom_tool_owned && tool_result_is_success(out)
-                            });
-                    if dominated {
-                        self.doom_detector.reset();
-                    }
-                } else {
-                    self.doom_detector.reset();
                 }
             }
 

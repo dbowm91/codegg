@@ -18,6 +18,7 @@ pub mod r#loop;
 pub mod mention;
 pub mod policy;
 pub mod processor;
+pub mod progress_recovery;
 pub mod prompt;
 pub mod registry;
 pub mod router;

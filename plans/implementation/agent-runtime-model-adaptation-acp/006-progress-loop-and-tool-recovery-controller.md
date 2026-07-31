@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 006 — Progress, Loop, and Tool Recovery Controller
 
-Status: blocked — requires Milestone 002 closure; final integration requires Milestone 003
+Status: implemented
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 
