@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: active — Milestone 004 closed; Milestone 005 ready; later milestones dependency-gated
+Status: active — Milestone 005 closed; Milestones 006–007 ready; later milestones dependency-gated
 
 Long-term references:
 
@@ -290,6 +290,8 @@ Primary class: capability.
 Turn `runtime_kind = research` into a bounded coordinator/evidence workflow using explicit workspace context and structured child reports.
 
 Plan: `plans/implementation/agent-runtime-model-adaptation-acp/005-specialized-research-runtime.md`
+
+Closure: `plans/closure/agent-runtime-model-adaptation-acp/005-status.md`
 
 Exit conditions:
 

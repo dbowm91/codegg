@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 005 — Specialized Research Runtime
 
-Status: active
+Status: implemented
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 
