@@ -218,7 +218,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         // ── Model profile / task-state policy ────────────────────────
         let model_profile =
             crate::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
-        let task_state_policy = model_profile.task_state_policy;
+        let task_state_policy = model_profile.task_state_policy.clone();
 
         // ── Tool registry ────────────────────────────────────────────
         let task_tool_runtime = subagent_pool
@@ -270,29 +270,45 @@ impl TurnRuntime for DefaultTurnRuntime {
         // ── System prompt assembly ───────────────────────────────────
         let agents = crate::protocol_conversions::dtos_to_agents(agents_dto.clone());
 
-        let mut system = {
-            let ctx = crate::agent::asset_context::AssetContextBuilder::new()
-                .with_synthetic_project_id(crate::agent::asset_context::ProjectId::new())
-                .with_workspace_root(&execution.workspace_root)
-                .build()
-                .expect("execution.workspace_root is a valid workspace root");
-            let selected_agent =
-                crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone());
-            match asset_snapshot.as_deref() {
-                Some(snapshot) => crate::agent::prompt::load_agent_prompt_with_snapshot(
-                    &selected_agent,
-                    &config,
-                    &model_name,
-                    snapshot,
-                ),
-                None => crate::agent::prompt::load_agent_prompt_with_context(
-                    &selected_agent,
-                    &config,
-                    &model_name,
-                    &ctx,
-                ),
-            }
-        };
+        let selected_agent = asset_snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.get_agent(&agents_dto[current_agent_idx].name))
+            .map(|resolved| resolved.agent.clone())
+            .unwrap_or_else(|| {
+                crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone())
+            });
+        let mut available_tools: Vec<String> =
+            tool_registry.tool_names().map(str::to_owned).collect();
+        available_tools.sort();
+        let available_skills: Vec<String> = asset_snapshot
+            .as_deref()
+            .map(|snapshot| {
+                snapshot
+                    .skills
+                    .effective
+                    .iter()
+                    .map(|skill| skill.normalized_name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let compiled_prompt = crate::agent::prompt::PromptCompiler::compile(
+            crate::agent::prompt::PromptCompilerInput {
+                agent: &selected_agent,
+                model_profile: &model_profile,
+                config: &config,
+                tools: &available_tools,
+                skills: &available_skills,
+                agents: &agents,
+                is_plan_mode: plan_mode,
+                snapshot: asset_snapshot.as_deref(),
+                // The mutable runtime pin is owned by AgentLoop; the
+                // immutable snapshot remains the compiler's asset identity.
+                pin: None,
+                execution: Some(&execution),
+                runtime_context: &[],
+            },
+        );
+        let mut system = compiled_prompt.text;
         system.push_str(&memory_context);
 
         // Goal context

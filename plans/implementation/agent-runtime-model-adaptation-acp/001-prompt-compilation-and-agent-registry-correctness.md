@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 001 — Prompt Compilation and Agent Registry Correctness
 
-Status: ready
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/001-status.md`
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

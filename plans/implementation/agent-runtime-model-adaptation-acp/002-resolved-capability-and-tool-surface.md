@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 002 — Resolved Capability and Tool Surface
 
-Status: blocked — requires Milestone 001 closure
+Status: ready for handoff
 
 Repository baseline: `672479726f1c79bbc931d70f084cd1649e8b2ed4`
 

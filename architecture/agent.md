@@ -17,7 +17,7 @@ src/agent/
 ├── team.rs         # Team, TeamMessage, AgentRole - multi-agent coordination
 ├── teams.rs        # TeamManager, SharedTaskList, team tools (team_create, send_message, etc.)
 ├── mention.rs      # @mention parsing and agent filtering
-├── prompt.rs       # System prompt assembly, instruction file loading
+├── prompt.rs       # Canonical prompt compiler and instruction loading
 ├── task.rs         # BackgroundTask, BackgroundScheduler
 └── prompts/        # Provider-specific system prompts
     ├── anthropic.txt
@@ -29,6 +29,25 @@ src/agent/
     ├── kimi.txt
     └── trinity.txt
 ```
+
+### Canonical prompt compilation
+
+`PromptCompiler` is the single production entry point for system prompts.
+Root turns and descendant turns provide the same typed inputs: the resolved
+agent, model profile, capability names, plan-mode state, explicit execution
+identity, and (when available) the immutable `ProjectAssetSnapshot` and its
+pin. The compiler sorts capability metadata, emits deterministic prompt
+content, and records a versioned fingerprint. Its block result is retained
+for the future context-plan/cache contract while current provider requests
+use the flattened text.
+
+Agent files merge by default and may use `replace = true` for full
+replacement. Native TOML agents may use `extends = "<resolved-agent>"`;
+missing bases and self-inheritance fail closed. Resolution order is built-in,
+inheritance, global file, project file, config, then the runtime safety
+envelope. Remote instruction URLs are not fetched during compilation and are
+not inserted as placeholder content; a bounded asset-refresh owner must
+resolve them before they become effective instructions.
 
 ---
 

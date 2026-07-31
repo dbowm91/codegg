@@ -1,9 +1,12 @@
 use crate::agent::asset_context::AssetContext;
+use crate::agent::asset_snapshot::{ProjectAssetSnapshot, RuntimeAssetPin};
 use crate::agent::instructions::{InstructionResolution, ProjectInstructionResolver};
 use crate::agent::Agent;
 use crate::config::schema::Config;
 use crate::model_profile::{PromptProfileKind, ResolvedModelProfile};
+use codegg_core::workspace::ExecutionContext;
 use once_cell::sync::Lazy;
+use sha2::Digest;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -496,7 +499,12 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
 
     if let Some(instructions) = ctx.config.instructions.as_ref() {
         for instruction in instructions {
-            parts.push(instruction.clone());
+            // Remote instructions are resolved by the asset refresh owner.
+            // Compilation is deliberately pure and never presents a URL as
+            // if its content had been loaded.
+            if !is_url(instruction) {
+                parts.push(instruction.clone());
+            }
         }
     }
 
@@ -509,6 +517,106 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
         .filter(|s| !s.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Versioned, deterministic prompt-compilation result.  Blocks retain their
+/// identity for the context-plan/cache milestone while `text` remains a
+/// provider-compatible flattened representation for today's request model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptBlock {
+    pub kind: &'static str,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledPrompt {
+    pub compiler_version: &'static str,
+    pub blocks: Vec<PromptBlock>,
+    pub text: String,
+    pub fingerprint: String,
+}
+
+pub struct PromptCompilerInput<'a> {
+    pub agent: &'a Agent,
+    pub model_profile: &'a ResolvedModelProfile,
+    pub config: &'a Config,
+    pub tools: &'a [String],
+    pub skills: &'a [String],
+    pub agents: &'a [Agent],
+    pub is_plan_mode: bool,
+    pub snapshot: Option<&'a ProjectAssetSnapshot>,
+    pub pin: Option<&'a RuntimeAssetPin>,
+    pub execution: Option<&'a ExecutionContext>,
+    pub runtime_context: &'a [String],
+}
+
+/// The sole production prompt entry point.  It consumes explicit execution
+/// identity and an immutable asset snapshot; it never reads cwd or performs
+/// network I/O.  Capability names are sorted before compilation so hash-map
+/// iteration cannot change the prompt or its identity.
+pub struct PromptCompiler;
+
+impl PromptCompiler {
+    pub const VERSION: &'static str = "prompt-compiler-v1";
+
+    pub fn compile(input: PromptCompilerInput<'_>) -> CompiledPrompt {
+        let mut tools = input.tools.to_vec();
+        tools.sort();
+        let mut skills = input.skills.to_vec();
+        skills.sort();
+        let mut agents = input.agents.to_vec();
+        agents.sort_by(|a, b| a.name.cmp(&b.name));
+
+        let asset_context = input
+            .snapshot
+            .map(|snapshot| snapshot.instruction_block().to_string())
+            .filter(|text| !text.is_empty());
+        let snapshot_skills = input.snapshot.map(|snapshot| snapshot.build_skill_prompt());
+        let mut custom = Vec::new();
+        if let Some(text) = asset_context {
+            custom.push(text);
+        }
+        if let Some(text) = snapshot_skills.filter(|text| !text.is_empty()) {
+            custom.push(text);
+        }
+        custom.extend(input.runtime_context.iter().cloned());
+        let custom_text = if custom.is_empty() {
+            None
+        } else {
+            Some(custom.join("\n\n"))
+        };
+
+        // Keep the explicit inputs alive at this boundary.  They are part of
+        // the contract even when the current provider message DTO cannot yet
+        // carry their provenance.
+        let _ = (input.execution, input.pin);
+        let text = assemble_system_prompt_with_profile(PromptContext {
+            agent: input.agent,
+            config: input.config,
+            model_profile: input.model_profile,
+            tools: &tools,
+            skills: &skills,
+            custom_instructions: custom_text.as_deref(),
+            is_plan_mode: input.is_plan_mode,
+            agents: &agents,
+        });
+        let blocks = vec![PromptBlock {
+            kind: "system",
+            text: text.clone(),
+        }];
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(Self::VERSION.as_bytes());
+        hasher.update(text.as_bytes());
+        if let Some(snapshot) = input.snapshot {
+            hasher.update(snapshot.fingerprint.as_bytes());
+        }
+        CompiledPrompt {
+            compiler_version: Self::VERSION,
+            blocks,
+            text,
+            fingerprint: hex::encode(hasher.finalize()),
+        }
+    }
 }
 
 fn base_harness_contract() -> &'static str {
@@ -718,6 +826,43 @@ mod tests {
         assert!(prompt.contains("Planning surfaces"));
         assert!(prompt.contains("todo"));
         assert!(prompt.contains("goal_request_completion"));
+    }
+
+    #[test]
+    fn prompt_compiler_is_deterministic_and_profile_aware() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let first = PromptCompiler::compile(PromptCompilerInput {
+            agent: &agent,
+            model_profile: &profile,
+            config: &config,
+            tools: &["z-tool".into(), "a-tool".into()],
+            skills: &["z-skill".into(), "a-skill".into()],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            runtime_context: &[],
+        });
+        let second = PromptCompiler::compile(PromptCompilerInput {
+            agent: &agent,
+            model_profile: &profile,
+            config: &config,
+            tools: &["a-tool".into(), "z-tool".into()],
+            skills: &["a-skill".into(), "z-skill".into()],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            runtime_context: &[],
+        });
+        assert_eq!(first, second);
+        assert_eq!(first.compiler_version, PromptCompiler::VERSION);
+        assert!(first.text.contains("Model profile"));
+        assert!(!first.fingerprint.is_empty());
     }
 
     #[test]

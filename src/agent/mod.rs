@@ -977,6 +977,7 @@ struct TomlAgentFile {
     replace: Option<bool>,
     disable: Option<bool>,
     merge: Option<bool>,
+    extends: Option<String>,
     /// Wrapped format: `[agent]` section
     agent: Option<TomlAgentInner>,
     // Flat format: top-level keys
@@ -1006,6 +1007,7 @@ struct TomlAgentFile {
 #[derive(serde::Deserialize, Debug, Default)]
 #[serde(default)]
 struct TomlAgentInner {
+    extends: Option<String>,
     name: Option<String>,
     role: Option<String>,
     description: Option<String>,
@@ -1062,7 +1064,7 @@ impl TomlAgentFile {
                 description: inner.description,
                 mode: inner.mode,
                 model: inner.model,
-                fallback_model: None,
+                fallback_model: inner.fallback_model,
                 variant: inner.variant,
                 temperature: inner.temperature,
                 top_p: inner.top_p,
@@ -1075,7 +1077,7 @@ impl TomlAgentFile {
                 permission,
                 tools: None,
                 options: None,
-                runtime_kind: None,
+                runtime_kind: inner.runtime_kind,
             }
         } else {
             // Flat format: use top-level fields
@@ -1138,6 +1140,7 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
                 "replace",
                 "disable",
                 "merge",
+                "extends",
                 "agent",
                 "name",
                 "role",
@@ -1179,6 +1182,11 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
     }
 
     let overlay = toml_file.overlay_flags();
+    let extends = toml_file
+        .agent
+        .as_ref()
+        .and_then(|inner| inner.extends.clone())
+        .or_else(|| toml_file.extends.clone());
     let bash_spec = toml_file.structured_bash_permission();
     let path_spec = toml_file.structured_path_permission();
     let mut agent_cfg = toml_file.into_agent_config();
@@ -1290,6 +1298,7 @@ pub fn load_agent_from_toml(path: &Path) -> Result<Option<FileAgent>, AgentError
 
     // Build a spec from the original config, preserving which fields were set.
     let mut spec = registry::AgentSpec::from_agent_config(&name, &agent_cfg)?;
+    spec.extends = extends;
 
     // Apply structured permissions into the spec as well
     if let Some(ref bash) = bash_spec {

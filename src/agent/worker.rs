@@ -759,6 +759,9 @@ async fn execute_agent_task(
         });
     }
 
+    let mut available_tools: Vec<String> = tool_registry.tool_names().map(str::to_owned).collect();
+    available_tools.sort();
+
     let permission_checker =
         PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 
@@ -807,12 +810,26 @@ async fn execute_agent_task(
         ..Default::default()
     });
 
-    let mut messages = Vec::new();
-    if let Some(ref system_prompt) = safe_agent.system_prompt {
-        messages.push(crate::provider::Message::System {
-            content: system_prompt.clone().into(),
+    let model_profile =
+        crate::model_profile::ModelProfileResolver::new(&config).resolve(&profile.resolved_model);
+    let available_agents = agents.as_ref().clone();
+    let compiled_prompt =
+        crate::agent::prompt::PromptCompiler::compile(crate::agent::prompt::PromptCompilerInput {
+            agent: &safe_agent,
+            model_profile: &model_profile,
+            config: &config,
+            tools: &available_tools,
+            skills: &[],
+            agents: &available_agents,
+            is_plan_mode: agent_name == "plan",
+            snapshot: None,
+            pin: None,
+            execution: None,
+            runtime_context: &[],
         });
-    }
+    let mut messages = vec![crate::provider::Message::System {
+        content: compiled_prompt.text.into(),
+    }];
 
     messages.push(crate::provider::Message::User {
         content: vec![crate::provider::ContentPart::Text {
