@@ -2761,6 +2761,50 @@ impl AgentLoop {
         let mut all_definitions = all_definitions;
         all_definitions.extend(mcp_tools);
 
+        // Resolve the complete model-facing surface once.  Prompt assembly,
+        // provider schemas, palette reduction, and diagnostics all consume
+        // this deterministic snapshot; the broker remains the execution and
+        // permission authority.
+        let has_functional_spawner = self
+            .tool_registry
+            .list()
+            .iter()
+            .find(|tool| tool.name() == "task")
+            .is_some_and(|tool| tool.has_functional_backend());
+        let surface = match crate::agent::tool_surface::ResolvedToolSurface::resolve(
+            all_definitions,
+            &self
+                .agents
+                .get(&self.state.current_agent)
+                .map(|agent| {
+                    agent
+                        .permissions
+                        .iter()
+                        .filter(|(_, level)| level.eq_ignore_ascii_case("deny"))
+                        .map(|(name, _)| name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            &std::collections::BTreeSet::new(),
+            self.state.plan_mode,
+            has_functional_spawner,
+            None,
+        ) {
+            Ok(surface) => surface,
+            Err(error) => {
+                tracing::error!(error = ?error, "invalid resolved tool surface");
+                return Vec::new();
+            }
+        };
+        tracing::debug!(
+            surface_fingerprint = %surface.fingerprint,
+            selected_tool_count = surface.tools.len(),
+            omitted_tool_count = surface.omissions.len(),
+            capabilities = ?surface.capabilities.capabilities(),
+            "resolved agent tool surface"
+        );
+        let all_definitions = surface.definitions();
+
         // Partition tools into immediate vs deferred based on provider capabilities
         let provider_id = self.provider.id();
         let caps = crate::provider::ProviderCapabilities::for_provider(provider_id);

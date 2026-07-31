@@ -495,6 +495,10 @@ impl Tool for TaskTool {
         ToolCategory::Mutating
     }
 
+    fn has_functional_backend(&self) -> bool {
+        self.spawner.is_some() || self.submission.is_some()
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
 

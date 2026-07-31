@@ -183,6 +183,13 @@ pub trait Tool: Send + Sync {
         true
     }
 
+    /// Whether the registered implementation has a functional execution
+    /// backend for this turn.  Most native tools are always callable; task
+    /// overrides this because its default store has no child spawner.
+    fn has_functional_backend(&self) -> bool {
+        true
+    }
+
     /// Return the tool's contract metadata.
     ///
     /// The default implementation builds a conservative legacy

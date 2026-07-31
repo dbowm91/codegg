@@ -277,8 +277,26 @@ impl TurnRuntime for DefaultTurnRuntime {
             .unwrap_or_else(|| {
                 crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone())
             });
-        let mut available_tools: Vec<String> =
-            tool_registry.tool_names().map(str::to_owned).collect();
+        let denied = std::collections::BTreeSet::new();
+        let disabled = model_profile
+            .disabled_tools
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry(
+            &tool_registry,
+            &denied,
+            &disabled,
+            plan_mode,
+            None,
+        )
+        .map_err(|error| format!("invalid turn tool surface: {error:?}"))?;
+        let mut available_tools: Vec<String> = surface
+            .tools
+            .iter()
+            .map(|tool| tool.canonical_name.clone())
+            .collect();
         available_tools.sort();
         let available_skills: Vec<String> = asset_snapshot
             .as_deref()

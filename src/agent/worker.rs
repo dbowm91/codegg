@@ -759,7 +759,26 @@ async fn execute_agent_task(
         });
     }
 
-    let mut available_tools: Vec<String> = tool_registry.tool_names().map(str::to_owned).collect();
+    let denied: std::collections::BTreeSet<String> = request.denied_tools.iter().cloned().collect();
+    let disabled: std::collections::BTreeSet<String> = profile
+        .disabled_tools
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let surface = crate::agent::tool_surface::ResolvedToolSurface::from_registry(
+        &tool_registry,
+        &denied,
+        &disabled,
+        agent_name == "plan",
+        None,
+    )
+    .map_err(|error| format!("invalid subagent tool surface: {error:?}"))?;
+    let mut available_tools: Vec<String> = surface
+        .tools
+        .iter()
+        .map(|tool| tool.canonical_name.clone())
+        .collect();
     available_tools.sort();
 
     let permission_checker =
@@ -874,15 +893,7 @@ async fn execute_agent_task(
 }
 
 fn is_read_only_agent(agent: &Agent) -> bool {
-    let role = agent.role.as_deref().unwrap_or_default();
-    let name = agent.name.as_str();
-    matches!(
-        role,
-        "planner" | "explorer" | "reviewer" | "security_reviewer" | "summarizer" | "title"
-    ) || matches!(
-        name,
-        "plan" | "explore" | "security-review" | "summary" | "title"
-    ) || ["write", "edit", "apply_patch", "replace", "multiedit"]
+    ["write", "edit", "apply_patch", "replace", "multiedit"]
         .iter()
         .all(|tool| {
             agent
@@ -903,7 +914,6 @@ fn read_only_blocked_tools() -> Vec<String> {
         "git",
         "commit",
         "image",
-        "task",
     ]
     .into_iter()
     .map(String::from)
