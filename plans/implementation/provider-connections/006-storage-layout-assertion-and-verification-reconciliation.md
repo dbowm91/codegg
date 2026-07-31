@@ -1,6 +1,6 @@
 # Provider Connections Milestone 006 — Storage Layout Assertion and Verification Reconciliation
 
-Status: ready for handoff
+Status: active
 
 Repository baseline:
 

@@ -1618,7 +1618,7 @@ mod tests {
             .fetch_one(&database)
             .await
             .unwrap();
-        assert_eq!(version, 33);
+        assert_eq!(version, crate::storage::STORAGE_LAYOUT_VERSION as i64);
         let store = ProviderConnectionStore::new(database.clone());
         let created = store
             .create(input(ProviderScope::project(ProjectId::new())))
