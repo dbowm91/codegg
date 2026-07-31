@@ -120,7 +120,6 @@ python3 scripts/check_websocket_bounds.py             # reject unbounded server 
 ```bash
 # Core workspace crates
 cargo test -p codegg-core
-cargo test -p codegg-core run_store
 cargo test -p codegg-config
 cargo test -p codegg-protocol
 cargo test -p codegg-providers
@@ -129,40 +128,12 @@ cargo test -p codegg-providers
 cargo test -p eggsentry
 cargo test -p eggcontext
 cargo test -p egggit
-cargo test -p egggit status_v2
-cargo test -p egggit log
-cargo test -p egggit blame
-cargo test -p egggit refs
-cargo test -p egggit operation_state
-cargo test -p egggit conflict
-cargo test -p codegg git_service
 cargo test -p codegg-git
-cargo test --test git_recovery_integration
-cargo test --test git_execution_origin_matrix
-python3 scripts/check_git_forbidden_patterns.py
 cargo test -p egglsp
 
-# TUI render regression tests (headless, no terminal needed)
+# TUI
 cargo test --test tui_render
-
-# TUI unit/integration tests
 cargo test --test tui
-
-# Shell projection tests
-cargo test --test shell_projection_harness
-cargo test --test shell_projection_phase10
-cargo test -p codegg --lib shell::redactor
-cargo test -p codegg --lib shell::rtk
-
-# Test runner module (resolver, parser, report formatter, previous-failures index)
-cargo test -p codegg --lib test_runner
-cargo test -p codegg --lib test_runner::projection
-cargo test -p codegg --lib test_runner::custom
-cargo test -p codegg --lib test_runner::index
-cargo test -p codegg --lib tool::test
-cargo test -p codegg --lib test_runner::runner::tests
-cargo test -p codegg --lib tui::commands::test
-cargo test -p codegg --lib async_request
 
 # LSP integration (fake server, no network, needs lsp-test-support)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -176,49 +147,13 @@ cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
 PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
 cargo build --target wasm32-unknown-unknown --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
 
-# Eggsact adapter integration tests
-cargo test --test eggsact_adapter
-cargo test --test eggsact_deterministic_tools
-
-# Eggsearch adapter/unit tests
-cargo test -p codegg --lib search_backend::eggsearch
-cargo test -p codegg --lib search_backend::bootstrap
-cargo test --test fake_eggsearch_mcp
-cargo test --test search_backend_eggsearch
-cargo test --test search_backend_arg_mapping
-cargo test --test preflight_integration
-cargo test -p codegg --lib search_backend::framing
-
-# Command intent/planner/routing
-cargo test -p codegg --lib command_intent
-cargo test -p codegg --lib command_intent::shell_shape
-cargo test -p codegg --lib command_planner
-cargo test -p codegg --lib command_routing
-cargo test -p codegg --lib python_script
-cargo test -p codegg --lib tool::bash
-
-# Tool programs
-cargo test -p codegg --test tool_program_read_palette
-cargo test -p codegg --test tool_program_child_jobs
-cargo test -p codegg --test tool_program_build_test_matrix
-cargo test -p codegg --test tool_program_child_recovery
-cargo test -p codegg --test tool_program_background
-cargo test -p codegg --test tool_program_notifications
-cargo test -p codegg --test tool_program_projection
-cargo test -p codegg --test tool_program_lifecycle
-cargo test -p codegg --test tool_contract_guards
-
 # Adversarial tests
 cargo test --test command_routing_adversarial
 cargo test --test python_sandbox_adversarial
 cargo test --test context_projection_adversarial
 cargo test --test command_routing_execution_ownership
 
-# Projection disclosure and artifact handle tests (M3)
-cargo test --test projection_disclosure_invariants
-cargo test --test projection_artifact_handles
-
-# Phase 4–5 durable jobs + scheduler tests
+# Phase 4-5 durable jobs + scheduler tests
 cargo test --test durable_jobs_phase4
 cargo test --test scheduler_submission_idempotency
 cargo test --test scheduler_permit_lifecycle
@@ -229,14 +164,6 @@ cargo test --test scheduler_authority_matrix
 cargo test --test managed_process_descendants
 cargo test --test scheduler_resource_profiles
 cargo test --test scheduler_protocol_consistency
-
-# Phase 09 projection contract tests
-cargo test -p codegg --lib shell::projector -- projection_id
-cargo test -p codegg --lib shell::projector -- span_role
-cargo test -p codegg --lib shell::projector -- promotion
-cargo test -p codegg --lib shell::projector -- preferred_projector
-cargo test -p codegg --lib python_script::projection
-cargo test -p codegg --lib test_runner::projection
 
 # Tokio flavor audit
 python3 scripts/audit_tokio_tests.py
@@ -264,132 +191,11 @@ Users and projects can add custom agents via TOML and Markdown files:
 - **Global agents**: `~/.config/codegg/agents/*.toml` or `*.md`
 - **Project agents**: `.codegg/agents/*.toml` or `*.md` (relative to `$PWD`)
 
-### TOML Format
+**Resolution order**: Compiled built-ins -> Global files -> Project files -> Config `agent` map -> Config `mode` map. Project files override global files. Config overrides file-based agents.
 
-```toml
-name = "my-agent"
-mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
-description = "A custom agent"
-prompt = "You are a helpful assistant."
-
-[permission]
-read = "allow"
-bash = "ask"
-write = "deny"
-```
-
-Or wrapped format:
-
-```toml
-[agent]
-name = "my-agent"
-mode = "subagent"
-description = "A custom agent"
-
-[agent.permissions]
-read = "allow"
-```
-
-### Overlay Flags
-
-File-based TOML agents support overlay flags that control how they interact with base agents:
-
-```toml
-name = "my-agent"
-mode = "subagent"
-description = "Agent with overlay flags"
-replace = false   # merge into base agent (default) vs full replacement
-disable = false   # remove agent from resolution
-merge = true      # explicitly enable merge mode
-```
-
-- **`replace = true`**: Full replacement — the overlay completely replaces the base agent (legacy behavior)
-- **`replace = false`** (default): Merge mode — overlay fields are applied on top of the base agent. Scalar fields replace only when set. Permissions merge per-tool (overlay overwrites matching keys).
-- **`merge = true`**: Explicitly enable merge mode (same as default, for clarity)
-- **`disable = true`**: Removes the agent from resolution entirely (logged as Info diagnostic)
-
-> **Note:** Overlay flags are TOML-only. Markdown files always use merge mode and do not support `replace`, `disable`, or `merge` flags.
-
-### Rich Permissions
-
-#### Simple Permissions
-
-```toml
-[permission]
-read = "allow"
-bash = "ask"
-write = "deny"
-```
-
-#### Bash Permission Patterns
-
-Fine-grained control over bash commands:
-
-```toml
-[bash_permission]
-action = "ask"                                          # default action for unmatched commands
-allow_patterns = ["git diff*", "cargo test*", "ls *"]   # auto-allowed command patterns
-deny_patterns = ["curl*", "rm *", "sudo *"]             # auto-denied command patterns
-```
-
-- Patterns use glob syntax (`*` matches any characters)
-- Deny patterns are evaluated before allow patterns
-- The `action` field sets the default for commands that match no patterns
-
-#### Path Permission Patterns
-
-Fine-grained control over file access:
-
-```toml
-[path_permission]
-allow = ["src/**", "crates/**", "tests/**"]   # allowed file path patterns
-deny = [".git/**", "target/**", "**/*.env"]    # denied file path patterns
-```
-
-- Patterns use glob syntax (`**` matches directories, `*` matches within a directory)
-- Denied paths are checked before allowed paths
-
-### Markdown Format
-
-```markdown
----
-name: my-agent
-mode: subagent
-description: A custom agent
----
-
-You are a focused code reviewer.
-Check for safety issues.
-```
-
-The markdown body becomes the agent's prompt unless `prompt` or `prompt_file` is explicitly set.
-
-> **Note:** Markdown is a **prompt-first, merge-only** format. It supports flat `permission` maps in frontmatter and `disable`, but does not support overlay flags (`replace`, `merge`) or structured permission sections (`[bash_permission]`, `[path_permission]`). Use TOML for those features.
-
-### Prompt File Resolution
-
-`prompt_file` is resolved relative to the directory containing the agent file:
-
-```toml
-prompt_file = "prompts/my-agent.md"  # resolved from agent file's directory
-```
-
-### Resolution Order
-
-1. Compiled built-ins
-2. Global files (`~/.config/codegg/agents/`)
-3. Project files (`.codegg/agents/`)
-4. Config `agent` map
-5. Config `mode` map
-
-**Overlay merge behavior**:
-- Layers 2-3 (file-based agents): **Merge by default** — overlay fields are applied on top of the base agent. Use `replace = true` for full replacement.
-- Layer 4 (config `agent` map): **Field-level merge** — each field uses `cfg.field.or_else(|| agent.field)` pattern. Permissions merge additively (config overwrites matching keys).
-- Layer 5 (config `mode` map): **Permission merge** — mode tools are applied on top of existing agent permissions.
+**Overlay flags** (TOML-only): `replace = true` does full replacement; `replace = false` (default) merges on top of base agent. Markdown is always merge-only and does not support overlay flags.
 
 **Safety envelope**: Agent permissions are bounded by the most restrictive level across agent, session, config, and hard-deny layers. A deny at any layer overrides allows at lower layers.
-
-Project files override global files. Config overrides file-based agents.
 
 ## CI Pipeline
 
@@ -430,10 +236,10 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 
 ### Durable Jobs and Schedules (Phase 4)
 
-- **Typed IDs**: `JobId`, `AttemptId`, `ScheduleId`, `DependencyId`, `DaemonGeneration` — opaque UUID strings, never parsed as integers.
+- **Typed IDs**: `JobId`, `AttemptId`, `ScheduleId`, `DependencyId`, `DaemonGeneration` -- opaque UUID strings, never parsed as integers.
 - **JobState machine**: Terminal states never regress. Transitions enforced via `validate_state_transition` (`crates/codegg-core/src/jobs/store.rs:65`).
 - **AttemptState machine**: Terminal states never regress. Transitions enforced via `validate_attempt_transition` (`crates/codegg-core/src/jobs/store.rs:114`).
-- **Daemon generation recovery**: `recover_generation` marks all attempts whose `daemon_generation` ≠ current as `Interrupted`. Requeues iff `RecoveryPolicy` permits based on `IdempotencyClass`.
+- **Daemon generation recovery**: `recover_generation` marks all attempts whose `daemon_generation` != current as `Interrupted`. Requeues iff `RecoveryPolicy` permits based on `IdempotencyClass`.
 - **Idempotency**: `IdempotencyClass::is_retry_eligible()` returns `true` for `ReadOnly` and `SafeRepeat`. Persisted at creation time.
 - **JobStore/ScheduleStore traits**: Live in `crates/codegg-core/src/jobs/`. UI/server/plugin/auth-free (boundary enforced by `scripts/check-core-boundary.sh`).
 - **RunStore linkage**: `JobAttempt.run_id: Option<RunId>` links attempt to RunStore. RunStore is NOT the queue authority.
@@ -463,14 +269,14 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 ### TUI
 
 - **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (20 submodules). Runtime is in `src/tui/runtime/`.
-- **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` — never via a shell.
+- **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` -- never via a shell.
 - **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
 - **DialogType is in component.rs**, not `types.rs`. FocusManager is in `component/focus.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant handles all plugin dialogs.
 - **Async command pattern**: High-latency handlers use spawn-and-complete via `spawn_tui_task`. New apply handlers MUST use `state.finish(request_id)` / `state.fail(request_id, err)` guard pattern and add a stale-completion test. See `src/tui/async_cmd.rs`.
 - **Sync dispatch is the rule**: `src/tui/runtime/command_dispatch.rs` arms are all `fn` (non-async). New dispatch arms should NOT add `.await`.
-- **Long output goes to info dialog**: `App::show_short_or_info(info_type, lines)` toasts when ≤3 lines, otherwise opens scrollable `InfoDialog`.
+- **Long output goes to info dialog**: `App::show_short_or_info(info_type, lines)` toasts when <=3 lines, otherwise opens scrollable `InfoDialog`.
 - **Background task lifecycle**: `TuiTaskRegistry` on `App` tracks spawned tasks. Use `spawn_registered_tui_task(tx, registry, kind, name, fut)`.
 - **Git sidebar is cached, not rendered live**: `GitSidebarState` caches git info. Stale generations dropped silently.
 - **Remote TUI protocol is event/state-driven**: The `/tui` WebSocket uses `TuiCommand` enum. `RenderFrame` is unsupported.
@@ -485,9 +291,9 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
 - **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`). `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
-- **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** — not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
+- **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** -- not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
 - **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
-- **Tool Programs (M006–M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
+- **Tool Programs (M006-M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
   - **M007** child-job composition (`submit_job()`, `BrokerCallback::submit_child_job`, scheduler submission via `JobSubmissionService`).
   - **M008** background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection.
   - **M011/M012** authority, broker, notification, lineage, recovery, result, and hosted correctness closure (current active milestone; see `plans/subsystems/tool-programs-correctness-closure-addendum.md` and `architecture/tool_broker.md`).
@@ -541,16 +347,16 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 - **Phase D: typed mutations**: `src/tool/git.rs` accepts `mutation` action. All mutations route through `GitMutationExecutor` with snapshot/delta/RunStore persistence.
 - **Phase E: network/config/destructive**: `src/git_network_policy.rs` and `src/git_network_ops.rs`. `PushForce::Force` and broad clean are rejected by tool-side policy. Config keys gated by allowlist.
 - **Phase F: conflicts/recovery**: `crates/egggit/src/operation_state.rs` exposes `RepositoryOperationState` + `RecoveryAction`. `src/git_recovery.rs` exposes `continue_in_progress`, `abort_in_progress_typed`, `skip_in_progress`.
-- **Track U: unified Bash→Git routing**: Git families split into `GitRead`, `GitLocalMutation`, `GitNetwork`, `GitDestructive`. Conservative default (`route_git_local_mutation = Off`). See `tests/git_execution_origin_matrix.rs`.
+- **Track U: unified Bash->Git routing**: Git families split into `GitRead`, `GitLocalMutation`, `GitNetwork`, `GitDestructive`. Conservative default (`route_git_local_mutation = Off`). See `tests/git_execution_origin_matrix.rs`.
 - See `architecture/git.md` for the full contract.
 
 ### Human Shell
 
 - **Central invariant**: A human `!` command is not model context unless the user explicitly promotes it.
 - **Syntax**: `!command` runs ephemeral (hidden from model). `!!command` runs and auto-promotes output.
-- **Module location**: `src/shell/` — `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projector.rs`, `projection_bridge.rs`, `rtk.rs`, `redactor.rs`.
+- **Module location**: `src/shell/` -- `types.rs`, `runtime.rs`, `store.rs`, `policy.rs`, `digest.rs`, `projection.rs`, `projector.rs`, `projection_bridge.rs`, `rtk.rs`, `redactor.rs`.
 - **Policy**: `evaluate_command()` blocks destructive commands, warns on risky ones.
-- **Projection pipeline (Phases 1–10)**: `CommandOutputStore` retains raw output. `ProjectionSelector` handles projection (safe/truncated/error-retention). RTK integration is env-gated (`CODEGG_RTK_INTEGRATION=1`). Redaction applied inside `ProjectionSelector::project()`. Context budget compaction via `ProjectionContextMetadata`. See `architecture/human_shell.md`.
+- **Projection pipeline (Phases 1-10)**: `CommandOutputStore` retains raw output. `ProjectionSelector` handles projection (safe/truncated/error-retention). RTK integration is env-gated (`CODEGG_RTK_INTEGRATION=1`). Redaction applied inside `ProjectionSelector::project()`. Context budget compaction via `ProjectionContextMetadata`. See `architecture/human_shell.md`.
 
 ### Command Intent and Planning
 
@@ -578,55 +384,14 @@ CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer 
 
 ## Architecture Docs
 
-`architecture/` has 67 docs covering every module. See `architecture/overview.md` for the full module map and navigation index. Key ones:
-
-| Document | Key Gotchas |
-|----------|-------------|
-| `architecture/overview.md` | Module map, verified counts (108 commands, 45 events, 39 LSP servers, ~38 tools, 9 agents) |
-| `architecture/agent.md` | AgentLoop has ~49 fields at `src/agent/loop.rs:1380` |
-| `architecture/bus.md` | 45 AppEvent variants; PermissionRegistry/QuestionRegistry are synchronous |
-| `architecture/lsp.md` | egglsp is authoritative; 39 servers; `src/lsp/` is thin re-export shim |
-| `architecture/plugin.md` | No `wasm.rs`; `marketplace.rs` exists; PluginRuntime trait with Process/Wasm/Builtin |
-| `architecture/tool.md` | ~38 tools in default registry; `ToolCatalog::register()` takes `&dyn Tool` |
-| `architecture/deterministic_tools.md` | Eggsact in-process deterministic tools (8 always-visible + 5 deferred); trust model, registration, preflight integration |
-| `architecture/tui.md` | `src/tui/app/mod.rs` ~13K lines; async command pattern; TuiTaskRegistry lifecycle |
-| `architecture/human_shell.md` | ! commands not in model context unless promoted; Phases 1-10 projection pipeline |
-| `architecture/command_intent.md` | Command intent classification, risk assessment, execution capability model |
-| `architecture/command_planner.md` | Backend routing, permission generation, projector/RTK policy selection |
-| `architecture/command_routing.md` | Routing resolution mapping planned execution to concrete subsystems |
-| `architecture/python_scripting.md` | First-class Python scripting with Analyze/Transform/Verify modes, AST-aware risk analysis, capability enforcement, env hardening — sole canonical module at `src/python_script/` |
-| `architecture/jobs.md` | Phase 4 durable jobs, attempts, schedules, recovery, idempotency |
-| `architecture/scheduler.md` | Phase 5 admission control, fair queue, executor dispatch |
-| `architecture/tool_programs.md` | M006: `tool_program` foreground model tool, read-only palette (read/glob/grep/list), `DirectOrProgrammatic` caller policy, manifest resolution, `BrokerAdapter` bridge, `ProgramCallCache`. M007: child-job composition (`submit_job()` language construct, `ExecuteChildJob` IR opcode, `ChildJobOp`/`ChildJobRequest`/`ChildJobResult` types, `BrokerCallback::submit_child_job` trait method, scheduler submission via `JobSubmissionService`, authority/workspace/deadline inheritance). M008: background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection. M011/M012: correctness closure (authority, broker, notification, lineage, recovery, result, hosted). |
-| `architecture/tool_broker.md` | `ToolBroker` boundary contract, authority invariants, fixture vs production adapters, broker failure classification. Read before touching tool broker paths. |
-| `architecture/command.md` | 108 built-in slash commands |
-| `architecture/config.md` | Config schema in `crates/codegg-config/src/schema.rs` |
-| `architecture/provider.md` | 16 auto-registered providers via env vars; CircuitBreaker pattern |
-| `architecture/preflight.md` | Harness-side eggsact preflight: types, policy config, tool integration, anti-recursion |
+`architecture/` has 67 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 
-## Key Lessons
-
-1. **Verify claims against code** — Many "bugs" in docs turned out to be correct after inspection.
-2. **Documentation goes stale** — Struct fields get added/removed; always compare docs to source.
-
 ## Where New Components Belong
 
-### New Web Search Providers
-Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only.
-
-### New Deterministic Validators
-Add to the **eggsact** crate. The eggsact project owns the validation logic. Codegg's `EggsactTool` wrapper in `src/tool/deterministic.rs` exposes eggsact tools to the model. New tools need:
-1. Implementation in eggsact with the `codegg_core` profile
-2. Registration in `build_eggsact_tools()` in `src/tool/deterministic.rs`
-3. Category assignment (always-visible vs deferred)
-
-### New LSP Servers
-Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry with command, extensions, and initialization options. See `architecture/lsp.md`.
-
-### New Native Tool Crates
-Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process.
-
-### New Git Operations
-`codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. `classify_git()` delegates to `codegg_git::parse_git_argv()`. See `architecture/command_intent.md`.
+- **New Web Search Providers**: Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only.
+- **New Deterministic Validators**: Add to the **eggsact** crate. Codegg's `EggsactTool` wrapper in `src/tool/deterministic.rs` exposes eggsact tools to the model. New tools need: (1) implementation in eggsact, (2) registration in `build_eggsact_tools()`, (3) category assignment.
+- **New LSP Servers**: Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry. See `architecture/lsp.md`.
+- **New Native Tool Crates**: Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process.
+- **New Git Operations**: `codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. `classify_git()` delegates to `codegg_git::parse_git_argv()`. See `architecture/command_intent.md`.
