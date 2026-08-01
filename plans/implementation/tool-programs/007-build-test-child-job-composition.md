@@ -1,6 +1,6 @@
 # Tool Programs Milestone 007 — Build/Test Child-Job Composition
 
-Status: blocked pending Milestone 006 closure
+Status: implemented
 
 Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
 
@@ -28,7 +28,7 @@ The program runtime must never spawn these commands directly or implement its ow
 
 ## 2. Readiness boundary
 
-Hard dependency: M006 closure. Foreground program execution, structured tool values, artifacts, and read-only palette must be stable before adding heavy child work.
+Hard dependency: M006 closure (satisfied by `plans/closure/tool-programs/006-status.md`). Foreground program execution, structured tool values, artifacts, and read-only palette are stable before child work.
 
 ## 3. Current implementation evidence
 

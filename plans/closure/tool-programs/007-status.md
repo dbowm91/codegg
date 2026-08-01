@@ -16,6 +16,7 @@ Implementation commits:
 
 - Child-job composition implementation (M007)
 - M007 gap closure: integration tests, BrokerAdapter enrichment, docs, preallocate fix
+- Current-head corrective hardening: typed argv/cwd validation, parent-deadline narrowing, and durable child summary handles
 
 ## 1. Executive finding
 
@@ -140,12 +141,53 @@ All tests pass. Formatting clean. No new clippy issues introduced (6 pre-existin
 | low | Full workspace CI not run locally (resource constraints) | Will verify in remote CI |
 | low | `projection_replay/` pre-existing clippy issues (6) | Not from M007; documented in M006 closure |
 
+### Current-head re-verification addendum
+
+The implementation-authored evidence above was rechecked against the current
+head. The child broker now rejects shell/dependency-install argv, requires
+check-only format commands, canonicalizes child cwd beneath the workspace,
+narrows the persisted timeout to the remaining parent deadline, and emits
+durable child summary/run/job handles while leaving full output in RunStore.
+Focused regression tests cover each of these boundaries. No high- or
+medium-severity finding remains. The existing native/RTK projector stack is
+still owned by the shared shell projection service; child completion never
+uses a projection to determine authoritative status.
+
+Reverification commands and results:
+
+```text
+cargo fmt --all -- --check                                  pass
+cargo test -p codegg-core --lib tool_program::child_job     6 passed
+cargo test --test tool_program_child_jobs                   13 passed
+cargo test --test tool_program_build_test_matrix            9 passed
+cargo test --test tool_program_child_recovery                5 passed
+cargo test --test scheduler_cancellation                    10 passed
+cargo check -p codegg-core                                  pass
+cargo check -p codegg                                       pass
+cargo test -p codegg --lib test_runner                     144 passed
+cargo test -p codegg --lib shell::rtk                       62 passed
+bash scripts/check-core-boundary.sh                         pass
+python3 scripts/check_scheduler_bypass.py                  pass
+python3 scripts/check_execution_ownership.py                pass
+python3 scripts/check_daemon_cwd_usage.py                   pass
+```
+
+The required all-feature Clippy command remains blocked by seven pre-existing
+`dead_code` errors in `crates/codegg-core/build.rs` model-profile parsing
+fixtures; none is in the M007 change set. This is recorded as a verification
+environment finding, not a new M007 correctness finding.
+
 ## 11. Roadmap disposition
 
-Milestone 007 is complete. The tool-programs roadmap's next milestone is M008 (background programs, projections, and parent notification), which was blocked on M007 closure.
+Milestone 007 is complete and its roadmap entry remains `closed`. M008 is also
+already closed in the current repository history, so this closure does not
+create a new dependency-ready handoff.
 
 ## 12. Registry updates
 
-- Move M007 from `blocked` to `closed` in `plans/registry.md`
-- Move M008 from `blocked` to `ready` (M007 was its only blocker)
-- Update current milestone from 006 to 007 closed
+- `plans/registry.md` already records M007 under recently closed work and the
+  Tool Programs subsystem is in its later independent-closure sequence; no
+  historical registry row is reopened.
+- The blocked-work audit found no registered plan whose remaining hard or
+  interface dependency is M007. M008 and later Tool Programs milestones are
+  already represented by their current closure/review sequence.

@@ -196,6 +196,7 @@ pub struct BrokerAdapter {
     attempt_id: Option<String>,
     grant: Option<codegg_core::jobs::ToolAuthorityGrant>,
     deadline: Option<tokio::time::Instant>,
+    artifact_store: Option<Arc<dyn crate::context::ContextArtifactStore>>,
     /// M013-C-34: Track submitted child job results for artifact handles.
     child_results: std::sync::Mutex<Vec<ChildJobTracking>>,
 }
@@ -240,6 +241,7 @@ impl BrokerAdapter {
             attempt_id: None,
             grant: None,
             deadline: None,
+            artifact_store: None,
             child_results: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -323,6 +325,14 @@ impl BrokerAdapter {
 
     pub fn with_deadline(mut self, deadline: Option<tokio::time::Instant>) -> Self {
         self.deadline = deadline;
+        self
+    }
+
+    pub fn with_artifact_store(
+        mut self,
+        store: Arc<dyn crate::context::ContextArtifactStore>,
+    ) -> Self {
+        self.artifact_store = Some(store);
         self
     }
 }
@@ -441,6 +451,15 @@ impl BrokerCallback for BrokerAdapter {
             InterpreterError::BrokerError("child job requires workspace_id".into())
         })?;
 
+        request
+            .config
+            .validate()
+            .map_err(InterpreterError::BrokerError)?;
+        let resolved_cwd = request
+            .config
+            .resolve_cwd(&self.cwd)
+            .map_err(InterpreterError::BrokerError)?;
+
         // Build the NewJob based on operation type
         let (kind, payload, timeout) = match &request.config {
             ChildJobConfig::Test(cfg) => {
@@ -451,7 +470,7 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobPayload::Test {
                         command: "cargo test".into(),
                         argv,
-                        cwd: cfg.cwd.clone(),
+                        cwd: resolved_cwd.clone(),
                         scope: cfg.scope.clone(),
                     },
                     timeout,
@@ -467,7 +486,7 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobKind::Build,
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
-                        cwd: cfg.cwd.clone(),
+                        cwd: resolved_cwd.clone(),
                     },
                     timeout,
                 )
@@ -487,7 +506,7 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobKind::Lint,
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
-                        cwd: cfg.cwd.clone(),
+                        cwd: resolved_cwd.clone(),
                     },
                     timeout,
                 )
@@ -501,7 +520,7 @@ impl BrokerCallback for BrokerAdapter {
                     codegg_core::jobs::JobKind::Format,
                     codegg_core::jobs::JobPayload::ManagedArgv {
                         argv,
-                        cwd: cfg.cwd.clone(),
+                        cwd: resolved_cwd.clone(),
                     },
                     timeout,
                 )
@@ -539,7 +558,7 @@ impl BrokerCallback for BrokerAdapter {
             priority: codegg_core::jobs::JobPriority::Normal,
             payload,
             resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
-            timeout,
+            timeout: Some(effective_timeout),
             retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
             idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
             not_before: None,
@@ -863,6 +882,52 @@ impl BrokerCallback for BrokerAdapter {
             .await
             .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
         let attempt = attempts.into_iter().max_by_key(|attempt| attempt.sequence);
+        let mut artifacts = Vec::new();
+        if let Some(run_id) = completion.run_id.as_ref() {
+            artifacts.push(format!("run://{run_id}"));
+        }
+        if let Some(attempt) = attempt.as_ref() {
+            artifacts.push(format!(
+                "job://{}/attempt/{}",
+                submitted.job_id, attempt.attempt_id
+            ));
+        }
+        // The scheduler's completion summary is the bounded display projection;
+        // the executor-owned RunStore remains authoritative for full output.
+        // Persisting this summary gives callers a durable expansion handle even
+        // when a lightweight executor has no RunStore run id.
+        if let Some(store) = &self.artifact_store {
+            let handle = format!("child-job://{}/summary", submitted.job_id);
+            let session_id = self
+                .session_id
+                .clone()
+                .unwrap_or_else(|| "tool-program".to_string());
+            let summary_artifact = crate::context::ContextArtifact {
+                handle: handle.clone(),
+                session_id,
+                turn_index: 0,
+                tool_call_id: Some(format!("call:{}:{}", self.program_id, request.sequence)),
+                tool_name: Some(format!("child_job/{}", request.op)),
+                kind: crate::context::ArtifactKind::CommandOutput,
+                created_at_ms: chrono::Utc::now().timestamp_millis(),
+                content_hash: format!(
+                    "sha256:{}",
+                    Sha256::digest(completion.summary.as_bytes())
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                ),
+                raw_bytes_len: completion.summary.len(),
+                estimated_tokens: completion.summary.len().div_ceil(4),
+                redacted_content: completion.summary.clone(),
+            };
+            if let Err(error) = store.put(summary_artifact).await {
+                tracing::warn!(%error, child_job = %submitted.job_id, "failed to persist child-job summary artifact");
+            } else {
+                artifacts.push(handle);
+            }
+        }
+
         if let Ok(mut results) = self.child_results.lock() {
             results.push(ChildJobTracking {
                 job_id: submitted.job_id.to_string(),
@@ -889,7 +954,7 @@ impl BrokerCallback for BrokerAdapter {
             exit_code,
             duration_ms: completion.metrics.elapsed_ms,
             details,
-            artifacts: vec![],
+            artifacts,
             error: if !success {
                 Some(completion.summary)
             } else {
@@ -1527,6 +1592,7 @@ impl JobExecutor for ToolProgramExecutor {
         }
         broker_adapter = broker_adapter.with_workspace_id(ctx.workspace_id.clone());
         broker_adapter = broker_adapter.with_cwd(ctx.workspace_root.clone());
+        broker_adapter = broker_adapter.with_artifact_store(canonical_artifact_store.clone());
         broker_adapter = broker_adapter.with_allowed_tools(allowed_tools.clone());
         broker_adapter = broker_adapter
             .with_ledger(ledger.clone())

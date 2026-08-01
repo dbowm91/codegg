@@ -14,6 +14,7 @@
 //! - Native typed projectors are preferred; RTK is a bounded fallback.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// The kind of child job a program may submit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -127,6 +128,170 @@ pub enum ChildJobConfig {
     Build(BuildJobConfig),
     Lint(LintJobConfig),
     Format(FormatJobConfig),
+}
+
+impl ChildJobConfig {
+    /// Validate the program-facing portion of a child request before it is
+    /// translated into a scheduler payload.  This is deliberately stricter
+    /// than the general managed-argv executor: a Tool Program is not allowed
+    /// to turn a typed build/test operation into an arbitrary shell escape.
+    pub fn validate(&self) -> Result<(), String> {
+        const MAX_ARGV: usize = 32;
+        const MAX_ARG_BYTES: usize = 4096;
+
+        fn validate_argv(
+            argv: &[String],
+            op: ChildJobOp,
+            max_args: usize,
+            max_bytes: usize,
+        ) -> Result<(), String> {
+            if argv.is_empty() || argv.len() > max_args {
+                return Err(format!("{op} argv must contain 1..={max_args} arguments"));
+            }
+            let bytes: usize = argv.iter().map(String::len).sum();
+            if bytes > max_bytes {
+                return Err(format!("{op} argv exceeds {max_bytes} bytes"));
+            }
+            if argv.iter().any(|arg| {
+                arg.is_empty()
+                    || arg.bytes().any(|byte| {
+                        matches!(
+                            byte,
+                            b'\0' | b'\n' | b'\r' | b'|' | b'&' | b';' | b'<' | b'>'
+                        )
+                    })
+            }) {
+                return Err(format!("{op} argv contains an invalid argument"));
+            }
+            if argv[0] != "cargo" {
+                return Err(format!("{op} only permits the cargo executable"));
+            }
+            let allowed_subcommand = match op {
+                ChildJobOp::Build => {
+                    matches!(argv.get(1).map(String::as_str), Some("build" | "check"))
+                }
+                ChildJobOp::Lint => {
+                    matches!(argv.get(1).map(String::as_str), Some("clippy" | "check"))
+                }
+                ChildJobOp::Format => {
+                    matches!(argv.get(1).map(String::as_str), Some("fmt"))
+                        && argv.iter().any(|arg| arg == "--check")
+                }
+                ChildJobOp::Test => matches!(argv.get(1).map(String::as_str), Some("test")),
+            };
+            if !allowed_subcommand {
+                return Err(format!("{op} command is not in the typed allowlist"));
+            }
+            if matches!(
+                op,
+                ChildJobOp::Build | ChildJobOp::Lint | ChildJobOp::Format
+            ) && argv
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "install" | "add" | "remove" | "publish"))
+            {
+                return Err(format!("{op} cannot install or publish dependencies"));
+            }
+            Ok(())
+        }
+
+        match self {
+            Self::Test(config) => {
+                let argv = ["cargo".to_string(), "test".to_string()];
+                validate_argv(&argv, ChildJobOp::Test, MAX_ARGV, MAX_ARG_BYTES)?;
+                validate_cwd(config.cwd.as_deref())?;
+                validate_positive_timeout(config.timeout_secs, "test timeout")?;
+                validate_positive_timeout(config.stall_timeout_secs, "test stall timeout")?;
+                if let Some(scope) = &config.scope {
+                    if !matches!(
+                        scope.as_str(),
+                        "workspace" | "package" | "file" | "previous_failures" | "custom"
+                    ) {
+                        return Err("test scope is not in the typed allowlist".into());
+                    }
+                }
+            }
+            Self::Build(config) => {
+                let default = ["cargo".to_string(), "build".to_string()];
+                let argv = config.argv.as_deref().unwrap_or(&default);
+                validate_argv(argv, ChildJobOp::Build, MAX_ARGV, MAX_ARG_BYTES)?;
+                validate_cwd(config.cwd.as_deref())?;
+                validate_positive_timeout(config.timeout_secs, "build timeout")?;
+            }
+            Self::Lint(config) => {
+                let default = ["cargo".to_string(), "clippy".to_string()];
+                validate_argv(
+                    config.argv.as_deref().unwrap_or(&default),
+                    ChildJobOp::Lint,
+                    MAX_ARGV,
+                    MAX_ARG_BYTES,
+                )?;
+                validate_cwd(config.cwd.as_deref())?;
+                validate_positive_timeout(config.timeout_secs, "lint timeout")?;
+            }
+            Self::Format(config) => {
+                let default = [
+                    "cargo".to_string(),
+                    "fmt".to_string(),
+                    "--".to_string(),
+                    "--check".to_string(),
+                ];
+                validate_argv(
+                    config.argv.as_deref().unwrap_or(&default),
+                    ChildJobOp::Format,
+                    MAX_ARGV,
+                    MAX_ARG_BYTES,
+                )?;
+                validate_cwd(config.cwd.as_deref())?;
+                validate_positive_timeout(config.timeout_secs, "format timeout")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve a workspace-relative cwd without allowing a program to escape
+    /// the workspace authority granted to its parent job.
+    pub fn resolve_cwd(&self, workspace_root: &Path) -> Result<Option<String>, String> {
+        let requested = match self {
+            Self::Test(c) => c.cwd.as_deref(),
+            Self::Build(c) => c.cwd.as_deref(),
+            Self::Lint(c) => c.cwd.as_deref(),
+            Self::Format(c) => c.cwd.as_deref(),
+        };
+        let Some(requested) = requested else {
+            return Ok(None);
+        };
+        let candidate = if Path::new(requested).is_absolute() {
+            PathBuf::from(requested)
+        } else {
+            workspace_root.join(requested)
+        };
+        let root = workspace_root
+            .canonicalize()
+            .map_err(|e| format!("workspace root is unavailable: {e}"))?;
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|e| format!("child cwd is unavailable: {e}"))?;
+        if !canonical.starts_with(&root) {
+            return Err("child cwd escapes the workspace authority".into());
+        }
+        Ok(Some(canonical.to_string_lossy().into_owned()))
+    }
+}
+
+fn validate_cwd(cwd: Option<&str>) -> Result<(), String> {
+    if cwd.is_some_and(|value| value.is_empty() || value.contains('\0') || value.len() > 4096) {
+        Err("child cwd is invalid".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_positive_timeout(value: Option<u64>, label: &str) -> Result<(), String> {
+    if value == Some(0) {
+        Err(format!("{label} must be greater than zero"))
+    } else {
+        Ok(())
+    }
 }
 
 /// A typed child-job submission request.
@@ -301,5 +466,54 @@ mod tests {
         let back: ChildJobResult = serde_json::from_str(&json_str).unwrap();
         assert!(back.success);
         assert_eq!(back.exit_code, Some(0));
+    }
+
+    #[test]
+    fn typed_commands_reject_shell_and_dependency_installation() {
+        let shell = ChildJobConfig::Build(BuildJobConfig {
+            argv: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "cargo build; rm -rf .".into(),
+            ]),
+            ..Default::default()
+        });
+        assert!(shell.validate().is_err());
+
+        let install = ChildJobConfig::Build(BuildJobConfig {
+            argv: Some(vec!["cargo".into(), "install".into(), "evil".into()]),
+            ..Default::default()
+        });
+        assert!(install.validate().is_err());
+    }
+
+    #[test]
+    fn format_is_check_only() {
+        let write = ChildJobConfig::Format(FormatJobConfig {
+            argv: Some(vec!["cargo".into(), "fmt".into()]),
+            ..Default::default()
+        });
+        assert!(write.validate().is_err());
+
+        let check = ChildJobConfig::Format(FormatJobConfig {
+            argv: Some(vec![
+                "cargo".into(),
+                "fmt".into(),
+                "--".into(),
+                "--check".into(),
+            ]),
+            ..Default::default()
+        });
+        assert!(check.validate().is_ok());
+    }
+
+    #[test]
+    fn cwd_resolution_rejects_workspace_escape() {
+        let config = ChildJobConfig::Build(BuildJobConfig {
+            cwd: Some("..".into()),
+            ..Default::default()
+        });
+        let root = std::env::current_dir().unwrap();
+        assert!(config.resolve_cwd(&root).is_err());
     }
 }

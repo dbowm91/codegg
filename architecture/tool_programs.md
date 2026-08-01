@@ -758,9 +758,9 @@ and are re-exported from `mod.rs`.
 
 | Variant | Meaning |
 |---------|---------|
-| `Test` | Test execution (cargo test, pytest, etc.) |
-| `Build` | Build/compile (cargo build, make, etc.) |
-| `Lint` | Lint/check (clippy, eslint, etc.) |
+| `Test` | Cargo test execution |
+| `Build` | Cargo build/check |
+| `Lint` | Cargo clippy/check |
 | `Format` | Format/check-format (cargo fmt --check, etc.) |
 
 **`ChildJobConfig`** — typed per-operation configuration:
@@ -781,6 +781,14 @@ and are re-exported from `mod.rs`.
 - `details: ChildJobDetails` — per-op result (TestJobResult, BuildJobResult, LintJobResult, FormatJobResult)
 - `artifacts: Vec<String>` — artifact handles for stdout/stderr/logs
 - `error: Option<String>`
+
+Before translation, the broker applies a closed Cargo argv allowlist,
+rejects shell metacharacters and dependency-install commands, requires format
+jobs to be `cargo fmt --check`, and resolves requested cwd values beneath the
+parent workspace. The effective child timeout is the minimum of the requested
+timeout and the remaining parent deadline. Real submissions return durable
+`run://`, `job://`, and `child-job://` handles; full execution evidence remains
+authoritative in RunStore.
 
 ### `BrokerCallback::submit_child_job` Trait Method
 
@@ -810,7 +818,7 @@ budget and are recorded in the completed-calls map for replay.
    - `Lint` → `JobKind::Lint`, `JobPayload::ManagedArgv { argv, cwd }`
    - `Format` → `JobKind::Format`, `JobPayload::ManagedArgv { argv, cwd }`
 2. Generating an idempotent `SubmissionKey` from program_id + config SHA-256
-3. Constructing a `NewJob` with the parent's `workspace_id`, `JobSource::Interactive`, `RetryPolicy::no_retry()`, `IdempotencyClass::SafeRepeat`
+3. Constructing a `NewJob` with the parent's `workspace_id`, `JobSource::AgentDelegated`, `RetryPolicy::no_retry()`, `IdempotencyClass::SafeRepeat`
 4. Submitting via `JobSubmissionService::submit()`
 5. Waiting for completion via `scheduler().wait_for_completion(job_id, timeout)`
 6. Mapping `ExecutorStatus` to `ChildJobResult` with per-op typed details
@@ -822,9 +830,9 @@ lint=`cargo clippy -- -D warnings`, format=`cargo fmt -- --check`.
 
 Child jobs inherit from the parent program:
 - **workspace_id**: taken from `BrokerAdapter.workspace_id` (the program's workspace)
-- **source**: `JobSource::Interactive`
+- **source**: `JobSource::AgentDelegated`
 - **exclusivity**: `ResourceRequest::for_kind(kind)` — no weakening allowed
-- **deadline**: program-supplied `timeout_secs` mapped to job timeout; parent's wall deadline used as fallback
+- **deadline**: minimum of program-supplied `timeout_secs` and the parent's remaining wall deadline
 - **retry**: `RetryPolicy::no_retry()` — child jobs are not retried
 - **idempotency**: `SafeRepeat` — safe to re-submit on restart
 
