@@ -38,8 +38,36 @@ struct RpcRequest {
 struct ActivePrompt {
     request_id: Value,
     session_id: String,
+    submission_event_floor: u64,
     turn_id: Option<String>,
-    cancelled: bool,
+    cancel_requested: bool,
+    close_requested: bool,
+    cancel_sent: bool,
+}
+
+impl ActivePrompt {
+    fn cancel(&mut self, close: bool) {
+        self.cancel_requested = true;
+        self.close_requested |= close;
+    }
+
+    fn can_accept(&self, event: &EventEnvelope<CoreEvent>) -> bool {
+        event.event_seq > self.submission_event_floor
+            && event.session_id.as_deref() == Some(self.session_id.as_str())
+    }
+
+    fn bind_turn(&mut self, turn_id: &str) -> bool {
+        if turn_id.is_empty() {
+            return false;
+        }
+        match self.turn_id.as_deref() {
+            Some(existing) => existing == turn_id,
+            None => {
+                self.turn_id = Some(turn_id.to_owned());
+                true
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +157,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             let subscription = subscribe(&client, &sid, None).await?;
                             sessions.insert(sid.clone(), SessionBinding { subscription_id: subscription.1, root: None });
                             if request.method == "session/load" {
-                                replay_snapshot(&stdout, &client, request.id.clone().unwrap_or(Value::Null), &sid).await?;
+                                replay_snapshot(&stdout, request.id.clone().unwrap_or(Value::Null), &sid, subscription.2).await?;
                             } else {
                                 write_result(&stdout, request.id.unwrap_or(Value::Null), json!({"sessionId": sid})).await?;
                             }
@@ -145,26 +173,37 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                         let text = prompt_text(&request.params)?;
                         let agents = native_agents(&sid, sessions.get(&sid).and_then(|b| b.root.as_deref()))?;
                         let model = request.params.get("model").and_then(Value::as_str).unwrap_or(agent::EMERGENCY_DEFAULT_MODEL).to_owned();
+                        let submission_event_floor = drain_event_floor(&mut events);
                         let response = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnSubmit {
                             session_id: sid.clone(), text: text.clone(), plan_mode: false, model, agents, current_agent_idx: 0,
                             messages: vec![ProviderMessage::User { content: vec![ContentPart::Text { text }] }],
                         })).await?;
                         match response {
-                            CoreResponse::Ack => active = Some(ActivePrompt { request_id: request.id.unwrap_or(Value::Null), session_id: sid, turn_id: None, cancelled: false }),
+                            CoreResponse::Ack => active = Some(ActivePrompt {
+                                request_id: request.id.unwrap_or(Value::Null),
+                                session_id: sid,
+                                submission_event_floor,
+                                turn_id: None,
+                                cancel_requested: false,
+                                close_requested: false,
+                                cancel_sent: false,
+                            }),
                             other => write_core_error(&stdout, request.id.unwrap_or(Value::Null), other).await?,
                         }
                     }
                     "session/cancel" => {
                         let sid = session_id(&request.params)?;
-                        if let (Some(client), Some(prompt)) = (client.as_ref(), active.as_ref().filter(|p| p.session_id == sid)) {
-                            if let Some(turn_id) = &prompt.turn_id { let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnCancel { session_id: sid, turn_id: turn_id.clone() })).await; }
+                        if let Some(prompt) = active.as_mut().filter(|p| p.session_id == sid) {
+                            prompt.cancel(false);
+                            cancel_if_ready(client.as_ref(), prompt).await;
                         }
                         write_result(&stdout, request.id.unwrap_or(Value::Null), json!({})).await?;
                     }
                     "session/close" => {
                         let sid = session_id(&request.params)?;
-                        if let (Some(client), Some(prompt)) = (client.as_ref(), active.as_ref().filter(|p| p.session_id == sid)) {
-                            if let Some(turn_id) = &prompt.turn_id { let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnCancel { session_id: sid.clone(), turn_id: turn_id.clone() })).await; }
+                        if let Some(prompt) = active.as_mut().filter(|p| p.session_id == sid) {
+                            prompt.cancel(true);
+                            cancel_if_ready(client.as_ref(), prompt).await;
                         }
                         if let Some(binding) = sessions.remove(&sid) { if let (Some(client), Some(sub)) = (client.as_ref(), binding.subscription_id) { let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::ProjectionUnsubscribe { subscription_id: sub })).await; } }
                         write_result(&stdout, request.id.unwrap_or(Value::Null), json!({})).await?;
@@ -174,10 +213,8 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                     "$/cancel_request" => {
                         let cancelled_id = request.params.get("id").cloned();
                         if let Some(prompt) = active.as_mut().filter(|p| cancelled_id.as_ref() == Some(&p.request_id)) {
-                            prompt.cancelled = true;
-                            if let (Some(client), Some(turn_id)) = (client.as_ref(), prompt.turn_id.as_ref()) {
-                                let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnCancel { session_id: prompt.session_id.clone(), turn_id: turn_id.clone() })).await;
-                            }
+                            prompt.cancel(false);
+                            cancel_if_ready(client.as_ref(), prompt).await;
                         }
                     }
                     _ => write_error(&stdout, request.id.unwrap_or(Value::Null), -32601, "method not supported by CodeGG ACP v1").await?,
@@ -186,20 +223,66 @@ pub async fn run() -> Result<(), crate::error::AppError> {
             event = events.recv() => {
                 let Some(event) = event else { break };
                 if let Some(prompt) = active.as_mut() {
-                    let had_turn = prompt.turn_id.is_some();
-                    handle_event(&stdout, prompt, &event).await?;
-                    if prompt.cancelled && !had_turn {
-                        if let Some(turn_id) = &prompt.turn_id {
-                            if let Some(client) = client.as_ref() { let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TurnCancel { session_id: prompt.session_id.clone(), turn_id: turn_id.clone() })).await; }
-                        }
+                    let accepted = handle_event(&stdout, prompt, &event).await?;
+                    if accepted {
+                        cancel_if_ready(client.as_ref(), prompt).await;
                     }
-                    if prompt.turn_id.is_none() { continue; }
                 }
-                if let Some(prompt) = active.as_ref() { if event_is_terminal(&event, &prompt.session_id, prompt.turn_id.as_deref()) { let prompt = active.take().unwrap(); let reason = terminal_reason(&event); write_result(&stdout, prompt.request_id, json!({"stopReason": reason})).await?; } }
+                if let Some(prompt) = active.as_ref() {
+                    if event_is_terminal(&event, prompt) {
+                        let prompt = active.take().unwrap();
+                        let reason = if prompt.cancel_requested || prompt.close_requested { "cancelled" } else { terminal_reason(&event) };
+                        write_result(&stdout, prompt.request_id, json!({"stopReason": reason})).await?;
+                    }
+                }
+            }
+        }
+    }
+    if let Some(prompt) = active.as_mut() {
+        prompt.cancel(true);
+        cancel_if_ready(client.as_ref(), prompt).await;
+    }
+    if let Some(client) = client.as_ref() {
+        for binding in sessions.into_values() {
+            if let Some(subscription_id) = binding.subscription_id {
+                let _ = client
+                    .request(new_request(
+                        uuid::Uuid::new_v4().to_string(),
+                        CoreRequest::ProjectionUnsubscribe { subscription_id },
+                    ))
+                    .await;
             }
         }
     }
     Ok(())
+}
+
+fn drain_event_floor(events: &mut mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>>) -> u64 {
+    let mut floor = 0;
+    while let Ok(event) = events.try_recv() {
+        floor = floor.max(event.event_seq);
+    }
+    floor
+}
+
+async fn cancel_if_ready(client: Option<&Arc<SocketCoreClient>>, prompt: &mut ActivePrompt) {
+    if !prompt.cancel_requested || prompt.cancel_sent {
+        return;
+    }
+    let Some(turn_id) = prompt.turn_id.clone() else {
+        return;
+    };
+    let Some(client) = client else { return };
+    prompt.cancel_sent = true;
+    let _ = client
+        .request(new_request(
+            uuid::Uuid::new_v4().to_string(),
+            CoreRequest::TurnCancel {
+                session_id: prompt.session_id.clone(),
+                turn_id,
+            },
+        ))
+        .await;
 }
 
 async fn ensure_client(
@@ -293,6 +376,7 @@ async fn subscribe(
     (
         Option<crate::protocol::projection::replay::ProjectionCursor>,
         Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+        Option<crate::protocol::projection::replay::ProjectionSnapshotBundle>,
     ),
     crate::error::AppError,
 > {
@@ -313,36 +397,55 @@ async fn subscribe(
         CoreResponse::ProjectionSubscribed {
             subscription_id,
             cursor,
+            snapshot,
             ..
-        } => Ok((Some(cursor), Some(subscription_id))),
+        } => Ok((Some(cursor), Some(subscription_id), Some(snapshot))),
         CoreResponse::Error { code, message } => Err(crate::error::AppError::Other(
             anyhow::anyhow!("{code}: {message}"),
         )),
-        _ => Ok((None, None)),
+        other => Err(crate::error::AppError::Other(anyhow::anyhow!(
+            "unexpected projection subscription response: {other:?}"
+        ))),
     }
 }
 
 async fn replay_snapshot(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
-    client: &Arc<SocketCoreClient>,
     id: Value,
     sid: &str,
+    snapshot: Option<crate::protocol::projection::replay::ProjectionSnapshotBundle>,
 ) -> Result<(), crate::error::AppError> {
-    let response = client
-        .request(new_request(
-            uuid::Uuid::new_v4().to_string(),
-            CoreRequest::SessionMessagesLoad {
-                session_id: sid.to_owned(),
-            },
-        ))
-        .await?;
-    if let CoreResponse::SessionMessages { messages, .. } = response {
-        for message in messages {
-            for part in message.data.parts {
-                if let crate::protocol::dto::PartData::Text { text } = part.data {
-                    update(stdout, sid, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":text}})).await?;
-                }
+    let Some(crate::protocol::projection::replay::ProjectionSnapshotBundle::One { snapshot }) =
+        snapshot
+    else {
+        return write_result(stdout, id, json!({"sessionId": sid})).await;
+    };
+    let mut turns = snapshot.recent_turns.clone();
+    if let Some(active) = snapshot.active_turn.clone() {
+        turns.push(active);
+    }
+    turns.sort_by_key(|turn| turn.started_at);
+    for turn in turns {
+        for message in turn.messages {
+            if message.visibility != crate::protocol::projection::dto::VisibilityClass::Public {
+                continue;
             }
+            let session_update = match message.role {
+                crate::protocol::projection::dto::MessageRole::User => "user_message_chunk",
+                crate::protocol::projection::dto::MessageRole::Assistant => "agent_message_chunk",
+                crate::protocol::projection::dto::MessageRole::Tool
+                | crate::protocol::projection::dto::MessageRole::System
+                | crate::protocol::projection::dto::MessageRole::Reasoning => continue,
+            };
+            update(
+                stdout,
+                sid,
+                json!({
+                    "sessionUpdate": session_update,
+                    "content": {"type": "text", "text": message.text}
+                }),
+            )
+            .await?;
         }
     }
     write_result(stdout, id, json!({"sessionId": sid})).await
@@ -352,13 +455,22 @@ async fn handle_event(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     prompt: &mut ActivePrompt,
     event: &EventEnvelope<CoreEvent>,
-) -> Result<(), crate::error::AppError> {
-    if event.session_id.as_deref() != Some(prompt.session_id.as_str()) {
-        return Ok(());
+) -> Result<bool, crate::error::AppError> {
+    if !prompt.can_accept(event) {
+        return Ok(false);
     }
     if let CoreEvent::ProjectionStreamEvent { envelope, .. } = &event.payload {
-        if prompt.turn_id.is_none() {
-            prompt.turn_id = envelope.turn_id.clone();
+        if envelope.session_id.as_deref() != Some(prompt.session_id.as_str()) {
+            return Ok(false);
+        }
+        let Some(turn_id) = envelope.turn_id.as_deref() else {
+            return Ok(false);
+        };
+        if !prompt.bind_turn(turn_id) {
+            return Ok(false);
+        }
+        if prompt.close_requested {
+            return Ok(true);
         }
         match &envelope.payload {
             ProjectionEvent::MessageAppended { message } if message.visibility == crate::protocol::projection::dto::VisibilityClass::Public => update(stdout, &prompt.session_id, json!({"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":message.text}})).await?,
@@ -367,24 +479,35 @@ async fn handle_event(
             _ => {}
         }
     } else if let CoreEvent::TurnStarted { turn_id, .. } = &event.payload {
-        prompt.turn_id = Some(turn_id.clone());
+        if !prompt.bind_turn(turn_id) {
+            return Ok(false);
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
-fn event_is_terminal(event: &EventEnvelope<CoreEvent>, session: &str, turn: Option<&str>) -> bool {
-    if event.session_id.as_deref() != Some(session) {
+fn event_is_terminal(event: &EventEnvelope<CoreEvent>, prompt: &ActivePrompt) -> bool {
+    if !prompt.can_accept(event) || event.session_id.as_deref() != Some(prompt.session_id.as_str())
+    {
         return false;
     }
+    let Some(turn) = prompt.turn_id.as_deref() else {
+        return false;
+    };
     match &event.payload {
-        CoreEvent::TurnCompleted { turn_id, .. } => turn.map(|t| t == turn_id).unwrap_or(true),
-        CoreEvent::TurnFailed { turn_id, .. } => {
-            turn.map(|t| Some(t) == turn_id.as_deref()).unwrap_or(true)
-        }
-        CoreEvent::ProjectionStreamEvent { envelope, .. } => matches!(
-            envelope.payload,
-            ProjectionEvent::TurnCompleted { .. } | ProjectionEvent::TurnFailed { .. }
-        ),
+        CoreEvent::TurnCompleted { turn_id, .. } => turn == turn_id,
+        CoreEvent::TurnFailed { turn_id, .. } => turn_id.as_deref() == Some(turn),
+        CoreEvent::ProjectionStreamEvent { envelope, .. } => match (
+            envelope.session_id.as_deref(),
+            envelope.turn_id.as_deref(),
+            &envelope.payload,
+        ) {
+            (Some(session), Some(event_turn), ProjectionEvent::TurnCompleted { turn_id, .. })
+            | (Some(session), Some(event_turn), ProjectionEvent::TurnFailed { turn_id, .. }) => {
+                session == prompt.session_id && event_turn == turn && turn_id == turn
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -458,6 +581,110 @@ async fn write_frame(
         .map_err(crate::error::AppError::Io)?;
     out.flush().await.map_err(crate::error::AppError::Io)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt() -> ActivePrompt {
+        ActivePrompt {
+            request_id: json!(1),
+            session_id: "session-1".into(),
+            submission_event_floor: 10,
+            turn_id: None,
+            cancel_requested: false,
+            close_requested: false,
+            cancel_sent: false,
+        }
+    }
+
+    fn event(seq: u64, session_id: &str, payload: CoreEvent) -> EventEnvelope<CoreEvent> {
+        EventEnvelope {
+            protocol_version: 1,
+            event_seq: seq,
+            timestamp_ms: 0,
+            session_id: Some(session_id.into()),
+            turn_id: None,
+            payload,
+        }
+    }
+
+    #[test]
+    fn lifecycle_rejects_pre_submission_and_neighbor_events() {
+        let active = prompt();
+        let before = event(
+            10,
+            "session-1",
+            CoreEvent::TurnStarted {
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+            },
+        );
+        assert!(!active.can_accept(&before));
+        let neighbor = event(
+            11,
+            "session-2",
+            CoreEvent::TurnStarted {
+                session_id: "session-2".into(),
+                turn_id: "turn-2".into(),
+            },
+        );
+        assert!(!active.can_accept(&neighbor));
+        assert!(active.turn_id.is_none());
+    }
+
+    #[test]
+    fn lifecycle_binds_one_turn_and_rejects_stale_terminal_events() {
+        let mut active = prompt();
+        let started = event(
+            11,
+            "session-1",
+            CoreEvent::TurnStarted {
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+            },
+        );
+        assert!(active.can_accept(&started));
+        assert!(active.bind_turn("turn-1"));
+        assert!(!active.bind_turn("turn-2"));
+
+        let stale = event(
+            12,
+            "session-1",
+            CoreEvent::TurnCompleted {
+                session_id: "session-1".into(),
+                turn_id: "turn-2".into(),
+                stop_reason: "end_turn".into(),
+            },
+        );
+        assert!(!event_is_terminal(&stale, &active));
+        let terminal = event(
+            13,
+            "session-1",
+            CoreEvent::TurnCompleted {
+                session_id: "session-1".into(),
+                turn_id: "turn-1".into(),
+                stop_reason: "end_turn".into(),
+            },
+        );
+        assert!(event_is_terminal(&terminal, &active));
+    }
+
+    #[test]
+    fn cancellation_and_close_are_pending_and_idempotent() {
+        let mut active = prompt();
+        active.cancel(false);
+        active.cancel(true);
+        assert!(active.cancel_requested);
+        assert!(active.close_requested);
+        assert!(!active.cancel_sent);
+        assert!(active.bind_turn("turn-1"));
+        active.cancel_sent = true;
+        active.cancel(true);
+        assert!(active.cancel_sent);
+    }
+}
+
 async fn write_core_error(
     stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
     id: Value,
@@ -472,7 +699,7 @@ async fn write_core_error(
 }
 
 #[cfg(test)]
-mod tests {
+mod helper_tests {
     use super::*;
 
     #[test]

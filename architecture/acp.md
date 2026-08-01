@@ -42,3 +42,28 @@ Example editor launch configuration:
 The adapter preserves durable native sessions when an ACP connection closes;
 `session/close` only releases its transient subscription and cancels an
 active turn.
+
+## Turn lifecycle and correlation
+
+The adapter supports one active prompt per ACP connection. Before submitting a
+turn it drains the connection event queue and records the highest observed
+native event sequence as the submission floor. After the daemon acknowledges the
+submission, only events strictly after that floor and for the exact requested
+session are eligible to bind the prompt. The first eligible `TurnStarted` event
+establishes the native turn identity; projection updates and terminal events
+must carry that same turn identity. A pre-floor, neighboring-session, stale-turn,
+or replayed event is ignored and cannot complete the prompt.
+
+`session/cancel`, `$/cancel_request`, and `session/close` share one idempotent
+pending-cancellation path. If cancellation arrives before `TurnStarted`, the
+intent remains in the transient ACP binding and is sent once the matching turn
+is identified. Closing also removes the projection subscription and suppresses
+later updates while the native turn reaches its terminal response. EOF performs
+the same bounded cancellation and unsubscribe cleanup.
+
+`session/load` uses the role-bearing canonical projection snapshot for replay.
+Public user and assistant messages retain their roles; tool, system, reasoning,
+private, and unsupported entries are omitted rather than relabeled. Snapshot
+limits and the 1 MiB ACP frame limit remain authoritative. A subscription result
+that is not a successful `ProjectionSubscribed` response is an adapter error,
+not an empty subscription.

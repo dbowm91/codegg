@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 012 — ACP Turn Lifecycle and Correlation Correctness
 
-Status: ready
+Status: implemented
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 
