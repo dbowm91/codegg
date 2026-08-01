@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 017 — Corrective Integration Evidence and Closure
 
-Status: blocked — requires Milestones 012–016 strict closure
+Status: ready for handoff
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 
