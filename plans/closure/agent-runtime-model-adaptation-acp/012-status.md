@@ -59,6 +59,9 @@ All commands were run locally against the reviewed worktree.
 - `python3 scripts/check_projection_transport_isolation.py` — passed.
 - `python3 scripts/check_projection_transport_lifecycle.py` — passed.
 - `bash scripts/check_projection_disclosure.sh` — passed.
+- `bash scripts/verify.sh quick` — passed; generated-agent, Tokio-flavor,
+  core-boundary, workspace all-target check, and quick verification gates are
+  green (with pre-existing unrelated warnings).
 - The plan's named `session_projection_transport` target does not exist in this
   repository; `projection_transport_real` is the current server-feature
   transport equivalent and was run successfully.
