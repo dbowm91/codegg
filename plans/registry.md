@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 review | M006 executable correction is accepted; M007 review evidence is gathered and hosted verification is pending |
+| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 conditionally closed | Provider/storage review passes; hosted verify `30681164263` fails on unrelated workspace Clippy dead-code errors in `crates/codegg-core/build.rs` |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -47,9 +47,9 @@ audit invalidated the strict disposition. M012 is the only dependency-ready
 handoff in the corrective addendum. M013–M017 must not be implemented out of
 order.
 
-Provider M007 and Tool Programs M019 are independent review-only handoffs and
-may proceed in parallel. DVR M006 must remain blocked until both strict closure
-records exist and contain no unresolved high- or medium-severity finding.
+Tool Programs M019 remains an independent review-only handoff. DVR M006 must
+remain blocked until Provider M007 and Tool Programs M019 both have strict
+closure records with no unresolved high- or medium-severity finding.
 
 ## Active closure work
 
@@ -62,7 +62,7 @@ M017 production implementation remains conditionally accepted. `plans/closure/to
 
 M018 implementation has landed. `plans/closure/tool-programs/018-status.md` is retained as provisional conditional implementation evidence, not independent strict approval. M019 owns the independently attributable strict decision.
 
-Provider M006 implementation and evidence have landed. `plans/closure/provider-connections/006-status.md` is retained as provisional implementation-authored evidence. M007 owns the independently attributable strict decision.
+Provider M006 implementation and evidence have landed. `plans/closure/provider-connections/006-status.md` is retained as provisional implementation-authored evidence. M007 is conditionally closed by `plans/closure/provider-connections/007-status.md`; strict closure awaits the named hosted workspace-gate evidence.
 
 Development verification and release M006 in-scope work has landed, but its
 closure record remains absent. DVR M006 is blocked until Provider M007 and Tool
@@ -114,6 +114,7 @@ These are not dependency-ready correctness plans and remain outside the active h
 | Agent runtime, model adaptation, and ACP | 001 — prompt compilation and agent registry correctness | `plans/closure/agent-runtime-model-adaptation-acp/001-status.md` | `3cb6c0e` implementation | Historical implementation retained; M014 owns complete block/fingerprint convergence |
 | Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | `plans/closure/agent-runtime-model-adaptation-acp/003-status.md` | `b893462` implementation | Historical functional delegation retained; M016 owns atomic admission and lineage cancellation |
 | Provider connections and Eggpool | 006 — storage layout assertion and verification reconciliation | `plans/closure/provider-connections/006-status.md` | implementation `139c832`; merged at `7d8657e` | Executable correction and evidence retained; strict closure authority transferred to independent Provider M007 because the M006 status was authored on the implementation branch |
+| Provider connections and Eggpool | 007 — independent closure ratification and governance reconciliation | `plans/closure/provider-connections/007-status.md` | review head `04f4bb2`; review-state commit `ebd7c11` | Conditionally closed; provider/storage evidence passes, but hosted workspace Clippy failed on unrelated build-script dead-code errors |
 | Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | `plans/closure/tool-programs/018-status.md` | implementation `4235442`; merged at `c0aa785` | Provisional conditional implementation evidence only; independent strict review and evidence ratification transferred to Tool Programs M019 |
 | Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence implementation | — | implementation landed before reviewed head `9686338` | Conditionally accepted production implementation; strict closure transferred through M018 to M019 after canonical workspace verification exposed stale M005-era runtime fixtures |
 | Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because final-head hosted evidence, package inventory, release documentation, and Tokio guard closure were incomplete |

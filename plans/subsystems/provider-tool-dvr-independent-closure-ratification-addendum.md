@@ -1,6 +1,6 @@
 # Provider, Tool Programs, and DVR Independent Closure Ratification Addendum
 
-Status: active — Provider M007 review in progress; Tool Programs M019 ready; DVR M006 blocked
+Status: active — Provider M007 conditionally closed; Tool Programs M019 ready; DVR M006 blocked
 
 Reviewed baseline:
 
@@ -60,7 +60,7 @@ Until independent review completes:
 - Provider Connections is `closing`, not strictly closed;
 - Provider M006 executable work remains accepted as implemented;
 - `plans/closure/provider-connections/006-status.md` is historical implementation-authored evidence;
-- Provider M007 review evidence is gathered; strict closure awaits hosted verification;
+- Provider M007 is conditionally closed by `plans/closure/provider-connections/007-status.md`; strict closure awaits a green hosted workspace gate;
 - Tool Programs is `closing`;
 - Tool Programs M018 executable work remains accepted as implemented;
 - `plans/closure/tool-programs/018-status.md` is historical provisional evidence;
@@ -248,13 +248,13 @@ Immediately after this addendum is registered, the registry must show:
 
 ### Dependency-ready plans
 
-- Provider M007;
 - Tool Programs M019;
 - unrelated dependency-ready plans from other subsystems remain unchanged.
 
 ### Blocked work
 
-- DVR M006 blocked on strict Provider M007 and Tool M019 records;
+- DVR M006 blocked on strict Provider M007 and Tool M019 records; Provider M007
+  has a conditional record but its hosted workspace gate is not green;
 - unrelated agent-runtime blocked milestones remain unchanged.
 
 ### Active closure work

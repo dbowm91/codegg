@@ -1,6 +1,6 @@
 # Provider Connections Storage Verification Reconciliation Addendum
 
-Status: closing; M007 review evidence gathered, closure record pending hosted verification
+Status: closing; M007 conditionally ratified; hosted workspace Clippy evidence remains outstanding
 
 Canonical subsystem roadmap:
 
@@ -143,15 +143,15 @@ M006 closed at `139c832c986106f31304d845860a66b17ba17099` after local and hosted
 
 ## 6. Closure authority
 
-After M006 closure:
+After M007 conditional closure:
 
-- Provider Connections status is `closed`;
+- Provider Connections status remains `closing` pending strict M007 hosted evidence;
 - M001–M005 remain historical accepted production milestones;
-- DVR M006 is the dependency-ready downstream handoff;
+- DVR M006 remains blocked on strict Provider M007 and Tool Programs M019;
 - Tool Programs M018 remains implementation-complete but not independently strictly closed;
 - the existing M018 status record is provisional conditional implementation evidence;
-- DVR M006 is no longer blocked by Provider Connections;
-- `plans/closure/provider-connections/006-status.md` records the accepted closure;
+- DVR M006 remains blocked by Provider Connections until strict M007 closure;
+- `plans/closure/provider-connections/006-status.md` remains historical implementation-authored evidence; M007's conditional disposition is recorded in `plans/closure/provider-connections/007-status.md`;
 - `plans/closure/development-verification-release/006-status.md` must remain absent;
 - Tool Programs M018 remains conditionally closed pending its separately owned strict review.
 
