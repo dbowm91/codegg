@@ -1,6 +1,6 @@
 # Provider, Tool Programs, and DVR Independent Closure Ratification Addendum
 
-Status: active — Provider M007 and Tool Programs M019 ready; DVR M006 blocked
+Status: active — Provider M007 review in progress; Tool Programs M019 ready; DVR M006 blocked
 
 Reviewed baseline:
 
@@ -60,12 +60,12 @@ Until independent review completes:
 - Provider Connections is `closing`, not strictly closed;
 - Provider M006 executable work remains accepted as implemented;
 - `plans/closure/provider-connections/006-status.md` is historical implementation-authored evidence;
-- Provider M007 is ready for independent ratification;
+- Provider M007 review evidence is gathered; strict closure awaits hosted verification;
 - Tool Programs is `closing`;
 - Tool Programs M018 executable work remains accepted as implemented;
 - `plans/closure/tool-programs/018-status.md` is historical provisional evidence;
 - Tool Programs M019 is ready for independent strict review;
-- DVR M006 is blocked on both Provider M007 and Tool Programs M019;
+- DVR M006 is blocked on Provider M007 and Tool Programs M019;
 - `plans/closure/development-verification-release/006-status.md` remains absent;
 - no production corrective plan is ready unless either independent review finds a real defect.
 

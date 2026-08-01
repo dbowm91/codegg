@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 ready | M006 executable correction is accepted, but `plans/closure/provider-connections/006-status.md` is implementation-authored evidence; M007 owns independent strict ratification |
+| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 review | M006 executable correction is accepted; M007 review evidence is gathered and hosted verification is pending |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -40,7 +40,6 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Agent runtime, model adaptation, and ACP | 012 — ACP turn lifecycle and correlation correctness | ready | `plans/implementation/agent-runtime-model-adaptation-acp/012-acp-turn-lifecycle-and-correlation-correctness.md` | Existing daemon/session-projection/ACP foundations are present; no external blocker |
-| Provider connections and Eggpool | 007 — independent closure ratification and governance reconciliation | ready | `plans/implementation/provider-connections/007-independent-closure-ratification-and-governance-reconciliation.md` | Provider M006 implementation and merge landed with green evidence; independent review has not yet been established |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 Agent-runtime M011 is conditionally closed after a post-closure production-path

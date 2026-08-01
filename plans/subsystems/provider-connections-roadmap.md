@@ -1,6 +1,6 @@
 # Provider Connections and Eggpool Roadmap
 
-Status: closed; see `plans/closure/provider-connections/006-status.md`.
+Status: closing; M007 review evidence gathered, closure record pending hosted verification.
 
 Long-term references:
 

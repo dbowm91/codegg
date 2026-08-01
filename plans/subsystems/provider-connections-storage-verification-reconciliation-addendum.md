@@ -1,6 +1,6 @@
 # Provider Connections Storage Verification Reconciliation Addendum
 
-Status: closed; see `plans/closure/provider-connections/006-status.md`
+Status: closing; M007 review evidence gathered, closure record pending hosted verification
 
 Canonical subsystem roadmap:
 
@@ -23,9 +23,13 @@ Related Tool Programs implementation/evidence:
 - `plans/implementation/tool-programs/018-runtime-fixture-contract-alignment-and-dvr-unblock.md`
 - `plans/closure/tool-programs/018-status.md`
 
-Target independent closure record:
+Historical implementation-authored evidence:
 
 - `plans/closure/provider-connections/006-status.md`
+
+Independent closure record:
+
+- `plans/closure/provider-connections/007-status.md`
 
 ## 1. Purpose
 
