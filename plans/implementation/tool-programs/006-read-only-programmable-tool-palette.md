@@ -1,8 +1,8 @@
 # Tool Programs Milestone 006 — Read-Only Programmable Tool Palette
 
-Status: closing
+Status: implemented
 
-Repository baseline: `2f715941516a1d49be578fdef56714ad3ddfe8bf` (`main`)
+Repository baseline: `135c2fe7` (`main`); implementation and closure evidence reviewed at current head
 
 Source roadmap:
 

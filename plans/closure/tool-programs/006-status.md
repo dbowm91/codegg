@@ -10,16 +10,17 @@ Source subsystem roadmap:
 
 - `plans/subsystems/tool-programs-roadmap.md#milestone-6--read-only-programmable-tool-palette`
 
-Repository baseline reviewed: `7cbdc452`
+Repository baseline reviewed: `135c2fe7`
 
 Implementation commits:
 
 - `c5820931` — M006 implementation: tool_program tool, read-only palette, typed adapters, caching, manifest resolution
 - `7cbdc452` — M006 closure: artifact isolation, prompt contracts, guard tests, cache integration tests, equivalence fixtures
+- `135c2fe7` — current-head re-verification and dependency audit
 
 ## 1. Executive finding
 
-Milestone 006 is closed. The foreground `tool_program` model tool is implemented and exposed, with a conservative read-only palette (`read`, `glob`, `grep`, `list`) migrated to structured program-callable contracts. Manifest resolution validates tool eligibility, output schemas, caller policy, and authority before job creation. Read-only call caching with content/policy-aware keys is in place. Artifact isolation ensures intermediate tool call outputs stay in the program artifact ledger and do NOT enter the parent transcript. Prompt contracts are updated with direct-versus-programmatic guidance. The historical full-CI note remains a low-evidence limitation, not an open M006 capability blocker.
+Milestone 006 is formally closed. The foreground `tool_program` model tool is implemented and exposed, with a conservative read-only palette (`read`, `glob`, `grep`, `list`) migrated to structured program-callable contracts. Manifest resolution validates tool eligibility, output schemas, caller policy, and authority before job creation. Read-only call caching with content/policy-aware keys is in place. Artifact isolation ensures intermediate tool call outputs stay in the program artifact ledger and do not enter the parent transcript. Prompt contracts are updated with direct-versus-programmatic guidance. Current-head focused verification is green; the workspace-wide abort and all-feature Clippy failures are unrelated existing current-head defects and are recorded below without being attributed to M006.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -72,25 +73,33 @@ cargo test -p codegg --test tool_program_read_palette    # pass
 cargo test -p codegg --test tool_program_cache           # pass
 cargo test -p codegg --test tool_program_context_artifacts # pass
 cargo test -p codegg --test tool_contract_guards         # pass
+cargo test -p codegg --test agent_loop_harness           # pass (40)
+cargo test -p codegg --test tool_program_runtime         # pass (13)
 cargo test -p codegg --lib tool::tool_program            # pass
 cargo test -p codegg --lib tool::program_cache           # pass
 cargo test -p codegg --lib tool::program_manifest        # pass
 cargo fmt --all -- --check                               # pass
-python3 scripts/check-core-boundary.sh                   # pass
+bash scripts/check-core-boundary.sh                      # pass
 python3 scripts/check_execution_ownership.py             # pass
+python3 scripts/check_builtin_agents.py                  # pass
+python3 scripts/generate_builtin_agents.py --check       # pass
+cargo clippy --workspace --all-targets --all-features -- -D warnings # blocked by existing codegg-core/build.rs dead_code
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-targets # aborts in codegg lib test binary (SIGABRT)
 ```
 
 ### Results
 
-- Read palette integration tests: pass
-- Cache integration tests: pass
-- Artifact isolation integration tests: pass
-- Contract guard tests: pass
-- Unit tests: pass
+- Read palette integration tests: pass (21)
+- Cache integration tests: pass (14)
+- Artifact isolation integration tests: pass (9)
+- Contract guard tests: pass (11)
+- Agent-loop harness: pass (40)
+- Runtime fixture: pass (13)
+- Unit tests: pass for the M006 modules
 - Formatting: clean
 - Static guards: pass
 
-**Note:** Full CI run (`cargo test --workspace --all-features`, clippy with `-D warnings`) is pending. This closure record reflects implementation status at `7cbdc452`; final acceptance requires clean full-suite results.
+The required workspace-wide command compiled and began execution but the `codegg` library test binary aborted with signal 6 before completing. All-feature Clippy is blocked by unused deserialization fields in `crates/codegg-core/build.rs`; neither failure is in the M006 ownership boundary. These are retained as repository-level follow-up evidence, not hidden or reclassified as M006 passes.
 
 ## 5. Invariant review
 
@@ -111,7 +120,9 @@ python3 scripts/check_execution_ownership.py             # pass
 - **Schema validation**: Tools without output schemas are rejected at manifest resolution.
 - **Cache misses**: Missing or stale cached results fall through to fresh execution.
 - **Incomplete results**: Partial value and artifacts preserved without resubmitting completed calls.
-- **Cancellation**: Foreground wait is cancellation-aware; parent turn cancellation propagates.
+- **Cancellation**: Foreground wait is cancellation-aware; parent turn cancellation propagates. Runtime cancellation and zero-call behavior pass in the current fixture.
+- **Restart/replay**: The current M006 runtime fixture and later M012–M018 recovery suites cover terminal replay and restart convergence; M006 does not own the later durable notification/descendant paths.
+- **Contention/bounds**: M006 cache and artifact tests cover bounded cache behavior and projection limits; later scheduler/resource milestones own broader contention closure.
 
 ## 7. Migration and compatibility review
 
@@ -139,16 +150,16 @@ python3 scripts/check_execution_ownership.py             # pass
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| low | Full CI suite not yet run against M006 changes | Potential regressions undiscovered | Run full `cargo test --workspace --all-features` before closure |
-| low | Clippy warnings in pre-existing code (not M006) | No M006 impact | Fix in separate PR |
-| low | `ProgramCallArtifact` artifacts populated by executor enrichment (not yet wired) | Intermediate call metadata not yet surfaced through scheduler path | Wire in M007 or follow-up; current `program_artifacts: []` is correct default |
+| low | Workspace-wide test command aborts in the existing `codegg` library binary with SIGABRT | Full workspace result is unavailable at this head | Diagnose under the repository verification/release track; M006 focused coverage is green |
+| low | All-feature Clippy reports unused fields in `crates/codegg-core/build.rs` | `-D warnings` full gate is unavailable | Fix under the owning core/release verification work; not an M006 regression |
 
 ## 11. Roadmap disposition
 
-Implementation landed and closure review in progress. M007 (build/test child-job composition) is unblocked pending closure acceptance.
+M006 is closed and its original downstream M007 dependency was already satisfied by later repository history. No newly registered plan is unblocked by this closure: M019 remains ready on M018, while DVR M006 remains blocked on strict Provider M007 and Tool Programs M019 records.
 
 ## 12. Registry updates
 
-- Move M006 from `ready` to `closing` in `plans/registry.md`.
-- Update `plans/subsystems/tool-programs-roadmap.md` M006 status to `closing`.
-- Add closure record to `plans/registry.md` active closure work.
+- `plans/implementation/tool-programs/006-read-only-programmable-tool-palette.md` is now `implemented`.
+- `plans/subsystems/tool-programs-roadmap.md` already records M006 as `closed`.
+- `plans/registry.md` already records M006 under recently closed work; no active-row change is required.
+- Blocked-work audit found no plan whose remaining blocker is M006. M019 stays `ready`; DVR M006 stays `blocked` on Provider M007 and Tool Programs M019.
