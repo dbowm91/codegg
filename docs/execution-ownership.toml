@@ -85,6 +85,12 @@ owner = "scheduler"
 reason = "AgentLoop dispatches subagent and security-review work; security-review path uses scheduler submission"
 entrypoint = "JobSubmissionService::submit"
 
+[[site]]
+path = "src/agent/specialized_runtime.rs"
+owner = "scheduler"
+reason = "Specialized research evidence children use the existing bounded SubAgentPool admission path"
+entrypoint = "SubAgentSpawner::send_and_wait"
+
 # ---------------------------------------------------------------------
 # Scheduler subsystem (definition)
 # ---------------------------------------------------------------------
