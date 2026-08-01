@@ -349,6 +349,26 @@ impl TurnRuntime for DefaultTurnRuntime {
             } else {
                 None
             };
+        let specialized_prepared = if let Some(bundle) = security_bundle.clone() {
+            Some(crate::agent::specialized_runtime::PreparedSpecializedRuntime::Security { bundle })
+        } else if let Some(plan) = research_plan.clone() {
+            let ledger = crate::agent::specialized_runtime::coordinate_research(
+                &plan,
+                subagent_pool.as_ref(),
+                &session_id,
+                &execution.workspace_root,
+                &model,
+            )
+            .await?;
+            Some(
+                crate::agent::specialized_runtime::PreparedSpecializedRuntime::Research {
+                    plan,
+                    ledger,
+                },
+            )
+        } else {
+            None
+        };
         let denied = std::collections::BTreeSet::new();
         let disabled = model_profile
             .disabled_tools
@@ -411,6 +431,13 @@ impl TurnRuntime for DefaultTurnRuntime {
         }
         if let Some(plan) = research_plan.as_ref() {
             system.push_str(&research_plan_prompt_context(plan));
+        }
+        if let Some(crate::agent::specialized_runtime::PreparedSpecializedRuntime::Research {
+            ledger,
+            ..
+        }) = specialized_prepared.as_ref()
+        {
+            system.push_str(&ledger.prompt_context());
         }
 
         // Goal context
@@ -523,8 +550,16 @@ impl TurnRuntime for DefaultTurnRuntime {
         let session_id_for_spawn = session_id.clone();
         let turn_id_for_spawn = turn_id.clone();
         let event_log_for_spawn = event_log;
+        let specialized_prepared_for_spawn = specialized_prepared;
         tokio::spawn(async move {
             let result = agent_loop.run(request).await;
+            let result = result.and_then(|events| {
+                if let Some(prepared) = specialized_prepared_for_spawn.as_ref() {
+                    let terminal = crate::agent::r#loop::AgentLoop::terminal_output(&events);
+                    crate::agent::specialized_runtime::finalize(prepared, &terminal)?;
+                }
+                Ok(events)
+            });
             if let Err(e) = result {
                 tracing::error!("Agent loop error: {}", e);
                 event_log_for_spawn

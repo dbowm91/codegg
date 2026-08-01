@@ -31,7 +31,7 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M013 ready | M012 strict closure accepted; M014–M017 retain explicit predecessor blockers |
+| Agent runtime, model adaptation, and ACP | closing | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M013 closure review | M013 production implementation landed; M014–M017 retain explicit predecessor blockers |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 
@@ -87,7 +87,7 @@ perform final DVR closure.
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 013 — specialized runtime finalization and research coordination | ready | `plans/implementation/agent-runtime-model-adaptation-acp/013-specialized-runtime-finalization-and-research-coordination.md` | M012 strict closure; existing security/research foundations |
+| Agent runtime, model adaptation, and ACP | 013 — specialized runtime finalization and research coordination | closing | `plans/implementation/agent-runtime-model-adaptation-acp/013-specialized-runtime-finalization-and-research-coordination.md` | Implementation landed; closure evidence under review |
 
 The previously reported projection stack failure did not reproduce after M018
 and remains unregistered unless it reappears reproducibly.

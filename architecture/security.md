@@ -268,3 +268,12 @@ diagnostics and tests) but filtered from the model-facing tool
 definitions. `SecurityTool::execute_structured()` reports provenance
 with `backend = "native"`, `implementation = "eggsentry"` when called
 through `ToolRegistry::execute_capture` from the agent loop.
+# Specialized agent finalization
+
+The `security-review` agent uses the read-only host workflow to prepare a
+bounded `SecurityEvidenceBundle`. Its ordinary model turn requests the common
+structured report shape, but that request is advisory: the host parses the
+public assistant text locally, enforces report bounds, and validates every
+finding against prepared targets and evidence. Unsupported findings become
+explicit evidence gaps/review prompts; malformed or oversized output fails the
+specialized turn and cannot publish successful completion.

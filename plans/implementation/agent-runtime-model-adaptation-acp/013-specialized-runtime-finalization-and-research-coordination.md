@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 013 — Specialized Runtime Finalization and Research Coordination
 
-Status: ready for handoff
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/013-status.md`
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 

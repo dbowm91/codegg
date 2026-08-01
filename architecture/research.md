@@ -128,3 +128,18 @@ Optional SQLite indexing via `upsert_metadata()` / `list_metadata()` for cross-r
 ## Integration
 
 The research module is consumed by the `research` built-in agent (`assets/agents/research.toml`). The agent's tool set includes `research` and `webfetch` tools. The coordinator is constructed with `ResearchCoordinator::new(project_root, artifact_root)` and configured with optional LLM provider via `.with_provider()`.
+# Specialized agent finalization
+
+The specialized research agent is a bounded wrapper around the ordinary agent
+loop. A `BoundedResearchPlan` selects zero, one, or three fixed evidence roles.
+When available, children run through the shared `SubAgentPool` with inherited
+workspace scope, read-only denied tools, depth, timeout, and tool-call limits.
+They must return `ResearchEvidenceReport`; malformed responses are recorded as
+branch limitations and never become evidence.
+
+The parent normalizes and deduplicates sources, bounds evidence and claims,
+preserves conflicts and limitations, then supplies the ledger to the root
+synthesis turn. The root's `ResearchReport` is parsed and locally validated,
+including citation/reference checks and minimum-evidence policy, before
+completion. Provider schema compliance is therefore advisory, and children
+never own final synthesis.

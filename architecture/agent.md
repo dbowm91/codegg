@@ -1490,3 +1490,20 @@ The `agent` module is the central coordinator for Codegg's AI-powered task execu
 11. **Hook system** integration for extensibility
 
 The module maintains strict boundaries with other components through clear interfaces (Provider trait, Tool trait, PermissionChecker), enabling testability and modularity.
+# Specialized runtime finalization
+
+Security-review and research agents use the ordinary `AgentLoop` for provider
+streaming, tools, permissions, scheduling, and cancellation. The host adds a
+small prepare/coordinate/finalize seam around that loop. `AgentLoop::run`
+continues to return its compatibility event vector, while
+`AgentLoop::terminal_output` exposes only bounded public assistant text,
+terminal reason, usage, and tool-event counts to finalizers; reasoning deltas
+are never passed to them. A specialized turn publishes completion only after
+its local finalizer accepts the typed output.
+
+Research coordination uses the existing `SubAgentPool` with fixed read-only
+child roles, explicit path/tool/depth/time ceilings, and typed
+`ResearchEvidenceReport` responses. The parent owns source normalization,
+evidence and citation validation, conflicts, limitations, and minimum-evidence
+policy. Child essays and fabricated citations cannot become authoritative
+completion data.

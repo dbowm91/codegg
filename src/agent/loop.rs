@@ -33,6 +33,16 @@ use crate::permission::{PermissionChecker, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
+
+/// Bounded public output collected from one ordinary agent-loop execution.
+/// Reasoning deltas are intentionally excluded from this type.
+#[derive(Debug, Clone)]
+pub struct AgentLoopTerminalOutput {
+    pub public_text: String,
+    pub stop_reason: String,
+    pub usage: Option<crate::provider::TokenUsage>,
+    pub tool_event_count: usize,
+}
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::question::{format_question_answers, parse_question_questions};
 use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
@@ -107,6 +117,35 @@ enum ContextPackObservationPhase {
 }
 
 impl AgentLoop {
+    /// Collect the final visible output without exposing provider-private
+    /// reasoning to host-owned specialized finalizers.
+    pub fn terminal_output(events: &[ChatEvent]) -> AgentLoopTerminalOutput {
+        let mut public_text = String::new();
+        let mut stop_reason = String::from("unknown");
+        let mut usage = None;
+        let mut tool_event_count = 0;
+        for event in events {
+            match event {
+                ChatEvent::TextDelta(text) => public_text.push_str(text),
+                ChatEvent::ToolCall(_) | ChatEvent::ToolResult { .. } => tool_event_count += 1,
+                ChatEvent::Finish {
+                    stop_reason: reason,
+                    usage: turn_usage,
+                } => {
+                    stop_reason = reason.to_string();
+                    usage = Some(turn_usage.clone());
+                }
+                ChatEvent::ReasoningDelta(_) | ChatEvent::Error(_) => {}
+            }
+        }
+        AgentLoopTerminalOutput {
+            public_text,
+            stop_reason,
+            usage,
+            tool_event_count,
+        }
+    }
+
     /// Build the exact candidate set used by the context packer observation path.
     /// Mirrors the pre-Phase5 inline builder at the InitialRequest site (system extract,
     /// synthetic profile text, ledger frame + control, build_all with Nones for goal/memory/todo/artifacts).

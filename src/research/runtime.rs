@@ -197,6 +197,9 @@ pub fn deduplicate_sources(sources: impl IntoIterator<Item = SourceRecord>) -> V
 }
 
 pub fn validate_report(report: &ResearchReport) -> Result<(), Vec<String>> {
+    // This validator is the completion gate for the specialized runtime, not
+    // merely a provider-schema check. Providers may ignore the requested
+    // schema, so all references and bounded payloads are checked locally.
     let source_ids: BTreeSet<_> = report
         .sources
         .iter()
@@ -218,6 +221,18 @@ pub fn validate_report(report: &ResearchReport) -> Result<(), Vec<String>> {
     }
     if report.claims.len() > MAX_CLAIMS {
         errors.push("claim limit exceeded".into());
+    }
+    if report.evidence.len() > MAX_EVIDENCE {
+        errors.push("evidence limit exceeded".into());
+    }
+    if report.unresolved_questions.len() > 32 || report.limitations.len() > 32 {
+        errors.push("limitation or unresolved-question limit exceeded".into());
+    }
+    for evidence in &report.evidence {
+        if evidence.claim_fragment.len() > MAX_TEXT_CHARS || evidence.excerpt.len() > MAX_TEXT_CHARS
+        {
+            errors.push(format!("evidence {} exceeds text bound", evidence.id));
+        }
     }
     for claim in &report.claims {
         if claim.text.trim().is_empty() {

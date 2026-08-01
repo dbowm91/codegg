@@ -200,10 +200,12 @@ pub async fn prepare_security_review(
     ))
 }
 
-/// Validate a model-produced report against host evidence.  A finding must
+/// Validate a model-produced report against host evidence. A finding must
 /// point at a target file and carry at least one evidence-bearing location.
-/// Invalid findings are returned as review prompts by the caller rather than
-/// being treated as confirmed vulnerabilities.
+/// Invalid findings are converted into explicit evidence gaps by the caller
+/// rather than being treated as confirmed vulnerabilities. The specialized
+/// runtime additionally bounds the report envelope and rejects malformed JSON
+/// before completion.
 pub fn validate_report(
     mut report: SecurityReviewReport,
     bundle: &SecurityEvidenceBundle,
