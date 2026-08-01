@@ -1086,7 +1086,8 @@ async fn execute_agent_task(
             snapshot: None,
             pin: None,
             execution: None,
-            runtime_context: &[],
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &[],
         });
     let mut messages = vec![crate::provider::Message::System {
         content: compiled_prompt.text.into(),

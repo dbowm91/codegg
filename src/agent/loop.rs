@@ -151,16 +151,18 @@ impl AgentLoop {
     /// synthetic profile text, ledger frame + control, build_all with Nones for goal/memory/todo/artifacts).
     fn build_packer_candidates(&self, request: &ChatRequest) -> Vec<crate::context::ContextBlock> {
         let adapter = crate::model_profile::resolve_adapter(None, &request.model);
-        let compiler = request
-            .messages
-            .iter()
-            .find_map(|message| match message {
-                Message::System { content } => {
-                    Some(crate::context::stable_hash_hex(content.as_bytes()))
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| crate::context::stable_hash_hex(""));
+        let compiler = self.prompt_compiler_fingerprint.clone().unwrap_or_else(|| {
+            request
+                .messages
+                .iter()
+                .find_map(|message| match message {
+                    Message::System { content } => {
+                        Some(crate::context::stable_hash_hex(content.as_bytes()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| crate::context::stable_hash_hex(""))
+        });
         crate::context::ContextPlan::from_request(
             request,
             self.provider.name(),
@@ -1500,6 +1502,10 @@ pub struct AgentLoop {
     context_cache_stats: crate::context::ContextCacheStats,
     /// Compound identity of the last provider-facing context plan.
     context_plan_cache_key: Option<String>,
+    /// Fingerprint emitted by PromptCompiler for the current turn. This is
+    /// authoritative context identity; flattened system text is not rehashed
+    /// as a substitute.
+    prompt_compiler_fingerprint: Option<String>,
     /// Full profile-filtered tool palette for the current run (source of truth for policy reductions).
     /// Captured once after model-profile filter at start of run(); reductions derive from this, not from
     /// the (possibly previously reduced) request.tools. Enables non-cumulative, restorable palettes.
@@ -1757,6 +1763,7 @@ impl AgentLoop {
             context_policy_config,
             context_cache_stats: crate::context::ContextCacheStats::new(),
             context_plan_cache_key: None,
+            prompt_compiler_fingerprint: None,
             base_request_tools: Vec::new(),
             context_policy_runtime: ContextPolicyRuntimeState::default(),
             runtime_asset_pin: None,
@@ -1773,16 +1780,18 @@ impl AgentLoop {
         request: &mut ChatRequest,
     ) -> Result<crate::context::ContextPlan, AppError> {
         let adapter = crate::model_profile::resolve_adapter(None, &request.model);
-        let compiler = request
-            .messages
-            .iter()
-            .find_map(|message| match message {
-                Message::System { content } => {
-                    Some(crate::context::stable_hash_hex(content.as_bytes()))
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| crate::context::stable_hash_hex(""));
+        let compiler = self.prompt_compiler_fingerprint.clone().unwrap_or_else(|| {
+            request
+                .messages
+                .iter()
+                .find_map(|message| match message {
+                    Message::System { content } => {
+                        Some(crate::context::stable_hash_hex(content.as_bytes()))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| crate::context::stable_hash_hex(""))
+        });
         let plan = crate::context::ContextPlan::from_request(
             request,
             self.provider.name(),
@@ -1803,6 +1812,10 @@ impl AgentLoop {
         pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     ) {
         self.runtime_asset_pin = pin;
+    }
+
+    pub fn set_prompt_compiler_fingerprint(&mut self, fingerprint: String) {
+        self.prompt_compiler_fingerprint = Some(fingerprint);
     }
 
     pub fn runtime_asset_pin(

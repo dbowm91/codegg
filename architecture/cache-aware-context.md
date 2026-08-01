@@ -187,7 +187,12 @@ history hardening, and is applied immediately before every provider call.
 Full mode is lossless: `PlannedMessage.sequence` preserves chronological
 transcript order, including assistant tool calls and matching tool results.
 Tier lists are diagnostic/cache metadata and never reconstruct or reorder the
-provider message list. Diagnostics expose counts and hashes only.
+provider message list. Diagnostics expose counts and hashes only. The prompt
+compiler fingerprint is the cache identity input: it includes compiler
+version and ordered typed block kind/source/content hashes, plus the resolved
+asset snapshot/pin and adapter identity. Required prompt blocks are never
+eligible for optional omission; optional evidence remains bounded and can use
+the existing recovery-handle path.
 
 The packer is invoked via `observe_context_pack` (which calls the private `compute_context_pack_result` / `build_packer_candidates`) at these phases during a turn: InitialRequest, AfterToolResults, AfterCompaction, BeforeProviderCall, BeforeFinalization.
 

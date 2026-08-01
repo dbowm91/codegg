@@ -407,40 +407,43 @@ impl TurnRuntime for DefaultTurnRuntime {
                     .collect()
             })
             .unwrap_or_default();
-        let compiled_prompt = crate::agent::prompt::PromptCompiler::compile(
-            crate::agent::prompt::PromptCompilerInput {
-                agent: &selected_agent,
-                model_profile: &model_profile,
-                config: &config,
-                tools: &available_tools,
-                skills: &available_skills,
-                agents: &agents,
-                is_plan_mode: plan_mode,
-                snapshot: asset_snapshot.as_deref(),
-                // The mutable runtime pin is owned by AgentLoop; the
-                // immutable snapshot remains the compiler's asset identity.
-                pin: None,
-                execution: Some(&execution),
-                runtime_context: &[],
-            },
-        );
-        let mut system = compiled_prompt.text;
-        system.push_str(&memory_context);
+        // Collect every behavior-affecting runtime context before compilation.
+        // PromptCompiler owns the only flattening step; the block metadata is
+        // retained in the compiler fingerprint used by ContextPlan.
+        let mut runtime_blocks = Vec::new();
+        if !memory_context.trim().is_empty() {
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                crate::agent::prompt::PromptBlockKind::MemorySummary,
+                "memory:user-preferences",
+                &memory_context,
+            ));
+        }
         if let Some(bundle) = security_bundle.as_ref() {
-            system.push_str(&bundle.prompt_context());
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::required(
+                crate::agent::prompt::PromptBlockKind::SecurityEvidence,
+                "security:prepared-bundle",
+                &bundle.prompt_context(),
+            ));
         }
         if let Some(plan) = research_plan.as_ref() {
-            system.push_str(&research_plan_prompt_context(plan));
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::required(
+                crate::agent::prompt::PromptBlockKind::ResearchEvidence,
+                "research:plan",
+                &research_plan_prompt_context(plan),
+            ));
         }
         if let Some(crate::agent::specialized_runtime::PreparedSpecializedRuntime::Research {
             ledger,
             ..
         }) = specialized_prepared.as_ref()
         {
-            system.push_str(&ledger.prompt_context());
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::required(
+                crate::agent::prompt::PromptBlockKind::ResearchEvidence,
+                "research:evidence-ledger",
+                &ledger.prompt_context(),
+            ));
         }
 
-        // Goal context
         let goal_context = if let Some(ref p) = pool {
             let goal_store = crate::goal::GoalStore::new(p.clone());
             match goal_store.active_for_session(&session_id).await {
@@ -460,27 +463,58 @@ impl TurnRuntime for DefaultTurnRuntime {
         } else {
             String::new()
         };
-        system.push_str(&goal_context);
+        if !goal_context.trim().is_empty() {
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                crate::agent::prompt::PromptBlockKind::GoalContext,
+                "goal:active-checkpoint",
+                &goal_context,
+            ));
+        }
 
-        // ── LSP context ──────────────────────────────────────────────
         if let Some(ref svc) = lsp_service {
             let root = execution.workspace_root.clone();
-            let lsp_ctx =
+            if let Some(lsp_ctx) =
                 assemble_lsp_context_for_turn(svc, lsp_context_input, &model_profile.family, root)
-                    .await;
-            if let Some(lsp_ctx) = lsp_ctx {
-                system.push_str(&lsp_ctx);
+                    .await
+            {
+                runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                    crate::agent::prompt::PromptBlockKind::LspContext,
+                    "lsp:turn-context",
+                    &lsp_ctx,
+                ));
             }
         }
-
-        // ── Git repository context ──────────────────────────────────
         let git_ctx = build_git_context_for_path(&execution.workspace_root).await;
-        system.push_str(&git_ctx);
-
-        if plan_mode {
-            system.push_str("\n\n");
-            system.push_str(crate::agent::prompt::plan_mode_contract());
+        if !git_ctx.trim().is_empty() {
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                crate::agent::prompt::PromptBlockKind::GitContext,
+                "git:repository-context",
+                &git_ctx,
+            ));
         }
+
+        let pin = asset_pin
+            .as_ref()
+            .and_then(|pin| pin.try_lock().ok().map(|guard| guard.clone()));
+        let compiled_prompt = crate::agent::prompt::PromptCompiler::compile(
+            crate::agent::prompt::PromptCompilerInput {
+                agent: &selected_agent,
+                model_profile: &model_profile,
+                config: &config,
+                tools: &available_tools,
+                skills: &available_skills,
+                agents: &agents,
+                is_plan_mode: plan_mode,
+                snapshot: asset_snapshot.as_deref(),
+                // The mutable runtime pin is owned by AgentLoop; the
+                // immutable snapshot remains the compiler's asset identity.
+                pin: pin.as_ref(),
+                execution: Some(&execution),
+                adapter_fingerprint: Some(&resolved_adapter.fingerprint),
+                runtime_blocks: &runtime_blocks,
+            },
+        );
+        let system = compiled_prompt.text.clone();
 
         // ── Search backend bootstrap ─────────────────────────────────
         let (mcp_service, _report) =
@@ -504,6 +538,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         };
         let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
         let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
+        agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
         agent_loop.set_runtime_asset_pin(asset_pin);
         agent_loop.load_persisted_todos().await;
 

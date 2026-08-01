@@ -445,25 +445,57 @@ pub struct PromptContext<'a> {
 }
 
 pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
-    let mut parts = Vec::new();
+    flatten_prompt_blocks(&build_base_prompt_blocks(ctx))
+}
 
-    parts.push(base_harness_contract().to_string());
-    parts.push(goal_and_todos_contract().to_string());
-    parts.push(role_contract(ctx.agent).to_string());
+fn build_base_prompt_blocks(ctx: PromptContext<'_>) -> Vec<PromptBlock> {
+    let mut blocks = Vec::new();
+
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::HarnessContract,
+        "builtin:harness",
+        base_harness_contract(),
+    ));
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::HarnessContract,
+        "builtin:planning-surfaces",
+        goal_and_todos_contract(),
+    ));
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::RoleContract,
+        "agent:role",
+        role_contract(ctx.agent),
+    ));
     if let Some(role) = ctx.agent.role.as_deref() {
-        parts.push(subagent_output_contract(role).to_string());
+        blocks.push(PromptBlock::required(
+            PromptBlockKind::RoleContract,
+            &format!("agent:output:{role}"),
+            subagent_output_contract(role),
+        ));
     }
-    parts.push(profile_contract(ctx.model_profile).to_string());
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::ModelAdapter,
+        &format!("adapter:profile:{:?}", ctx.model_profile.prompt_profile),
+        profile_contract(ctx.model_profile),
+    ));
 
     if ctx.is_plan_mode {
-        parts.push(plan_mode_contract().to_string());
+        blocks.push(PromptBlock::required(
+            PromptBlockKind::PlanMode,
+            "mode:plan",
+            plan_mode_contract(),
+        ));
     }
 
     // Inject the websearch contract whenever the model has access to
     // the `websearch` tool. This steers the model away from `curl` /
     // `wget` for web search and page retrieval.
     if ctx.tools.iter().any(|t| t == "websearch") {
-        parts.push(websearch_contract().to_string());
+        blocks.push(PromptBlock::optional(
+            PromptBlockKind::CapabilityContract,
+            "capability:websearch",
+            websearch_contract(),
+        ));
     }
 
     // Inject the research-subagent addendum whenever the model can
@@ -472,27 +504,51 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
     // condition is "is `research` a known subagent kind".
     let research_spawnable = !ctx.is_plan_mode && ctx.agents.iter().any(|a| a.name == "research");
     if research_spawnable && ctx.tools.iter().any(|t| t == "task") {
-        parts.push(research_subagent_contract().to_string());
+        blocks.push(PromptBlock::optional(
+            PromptBlockKind::CapabilityContract,
+            "capability:research-subagent",
+            research_subagent_contract(),
+        ));
     }
 
     if let Some(prompt) = &ctx.agent.system_prompt {
-        parts.push(prompt.clone());
+        blocks.push(PromptBlock::optional(
+            PromptBlockKind::AgentInstructions,
+            "agent:system-prompt",
+            prompt,
+        ));
     }
 
-    parts.push(format!(
-        "You are the {} agent. {}",
-        ctx.agent.name, ctx.agent.description
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::RoleContract,
+        "agent:identity",
+        &format!(
+            "You are the {} agent. {}",
+            ctx.agent.name, ctx.agent.description
+        ),
     ));
 
     if !ctx.tools.is_empty() {
-        parts.push(format!("Available tools: {}", ctx.tools.join(", ")));
+        blocks.push(PromptBlock::required(
+            PromptBlockKind::CapabilityContract,
+            "capability:tools",
+            &format!("Available tools: {}", ctx.tools.join(", ")),
+        ));
     }
 
     if !ctx.skills.is_empty() {
-        parts.push(format!("Available skills: {}", ctx.skills.join(", ")));
+        blocks.push(PromptBlock::optional(
+            PromptBlockKind::CapabilityContract,
+            "capability:skills",
+            &format!("Available skills: {}", ctx.skills.join(", ")),
+        ));
     }
 
-    parts.push(format!("Using model: {}", ctx.model_profile.model));
+    blocks.push(PromptBlock::required(
+        PromptBlockKind::ModelAdapter,
+        "adapter:model",
+        &format!("Using model: {}", ctx.model_profile.model),
+    ));
 
     if let Some(instructions) = ctx.config.instructions.as_ref() {
         for instruction in instructions {
@@ -500,29 +556,129 @@ pub fn assemble_system_prompt_with_profile(ctx: PromptContext<'_>) -> String {
             // Compilation is deliberately pure and never presents a URL as
             // if its content had been loaded.
             if !is_url(instruction) {
-                parts.push(instruction.clone());
+                blocks.push(PromptBlock::optional(
+                    PromptBlockKind::ProjectInstructions,
+                    &format!("config:instruction:{}", blocks.len()),
+                    instruction,
+                ));
             }
         }
     }
 
     if let Some(instructions) = ctx.custom_instructions {
-        parts.push(instructions.to_string());
+        blocks.push(PromptBlock::optional(
+            PromptBlockKind::ProjectInstructions,
+            "agent:custom-instructions",
+            instructions,
+        ));
     }
 
-    parts
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    blocks
 }
 
 /// Versioned, deterministic prompt-compilation result.  Blocks retain their
 /// identity for the context-plan/cache milestone while `text` remains a
 /// provider-compatible flattened representation for today's request model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PromptBlockKind {
+    HarnessContract,
+    RoleContract,
+    ModelAdapter,
+    CapabilityContract,
+    ProjectInstructions,
+    AgentInstructions,
+    MemorySummary,
+    GoalContext,
+    SecurityEvidence,
+    ResearchEvidence,
+    LspContext,
+    GitContext,
+    PlanMode,
+    ControlInstruction,
+    Extension,
+}
+
+impl PromptBlockKind {
+    fn order(self) -> u8 {
+        match self {
+            Self::HarnessContract | Self::RoleContract => 0,
+            Self::ModelAdapter | Self::CapabilityContract => 1,
+            Self::ProjectInstructions | Self::AgentInstructions => 2,
+            Self::MemorySummary | Self::GoalContext => 3,
+            Self::SecurityEvidence
+            | Self::ResearchEvidence
+            | Self::LspContext
+            | Self::GitContext => 4,
+            Self::PlanMode | Self::ControlInstruction => 5,
+            Self::Extension => 6,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptBlock {
-    pub kind: &'static str,
-    pub text: String,
+    pub kind: PromptBlockKind,
+    pub source_id: String,
+    pub cache_class: crate::context::CacheClass,
+    pub required: bool,
+    pub content: String,
+    pub content_hash: String,
+}
+
+impl PromptBlock {
+    pub fn required(kind: PromptBlockKind, source_id: &str, content: &str) -> Self {
+        Self::new(kind, source_id, content, true)
+    }
+
+    pub fn optional(kind: PromptBlockKind, source_id: &str, content: &str) -> Self {
+        Self::new(kind, source_id, content, false)
+    }
+
+    pub fn new(kind: PromptBlockKind, source_id: &str, content: &str, required: bool) -> Self {
+        const MAX_BLOCK_BYTES: usize = 32 * 1024;
+        let content = if content.len() <= MAX_BLOCK_BYTES {
+            content.to_string()
+        } else {
+            let mut end = MAX_BLOCK_BYTES;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}\n[bounded prompt block truncated]", &content[..end])
+        };
+        let cache_class = match kind {
+            PromptBlockKind::HarnessContract
+            | PromptBlockKind::RoleContract
+            | PromptBlockKind::ModelAdapter
+            | PromptBlockKind::CapabilityContract
+            | PromptBlockKind::ProjectInstructions
+            | PromptBlockKind::AgentInstructions => crate::context::CacheClass::StablePrefix,
+            PromptBlockKind::MemorySummary | PromptBlockKind::GoalContext => {
+                crate::context::CacheClass::SlowChanging
+            }
+            PromptBlockKind::ControlInstruction | PromptBlockKind::PlanMode => {
+                crate::context::CacheClass::NeverCache
+            }
+            _ => crate::context::CacheClass::Volatile,
+        };
+        let content_hash = crate::context::stable_hash_hex(&content);
+        Self {
+            kind,
+            source_id: source_id.to_string(),
+            cache_class,
+            required,
+            content,
+            content_hash,
+        }
+    }
+}
+
+fn flatten_prompt_blocks(blocks: &[PromptBlock]) -> String {
+    blocks
+        .iter()
+        .filter(|block| !block.content.trim().is_empty())
+        .map(|block| block.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -531,6 +687,7 @@ pub struct CompiledPrompt {
     pub blocks: Vec<PromptBlock>,
     pub text: String,
     pub fingerprint: String,
+    pub diagnostics: Vec<String>,
 }
 
 pub struct PromptCompilerInput<'a> {
@@ -544,7 +701,10 @@ pub struct PromptCompilerInput<'a> {
     pub snapshot: Option<&'a ProjectAssetSnapshot>,
     pub pin: Option<&'a RuntimeAssetPin>,
     pub execution: Option<&'a ExecutionContext>,
-    pub runtime_context: &'a [String],
+    /// Resolved adapter identity, supplied by the runtime rather than
+    /// inferred from a model-name substring.
+    pub adapter_fingerprint: Option<&'a str>,
+    pub runtime_blocks: &'a [PromptBlock],
 }
 
 /// The sole production prompt entry point.  It consumes explicit execution
@@ -569,49 +729,73 @@ impl PromptCompiler {
             .map(|snapshot| snapshot.instruction_block().to_string())
             .filter(|text| !text.is_empty());
         let snapshot_skills = input.snapshot.map(|snapshot| snapshot.build_skill_prompt());
-        let mut custom = Vec::new();
+        let mut runtime_blocks = input.runtime_blocks.to_vec();
         if let Some(text) = asset_context {
-            custom.push(text);
+            runtime_blocks.push(PromptBlock::optional(
+                PromptBlockKind::ProjectInstructions,
+                "assets:instructions",
+                &text,
+            ));
         }
         if let Some(text) = snapshot_skills.filter(|text| !text.is_empty()) {
-            custom.push(text);
+            runtime_blocks.push(PromptBlock::optional(
+                PromptBlockKind::CapabilityContract,
+                "assets:skills",
+                &text,
+            ));
         }
-        custom.extend(input.runtime_context.iter().cloned());
-        let custom_text = if custom.is_empty() {
-            None
-        } else {
-            Some(custom.join("\n\n"))
-        };
 
-        // Keep the explicit inputs alive at this boundary.  They are part of
-        // the contract even when the current provider message DTO cannot yet
-        // carry their provenance.
-        let _ = (input.execution, input.pin);
-        let text = assemble_system_prompt_with_profile(PromptContext {
+        let mut blocks = build_base_prompt_blocks(PromptContext {
             agent: input.agent,
             config: input.config,
             model_profile: input.model_profile,
             tools: &tools,
             skills: &skills,
-            custom_instructions: custom_text.as_deref(),
+            custom_instructions: None,
             is_plan_mode: input.is_plan_mode,
             agents: &agents,
         });
-        let blocks = vec![PromptBlock {
-            kind: "system",
-            text: text.clone(),
-        }];
+        blocks.extend(runtime_blocks);
+        blocks.sort_by_key(|block| block.kind.order());
+        let mut diagnostics = Vec::new();
+        for pair in blocks.windows(2) {
+            if pair[0].kind == pair[1].kind && pair[0].source_id == pair[1].source_id {
+                diagnostics.push(format!(
+                    "duplicate prompt block identity: {:?}/{}",
+                    pair[0].kind, pair[0].source_id
+                ));
+            }
+        }
+        let text = flatten_prompt_blocks(&blocks);
         let mut hasher = sha2::Sha256::new();
         hasher.update(Self::VERSION.as_bytes());
-        hasher.update(text.as_bytes());
+        if let Some(execution) = input.execution {
+            hasher.update(execution.workspace_id.as_str().as_bytes());
+            if let Some(session_id) = execution.session_id.as_deref() {
+                hasher.update(session_id.as_bytes());
+            }
+        }
+        for block in &blocks {
+            hasher.update([block.kind as u8]);
+            hasher.update(block.source_id.as_bytes());
+            hasher.update(block.content_hash.as_bytes());
+            hasher.update([block.required as u8]);
+        }
         if let Some(snapshot) = input.snapshot {
             hasher.update(snapshot.fingerprint.as_bytes());
+        }
+        if let Some(adapter) = input.adapter_fingerprint {
+            hasher.update(adapter.as_bytes());
+        }
+        if let Some(pin) = input.pin {
+            hasher.update(format!("{:?}", pin).as_bytes());
         }
         CompiledPrompt {
             compiler_version: Self::VERSION,
             blocks,
             text,
             fingerprint: hex::encode(hasher.finalize()),
+            diagnostics,
         }
     }
 }
@@ -841,7 +1025,8 @@ mod tests {
             snapshot: None,
             pin: None,
             execution: None,
-            runtime_context: &[],
+            adapter_fingerprint: None,
+            runtime_blocks: &[],
         });
         let second = PromptCompiler::compile(PromptCompilerInput {
             agent: &agent,
@@ -854,12 +1039,101 @@ mod tests {
             snapshot: None,
             pin: None,
             execution: None,
-            runtime_context: &[],
+            adapter_fingerprint: None,
+            runtime_blocks: &[],
         });
         assert_eq!(first, second);
         assert_eq!(first.compiler_version, PromptCompiler::VERSION);
         assert!(first.text.contains("Model profile"));
         assert!(!first.fingerprint.is_empty());
+    }
+
+    #[test]
+    fn typed_runtime_blocks_change_identity_and_are_bounded() {
+        let agent = test_agent("build");
+        let config = test_config();
+        let profile = infer_builtin_profile("openai/gpt-5");
+        let block = PromptBlock::required(
+            PromptBlockKind::SecurityEvidence,
+            "security:bundle",
+            "prepared security evidence",
+        );
+        let first = PromptCompiler::compile(PromptCompilerInput {
+            agent: &agent,
+            model_profile: &profile,
+            config: &config,
+            tools: &[],
+            skills: &[],
+            agents: std::slice::from_ref(&agent),
+            is_plan_mode: true,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some("adapter-a"),
+            runtime_blocks: std::slice::from_ref(&block),
+        });
+        let second_block = PromptBlock::required(
+            PromptBlockKind::SecurityEvidence,
+            "security:bundle",
+            "changed security evidence",
+        );
+        let second = PromptCompiler::compile(PromptCompilerInput {
+            runtime_blocks: std::slice::from_ref(&second_block),
+            ..PromptCompilerInput {
+                agent: &agent,
+                model_profile: &profile,
+                config: &config,
+                tools: &[],
+                skills: &[],
+                agents: std::slice::from_ref(&agent),
+                is_plan_mode: true,
+                snapshot: None,
+                pin: None,
+                execution: None,
+                adapter_fingerprint: Some("adapter-a"),
+                runtime_blocks: &[],
+            }
+        });
+        assert_ne!(first.fingerprint, second.fingerprint);
+        assert_eq!(
+            first
+                .blocks
+                .iter()
+                .filter(|b| b.kind == PromptBlockKind::PlanMode)
+                .count(),
+            1
+        );
+        assert!(first
+            .blocks
+            .iter()
+            .all(|b| b.content.len() <= 32 * 1024 + 40));
+
+        let duplicate = PromptCompiler::compile(PromptCompilerInput {
+            runtime_blocks: &[block.clone(), block],
+            ..PromptCompilerInput {
+                agent: &agent,
+                model_profile: &profile,
+                config: &config,
+                tools: &[],
+                skills: &[],
+                agents: std::slice::from_ref(&agent),
+                is_plan_mode: false,
+                snapshot: None,
+                pin: None,
+                execution: None,
+                adapter_fingerprint: None,
+                runtime_blocks: &[],
+            }
+        });
+        assert_eq!(duplicate.diagnostics.len(), 1);
+
+        let oversized = PromptBlock::optional(
+            PromptBlockKind::Extension,
+            "test:oversized",
+            &"é".repeat(40_000),
+        );
+        assert!(oversized.content.is_char_boundary(oversized.content.len()));
+        assert!(oversized.content.contains("bounded prompt block truncated"));
     }
 
     #[test]

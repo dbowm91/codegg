@@ -37,9 +37,13 @@ Root turns and descendant turns provide the same typed inputs: the resolved
 agent, model profile, capability names, plan-mode state, explicit execution
 identity, and (when available) the immutable `ProjectAssetSnapshot` and its
 pin. The compiler sorts capability metadata, emits deterministic prompt
-content, and records a versioned fingerprint. Its block result is retained
-for the future context-plan/cache contract while current provider requests
-use the flattened text.
+content, and records a versioned fingerprint. Each block has a typed kind,
+source identity, cache class, required/optional policy, bounded content, and
+content hash. Memory, goals, specialized evidence, LSP, Git, asset
+instructions, skills, and plan/control guidance are collected before compile;
+there is no production post-compilation system-string mutation. The same
+contract is used by root and descendant turns. `ContextPlan` receives the
+compiler fingerprint directly rather than re-hashing flattened text.
 
 Agent files merge by default and may use `replace = true` for full
 replacement. Native TOML agents may use `extends = "<resolved-agent>"`;
