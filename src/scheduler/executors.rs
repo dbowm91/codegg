@@ -435,6 +435,7 @@ impl JobExecutor for SubagentJobExecutor {
             .bytes()
             .take(8)
             .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        let workspace_root = allowed_paths.first().map(std::path::PathBuf::from);
 
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
@@ -447,7 +448,7 @@ impl JobExecutor for SubagentJobExecutor {
             depth: 1,
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: None,
-            workspace_root: None,
+            workspace_root,
         };
 
         let result = self.pool.spawner().send_and_wait(request).await;
