@@ -62,6 +62,32 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_accumulation_never_slices_unicode() {
+        let mut processor = EventProcessor::new();
+        let delta = "a".repeat(codegg::provider::MAX_REASONING_BYTES - 1) + "💡tail";
+
+        processor.process(reasoning_delta(&delta));
+
+        assert_eq!(
+            processor.reasoning().len(),
+            codegg::provider::MAX_REASONING_BYTES - 1
+        );
+        assert!(processor.reasoning().ends_with('a'));
+        assert!(std::str::from_utf8(processor.reasoning().as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn fragmented_multibyte_reasoning_deltas_remain_bounded() {
+        let mut processor = EventProcessor::new();
+        for delta in ["é", "界", "🦀", " combining\u{301}"] {
+            processor.process(reasoning_delta(delta));
+        }
+
+        assert!(processor.reasoning().len() <= codegg::provider::MAX_REASONING_BYTES);
+        assert_eq!(processor.reasoning(), "é界🦀 combining\u{301}");
+    }
+
+    #[test]
     fn test_event_processor_tool_calls() {
         let mut processor = EventProcessor::new();
 

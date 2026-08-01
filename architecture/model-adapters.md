@@ -31,3 +31,9 @@ cargo package -p codegg-core --allow-dirty --no-verify
 
 Reasoning preservation and provider-specific reasoning round trips remain the
 responsibility of Milestone 008.
+
+Request transforms are a closed, typed set. Built-in adapter TOML is parsed at
+build time; unknown operations, conflicting targets, nested paths, and authority
+fields are rejected. The provider wire boundary consumes only a bounded policy:
+private reasoning field, thinking parameter, and reversible tool/argument
+aliases. Generic or excluded models receive no private-reasoning round trip.

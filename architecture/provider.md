@@ -653,6 +653,12 @@ pub struct SseParser {
 - `parse_anthropic_buffer()` - Parses Anthropic SSE
 - Handles tool call streaming (accumulating arguments across chunks)
 - Supports reasoning content via `reasoning_content` or `reasoning` fields
+
+OpenAI-compatible private reasoning and thinking parameters are selected by the
+adapter wire policy, with explicit model matching and exclusions. Model-name
+substring checks are not an activation mechanism. Canonical tool names remain
+the permission/execution identity; aliases are applied only at the provider
+wire boundary and reversed on inbound tool calls.
 - Handles both `delta` and `message` tool call formats
 
 ### State Preservation

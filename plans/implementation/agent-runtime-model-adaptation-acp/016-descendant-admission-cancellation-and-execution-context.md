@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 016 — Descendant Admission, Cancellation, and Execution Context
 
-Status: blocked — requires Milestone 015 strict closure
+Status: ready for handoff
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 

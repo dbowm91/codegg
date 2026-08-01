@@ -37,11 +37,16 @@ impl EventProcessor {
             ChatEvent::ReasoningDelta(reasoning) => {
                 if self.accumulated_reasoning.len() < MAX_REASONING_BYTES {
                     let remaining = MAX_REASONING_BYTES - self.accumulated_reasoning.len();
-                    let mut bounded = reasoning.as_str();
-                    while bounded.len() > remaining {
-                        bounded = &bounded[..bounded.len().saturating_sub(1)];
-                    }
-                    self.accumulated_reasoning.push_str(bounded);
+                    let take = if reasoning.len() <= remaining {
+                        reasoning.len()
+                    } else {
+                        let mut take = remaining;
+                        while take > 0 && !reasoning.is_char_boundary(take) {
+                            take -= 1;
+                        }
+                        take
+                    };
+                    self.accumulated_reasoning.push_str(&reasoning[..take]);
                 }
             }
             ChatEvent::ToolCall(tc) => {

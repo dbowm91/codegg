@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 015 — Adapter-Driven Reasoning Safety
 
-Status: ready for handoff
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/015-status.md`
 
 Repository baseline: `81b46de801137df605ce302dccff6f258c99fae1`
 

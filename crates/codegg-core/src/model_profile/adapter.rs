@@ -138,12 +138,43 @@ pub fn serving_requirement_diagnostics(
     }
     diagnostics
 }
+/// Closed, data-only request mutations allowed by model adapters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequestTransform {
-    pub op: String,
-    pub field: Option<String>,
-    pub value: Option<String>,
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RequestTransform {
+    SetRequestField {
+        field: String,
+        value: Option<String>,
+    },
+    RemoveRequestField {
+        field: String,
+    },
+    RenameToolArgument {
+        field: String,
+        value: Option<String>,
+    },
+    SetSystemRole {
+        field: String,
+        value: Option<String>,
+    },
+    SetToolChoice {
+        field: String,
+        value: Option<String>,
+    },
+    SetMaxParallelTools {
+        field: String,
+        value: Option<String>,
+    },
+    SetThinkingParameter {
+        field: String,
+        value: Option<String>,
+    },
+    RequireLateSystemMessages {
+        field: String,
+    },
+    RequireContinueNudge {
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -533,6 +564,14 @@ mod tests {
         );
         assert_eq!(diagnostics.len(), 3);
         assert!(diagnostics.iter().any(|d| d.contains("reasoning parser")));
+        assert!(matches!(
+            a.transforms.first(),
+            Some(RequestTransform::SetRequestField { field, .. }) if field == "reasoning_content"
+        ));
+        assert!(matches!(
+            a.transforms.get(1),
+            Some(RequestTransform::SetThinkingParameter { field, .. }) if field == "enable_thinking"
+        ));
     }
 
     #[test]

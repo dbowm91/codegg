@@ -20,6 +20,46 @@ pub enum ToolChoice {
     Specific(String),
 }
 
+#[derive(Debug, Clone, Default)]
+struct RequestPolicy {
+    reasoning_field: Option<&'static str>,
+    thinking_field: Option<&'static str>,
+    tool_aliases: &'static [(&'static str, &'static str)],
+    argument_aliases: &'static [(&'static str, &'static str, &'static str)],
+}
+
+// This is the bounded wire projection of the declarative adapter contract.
+// It intentionally contains no provider credentials, transport settings, or
+// executable behavior.  Matching is explicit and exclusion-aware; it is not
+// a model-name substring heuristic.
+const LAGUNA_TOOL_ALIASES: &[(&str, &str)] = &[("bash", "shell")];
+const LAGUNA_ARGUMENT_ALIASES: &[(&str, &str, &str)] = &[("shell", "command", "cmd")];
+
+fn request_policy(provider: &str, model: &str) -> RequestPolicy {
+    let provider = provider.to_ascii_lowercase();
+    let model = model.to_ascii_lowercase();
+    let supported_provider = matches!(
+        provider.as_str(),
+        "local" | "vllm" | "sglang" | "openai" | "openai-compatible" | "poolside"
+    );
+    let laguna_model = regex::Regex::new(r"laguna-(m|xs|s)")
+        .expect("built-in adapter regex")
+        .is_match(&model)
+        && !regex::Regex::new(r"(base|embed)")
+            .expect("built-in adapter exclusion regex")
+            .is_match(&model);
+    if supported_provider && laguna_model {
+        RequestPolicy {
+            reasoning_field: Some("reasoning_content"),
+            thinking_field: Some("enable_thinking"),
+            tool_aliases: LAGUNA_TOOL_ALIASES,
+            argument_aliases: LAGUNA_ARGUMENT_ALIASES,
+        }
+    } else {
+        RequestPolicy::default()
+    }
+}
+
 #[derive(Clone)]
 pub struct OpenAiCompatibleConfig {
     pub credential: Credential,
@@ -79,6 +119,7 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
+        let adapter = request_policy(&self.id, &request.model);
         let mut messages: Vec<serde_json::Value> = Vec::new();
         for msg in &request.messages {
             match msg {
@@ -140,7 +181,7 @@ impl OpenAiCompatibleProvider {
                                     "id": tc.id,
                                     "type": "function",
                                     "function": {
-                                        "name": tc.name,
+                                        "name": wire_tool_name(&adapter, tc.name.as_str()),
                                         "arguments": openai_tool_arguments_value(&tc.arguments),
                                     }
                                 })
@@ -152,7 +193,7 @@ impl OpenAiCompatibleProvider {
                     // Laguna's OpenAI-compatible contract requires the
                     // provider-private reasoning_content field on the next
                     // assistant turn. Other models must not receive it.
-                    if request.model.to_ascii_lowercase().contains("laguna") {
+                    if let Some(reasoning_field) = reasoning_field(&adapter) {
                         if let Some(reasoning) = content.iter().find_map(|part| match part {
                             ContentPart::Reasoning { text, visibility }
                                 if *visibility == ReasoningVisibility::Private =>
@@ -161,7 +202,7 @@ impl OpenAiCompatibleProvider {
                             }
                             _ => None,
                         }) {
-                            assistant_msg["reasoning_content"] = json!(reasoning);
+                            assistant_msg[reasoning_field] = json!(reasoning);
                         }
                     }
 
@@ -180,10 +221,25 @@ impl OpenAiCompatibleProvider {
             }
         }
 
-        let tools_json = request
-            .tools
-            .as_ref()
-            .map(|tools| tools.iter().map(|t| t.to_openai()).collect::<Vec<_>>());
+        let tools_json = request.tools.as_ref().map(|tools| {
+            tools
+                .iter()
+                .map(|tool| {
+                    let mut value = tool.to_openai();
+                    if let Some(function) = value.get_mut("function") {
+                        if let Some(name_value) = function.get_mut("name") {
+                            if let Some(name) = name_value.as_str() {
+                                *name_value = json!(wire_tool_name(&adapter, name));
+                            }
+                        }
+                        if let Some(parameters) = function.get_mut("parameters") {
+                            alias_parameter_properties(&adapter, tool.name.as_str(), parameters);
+                        }
+                    }
+                    value
+                })
+                .collect::<Vec<_>>()
+        });
 
         let mut body = json!({
             "model": request.model,
@@ -191,10 +247,15 @@ impl OpenAiCompatibleProvider {
             "stream": true,
             "tools": tools_json,
         });
-        if request.model.to_ascii_lowercase().contains("laguna") {
-            body["chat_template_kwargs"] = json!({
-                "enable_thinking": request.thinking_budget != Some(0),
-            });
+        if let Some((field, configured_value)) = thinking_transform(&adapter) {
+            let value = if configured_value.as_deref() == Some("true") {
+                json!(request.thinking_budget != Some(0))
+            } else if configured_value.as_deref() == Some("false") {
+                json!(false)
+            } else {
+                json!(configured_value.unwrap_or_else(|| "true".to_string()))
+            };
+            body["chat_template_kwargs"] = json!({field: value});
         }
         let has_tools = request
             .tools
@@ -215,13 +276,83 @@ impl OpenAiCompatibleProvider {
                 ToolChoice::Specific(name) => {
                     body["tool_choice"] = json!({
                         "type": "function",
-                        "function": {"name": name}
+                        "function": {"name": wire_tool_name(&adapter, name)}
                     });
                 }
             }
         }
 
         body
+    }
+}
+
+fn reasoning_field(adapter: &RequestPolicy) -> Option<&str> {
+    adapter.reasoning_field
+}
+
+fn thinking_transform(adapter: &RequestPolicy) -> Option<(&str, Option<String>)> {
+    adapter
+        .thinking_field
+        .map(|field| (field, Some("true".to_string())))
+}
+
+fn wire_tool_name(adapter: &RequestPolicy, name: &str) -> String {
+    adapter
+        .tool_aliases
+        .iter()
+        .find_map(|(canonical, wire)| (*canonical == name).then_some(*wire))
+        .unwrap_or(name)
+        .to_string()
+}
+
+fn alias_parameter_properties(
+    adapter: &RequestPolicy,
+    tool_name: &str,
+    parameters: &mut serde_json::Value,
+) {
+    let wire_name = wire_tool_name(adapter, tool_name);
+    let Some(properties) = parameters
+        .get_mut("properties")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    for (alias_tool, canonical, wire) in adapter.argument_aliases {
+        if *alias_tool != wire_name {
+            continue;
+        }
+        if let Some(schema) = properties.remove(*canonical) {
+            properties.insert((*wire).to_string(), schema);
+        }
+    }
+}
+
+fn normalize_openai_event(
+    event: Result<crate::ChatEvent, ProviderError>,
+    adapter: &RequestPolicy,
+) -> Option<Result<crate::ChatEvent, ProviderError>> {
+    match event {
+        Ok(crate::ChatEvent::ReasoningDelta(_)) if reasoning_field(adapter).is_none() => None,
+        Ok(crate::ChatEvent::ToolCall(mut call)) => {
+            let wire_name = call.name.to_string();
+            let canonical_name = adapter
+                .tool_aliases
+                .iter()
+                .find_map(|(canonical, wire)| (*wire == wire_name).then_some(*canonical))
+                .unwrap_or(wire_name.as_str());
+            if let Some(args) = call.arguments.as_object_mut() {
+                for (tool, canonical, wire) in adapter.argument_aliases {
+                    if *tool == wire_name {
+                        if let Some(value) = args.remove(*wire) {
+                            args.insert((*canonical).to_string(), value);
+                        }
+                    }
+                }
+            }
+            call.name = canonical_name.to_string().into();
+            Some(Ok(crate::ChatEvent::ToolCall(call)))
+        }
+        other => Some(other),
     }
 }
 
@@ -349,6 +480,7 @@ impl Provider for OpenAiCompatibleProvider {
         let stream = resp.bytes_stream();
         let buffer = String::new();
         let provider_name = self.name.clone();
+        let adapter = request_policy(&self.id, &request.model);
 
         tracing::debug!("{}: starting stream processing", provider_name);
 
@@ -356,10 +488,14 @@ impl Provider for OpenAiCompatibleProvider {
             (stream, buffer),
             move |(mut stream, mut buffer)| {
                 let provider_name = provider_name.clone();
+                let adapter = adapter.clone();
                 async move {
                     loop {
                         if let Some(event) = parse_openai_buffer(&mut buffer) {
-                            return Some((event, (stream, buffer)));
+                            if let Some(event) = normalize_openai_event(event, &adapter) {
+                                return Some((event, (stream, buffer)));
+                            }
+                            continue;
                         }
 
                         if buffer.len() > MAX_BUFFER_SIZE {
@@ -383,7 +519,9 @@ impl Provider for OpenAiCompatibleProvider {
                                     return None;
                                 }
                                 if let Some(event) = parse_openai_buffer(&mut buffer) {
-                                    return Some((event, (stream, buffer)));
+                                    if let Some(event) = normalize_openai_event(event, &adapter) {
+                                        return Some((event, (stream, buffer)));
+                                    }
                                 }
                                 return None;
                             }

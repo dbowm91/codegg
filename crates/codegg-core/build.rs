@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use regex::Regex;
 use serde::Deserialize;
 use std::{env, fs, path::PathBuf};
@@ -95,11 +97,57 @@ struct ServerRequirements {
     auto_tool_choice: Option<bool>,
 }
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Transform {
-    op: String,
-    field: Option<String>,
-    value: Option<String>,
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum Transform {
+    SetRequestField {
+        field: String,
+        value: Option<String>,
+    },
+    RemoveRequestField {
+        field: String,
+    },
+    RenameToolArgument {
+        field: String,
+        value: Option<String>,
+    },
+    SetSystemRole {
+        field: String,
+        value: Option<String>,
+    },
+    SetToolChoice {
+        field: String,
+        value: Option<String>,
+    },
+    SetMaxParallelTools {
+        field: String,
+        value: Option<String>,
+    },
+    SetThinkingParameter {
+        field: String,
+        value: Option<String>,
+    },
+    RequireLateSystemMessages {
+        field: String,
+    },
+    RequireContinueNudge {
+        field: String,
+    },
+}
+
+impl Transform {
+    fn field(&self) -> &str {
+        match self {
+            Self::SetRequestField { field, .. }
+            | Self::RemoveRequestField { field }
+            | Self::RenameToolArgument { field, .. }
+            | Self::SetSystemRole { field, .. }
+            | Self::SetToolChoice { field, .. }
+            | Self::SetMaxParallelTools { field, .. }
+            | Self::SetThinkingParameter { field, .. }
+            | Self::RequireLateSystemMessages { field }
+            | Self::RequireContinueNudge { field } => field,
+        }
+    }
 }
 
 fn main() {
@@ -209,31 +257,47 @@ fn main() {
             "{}: max_parallel out of bounds",
             path.display()
         );
+        let mut transform_keys = std::collections::HashSet::new();
         for t in &parsed.transforms {
+            let field = t.field();
             assert!(
-                [
-                    "set_request_field",
-                    "remove_request_field",
-                    "rename_tool_argument",
-                    "set_system_role",
-                    "set_tool_choice",
-                    "set_max_parallel_tools",
-                    "set_thinking_parameter",
-                    "require_late_system_messages",
-                    "require_continue_nudge"
-                ]
-                .contains(&t.op.as_str()),
-                "{}: unsupported transform {}",
-                path.display(),
-                t.op
-            );
-            assert!(
-                t.field
-                    .as_ref()
-                    .is_some_and(|x| !x.is_empty() && x.len() <= 128),
+                !field.is_empty() && field.len() <= 128,
                 "{}: transform field required/bounded",
                 path.display()
             );
+            assert!(
+                !field.contains('.') && !field.contains('[') && !field.contains(']'),
+                "{}: transform field must be a safe top-level name",
+                path.display()
+            );
+            assert!(
+                !matches!(
+                    field.to_ascii_lowercase().as_str(),
+                    "authorization" | "headers" | "endpoint" | "url" | "tools" | "permissions"
+                ),
+                "{}: transform field cannot alter authority or transport",
+                path.display()
+            );
+            let key = format!("{:?}:{field}", std::mem::discriminant(t));
+            assert!(
+                transform_keys.insert(key),
+                "{}: duplicate/conflicting transform",
+                path.display()
+            );
+            if matches!(t, Transform::SetRequestField { .. }) {
+                assert!(
+                    field == "reasoning_content",
+                    "{}: unsupported private request field",
+                    path.display()
+                );
+            }
+            if matches!(t, Transform::SetThinkingParameter { .. }) {
+                assert!(
+                    field == "enable_thinking",
+                    "{}: unsupported thinking field",
+                    path.display()
+                );
+            }
         }
         let mut wire_names = std::collections::HashSet::new();
         for (canonical, wire) in &parsed.tools.rename {
