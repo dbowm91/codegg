@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Corrective Closure Addendum
 
-Status: active — Milestones 013–015 closed; Milestone 016 ready; Milestone 017 dependency-blocked
+Status: active — Milestones 012–016 closed; Milestone 017 ready
 
 Repository baseline reviewed: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 

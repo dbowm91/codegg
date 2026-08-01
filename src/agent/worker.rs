@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -89,6 +90,7 @@ pub struct SubAgentRequest {
     pub depth: usize,
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
+    pub workspace_root: Option<PathBuf>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -164,10 +166,97 @@ impl SubAgentResult {
 struct WorkerRequest {
     request: SubAgentRequest,
     response_tx: oneshot::Sender<SubAgentResult>,
+    lease: DescendantAdmissionLease,
+    lineage_token: CancellationToken,
+}
+
+#[derive(Default)]
+struct AdmissionState {
+    active: usize,
+    accepted_tasks: HashSet<u64>,
+    delegation_keys: HashMap<String, u64>,
+    direct_child_counts: HashMap<String, usize>,
+    total_child_tool_calls: usize,
+}
+
+struct AdmissionRegistry {
+    state: Mutex<AdmissionState>,
+    max_active: usize,
+    max_direct_children: usize,
+    max_total_child_tool_calls: usize,
+}
+
+struct DescendantAdmissionLease {
+    registry: Arc<AdmissionRegistry>,
+    active: bool,
+}
+
+impl Drop for DescendantAdmissionLease {
+    fn drop(&mut self) {
+        if self.active {
+            let mut state = self
+                .registry
+                .state
+                .lock()
+                .expect("admission registry poisoned");
+            state.active = state.active.saturating_sub(1);
+            self.active = false;
+        }
+    }
+}
+
+impl AdmissionRegistry {
+    fn admit(
+        self: &Arc<Self>,
+        request: &SubAgentRequest,
+        tool_calls: usize,
+    ) -> Result<DescendantAdmissionLease, String> {
+        let key = delegation_key(request);
+        let parent = request.parent_id.as_deref().unwrap_or("<root>").to_string();
+        let mut state = self.state.lock().expect("admission registry poisoned");
+        if state.active >= self.max_active {
+            return Err("subagent active-descendant limit exceeded".into());
+        }
+        if let Some(existing) = state.delegation_keys.get(&key) {
+            if *existing != request.task_id {
+                return Err(format!(
+                    "duplicate delegation identity already accepted as task {existing}"
+                ));
+            }
+        }
+        if state.accepted_tasks.contains(&request.task_id) {
+            return Err(format!("duplicate task identity {}", request.task_id));
+        }
+        if self.max_direct_children != usize::MAX
+            && state.direct_child_counts.get(&parent).copied().unwrap_or(0)
+                >= self.max_direct_children
+        {
+            return Err("subagent direct-child limit exceeded".into());
+        }
+        if state.total_child_tool_calls.saturating_add(tool_calls) > self.max_total_child_tool_calls
+        {
+            return Err("subagent total child tool-call budget exceeded".into());
+        }
+        state.active += 1;
+        state.accepted_tasks.insert(request.task_id);
+        state.delegation_keys.insert(key, request.task_id);
+        *state.direct_child_counts.entry(parent).or_default() += 1;
+        state.total_child_tool_calls = state.total_child_tool_calls.saturating_add(tool_calls);
+        Ok(DescendantAdmissionLease {
+            registry: Arc::clone(self),
+            active: true,
+        })
+    }
+
+    fn active_count(&self) -> usize {
+        self.state
+            .lock()
+            .expect("admission registry poisoned")
+            .active
+    }
 }
 
 pub struct SubAgentPool {
-    active_count: Arc<AtomicUsize>,
     max_concurrent: usize,
     max_depth: usize,
     task_store: Arc<TokioMutex<TaskStore>>,
@@ -180,13 +269,11 @@ pub struct SubAgentPool {
     cancel_token: CancellationToken,
     active_handles: Arc<TokioMutex<Vec<tokio::task::JoinHandle<()>>>>,
     pool: Option<SqlitePool>,
-    accepted_tasks: Arc<TokioMutex<HashSet<u64>>>,
-    delegation_keys: Arc<TokioMutex<HashMap<String, u64>>>,
     max_direct_children: usize,
     max_active_descendants: usize,
     max_total_child_tool_calls: usize,
-    total_child_tool_calls: Arc<AtomicUsize>,
-    direct_child_counts: Arc<TokioMutex<HashMap<String, usize>>>,
+    admission: Arc<AdmissionRegistry>,
+    lineage_tokens: Arc<TokioMutex<HashMap<String, CancellationToken>>>,
 }
 
 impl SubAgentPool {
@@ -218,7 +305,6 @@ impl SubAgentPool {
             .and_then(|s| s.max_total_child_tool_calls)
             .unwrap_or(usize::MAX);
         let (request_tx, request_rx) = mpsc::channel(max_concurrent * 2);
-        let active_count = Arc::new(AtomicUsize::new(0));
         let task_store = Arc::new(TokioMutex::new(TaskStore::new()));
         if let Some(ref p) = pool {
             task_store.lock().await.set_pool(p.clone());
@@ -228,7 +314,6 @@ impl SubAgentPool {
         let active_handles = Arc::new(TokioMutex::new(Vec::new()));
 
         let pool_inst = Self {
-            active_count,
             max_concurrent,
             max_depth,
             task_store,
@@ -241,13 +326,16 @@ impl SubAgentPool {
             cancel_token,
             active_handles,
             pool,
-            accepted_tasks: Arc::new(TokioMutex::new(HashSet::new())),
-            delegation_keys: Arc::new(TokioMutex::new(HashMap::new())),
             max_direct_children,
             max_active_descendants,
             max_total_child_tool_calls,
-            total_child_tool_calls: Arc::new(AtomicUsize::new(0)),
-            direct_child_counts: Arc::new(TokioMutex::new(HashMap::new())),
+            admission: Arc::new(AdmissionRegistry {
+                state: Mutex::new(AdmissionState::default()),
+                max_active: max_active_descendants,
+                max_direct_children,
+                max_total_child_tool_calls,
+            }),
+            lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
         };
 
         let pool_clone = pool_inst.clone();
@@ -285,7 +373,6 @@ impl SubAgentPool {
             .and_then(|s| s.max_total_child_tool_calls)
             .unwrap_or(usize::MAX);
         let (request_tx, request_rx) = mpsc::channel(max_concurrent * 2);
-        let active_count = Arc::new(AtomicUsize::new(0));
         let workers = Arc::new(TokioMutex::new(Vec::new()));
         let cancel_token = CancellationToken::new();
         let active_handles = Arc::new(TokioMutex::new(Vec::new()));
@@ -294,7 +381,6 @@ impl SubAgentPool {
         }
 
         let pool_inst = Self {
-            active_count,
             max_concurrent,
             max_depth,
             task_store,
@@ -307,13 +393,16 @@ impl SubAgentPool {
             cancel_token,
             active_handles,
             pool,
-            accepted_tasks: Arc::new(TokioMutex::new(HashSet::new())),
-            delegation_keys: Arc::new(TokioMutex::new(HashMap::new())),
             max_direct_children,
             max_active_descendants,
             max_total_child_tool_calls,
-            total_child_tool_calls: Arc::new(AtomicUsize::new(0)),
-            direct_child_counts: Arc::new(TokioMutex::new(HashMap::new())),
+            admission: Arc::new(AdmissionRegistry {
+                state: Mutex::new(AdmissionState::default()),
+                max_active: max_active_descendants,
+                max_direct_children,
+                max_total_child_tool_calls,
+            }),
+            lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
         };
 
         let pool_clone = pool_inst.clone();
@@ -324,7 +413,6 @@ impl SubAgentPool {
 
     fn start_worker_loop(&self, mut request_rx: mpsc::Receiver<WorkerRequest>) {
         let cancel_token = self.cancel_token.clone();
-        let active_count = Arc::clone(&self.active_count);
         let task_store = Arc::clone(&self.task_store);
         let max_concurrent = self.max_concurrent;
         let agents = Arc::clone(&self.agents);
@@ -352,8 +440,9 @@ impl SubAgentPool {
                         let mut handles = active_handles.lock().await;
                         handles.retain(|h| !h.is_finished());
                     }
-                    Some(WorkerRequest { request, response_tx }) = request_rx.recv() => {
+                    Some(WorkerRequest { request, response_tx, lease, lineage_token }) = request_rx.recv() => {
                         if cancel_token.is_cancelled() {
+                            drop(lease);
                             let _ = response_tx.send(SubAgentResult::failure(
                                 request.task_id,
                                 "pool shutting down".to_string(),
@@ -362,7 +451,6 @@ impl SubAgentPool {
                         }
 
                         let sem = Arc::clone(&sem);
-                        let active_count = Arc::clone(&active_count);
                         let task_store = Arc::clone(&task_store);
                         let agents = Arc::clone(&agents);
                         let provider_registry = Arc::clone(&provider_registry);
@@ -373,25 +461,7 @@ impl SubAgentPool {
                         let subagent_pool = Arc::clone(&subagent_pool);
 
                         let handle = tokio::spawn(async move {
-                            // RAII guard for active_count
-                            struct ActiveCountGuard {
-                                active_count: Arc<AtomicUsize>,
-                            }
-
-                            impl ActiveCountGuard {
-                                fn new(active_count: Arc<AtomicUsize>) -> Self {
-                                    active_count.fetch_add(1, Ordering::SeqCst);
-                                    Self { active_count }
-                                }
-                            }
-
-                            impl Drop for ActiveCountGuard {
-                                fn drop(&mut self) {
-                                    self.active_count.fetch_sub(1, Ordering::SeqCst);
-                                }
-                            }
-
-                            let _guard = ActiveCountGuard::new(active_count);
+                            let _lease = lease;
 
                             // Wait for semaphore permit, but also check for cancellation
                             let permit = tokio::select! {
@@ -400,6 +470,13 @@ impl SubAgentPool {
                                     let _ = response_tx.send(SubAgentResult::failure(
                                         request.task_id,
                                         "pool shutting down".to_string(),
+                                    ));
+                                    return;
+                                }
+                                _ = lineage_token.cancelled() => {
+                                    let _ = response_tx.send(SubAgentResult::failure(
+                                        request.task_id,
+                                        "Task cancelled".to_string(),
                                     ));
                                     return;
                                 }
@@ -426,6 +503,7 @@ impl SubAgentPool {
                                 config,
                                 session_store,
                                 cancel_token,
+                                lineage_token,
                                 db_pool,
                                 subagent_pool,
                             ).await;
@@ -457,11 +535,21 @@ impl SubAgentPool {
     }
 
     pub fn active_count(&self) -> usize {
-        self.active_count.load(Ordering::SeqCst)
+        self.admission.active_count()
     }
 
     pub fn task_store(&self) -> Arc<TokioMutex<TaskStore>> {
         self.task_store.clone()
+    }
+
+    /// Cancel one root lineage without affecting unrelated roots.
+    pub async fn cancel_lineage(&self, root_id: &str) -> bool {
+        self.lineage_tokens
+            .lock()
+            .await
+            .get(root_id)
+            .map(|token| token.cancel())
+            .is_some()
     }
 
     pub async fn shutdown(&self) {
@@ -470,7 +558,7 @@ impl SubAgentPool {
 
         // Wait briefly for cooperative cancellation to finish
         let mut attempts = 0;
-        while self.active_count.load(Ordering::SeqCst) > 0 && attempts < 10 {
+        while self.admission.active_count() > 0 && attempts < 10 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             attempts += 1;
         }
@@ -497,12 +585,12 @@ impl SubAgentPool {
 
         // Wait for aborted tasks to complete (active_count to reach 0)
         let mut attempts = 0;
-        while self.active_count.load(Ordering::SeqCst) > 0 && attempts < 10 {
+        while self.admission.active_count() > 0 && attempts < 10 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             attempts += 1;
         }
 
-        let final_count = self.active_count.load(Ordering::SeqCst);
+        let final_count = self.admission.active_count();
         tracing::info!(
             "SubAgentPool shutdown complete, final active count: {}",
             final_count
@@ -513,7 +601,6 @@ impl SubAgentPool {
 impl Clone for SubAgentPool {
     fn clone(&self) -> Self {
         Self {
-            active_count: Arc::clone(&self.active_count),
             max_concurrent: self.max_concurrent,
             max_depth: self.max_depth,
             task_store: Arc::clone(&self.task_store),
@@ -526,13 +613,11 @@ impl Clone for SubAgentPool {
             cancel_token: self.cancel_token.clone(),
             active_handles: Arc::clone(&self.active_handles),
             pool: self.pool.clone(),
-            accepted_tasks: Arc::clone(&self.accepted_tasks),
-            delegation_keys: Arc::clone(&self.delegation_keys),
             max_direct_children: self.max_direct_children,
             max_active_descendants: self.max_active_descendants,
             max_total_child_tool_calls: self.max_total_child_tool_calls,
-            total_child_tool_calls: Arc::clone(&self.total_child_tool_calls),
-            direct_child_counts: Arc::clone(&self.direct_child_counts),
+            admission: Arc::clone(&self.admission),
+            lineage_tokens: Arc::clone(&self.lineage_tokens),
         }
     }
 }
@@ -587,7 +672,10 @@ impl SubAgentSpawner {
                 task_store
                     .lock()
                     .await
-                    .set_failed(task_id, format!("worker error: {}", e))
+                    .set_interrupted(
+                        task_id,
+                        format!("Task cancelled (worker interrupted: {})", e),
+                    )
                     .await;
             }
         }
@@ -607,20 +695,6 @@ impl SubAgentSpawner {
             ));
         }
 
-        if self.pool.active_count() >= self.pool.max_active_descendants {
-            return Err("subagent active-descendant limit exceeded".to_string());
-        }
-
-        if self.pool.max_direct_children != usize::MAX {
-            let parent = request.parent_id.as_deref().unwrap_or("<root>");
-            let mut counts = self.pool.direct_child_counts.lock().await;
-            let count = counts.entry(parent.to_string()).or_default();
-            if *count >= self.pool.max_direct_children {
-                return Err("subagent direct-child limit exceeded".to_string());
-            }
-            *count += 1;
-        }
-
         let cfg = self.pool.config.subagent.as_ref();
         if let Some(allowed) = cfg.and_then(|s| s.allowed_agents.as_ref()) {
             if !allowed.is_empty() && !allowed.iter().any(|name| name == &request.agent) {
@@ -637,80 +711,32 @@ impl SubAgentSpawner {
             return Err(format!("subagent target '{}' is denied", request.agent));
         }
 
-        let key = delegation_key(&request);
-        {
-            let mut keys = self.pool.delegation_keys.lock().await;
-            if let Some(existing) = keys.get(&key) {
-                if *existing != request.task_id {
-                    return Err(format!(
-                        "duplicate delegation identity already accepted as task {}",
-                        existing
-                    ));
-                }
-            } else {
-                keys.insert(key.clone(), request.task_id);
-            }
-        }
-        {
-            let mut accepted = self.pool.accepted_tasks.lock().await;
-            if !accepted.insert(request.task_id) {
-                return Err(format!("duplicate task identity {}", request.task_id));
-            }
-        }
-
         let reserved_tool_calls = cfg
             .and_then(|settings| settings.max_total_child_tool_calls)
             .map(|budget| request.max_tool_calls.unwrap_or(budget))
             .unwrap_or(0);
-        if reserved_tool_calls > 0 {
-            let previous = self
-                .pool
-                .total_child_tool_calls
-                .fetch_add(reserved_tool_calls, Ordering::SeqCst);
-            let budget = cfg
-                .and_then(|settings| settings.max_total_child_tool_calls)
-                .unwrap_or(usize::MAX);
-            if previous.saturating_add(reserved_tool_calls) > budget {
-                self.pool
-                    .total_child_tool_calls
-                    .fetch_sub(reserved_tool_calls, Ordering::SeqCst);
-                self.pool
-                    .accepted_tasks
-                    .lock()
-                    .await
-                    .remove(&request.task_id);
-                self.pool.delegation_keys.lock().await.remove(&key);
-                if self.pool.max_direct_children != usize::MAX {
-                    let parent = request.parent_id.as_deref().unwrap_or("<root>");
-                    let mut counts = self.pool.direct_child_counts.lock().await;
-                    if let Some(count) = counts.get_mut(parent) {
-                        *count = count.saturating_sub(1);
-                    }
-                }
-                return Err("subagent total child tool-call budget exceeded".to_string());
-            }
-        }
+        let lease = self.pool.admission.admit(&request, reserved_tool_calls)?;
+        let root = request
+            .parent_id
+            .clone()
+            .unwrap_or_else(|| format!("task-root-{}", request.task_id));
+        let lineage_token = {
+            let mut tokens = self.pool.lineage_tokens.lock().await;
+            tokens
+                .entry(root)
+                .or_insert_with(CancellationToken::new)
+                .clone()
+        };
 
         let (response_tx, response_rx) = oneshot::channel();
-        let parent_for_rollback = request.parent_id.clone();
         let worker_request = WorkerRequest {
             request,
             response_tx,
+            lease,
+            lineage_token,
         };
 
         if let Err(error) = self.pool.request_tx.send(worker_request).await {
-            if self.pool.max_direct_children != usize::MAX {
-                let parent = parent_for_rollback.as_deref().unwrap_or("<root>");
-                let mut counts = self.pool.direct_child_counts.lock().await;
-                if let Some(count) = counts.get_mut(parent) {
-                    *count = count.saturating_sub(1);
-                }
-            }
-            if reserved_tool_calls > 0 {
-                self.pool
-                    .total_child_tool_calls
-                    .fetch_sub(reserved_tool_calls, Ordering::SeqCst);
-            }
             return Err(format!("failed to queue request: {}", error));
         }
 
@@ -758,6 +784,7 @@ async fn run_subagent_task_with_cancel(
     config: Arc<Config>,
     session_store: Arc<SessionStore>,
     cancel_token: CancellationToken,
+    lineage_token: CancellationToken,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
 ) -> SubAgentResult {
@@ -795,6 +822,13 @@ async fn run_subagent_task_with_cancel(
                 error: msg.clone(),
             });
             // Don't update task store here - let handle_response do it
+            SubAgentResult::failure(task_id, "Task cancelled".to_string())
+        }
+        _ = lineage_token.cancelled() => {
+            GlobalEventBus::publish(AppEvent::SubagentFailed {
+                session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                error: "Task cancelled by root lineage".to_string(),
+            });
             SubAgentResult::failure(task_id, "Task cancelled".to_string())
         }
         result = async {
@@ -958,6 +992,7 @@ async fn execute_agent_task(
             )
             .with_depth(request.depth)
             .with_parent_model(Some(profile.resolved_model.clone()))
+            .with_workspace_root(request.workspace_root.clone())
             .with_parent_allowed_paths(request.allowed_paths.clone()),
         );
     }
@@ -1037,6 +1072,10 @@ async fn execute_agent_task(
         pool,
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
     );
+
+    if let Some(root) = request.workspace_root.clone() {
+        agent_loop.set_workspace_root(root);
+    }
 
     if let Some(parent_id) = &request.parent_id {
         let subagent_session_id = format!("{}-sub-{}", parent_id, request.task_id);
@@ -1174,4 +1213,68 @@ fn delegation_key(request: &SubAgentRequest) -> String {
     hasher.update([0]);
     hasher.update(request.prompt.as_bytes());
     format!("delegation-{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    fn request(task_id: u64) -> SubAgentRequest {
+        SubAgentRequest {
+            task_id,
+            prompt: "test".into(),
+            agent: "build".into(),
+            parent_id: Some("root-a".into()),
+            denied_tools: Vec::new(),
+            allowed_paths: Vec::new(),
+            description: format!("task-{task_id}"),
+            depth: 0,
+            max_tool_calls: None,
+            parent_model: None,
+            workspace_root: None,
+        }
+    }
+
+    #[test]
+    fn concurrent_admission_is_atomic_and_releases_once() {
+        let registry = Arc::new(AdmissionRegistry {
+            state: Mutex::new(AdmissionState::default()),
+            max_active: 2,
+            max_direct_children: usize::MAX,
+            max_total_child_tool_calls: usize::MAX,
+        });
+        let barrier = Arc::new(Barrier::new(8));
+        let mut joins = Vec::new();
+        for task_id in 0..8 {
+            let registry = Arc::clone(&registry);
+            let barrier = Arc::clone(&barrier);
+            joins.push(thread::spawn(move || {
+                barrier.wait();
+                registry.admit(&request(task_id), 0).ok()
+            }));
+        }
+        let leases: Vec<_> = joins.into_iter().map(|join| join.join().unwrap()).collect();
+        assert_eq!(leases.iter().filter(|lease| lease.is_some()).count(), 2);
+        assert_eq!(registry.active_count(), 2);
+        drop(leases);
+        assert_eq!(registry.active_count(), 0);
+    }
+
+    #[test]
+    fn rejected_admission_does_not_consume_identity_or_budget() {
+        let registry = Arc::new(AdmissionRegistry {
+            state: Mutex::new(AdmissionState::default()),
+            max_active: 1,
+            max_direct_children: usize::MAX,
+            max_total_child_tool_calls: 3,
+        });
+        let lease = registry.admit(&request(1), 3).unwrap();
+        assert!(registry.admit(&request(2), 1).is_err());
+        assert_eq!(registry.active_count(), 1);
+        drop(lease);
+        assert_eq!(registry.active_count(), 0);
+        assert!(registry.admit(&request(2), 0).is_ok());
+    }
 }

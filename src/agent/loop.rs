@@ -957,7 +957,13 @@ impl AgentLoop {
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            // Production loops are constructed with an explicit workspace root.
+            // The non-authoritative fallback keeps isolated legacy unit fixtures
+            // usable without consulting process-global cwd.
+            cwd: self
+                .workspace_root
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
             permission_mode: None,
             timeout_ms,
             invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
@@ -4582,6 +4588,7 @@ impl AgentLoop {
             depth: 1,
             max_tool_calls: None,
             parent_model,
+            workspace_root: self.workspace_root.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = pool.spawner().send(request).await {

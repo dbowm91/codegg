@@ -435,6 +435,11 @@ impl TaskTool {
         self
     }
 
+    pub fn with_workspace_root(mut self, root: Option<std::path::PathBuf>) -> Self {
+        self.workspace_root = root;
+        self
+    }
+
     pub fn store(&self) -> Arc<Mutex<TaskStore>> {
         self.store.clone()
     }
@@ -671,6 +676,7 @@ impl Tool for TaskTool {
                     depth: self.depth + 1,
                     max_tool_calls: None,
                     parent_model: self.parent_model.clone(),
+                    workspace_root: self.workspace_root.clone(),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

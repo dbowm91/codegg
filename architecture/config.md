@@ -447,3 +447,13 @@ bounds. Validation rejects control/NUL text, oversized values, invalid bounds,
 duplicate ids or names, and lexically overlapping roots. Reload changes only
 future scans; it does not remove catalog records or prior successful
 generations.
+# Subagent capacity semantics
+
+Subagent limits are intentionally separate. `max_concurrent` limits workers
+performing provider/tool work, while `max_active_descendants` counts accepted
+queued and running descendants and is reserved atomically before enqueue.
+`max_direct_children` counts accepted direct children per parent for the
+transient pool lifetime. `max_total_child_tool_calls` is cumulative and is not
+released when a child finishes. Accepted task/delegation identities are kept
+for deterministic duplicate rejection; only active capacity is released by
+the request lease.

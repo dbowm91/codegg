@@ -120,6 +120,7 @@ pub async fn coordinate_research(
             depth: 1,
             max_tool_calls: Some(MAX_CHILD_TOOL_CALLS),
             parent_model: Some(parent_model.into()),
+            workspace_root: None,
         };
         let result =
             tokio::time::timeout(MAX_CHILD_TIMEOUT, pool.spawner().send_and_wait(request)).await;

@@ -96,7 +96,6 @@ ALLOWLIST: list[re.Pattern] = [
     re.compile(r"ToolRegistryOptions::default\(\)"),
     re.compile(r"allowed_root:\s*std::env::current_dir"),
     re.compile(r"workdir:\s*std::env::current_dir"),
-    re.compile(r"cwd:\s*std::env::current_dir"),
     re.compile(r"let project_root\s*=\s*std::env::current_dir"),
     re.compile(r"let project_dir\s*=\s*std::env::current_dir"),
     re.compile(r"let default_root\s*=\s*std::env::current_dir"),

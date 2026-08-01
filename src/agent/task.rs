@@ -246,6 +246,7 @@ impl BackgroundScheduler {
                                 depth: 1,
                                 max_tool_calls: None,
                                 parent_model: None,
+                                workspace_root: None,
                             };
                             // scheduler-audit: definition-site
                             // BackgroundScheduler::spawn_loop is the

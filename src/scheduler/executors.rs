@@ -447,6 +447,7 @@ impl JobExecutor for SubagentJobExecutor {
             depth: 1,
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: None,
+            workspace_root: None,
         };
 
         let result = self.pool.spawner().send_and_wait(request).await;

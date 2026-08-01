@@ -1511,3 +1511,24 @@ child roles, explicit path/tool/depth/time ceilings, and typed
 evidence and citation validation, conflicts, limitations, and minimum-evidence
 policy. Child essays and fabricated citations cannot become authoritative
 completion data.
+# Descendant admission and cancellation
+
+`SubAgentPool` admits descendants through one atomic admission registry. The
+registry reserves accepted capacity, identity, direct-child fan-out, and the
+cumulative child tool-call budget before queue send. Each accepted request
+owns one idempotent RAII lease; dropping it releases only active capacity, so
+queue failure, cancellation, worker abort, and shutdown cannot leak capacity.
+
+The limits have distinct meanings: `max_concurrent` bounds provider/tool
+workers; `max_active_descendants` bounds accepted queued plus running
+descendants; `max_direct_children` bounds total accepted direct children per
+parent for the lifetime of the transient pool; and
+`max_total_child_tool_calls` is a cumulative pool budget. Accepted task and
+delegation identities remain retained for deterministic duplicate rejection.
+
+Every root lineage has its own cancellation token. `cancel_lineage` cancels
+only that root's queued and running descendants; pool shutdown remains the
+separate global cancellation path. Descendant native tools receive an
+explicit inherited workspace root. Production execution context must not
+derive cwd from process-global current directory; legacy isolated fixtures use
+the non-authoritative `.` fallback until they provide a workspace context.
