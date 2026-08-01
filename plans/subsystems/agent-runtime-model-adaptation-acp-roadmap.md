@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: closed — Milestones 001–011 closed
+Status: closed — Milestones 001–011 closed; corrective addendum Milestones 012–017 closed
 
 Long-term references:
 
@@ -33,6 +33,9 @@ Primary specifications and research anchors:
 - Poolside Laguna model cards and serving guidance: `https://huggingface.co/poolside`
 
 ## 1. Purpose and ownership boundary
+
+The historical M001–M011 scope is strictly closed. Corrective integration
+work is tracked by `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md`, whose M012–M017 sequence is also strictly closed.
 
 This subsystem converges CodeGG's prompt construction, agent registry, tool surface, delegation, specialized security/research behavior, progress recovery, model-specific harness adaptation, context/cache planning, and ACP frontend integration into one coherent daemon-owned execution path.
 

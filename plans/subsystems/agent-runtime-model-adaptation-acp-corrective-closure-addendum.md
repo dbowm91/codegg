@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Corrective Closure Addendum
 
-Status: active — Milestones 012–016 closed; Milestone 017 ready
+Status: closed — Milestones 012–017 closed
 
 Repository baseline reviewed: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 
@@ -270,3 +270,10 @@ Stop and report rather than expanding scope if:
 ## 8. Final closure rule
 
 The addendum may return the subsystem to `closed` only after Milestone 017 records an independent requirement-to-evidence matrix and no unresolved high or medium finding remains. Until then, the original M011 closure is conditionally accepted historical implementation evidence, not strict subsystem closure.
+
+Milestone 017 completed that independent review. Its focused production-path
+evidence is green and no critical, high, or medium finding remains in this
+addendum's scope. The bounded all-features workspace command remains recorded
+as failed evidence because it reproduces two unrelated stale assertions and an
+independent daemon-socket stack overflow; those findings belong to their owning
+tests/subsystems and do not change this addendum's strict disposition.
