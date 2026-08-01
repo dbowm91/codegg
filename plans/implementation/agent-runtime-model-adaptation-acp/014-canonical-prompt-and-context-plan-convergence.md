@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 014 — Canonical Prompt and Context-Plan Convergence
 
-Status: blocked — requires Milestone 013 strict closure
+Status: implemented — closure record: `plans/closure/agent-runtime-model-adaptation-acp/014-status.md`
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 

@@ -1,8 +1,8 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 015 — Adapter-Driven Reasoning Safety
 
-Status: blocked — requires Milestone 014 strict closure
+Status: ready for handoff
 
-Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
+Repository baseline: `81b46de801137df605ce302dccff6f258c99fae1`
 
 Source corrective addendum:
 
