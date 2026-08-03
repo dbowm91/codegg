@@ -27,31 +27,30 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 conditionally closed | Provider/storage review passes; hosted verify `30681164263` fails on unrelated workspace Clippy dead-code errors in `crates/codegg-core/build.rs` |
+| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 conditionally closed | Provider/storage review passes; strict ratification may reuse the single green hosted run required by DVR M007 when provider/storage executable identity is unchanged |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M016 closed; M017 ready | M017 owns independent review of M012–M016 |
-| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
-| Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
+| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M016 closed; M017 ready | M017 owns independent review of M012–M016; verification breadth is superseded by DVR M007 minimal contract |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M019 owns independent strict review; verification breadth is superseded by DVR M007 minimal contract |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 ready | M007 owns the fail-open boundary-guard correction, one shared quick/hosted run, and final minimal closure; M006 is historical implementation evidence |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
-| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | ready | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | M012–M016 strict closure records accepted; independent review is now ready |
+| Development verification and release | 007 — minimal verification contract and final closure | ready | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | Existing one-job CI and active closure plans are present; correct the fail-open boundary guard before shared final evidence |
+| Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; execute only the focused M019 set defined by DVR M007 and reuse its shared quick/hosted evidence |
+| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | ready | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | M012–M016 strict closure records accepted; execute only the representative focused set defined by DVR M007 and reuse its shared quick/hosted evidence |
 
-Agent-runtime M011 is conditionally closed after a post-closure production-path
-audit invalidated the strict disposition. M012 is strictly closed by
-`plans/closure/agent-runtime-model-adaptation-acp/012-status.md`. M013 and M014
-are strictly closed by their closure records. M015 is strictly
-closed by its closure record. M016 is strictly closed by its closure record;
-M017 is now dependency-ready because M012–M016 all have strict closure records.
+DVR M007 is the sole verification-policy implementation handoff. It supersedes
+the expansive command matrices and release/package evidence requirements in
+DVR M006, Tool Programs M019, and Agent Runtime M017 while preserving their
+technical and independent-review criteria.
 
-Tool Programs M019 remains an independent review-only handoff. DVR M006 must
-remain blocked until Provider M007 and Tool Programs M019 both have strict
-closure records with no unresolved high- or medium-severity finding.
+M017 and M019 remain independent review handoffs. They may proceed against the
+same accepted revision and must reuse the one quick result and one hosted
+`verify` result rather than requiring duplicate broad runs.
 
 ## Active closure work
 
@@ -65,30 +64,26 @@ M013 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/013
 M014 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/014-status.md`.
 M015 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/015-status.md`.
 M016 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/016-status.md`.
-M017 is ready for independent integration review.
+M017 is ready for independent integration review under the DVR M007 minimal evidence budget.
 
 M017 production implementation remains conditionally accepted. `plans/closure/tool-programs/017-status.md` remains absent; final Tool Programs verification responsibility transferred through M018 to M019.
 
-M018 implementation has landed. `plans/closure/tool-programs/018-status.md` is retained as provisional conditional implementation evidence, not independent strict approval. M019 owns the independently attributable strict decision.
+M018 implementation has landed. `plans/closure/tool-programs/018-status.md` is retained as provisional conditional implementation evidence, not independent strict approval. M019 owns the independently attributable strict decision and uses the DVR M007 focused evidence contract.
 
-Provider M006 implementation and evidence have landed. `plans/closure/provider-connections/006-status.md` is retained as provisional implementation-authored evidence. M007 is conditionally closed by `plans/closure/provider-connections/007-status.md`; strict closure awaits the named hosted workspace-gate evidence.
+Provider M006 implementation and evidence have landed. `plans/closure/provider-connections/006-status.md` is retained as provisional implementation-authored evidence. M007 is conditionally closed by `plans/closure/provider-connections/007-status.md`; a shared green DVR M007 hosted run may satisfy the remaining workspace-gate evidence when provider/storage executable identity is unchanged.
 
-Development verification and release M006 in-scope work has landed, but its
-closure record remains absent. DVR M006 is blocked until Provider M007 and Tool
-Programs M019 are both strictly closed; only then may its independent reviewer
-perform final DVR closure.
+Development verification and release M006 is retained as historical implementation evidence. DVR M007 now owns the boundary-guard correction, minimal shared verification contract, and final independent DVR closure.
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Development verification and release | 006 — final evidence and release documentation closure | blocked | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | Requires strict `plans/closure/provider-connections/007-status.md` and `plans/closure/tool-programs/019-status.md` with no unresolved high/medium findings |
 
 ## Newly dependency-ready work
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | ready | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | M012–M016 strict closure records; independent integration review is now unblocked |
+| Development verification and release | 007 — minimal verification contract and final closure | ready | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | No external dependency; correct the fail-open boundary guard, then collect one shared quick and hosted result |
 
 The previously reported projection stack failure did not reproduce after M018
 and remains unregistered unless it reappears reproducibly.
@@ -111,10 +106,9 @@ These are not dependency-ready correctness plans and remain outside the active h
 | Agent runtime, model adaptation, and ACP | 013 — specialized runtime finalization and research coordination | `plans/closure/agent-runtime-model-adaptation-acp/013-status.md` | `d91ccea` implementation; closure review commit | M014–M016 closed; M017 ready |
 | Agent runtime, model adaptation, and ACP | 014 — canonical prompt and context-plan convergence | `plans/closure/agent-runtime-model-adaptation-acp/014-status.md` | `81b46de` implementation; closure review commit | M015–M016 closed; M017 ready |
 | Agent runtime, model adaptation, and ACP | 015 — adapter-driven reasoning safety | `plans/closure/agent-runtime-model-adaptation-acp/015-status.md` | implementation and closure commit | M016 closed; M017 promoted to ready |
-| Agent runtime, model adaptation, and ACP | 016 — descendant admission, cancellation, and execution context | `plans/closure/agent-runtime-model-adaptation-acp/016-status.md` | `8a29926e`, `5a5c0fe2` implementation; closure review commit | M017 promoted to ready |
-| Agent runtime, model adaptation, and ACP | 016 — descendant admission, cancellation, and execution context | `plans/closure/agent-runtime-model-adaptation-acp/016-status.md` | implementation and closure commit | M017 promoted to ready for independent integration evidence |
-| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | `plans/closure/agent-runtime-model-adaptation-acp/011-corrective-status.md` | conditionally closed at reviewed head `7d8657e` | Strict closure withdrawn; M012 ready and M013–M017 registered through corrective addendum |
-| Agent runtime, model adaptation, and ACP | 012 — ACP turn lifecycle and correlation correctness | `plans/closure/agent-runtime-model-adaptation-acp/012-status.md` | implementation and closure commits | Strictly closed; M013 unblocked, M014–M017 remain predecessor-blocked |
+| Agent runtime, model adaptation, and ACP | 016 — descendant admission, cancellation, and execution context | `plans/closure/agent-runtime-model-adaptation-acp/016-status.md` | `8a29926e`, `5a5c0fe2` implementation; closure review commit | M017 promoted to ready under DVR M007 minimal verification contract |
+| Agent runtime, model adaptation, and ACP | 011 — integration evidence and closure | `plans/closure/agent-runtime-model-adaptation-acp/011-corrective-status.md` | conditionally closed at reviewed head `7d8657e` | Strict closure withdrawn; M012–M016 closed and M017 ready |
+| Agent runtime, model adaptation, and ACP | 012 — ACP turn lifecycle and correlation correctness | `plans/closure/agent-runtime-model-adaptation-acp/012-status.md` | implementation and closure commits | Strictly closed; final integration disposition transferred to M017 |
 | Agent runtime, model adaptation, and ACP | 009 — context-plan and cache convergence | `plans/closure/agent-runtime-model-adaptation-acp/009-status.md` | implementation and closure commit | Historical implementation retained; M014 owns corrective prompt/context identity convergence |
 | Agent runtime, model adaptation, and ACP | 010 — ACP v1 daemon/projection adapter | `plans/closure/agent-runtime-model-adaptation-acp/010-status.md` | implementation and closure commit | Historical implementation retained; M012 owns lifecycle/correlation correctness |
 | Agent runtime, model adaptation, and ACP | 008 — reasoning preservation and Poolside Laguna adapter | `plans/closure/agent-runtime-model-adaptation-acp/008-status.md` | implementation and closure commit | Historical implementation retained; M015 owns UTF-8 and adapter-authority correction |
@@ -124,22 +118,22 @@ These are not dependency-ready correctness plans and remain outside the active h
 | Agent runtime, model adaptation, and ACP | 004 — specialized security-review runtime | `plans/closure/agent-runtime-model-adaptation-acp/004-status.md` | implementation/closure commit | Historical preparation retained; M013 owns authoritative finalization |
 | Agent runtime, model adaptation, and ACP | 001 — prompt compilation and agent registry correctness | `plans/closure/agent-runtime-model-adaptation-acp/001-status.md` | `3cb6c0e` implementation | Historical implementation retained; M014 owns complete block/fingerprint convergence |
 | Agent runtime, model adaptation, and ACP | 003 — bounded nested agent delegation | `plans/closure/agent-runtime-model-adaptation-acp/003-status.md` | `b893462` implementation | Historical functional delegation retained; M016 owns atomic admission and lineage cancellation |
-| Provider connections and Eggpool | 006 — storage layout assertion and verification reconciliation | `plans/closure/provider-connections/006-status.md` | implementation `139c832`; merged at `7d8657e` | Executable correction and evidence retained; strict closure authority transferred to independent Provider M007 because the M006 status was authored on the implementation branch |
-| Provider connections and Eggpool | 007 — independent closure ratification and governance reconciliation | `plans/closure/provider-connections/007-status.md` | review head `04f4bb2`; review-state commit `ebd7c11` | Conditionally closed; provider/storage evidence passes, but hosted workspace Clippy failed on unrelated build-script dead-code errors |
-| Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | `plans/closure/tool-programs/018-status.md` | implementation `4235442`; merged at `c0aa785` | Provisional conditional implementation evidence only; independent strict review and evidence ratification transferred to Tool Programs M019 |
-| Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence implementation | — | implementation landed before reviewed head `9686338` | Conditionally accepted production implementation; strict closure transferred through M018 to M019 after canonical workspace verification exposed stale M005-era runtime fixtures |
-| Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through reviewed head `db890ac` | Conditionally accepted implementation; strict closure transferred to M006 because final-head hosted evidence, package inventory, release documentation, and Tokio guard closure were incomplete |
-| Development verification and release | 006 — final evidence and release documentation closure | — | M006 in-scope implementation `80e0919`; hosted evidence update `9686338` | In-scope work landed; strict closure now blocked on independent Provider M007 and Tool Programs M019 records. The projection failure did not reproduce. |
-| Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained, but strict subsystem closure transferred through M005 to M006 |
-| Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; automated release removal retained, with final release-contract closure transferred through M005 to M006 |
-| Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained, with final verification evidence transferred through M005 to M006 |
-| Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | `986d516` with amendment `6730213` | Historical conditional record; one-job contraction retained, with final green/evidence closure transferred through M005 to M006 |
-| Programmatic tool execution and Tool Programs | 016 — notification replay polish implementation | `plans/closure/tool-programs/016-status.md` | implementation `f4101b9`; conditional review in the M017 registration series | Historical conditional record; M017 retained semantic confirmation and durable evidence, with final verification closure transferred to M018 |
-| Programmatic tool execution and Tool Programs | 015 — final production-path implementation and review | `plans/closure/tool-programs/015-status.md` | implementation `247ef50`; independent approval `230f435`; original closure `9bd9d0b`; post-closure reconciliation in the M016 registration series | Historical conditional record; strict closure transferred through M016–M018 |
-| Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; strict closure transferred through M015–M018 |
-| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, delivery, and recovery implementation | `plans/closure/tool-programs/013-status.md` | implementation/closure head `58e87ff`; post-implementation reconciliation at `7b782da` | Historical conditional implementation record; strict closure transferred through M014–M018 |
-| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective implementation | `plans/closure/tool-programs/012-status.md` | `d056e42` implementation; later reviews transferred strict closure through M013–M018 | Historical conditional implementation record |
-| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` original closure; post-closure review at `d71a5ee` | Historical conditional implementation record; remaining findings transferred through M012–M018 |
+| Provider connections and Eggpool | 006 — storage layout assertion and verification reconciliation | `plans/closure/provider-connections/006-status.md` | implementation `139c832`; merged at `7d8657e` | Executable correction and evidence retained; strict closure authority transferred to independent Provider M007 |
+| Provider connections and Eggpool | 007 — independent closure ratification and governance reconciliation | `plans/closure/provider-connections/007-status.md` | review head `04f4bb2`; review-state commit `ebd7c11` | Conditionally closed; may be upgraded from the shared DVR M007 hosted result without a separate rerun when provider/storage tree identity is unchanged |
+| Programmatic tool execution and Tool Programs | 018 — runtime fixture contract alignment and DVR unblock | `plans/closure/tool-programs/018-status.md` | implementation `4235442`; merged at `c0aa785` | Provisional conditional implementation evidence only; independent strict review transferred to M019 |
+| Programmatic tool execution and Tool Programs | 017 — semantic recovery confirmation and evidence implementation | — | implementation landed before reviewed head `9686338` | Conditionally accepted production implementation; strict closure transferred through M018 to M019 |
+| Development verification and release | 005 — green verification and crates.io correctness implementation | — | implementation series `e90a78e` through reviewed head `db890ac` | Historical implementation; broad release/package evidence is no longer a closure requirement |
+| Development verification and release | 006 — final evidence and release documentation closure | — | M006 in-scope implementation `80e0919`; hosted evidence update `9686338` | Historical implementation evidence; final closure and minimal verification ownership transferred to M007 |
+| Development verification and release | 004 — optional integration evidence cleanup and closure | `plans/closure/development-verification-release/004-status.md` | `9425938` | Historical conditional record; structural LSP/evidence cleanup retained |
+| Development verification and release | 003 — manual crates.io release ownership | `plans/closure/development-verification-release/003-status.md` | `d4d57d2` | Historical conditional record; actual registry/package verification remains manual release-time work |
+| Development verification and release | 002 — canonical local verification contract | `plans/closure/development-verification-release/002-status.md` | `75b5dc0` | Historical conditional record; script/document consolidation retained |
+| Development verification and release | 001 — routine CI contraction | `plans/closure/development-verification-release/001-status.md` | `986d516` with amendment `6730213` | Historical conditional record; one-job contraction retained |
+| Programmatic tool execution and Tool Programs | 016 — notification replay polish implementation | `plans/closure/tool-programs/016-status.md` | implementation `f4101b9`; conditional review in the M017 registration series | Historical conditional record; final closure transferred to M019 |
+| Programmatic tool execution and Tool Programs | 015 — final production-path implementation and review | `plans/closure/tool-programs/015-status.md` | implementation `247ef50`; independent approval `230f435`; original closure `9bd9d0b`; post-closure reconciliation in the M016 registration series | Historical conditional record; strict closure transferred through M016–M019 |
+| Programmatic tool execution and Tool Programs | 014 — production-boundary implementation | `plans/closure/tool-programs/014-status.md` | implementation/closure head `c9559d2`; post-implementation reconciliation in the M015 registration series | Historical conditional implementation record; strict closure transferred through M015–M019 |
+| Programmatic tool execution and Tool Programs | 013 — production authority, descendant, delivery, and recovery implementation | `plans/closure/tool-programs/013-status.md` | implementation/closure head `58e87ff`; post-implementation reconciliation at `7b782da` | Historical conditional implementation record; strict closure transferred through M14–M19 |
+| Programmatic tool execution and Tool Programs | 012 — authority, recovery, delivery, and child-ownership corrective implementation | `plans/closure/tool-programs/012-status.md` | `d056e42` implementation; later reviews transferred strict closure through M013–M019 | Historical conditional implementation record |
+| Programmatic tool execution and Tool Programs | 011 — production correctness and ownership closure | `plans/closure/tool-programs/011-status.md` | `0ae1067` implementation; `705ae2c` original closure; post-closure review at `d71a5ee` | Historical conditional implementation record; remaining findings transferred through M012–M019 |
 | Programmatic tool execution and Tool Programs | 010 — harness, Eggpool, chaos, performance, and closure | `plans/closure/tool-programs/010-status.md` | `2f5e3d3` implementation; `b62686e` closure/reconciliation | Historical conditional closure; later milestones own final production and verification depth |
 | Programmatic tool execution and Tool Programs | 009 — OpenAI Responses hosted-program adapter | `plans/closure/tool-programs/009-status.md` | HEAD implementation | Historical capability/library closure; production Tool Programs remain native-only |
 | Programmatic tool execution and Tool Programs | 008 — background programs, projections, and parent notification | `plans/closure/tool-programs/008-status.md` | HEAD implementation | Historical closure; later milestones own final notification recovery and verification depth |
