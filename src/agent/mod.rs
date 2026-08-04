@@ -1582,7 +1582,7 @@ mod tests {
         assert_eq!(research.mode, AgentMode::All);
         assert!(!research.hidden);
         assert_eq!(research.role.as_deref(), Some("researcher"));
-        // Network + research tools allowed; mutating tools ask; image denied.
+        // Network + research tools allowed; mutating tools denied; image denied.
         assert_eq!(
             research.permissions.get("websearch"),
             Some(&"allow".to_string())
@@ -1595,7 +1595,7 @@ mod tests {
             research.permissions.get("research"),
             Some(&"allow".to_string())
         );
-        assert_eq!(research.permissions.get("edit"), Some(&"ask".to_string()));
+        assert_eq!(research.permissions.get("edit"), Some(&"deny".to_string()));
         assert_eq!(research.permissions.get("image"), Some(&"deny".to_string()));
     }
 
