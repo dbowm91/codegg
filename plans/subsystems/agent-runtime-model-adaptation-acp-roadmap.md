@@ -1,6 +1,6 @@
 # Agent Runtime, Delegation, Model Adaptation, and ACP Roadmap
 
-Status: closed — Milestones 001–011 closed
+Status: closed — Milestones 001–011 and corrective M012–M017 closed by the current addendum
 
 Long-term references:
 

@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 007 — Minimal Verification Contract and Final Closure
 
-Status: ready for handoff
+Status: implemented — closed; see `plans/closure/development-verification-release/007-status.md`
 
 Repository baseline reviewed:
 

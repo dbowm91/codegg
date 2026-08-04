@@ -1,6 +1,6 @@
 # Provider, Tool Programs, and DVR Independent Closure Ratification Addendum
 
-Status: active — Provider M007 conditionally closed; Tool Programs M019 ready; DVR M006 blocked
+Status: closed — Provider M007, Tool Programs M019/M020, and DVR M007 strictly closed
 
 Reviewed baseline:
 
@@ -21,6 +21,7 @@ Current review milestones:
 
 - `plans/implementation/provider-connections/007-independent-closure-ratification-and-governance-reconciliation.md`
 - `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md`
+- `plans/implementation/tool-programs/020-canonical-child-artifact-recovery-corrective-closure.md`
 
 Downstream closure plan:
 
@@ -30,7 +31,26 @@ Target closure records:
 
 - `plans/closure/provider-connections/007-status.md`
 - `plans/closure/tool-programs/019-status.md`
-- `plans/closure/development-verification-release/006-status.md`
+- `plans/closure/tool-programs/020-status.md`
+- `plans/closure/development-verification-release/007-status.md`
+
+## Current final disposition
+
+The historical review sequence below is superseded by DVR M007's minimal
+verification contract. Provider M007, Tool Programs M019, corrective Tool
+Programs M020, and DVR M007 are strictly closed on accepted executable
+revision `c85980e2a570a47669c54b23dd02ef388e30fd3b`, with shared hosted run
+`30931979689` / job `92084050226` passed on attempt 3. The strict records are:
+
+- `plans/closure/provider-connections/007-status.md`;
+- `plans/closure/tool-programs/019-status.md`;
+- `plans/closure/tool-programs/020-status.md`;
+- `plans/closure/development-verification-release/007-status.md`.
+
+The older M006/M018 blocker and handoff language is retained below for
+traceability only. The registry contains no blocked or dependency-ready plan
+for this closure line, and no future plan required a status promotion in the
+final audit.
 
 ## 1. Purpose
 
@@ -53,7 +73,7 @@ The remaining defect is closure governance and dependency ordering:
 
 This addendum introduces no production work. It defines the minimum review sequence required to complete the line correctly.
 
-## 2. Authoritative disposition
+## 2. Historical pre-M007 disposition (superseded)
 
 Until independent review completes:
 
@@ -236,7 +256,7 @@ After DVR closes:
 - preserve historical M006/M018 provisional records for traceability;
 - register no next plan for this line absent a newly demonstrated defect.
 
-## 9. Registry contract
+## 9. Historical registry contract (superseded)
 
 Immediately after this addendum is registered, the registry must show:
 

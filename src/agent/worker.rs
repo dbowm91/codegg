@@ -776,6 +776,7 @@ impl SubAgentSpawner {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn run_subagent_task_with_cancel(
     request: SubAgentRequest,
     task_store: Arc<TokioMutex<TaskStore>>,

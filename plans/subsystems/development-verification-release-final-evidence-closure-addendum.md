@@ -1,6 +1,6 @@
 # Development Verification and Release Final Evidence Closure Addendum
 
-Status: active
+Status: closed — M007 final evidence and closure review complete
 
 Parent roadmap:
 
@@ -14,19 +14,31 @@ Predecessor implementation:
 
 - `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md`
 
-Final corrective implementation:
+Historical final corrective implementation:
 
 - `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md`
 
-Target independent closure record:
+Current final implementation and closure:
+
+- `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md`
+
+Historical target closure record:
 
 - `plans/closure/development-verification-release/006-status.md`
 
+Current target independent closure record:
+
+- `plans/closure/development-verification-release/007-status.md`
+
 ## 1. Purpose
+
+M006 is historical implementation evidence. M007 is the controlling final
+verification contract and supersedes M006's breadth and release-evidence
+requirements without rewriting its historical record.
 
 M005 landed the substantive verification and manual-release corrections, but independent review found that strict subsystem closure is still unsupported by final-head evidence and active documentation.
 
-This addendum transfers final closure ownership to M006. It does not reopen the broad CI simplification or authorize additional runtime cleanup.
+This addendum transferred final closure ownership to M007. It does not reopen the broad CI simplification or authorize additional runtime cleanup.
 
 The governing rule is:
 
@@ -151,4 +163,5 @@ A missing hosted run, nonzero canonical verification command, registry ownership
 | 003 — Manual crates.io release ownership | conditionally closed | `plans/implementation/development-verification-release/003-manual-crates-io-release-ownership.md` | `plans/closure/development-verification-release/003-status.md` | Historical automated-release removal retained |
 | 004 — Optional integration evidence cleanup and closure | conditionally closed | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | `plans/closure/development-verification-release/004-status.md` | Historical structural cleanup retained |
 | 005 — Green verification and crates.io correctness implementation | conditionally closed | `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md` | — | Substantive implementation retained; strict closure transferred to M006 |
-| 006 — Final evidence and release documentation closure | closing | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | — | In-scope work landed; strict closure blocked by pre-existing Tool Programs runtime test isolation failure and projection transport daemon-socket stack overflow under `--test-threads=1`, both outside M006's ownership boundary. Stop-condition record at `plans/closure/development-verification-release/006-stop-condition.md` is authoritative until corrective plans from the owning subsystems clear the gap. |
+| 006 — Final evidence and release documentation closure | conditionally closed | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | `plans/closure/development-verification-release/006-stop-condition.md` | Historical implementation and stop-condition evidence retained; final verification ownership transferred to M007. |
+| 007 — Minimal verification contract and final closure | closed | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | `plans/closure/development-verification-release/007-status.md` | Boundary guard corrected; focused, quick, and shared hosted evidence passed; Provider M007, Tool Programs M019, and Agent Runtime M017 are strictly closed. |

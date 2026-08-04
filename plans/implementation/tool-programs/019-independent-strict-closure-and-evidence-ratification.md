@@ -1,6 +1,6 @@
 # Tool Programs Milestone 019 — Independent Strict Closure and Evidence Ratification
 
-Status: ready for handoff
+Status: implemented — closed; see `plans/closure/tool-programs/019-status.md`
 
 Repository baseline reviewed:
 

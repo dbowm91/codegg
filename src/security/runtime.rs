@@ -55,7 +55,7 @@ pub struct SecurityEvidenceBundle {
 
 impl SecurityEvidenceBundle {
     pub fn prompt_context(&self) -> String {
-        let mut out = String::from("\n\n## Host-prepared security review evidence\n".to_string());
+        let mut out = "\n\n## Host-prepared security review evidence\n".to_string();
         out.push_str(&format!("- Bundle fingerprint: {}\n", self.fingerprint));
         out.push_str(&format!("- Targets examined: {}\n", self.targets.len()));
         out.push_str("- Risk markers and diagnostics are review prompts, not findings.\n");

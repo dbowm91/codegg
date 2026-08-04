@@ -19,8 +19,8 @@ tool_call_reliability = "high"
 instruction_adherence = "high"
 patch_reliability = "high"
 supports_late_system_messages = true
+max_parallel_tools = 10
 
 [tools]
 format = "openai_function"
 tool_choice = "auto"
-

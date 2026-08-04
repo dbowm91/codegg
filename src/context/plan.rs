@@ -254,10 +254,10 @@ fn message_block(message: &Message) -> (ContextBlockKind, String, bool) {
 fn visible_content(parts: &[ContentPart]) -> String {
     parts
         .iter()
-        .filter_map(|part| match part {
-            ContentPart::Text { text } => Some(text.to_string()),
-            ContentPart::Image { .. } => Some("[image]".to_string()),
-            ContentPart::Reasoning { .. } => Some("[private reasoning]".to_string()),
+        .map(|part| match part {
+            ContentPart::Text { text } => text.to_string(),
+            ContentPart::Image { .. } => "[image]".to_string(),
+            ContentPart::Reasoning { .. } => "[private reasoning]".to_string(),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -297,10 +297,8 @@ fn validate_tool_protocol(messages: &[Message]) -> Result<(), String> {
                     pending.insert(call.id.to_string());
                 }
             }
-            Message::Tool { tool_call_id, .. } => {
-                if !pending.remove(tool_call_id.as_ref()) {
-                    return Err(format!("tool result has no preceding call: {tool_call_id}"));
-                }
+            Message::Tool { tool_call_id, .. } if !pending.remove(tool_call_id.as_ref()) => {
+                return Err(format!("tool result has no preceding call: {tool_call_id}"));
             }
             _ => {}
         }
