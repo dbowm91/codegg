@@ -511,7 +511,7 @@ fn recursive_descendants_and_capacity_converge_after_cancel_crash() {
         &workspace_id,
         program_id,
         false,
-        "result = submit_job(\"build\", {\"argv\": [\"bash\", \"-lc\", \"sleep 30\"]})\n",
+        "result = submit_job(\"build\", {\"argv\": [\"cargo\", \"build\"]})\n",
         vec!["read".into()],
     ));
     let parent_job_id = submitted["job_id"].as_str().unwrap().to_string();

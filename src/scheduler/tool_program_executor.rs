@@ -882,12 +882,17 @@ impl BrokerCallback for BrokerAdapter {
             .await
             .map_err(|error| InterpreterError::BrokerError(error.to_string()))?;
         let attempt = attempts.into_iter().max_by_key(|attempt| attempt.sequence);
-        let mut artifacts = Vec::new();
+        // Keep opaque scheduler metadata separate from the canonical context
+        // artifact. Call-result consumers resolve the first handle through the
+        // context-artifact store, so the durable summary must precede
+        // job/run identity handles.
+        let mut canonical_artifacts = Vec::new();
+        let mut metadata_artifacts = Vec::new();
         if let Some(run_id) = completion.run_id.as_ref() {
-            artifacts.push(format!("run://{run_id}"));
+            metadata_artifacts.push(format!("run://{run_id}"));
         }
         if let Some(attempt) = attempt.as_ref() {
-            artifacts.push(format!(
+            metadata_artifacts.push(format!(
                 "job://{}/attempt/{}",
                 submitted.job_id, attempt.attempt_id
             ));
@@ -896,6 +901,8 @@ impl BrokerCallback for BrokerAdapter {
         // the executor-owned RunStore remains authoritative for full output.
         // Persisting this summary gives callers a durable expansion handle even
         // when a lightweight executor has no RunStore run id.
+        let mut canonical_artifact_id = None;
+        let mut canonical_artifact_digest = None;
         if let Some(store) = &self.artifact_store {
             let handle = format!("child-job://{}/summary", submitted.job_id);
             let session_id = self
@@ -910,23 +917,21 @@ impl BrokerCallback for BrokerAdapter {
                 tool_name: Some(format!("child_job/{}", request.op)),
                 kind: crate::context::ArtifactKind::CommandOutput,
                 created_at_ms: chrono::Utc::now().timestamp_millis(),
-                content_hash: format!(
-                    "sha256:{}",
-                    Sha256::digest(completion.summary.as_bytes())
-                        .iter()
-                        .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                ),
+                content_hash: crate::context::compute_content_hash(&completion.summary),
                 raw_bytes_len: completion.summary.len(),
                 estimated_tokens: completion.summary.len().div_ceil(4),
                 redacted_content: completion.summary.clone(),
             };
+            let content_hash = summary_artifact.content_hash.clone();
             if let Err(error) = store.put(summary_artifact).await {
                 tracing::warn!(%error, child_job = %submitted.job_id, "failed to persist child-job summary artifact");
             } else {
-                artifacts.push(handle);
+                canonical_artifacts.push(handle.clone());
+                canonical_artifact_id = Some(handle);
+                canonical_artifact_digest = Some(content_hash);
             }
         }
+        canonical_artifacts.extend(metadata_artifacts);
 
         if let Ok(mut results) = self.child_results.lock() {
             results.push(ChildJobTracking {
@@ -941,11 +946,13 @@ impl BrokerCallback for BrokerAdapter {
                 sequence: request.sequence,
                 status: status_str.to_string(),
                 success,
-                artifact_id: None,
-                artifact_digest: None,
-                absence_reason: Some(
-                    "child executor completed without a canonical result artifact".into(),
-                ),
+                artifact_id: canonical_artifact_id,
+                artifact_digest: canonical_artifact_digest,
+                absence_reason: if canonical_artifacts.is_empty() {
+                    Some("child executor completed without a canonical result artifact".into())
+                } else {
+                    None
+                },
             });
         }
 
@@ -954,7 +961,7 @@ impl BrokerCallback for BrokerAdapter {
             exit_code,
             duration_ms: completion.metrics.elapsed_ms,
             details,
-            artifacts,
+            artifacts: canonical_artifacts,
             error: if !success {
                 Some(completion.summary)
             } else {
