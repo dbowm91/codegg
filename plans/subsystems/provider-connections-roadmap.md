@@ -1,6 +1,6 @@
 # Provider Connections and Eggpool Roadmap
 
-Status: closing; M007 conditionally ratified; hosted workspace Clippy evidence remains outstanding.
+Status: closed; M007 strictly ratified under DVR M007.
 
 Long-term references:
 

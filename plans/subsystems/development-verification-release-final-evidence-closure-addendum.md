@@ -1,6 +1,6 @@
 # Development Verification and Release Final Evidence Closure Addendum
 
-Status: closing — M007 final evidence and closure review
+Status: closed — M007 final evidence and closure review complete
 
 Parent roadmap:
 
@@ -38,7 +38,7 @@ requirements without rewriting its historical record.
 
 M005 landed the substantive verification and manual-release corrections, but independent review found that strict subsystem closure is still unsupported by final-head evidence and active documentation.
 
-This addendum transfers final closure ownership to M006. It does not reopen the broad CI simplification or authorize additional runtime cleanup.
+This addendum transferred final closure ownership to M007. It does not reopen the broad CI simplification or authorize additional runtime cleanup.
 
 The governing rule is:
 
@@ -164,4 +164,4 @@ A missing hosted run, nonzero canonical verification command, registry ownership
 | 004 — Optional integration evidence cleanup and closure | conditionally closed | `plans/implementation/development-verification-release/004-integration-evidence-cleanup-and-closure.md` | `plans/closure/development-verification-release/004-status.md` | Historical structural cleanup retained |
 | 005 — Green verification and crates.io correctness implementation | conditionally closed | `plans/implementation/development-verification-release/005-green-verification-and-crates-io-closure.md` | — | Substantive implementation retained; strict closure transferred to M006 |
 | 006 — Final evidence and release documentation closure | conditionally closed | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | `plans/closure/development-verification-release/006-stop-condition.md` | Historical implementation and stop-condition evidence retained; final verification ownership transferred to M007. |
-| 007 — Minimal verification contract and final closure | closing | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | `plans/closure/development-verification-release/007-status.md` | Boundary guard corrected; focused and quick evidence passed; one shared hosted verify result and independent closure records remain. |
+| 007 — Minimal verification contract and final closure | closed | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | `plans/closure/development-verification-release/007-status.md` | Boundary guard corrected; focused, quick, and shared hosted evidence passed; Provider M007, Tool Programs M019, and Agent Runtime M017 are strictly closed. |

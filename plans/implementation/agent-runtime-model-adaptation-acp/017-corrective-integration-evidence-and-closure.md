@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Milestone 017 — Corrective Integration Evidence and Closure
 
-Status: active — independent review and focused evidence in progress
+Status: implemented — closed; see `plans/closure/agent-runtime-model-adaptation-acp/017-status.md`
 
 Repository baseline: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 

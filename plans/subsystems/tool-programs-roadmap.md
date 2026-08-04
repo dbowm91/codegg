@@ -1,6 +1,6 @@
 # Programmatic Tool Execution and Tool Programs Roadmap
 
-Status: closing — Milestone 018 conditionally closed, awaiting independent review
+Status: closed — M018 remains historical conditional implementation evidence; M019 strict closure and M020 corrective disposition accepted
 
 Long-term references:
 
@@ -516,5 +516,7 @@ This subsystem is closed only when:
 | 014 | conditionally closed, historical | `plans/implementation/tool-programs/014-production-boundary-and-process-evidence-closure.md` | `plans/closure/tool-programs/014-status.md` | Strict closure transferred to M015 |
 | 015 | conditionally closed, historical | `plans/implementation/tool-programs/015-final-production-path-and-independent-closure.md` | `plans/closure/tool-programs/015-status.md` | Implementation `247ef50`; independent approval `230f435`; notification reconstruction defect transferred to M016 |
 | 016 | conditionally closed, historical | `plans/implementation/tool-programs/016-notification-replay-polish-and-final-closure.md` | `plans/closure/tool-programs/016-status.md` | Semantic event equality and restart fixture retained; recovery confirmation/evidence defects transferred to M017 |
-| 017 | conditionally closed | `plans/implementation/tool-programs/017-semantic-recovery-confirmation-and-evidence-closure.md` | — | Production implementation retained; strict verification closure transferred to M018 |
-| 018 | conditionally closed | `plans/implementation/tool-programs/018-runtime-fixture-contract-alignment-and-dvr-unblock.md` | `plans/closure/tool-programs/018-status.md` | Fixture and Tool Programs evidence green; canonical full gate blocked by unrelated codegg-core migration assertion; independent review remains |
+| 017 | conditionally closed, historical | `plans/implementation/tool-programs/017-semantic-recovery-confirmation-and-evidence-closure.md` | — | Production implementation retained; strict verification closure transferred through M018 to M019 |
+| 018 | conditionally closed, historical | `plans/implementation/tool-programs/018-runtime-fixture-contract-alignment-and-dvr-unblock.md` | `plans/closure/tool-programs/018-status.md` | Fixture implementation evidence retained; independent strict closure transferred to M019 |
+| 019 | closed | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | `plans/closure/tool-programs/019-status.md` | Shared DVR M007 evidence; no follow-up absent a new defect |
+| 020 | closed | `plans/implementation/tool-programs/020-canonical-child-artifact-recovery-corrective-closure.md` | `plans/closure/tool-programs/020-status.md` | Narrow DVR M007 corrective disposition; no follow-up absent a new defect |

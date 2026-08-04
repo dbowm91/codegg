@@ -1,6 +1,6 @@
 # Provider Connections Milestone 007 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -14,6 +14,14 @@ Repository baseline reviewed: `04f4bb28c4d4236d066fc2d3f80ad41b4858738d`
 
 Review-state commit: `ebd7c11b3117ca7e5fd976bd6658093691bea4ff`
 
+Strict closure ratification: accepted executable revision
+`c85980e2a570a47669c54b23dd02ef388e30fd3b`; shared hosted `verify` run
+`30931979689`, job `92084050226`, passed on attempt 3. The earlier hosted
+Clippy, workspace-test, and cache post-step failures are historical evidence
+and are resolved by the narrow accepted-descendant corrections and fresh
+runner retry. The Provider/storage executable identity remained unchanged, so
+no duplicate provider run was required.
+
 Implementation and evidence lineage:
 
 - `139c832c986106f31304d845860a66b17ba17099` — M006 executable correction;
@@ -23,7 +31,11 @@ Implementation and evidence lineage:
 - `8eddda26c417043c1ce0a9112df98beff2edeba1` — provider branch reconciliation.
 - `7d8657e60aad85f677144b1bd0e7fb5d2929faa3` — merge to `main`.
 
-## 1. Executive finding
+## 1. Historical provisional disposition (superseded)
+
+The following sections preserve the original M007 conditional disposition and
+its evidence lineage. The strict disposition above supersedes the old
+conditional result.
 
 The independent review confirms that M006 corrected a stale test assertion,
 not a production migration defect. Provider storage is historically introduced
@@ -136,7 +148,7 @@ independent conditional authority. The fresh hosted failure is preserved with
 its exact run, job, command, and owning unrelated file. No CI topology,
 resource, or release behavior was changed.
 
-## 10. Unresolved findings
+## 10. Historical unresolved findings (resolved)
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
@@ -145,7 +157,7 @@ resource, or release behavior was changed.
 No Provider Connections migration, provider, security, or compatibility finding
 remains at high or medium severity.
 
-## 11. Roadmap disposition
+## 11. Historical roadmap disposition (superseded)
 
 M007 is conditionally closed. Provider M006 is accepted as implemented and its
 self-authored closure record remains historical evidence. Strict Provider
@@ -153,7 +165,7 @@ Connections closure requires the named hosted workspace-gate evidence. Tool
 Programs M019 remains independently ready. DVR M006 remains blocked until both
 Provider M007 and Tool Programs M019 have strict closure records.
 
-## 12. Registry updates
+## 12. Historical registry updates (superseded)
 
 - Provider Connections remains `closing` with M007 conditionally closed.
 - M007 is removed from dependency-ready handoffs.
