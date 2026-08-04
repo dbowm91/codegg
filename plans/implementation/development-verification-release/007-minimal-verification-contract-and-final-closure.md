@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 007 — Minimal Verification Contract and Final Closure
 
-Status: ready for handoff
+Status: closing — implementation and focused evidence complete; shared hosted evidence pending
 
 Repository baseline reviewed:
 

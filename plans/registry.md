@@ -31,26 +31,25 @@ Canonical direction remains in:
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
-| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M016 closed; M017 ready | M017 owns independent review of M012–M016; verification breadth is superseded by DVR M007 minimal contract |
-| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M019 owns independent strict review; verification breadth is superseded by DVR M007 minimal contract |
-| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 ready | M007 owns the fail-open boundary-guard correction, one shared quick/hosted run, and final minimal closure; M006 is historical implementation evidence |
+| Agent runtime, model adaptation, and ACP | active | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M016 closed; M017 active | M017 owns independent review of M012–M016 under the DVR M007 minimal contract |
+| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 active | M019 owns independent strict review under the DVR M007 minimal contract |
+| Development verification and release | closing | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closing | M007 owns the fail-open boundary-guard correction, one shared quick/hosted run, and final minimal closure; M006 is historical implementation evidence |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 007 — minimal verification contract and final closure | ready | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | Existing one-job CI and active closure plans are present; correct the fail-open boundary guard before shared final evidence |
-| Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; execute only the focused M019 set defined by DVR M007 and reuse its shared quick/hosted evidence |
-| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | ready | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | M012–M016 strict closure records accepted; execute only the representative focused set defined by DVR M007 and reuse its shared quick/hosted evidence |
+| Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | active | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | Independent review and focused evidence are in progress under DVR M007; shared hosted evidence is pending |
+| Agent runtime, model adaptation, and ACP | 017 — corrective integration evidence and closure | active | `plans/implementation/agent-runtime-model-adaptation-acp/017-corrective-integration-evidence-and-closure.md` | Independent review and focused evidence are in progress under DVR M007; shared hosted evidence is pending |
 
 DVR M007 is the sole verification-policy implementation handoff. It supersedes
 the expansive command matrices and release/package evidence requirements in
 DVR M006, Tool Programs M019, and Agent Runtime M017 while preserving their
 technical and independent-review criteria.
 
-M017 and M019 remain independent review handoffs. They may proceed against the
-same accepted revision and must reuse the one quick result and one hosted
-`verify` result rather than requiring duplicate broad runs.
+M017 and M019 are active independent reviews. They may proceed against the same
+accepted revision and must reuse the one quick result and one hosted `verify`
+result rather than requiring duplicate broad runs.
 
 ## Active closure work
 
@@ -64,7 +63,7 @@ M013 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/013
 M014 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/014-status.md`.
 M015 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/015-status.md`.
 M016 is strictly closed by `plans/closure/agent-runtime-model-adaptation-acp/016-status.md`.
-M017 is ready for independent integration review under the DVR M007 minimal evidence budget.
+M017 is active for independent integration review under the DVR M007 minimal evidence budget.
 
 M017 production implementation remains conditionally accepted. `plans/closure/tool-programs/017-status.md` remains absent; final Tool Programs verification responsibility transferred through M018 to M019.
 
@@ -83,7 +82,7 @@ Development verification and release M006 is retained as historical implementati
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Development verification and release | 007 — minimal verification contract and final closure | ready | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | No external dependency; correct the fail-open boundary guard, then collect one shared quick and hosted result |
+| Development verification and release | 007 — minimal verification contract and final closure | closing | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | Boundary guard and focused/local evidence complete; shared hosted result and closure records pending |
 
 The previously reported projection stack failure did not reproduce after M018
 and remains unregistered unless it reappears reproducibly.

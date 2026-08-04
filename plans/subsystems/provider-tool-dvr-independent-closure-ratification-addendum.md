@@ -1,6 +1,6 @@
 # Provider, Tool Programs, and DVR Independent Closure Ratification Addendum
 
-Status: active — Provider M007 conditionally closed; Tool Programs M019 ready; DVR M006 blocked
+Status: active — Provider M007 conditionally closed; Tool Programs M019 and DVR M007 reviews active
 
 Reviewed baseline:
 

@@ -1,6 +1,6 @@
 # Agent Runtime, Model Adaptation, and ACP Corrective Closure Addendum
 
-Status: active — Milestones 012–016 closed; Milestone 017 ready
+Status: active — Milestones 012–016 closed; Milestone 017 active under DVR M007
 
 Repository baseline reviewed: `7d8657e60aad85f677144b1bd0e7fb5d2929faa3`
 
