@@ -13,12 +13,17 @@ The command planner maps classified intents to execution backends, generates per
 ```rust
 pub enum ExecutionBackend {
     RawShell { command: String },
-    ManagedArgv { argv: Vec<String>, cwd: PathBuf },
-    NativeTool { tool_name: String },
+    ManagedArgv { command: NativeCommand, cwd: PathBuf },
+    NativeTool { tool_name: String, command: NativeCommand },
     TestRunner { validated_command: Option<String> },
     PythonScript { script: String, mode_guess: PythonModeGuess },
     Git { request: GitExecutionRequest },
     Reject { reason: String },
+}
+
+pub struct NativeCommand {
+    pub executable: String,
+    pub argv: Vec<String>,
 }
 ```
 
@@ -88,8 +93,8 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 | GitReadOnly | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
 | GitMutating (safe) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
 | GitMutating (dangerous) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
-| SearchReadOnly, FileRead | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
-| Build, Lint, Format | `ManagedArgv { argv, cwd }` | `parsed_argv` (fallback to whitespace split) |
+| SearchReadOnly, FileRead | `ManagedArgv { command, cwd }` | typed `parsed_argv` only |
+| Build, Lint, Format | `ManagedArgv { command, cwd }` | typed `parsed_argv` only |
 | FileWrite, FileEdit, RawShell | `RawShell { command }` | command string |
 | Rejected | `Reject { reason }` | n/a |
 
@@ -97,7 +102,7 @@ All git commands — reads, safe mutations, and dangerous mutations — plan thr
 
 **Routing caveat (polish-pass finding, closed by Track U):** The plan-level backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash.rs:75-90` historically returned `None` for `CommandIntentKind::GitMutating`, meaning bash-translated simple git mutations planned as `Git` but dispatched as `RawShell`. As of Track U, bash git mutations route through `dispatch_to_git` → `GitMutationExecutor` (sharing env policy, snapshot/delta, and RunStore parity with the native tool) when the `route_git_local_mutation` gate is enabled. The default remains `Off` so existing user-visible behavior is unchanged unless the user opts in.
 
-`ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser, falling back to whitespace splitting if `None`.
+`ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser and preserve the executable separately from its arguments. Missing typed argv is rejected; it is never reconstructed from a display string or whitespace splitting. `RawShell` is selected only by the classifier's explicit shell route.
 
 ### `validate_for_active_routing()`
 

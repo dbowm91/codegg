@@ -14,6 +14,7 @@ use crate::command_outcome::{
 use crate::command_planner::plan_execution;
 use crate::command_planner::CommandPlan;
 use crate::command_planner::ExecutionBackend;
+use crate::command_planner::NativeCommand;
 use crate::command_routing::resolve_routing;
 use crate::command_routing::RoutingDecision;
 use crate::config::schema::CommandIntentConfig;
@@ -664,7 +665,9 @@ impl BashTool {
                     source: codegg_core::jobs::JobSource::Interactive,
                     priority: codegg_core::jobs::JobPriority::Interactive,
                     payload: codegg_core::jobs::JobPayload::Test {
-                        command: argv.join(" "),
+                        command: NativeCommand::from_argv(argv.to_vec())
+                            .map(|command| command.display())
+                            .unwrap_or_default(),
                         argv: argv.to_vec(),
                         cwd: Some(run_cwd.to_string_lossy().into_owned()),
                         scope: Some("bash-dispatch".into()),
@@ -725,28 +728,18 @@ impl BashTool {
     /// instead of `sh -c`, bypassing shell interpretation.
     async fn dispatch_to_native_tool(
         &self,
-        command: &str,
+        command: &NativeCommand,
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<DispatchOutcome, ToolError> {
-        let argv: Vec<&str> = command.split_whitespace().collect();
-        if argv.is_empty() {
-            let (result, output) = self
-                .execute_via_raw_shell(command, canonical_workdir, timeout)
-                .await?;
-            return Ok(DispatchOutcome {
-                result,
-                output,
-                executor: ActualExecutor::RawShell {
-                    command: command.to_string(),
-                    argv: vec!["sh".to_string(), "-c".to_string(), command.to_string()],
-                },
-                delegated_run_id: None,
-            });
+        if command.executable.is_empty() {
+            return Err(ToolError::Execution(
+                "native command has an empty executable".to_string(),
+            ));
         }
 
-        let argv_owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let tool_name = argv_owned[0].clone();
+        let argv_owned = command.full_argv();
+        let tool_name = command.executable.clone();
         let cwd = canonical_workdir
             .map(Path::to_path_buf)
             .or_else(|| std::env::current_dir().ok())
@@ -765,7 +758,7 @@ impl BashTool {
             managed.termination,
             crate::managed_process::TerminationReason::TimedOut
         ) {
-            return Err(ToolError::Timeout(command.to_string()));
+            return Err(ToolError::Timeout(command.display()));
         }
         let stdout = managed.stdout.to_string_lossy();
         let stderr = managed.stderr.to_string_lossy();
@@ -1231,16 +1224,16 @@ impl BashTool {
     /// failure is returned to the caller; this path never falls back to shell.
     async fn dispatch_to_managed_process(
         &self,
-        argv: &[String],
+        command: &NativeCommand,
         cwd: Option<&Path>,
         timeout: Duration,
         kind: codegg_core::jobs::JobKind,
     ) -> Result<DispatchOutcome, ToolError> {
-        if argv.is_empty() {
-            return Err(ToolError::Execution("empty argv".to_string()));
+        if command.executable.is_empty() {
+            return Err(ToolError::Execution("empty executable".to_string()));
         }
 
-        let argv_owned = argv.to_vec();
+        let argv_owned = command.full_argv();
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
                 "managed process execution requires the daemon scheduler".into(),
@@ -1264,7 +1257,7 @@ impl BashTool {
                     source: codegg_core::jobs::JobSource::Interactive,
                     priority: codegg_core::jobs::JobPriority::Interactive,
                     payload: codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv: argv.to_vec(),
+                        argv: argv_owned.clone(),
                         cwd: Some(cwd_owned.to_string_lossy().into_owned()),
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
@@ -1443,14 +1436,14 @@ impl BashTool {
                 self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
                     .await
             }
-            RoutingDecision::RouteToManagedProcess { argv, cwd, .. } => {
+            RoutingDecision::RouteToManagedProcess { command, cwd, .. } => {
                 let kind = match _plan.intent.kind {
                     CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
                     CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
                     CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
                     _ => codegg_core::jobs::JobKind::ManagedProcess,
                 };
-                self.dispatch_to_managed_process(argv, Some(cwd), timeout, kind)
+                self.dispatch_to_managed_process(command, Some(cwd), timeout, kind)
                     .await
             }
             RoutingDecision::RouteToGit { request, .. } => {

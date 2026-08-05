@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M004 closed; M005/M006 hosted conditions are operational; M003 and M007–M008 remain blocked.
+Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M004 closed; M005/M006 hosted conditions are operational; M003 is active and M007–M008 remain blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -254,6 +254,8 @@ Exit conditions:
 - ownership guards prevent reintroduction of unbounded `Command::output()` in governed paths.
 
 ### Milestone 003 — Typed argv preservation and shell-routing convergence
+
+Status: active
 
 Class: invariant and correctness
 

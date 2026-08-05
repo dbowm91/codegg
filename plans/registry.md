@@ -25,13 +25,13 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M003 ready; C001/M001/M002 conditionally closed; M004 closed; M005/M006 conditionally closed | M003 may execute against the accepted M002 process interface; supported-Linux Landlock evidence remains an operational requirement for strict sandbox and final M008 closure |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M003 active; C001/M001/M002 conditionally closed; M004 closed; M005/M006 conditionally closed | M003 implementation and closure evidence in progress; supported-Linux Landlock evidence remains an operational requirement for strict sandbox and final M008 closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | ready | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md`; promotion disposition: `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` | M002 executable/argv and managed-process interface accepted; C001 production trust-channel correction accepted; supported-Linux evidence is operational and does not block implementation |
+| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | active | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md`; promotion disposition: `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` | M002 executable/argv and managed-process interface accepted; C001 production trust-channel correction accepted; supported-Linux evidence is operational and does not block implementation |
 
 ## Runtime-safety milestone dispositions
 

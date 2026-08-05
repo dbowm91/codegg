@@ -378,6 +378,8 @@ pub struct ManagedProcessResult {
 pub enum ManagedProcessError {
     #[error("managed process argv must not be empty")]
     EmptyArgv,
+    #[error("managed process executable or argument contains an interior NUL: {0}")]
+    InvalidArgument(String),
     #[error("managed process was cancelled before spawn")]
     CancelledBeforeSpawn,
     #[error("failed to spawn managed process: {0}")]
@@ -436,6 +438,19 @@ async fn run_inner(
 
     if executable.is_empty() {
         return Err(ManagedProcessError::EmptyArgv);
+    }
+    if executable.to_string_lossy().contains('\0') {
+        return Err(ManagedProcessError::InvalidArgument(
+            "executable".to_string(),
+        ));
+    }
+    if let Some(index) = argv
+        .iter()
+        .position(|arg| arg.to_string_lossy().contains('\0'))
+    {
+        return Err(ManagedProcessError::InvalidArgument(format!(
+            "argument {index}"
+        )));
     }
     if cancellation.is_cancelled() {
         return Err(ManagedProcessError::CancelledBeforeSpawn);
@@ -907,6 +922,18 @@ mod tests {
             std::env::current_dir().expect("test cwd"),
             ProcessProvenance::new("job-test", "attempt-test"),
         )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interior_nul_is_rejected_before_spawn() {
+        let mut request = request("true");
+        request.argv = vec![OsString::from("bad\0argument")];
+
+        let error = run(request).await.expect_err("NUL must be rejected");
+        assert!(matches!(
+            error,
+            ManagedProcessError::InvalidArgument(field) if field == "argument 0"
+        ));
     }
 
     #[cfg(unix)]

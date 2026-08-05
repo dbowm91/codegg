@@ -131,6 +131,15 @@ CANONICAL_FINITE_PATHS = {
 }
 CANONICAL_EXECUTOR_PATH = "src/managed_process.rs"
 
+# These are the command-planning and translation boundaries. A process argv
+# must arrive here already tokenized; whitespace splitting is only valid for
+# ordinary diagnostics/security text outside these paths.
+TYPED_ARGV_PATHS = {
+    "src/tool/bash.rs",
+    "src/command_intent/plan.rs",
+    "src/command_routing.rs",
+}
+
 
 def forbidden_finite_process_lines(rel_path: str, lines: list[str]) -> list[str]:
     if rel_path not in CANONICAL_FINITE_PATHS:
@@ -151,6 +160,23 @@ def forbidden_finite_process_lines(rel_path: str, lines: list[str]) -> list[str]
     return failures
 
 
+def forbidden_lossy_argv_lines(rel_path: str, lines: list[str]) -> list[str]:
+    """Reject whitespace tokenization at governed argv boundaries."""
+    if rel_path not in TYPED_ARGV_PATHS:
+        return []
+    failures: list[str] = []
+    for index, line in enumerate(lines):
+        if is_comment_line(line):
+            continue
+        if ".split_whitespace()" not in line:
+            continue
+        if re.search(r"\bargv\b|Command::new|ManagedProcessRequest", line):
+            failures.append(
+                f"{rel_path}:{index + 1}: lossy whitespace parsing used for process argv"
+            )
+    return failures
+
+
 def run_self_test() -> int:
     with tempfile.TemporaryDirectory() as directory:
         fixture = Path(directory) / "fixture.rs"
@@ -160,6 +186,18 @@ def run_self_test() -> int:
         )
         if not detected:
             print("execution-ownership self-test failed: fixture was not rejected")
+            return 1
+        argv_fixture = Path(directory) / "argv_fixture.rs"
+        argv_fixture.write_text(
+            "let argv: Vec<&str> = command.split_whitespace().collect();\n",
+            encoding="utf-8",
+        )
+        detected = forbidden_lossy_argv_lines(
+            "src/tool/bash.rs",
+            argv_fixture.read_text(encoding="utf-8").splitlines(),
+        )
+        if not detected:
+            print("execution-ownership self-test failed: argv fixture was not rejected")
             return 1
     print("execution-ownership self-test ok")
     return 0
@@ -320,6 +358,7 @@ def main() -> int:
         except OSError:
             continue
         failures.extend(forbidden_finite_process_lines(rel, content.splitlines()))
+        failures.extend(forbidden_lossy_argv_lines(rel, content.splitlines()))
 
     if bad_owners:
         print("execution-ownership: manifest has unknown owners:")

@@ -89,6 +89,67 @@ pub struct CommandPermissionRequest {
     pub default_decision: PermissionDefault,
 }
 
+/// A non-shell process invocation. Keep the executable separate from the
+/// argument vector so a display string can never become execution input.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NativeCommand {
+    pub executable: String,
+    pub argv: Vec<String>,
+}
+
+impl NativeCommand {
+    /// Build a native command from a complete, already-tokenized argv.
+    pub fn from_argv(mut argv: Vec<String>) -> Option<Self> {
+        let executable = argv.first()?.clone();
+        argv.remove(0);
+        Some(Self { executable, argv })
+    }
+
+    /// Return the complete argv only at the managed-process boundary.
+    pub fn full_argv(&self) -> Vec<String> {
+        std::iter::once(self.executable.clone())
+            .chain(self.argv.iter().cloned())
+            .collect()
+    }
+
+    /// Render a diagnostic form without using it as execution input.
+    pub fn display(&self) -> String {
+        self.full_argv()
+            .into_iter()
+            .map(|arg| {
+                if arg.is_empty()
+                    || arg.chars().any(|character| {
+                        character.is_whitespace()
+                            || matches!(
+                                character,
+                                '\\' | '\''
+                                    | '"'
+                                    | '$'
+                                    | ';'
+                                    | '|'
+                                    | '>'
+                                    | '<'
+                                    | '&'
+                                    | '('
+                                    | ')'
+                                    | '*'
+                                    | '?'
+                                    | '['
+                                    | ']'
+                                    | '`'
+                            )
+                    })
+                {
+                    format!("'{}'", arg.replace('\'', "'\\''"))
+                } else {
+                    arg
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
 /// A typed Git execution request carrying the parsed operation, argv,
 /// repository context, and risk metadata. This is the unified Git backend
 /// that replaces both `NativeTool { "egggit" }` for reads and
@@ -281,11 +342,12 @@ pub enum ExecutionBackend {
         command: String,
     },
     ManagedArgv {
-        argv: Vec<String>,
+        command: NativeCommand,
         cwd: PathBuf,
     },
     NativeTool {
         tool_name: String,
+        command: NativeCommand,
     },
     TestRunner {
         validated_command: Option<String>,
@@ -478,16 +540,22 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
                 ) {
                     Ok(request) => ExecutionBackend::Git { request },
                     Err(_) => {
-                        // Parser failure: conservative fallback to managed argv.
-                        ExecutionBackend::ManagedArgv {
-                            argv: argv.clone(),
-                            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-                        }
+                        // A typed Git argv that the structured parser cannot
+                        // represent is still safe to execute as native argv.
+                        // It must not be reconstructed from the command text.
+                        NativeCommand::from_argv(argv.clone())
+                            .map(|command| ExecutionBackend::ManagedArgv {
+                                command,
+                                cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                            })
+                            .unwrap_or_else(|| ExecutionBackend::Reject {
+                                reason: "git argv is empty".to_string(),
+                            })
                     }
                 }
             } else {
-                ExecutionBackend::NativeTool {
-                    tool_name: "egggit".to_string(),
+                ExecutionBackend::Reject {
+                    reason: "git command has no typed argv; use explicit shell mode".to_string(),
                 }
             }
         }
@@ -501,42 +569,41 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
                 ) {
                     Ok(request) => ExecutionBackend::Git { request },
                     Err(_) => {
-                        // Parser failure: conservative fallback to raw shell.
-                        ExecutionBackend::RawShell {
-                            command: intent.command.clone(),
+                        // Structured parser failure is not permission to
+                        // reinterpret the display command as shell input.
+                        ExecutionBackend::Reject {
+                            reason: "git argv is not representable by the typed parser; use explicit shell mode".to_string(),
                         }
                     }
                 }
             } else {
-                ExecutionBackend::RawShell {
-                    command: intent.command.clone(),
+                ExecutionBackend::Reject {
+                    reason: "git command has no typed argv; use explicit shell mode".to_string(),
                 }
             }
         }
-        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
-            ExecutionBackend::ManagedArgv {
-                argv: intent.parsed_argv.clone().unwrap_or_else(|| {
-                    intent
-                        .command
-                        .split_whitespace()
-                        .map(String::from)
-                        .collect()
-                }),
+        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => intent
+            .parsed_argv
+            .clone()
+            .and_then(NativeCommand::from_argv)
+            .map(|command| ExecutionBackend::ManagedArgv {
+                command,
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            }
-        }
-        CommandIntentKind::Build | CommandIntentKind::Lint | CommandIntentKind::Format => {
-            ExecutionBackend::ManagedArgv {
-                argv: intent.parsed_argv.clone().unwrap_or_else(|| {
-                    intent
-                        .command
-                        .split_whitespace()
-                        .map(String::from)
-                        .collect()
-                }),
+            })
+            .unwrap_or_else(|| ExecutionBackend::Reject {
+                reason: "native command has no typed argv; use explicit shell mode".to_string(),
+            }),
+        CommandIntentKind::Build | CommandIntentKind::Lint | CommandIntentKind::Format => intent
+            .parsed_argv
+            .clone()
+            .and_then(NativeCommand::from_argv)
+            .map(|command| ExecutionBackend::ManagedArgv {
+                command,
                 cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-            }
-        }
+            })
+            .unwrap_or_else(|| ExecutionBackend::Reject {
+                reason: "native command has no typed argv; use explicit shell mode".to_string(),
+            }),
         CommandIntentKind::FileWrite | CommandIntentKind::FileEdit => ExecutionBackend::RawShell {
             command: intent.command.clone(),
         },
@@ -1040,8 +1107,8 @@ mod tests {
         let intent = classify_command("rg 'fn main' src/");
         let plan = plan_execution(&intent);
         match &plan.backend {
-            ExecutionBackend::ManagedArgv { argv, .. } => {
-                assert_eq!(argv, &vec!["rg", "fn main", "src/"]);
+            ExecutionBackend::ManagedArgv { command, .. } => {
+                assert_eq!(command.full_argv(), vec!["rg", "fn main", "src/"]);
             }
             other => panic!("expected ManagedArgv, got {:?}", other),
         }
@@ -1052,8 +1119,8 @@ mod tests {
         let intent = classify_command("cat \"my file.txt\"");
         let plan = plan_execution(&intent);
         match &plan.backend {
-            ExecutionBackend::ManagedArgv { argv, .. } => {
-                assert_eq!(argv, &vec!["cat", "my file.txt"]);
+            ExecutionBackend::ManagedArgv { command, .. } => {
+                assert_eq!(command.full_argv(), vec!["cat", "my file.txt"]);
             }
             other => panic!("expected ManagedArgv, got {:?}", other),
         }
@@ -1064,8 +1131,8 @@ mod tests {
         let intent = classify_command("cargo build --release");
         let plan = plan_execution(&intent);
         match &plan.backend {
-            ExecutionBackend::ManagedArgv { argv, .. } => {
-                assert_eq!(argv, &vec!["cargo", "build", "--release"]);
+            ExecutionBackend::ManagedArgv { command, .. } => {
+                assert_eq!(command.full_argv(), vec!["cargo", "build", "--release"]);
             }
             other => panic!("expected ManagedArgv, got {:?}", other),
         }

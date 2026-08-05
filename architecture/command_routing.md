@@ -28,14 +28,14 @@ pub enum RoutingDecision {
     },
     RouteToNativeTool {
         tool_name: String,
-        command: String,
+        command: NativeCommand,
     },
     RouteToGit {
         request: GitExecutionRequest,
         timeout_secs: Option<u64>,
     },
     RouteToManagedProcess {
-        argv: Vec<String>,
+        command: NativeCommand,
         cwd: PathBuf,
         timeout_secs: Option<u64>,
     },
@@ -59,9 +59,9 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 |---------|----------------|
 | `TestRunner { validated_command }` | `RouteToTestRunner { argv, scope_label: "command-intent:<label>", validated_command }` |
 | `PythonScript { script, mode_guess }` | `RouteToPythonScripting { script, mode, timeout_secs }` |
-| `NativeTool { tool_name }` | `RouteToNativeTool { tool_name, command }` |
+| `NativeTool { tool_name, command }` | `RouteToNativeTool { tool_name, command }` |
 | `Git { request }` | `RouteToGit { request, timeout_secs }` |
-| `ManagedArgv { argv, cwd }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
+| `ManagedArgv { command, cwd }` | `RouteToManagedProcess { command, cwd, timeout_secs }` |
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |
 
