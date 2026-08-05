@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M001 conditionally closed; M004 and M005 ready | M002 remains blocked on M001's supported-Linux evidence; M003 and M006–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M002 conditionally closed; M004 and M005 ready | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
@@ -39,13 +39,13 @@ Canonical direction remains in:
 | Milestone | Status | Closure | Promotion decision |
 |---|---|---|---|
 | M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | M002 remains blocked until supported-Linux enforcement evidence is accepted |
+| M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; strict promotion awaits M001's supported-Linux evidence and hosted verification |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M002 — canonical bounded process execution | blocked | `plans/implementation/runtime-safety-resource-footprint/002-canonical-bounded-process-execution.md` | M001 production contract landed, but strict M001 closure still requires supported-Linux enforcement evidence |
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | Hard dependency on M002's canonical executor |
+| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | M002 production contract is available, but strict M001/M002 closure still requires supported-Linux enforcement evidence and hosted verification |
 | Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 must stabilize dependency/manifest ownership before parser migration |
 | Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | Hard dependencies on M002, M003, M005, and M006; M004 is a soft final-measurement dependency |
 | Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M001–M007 must have accepted dispositions and compact closure records |
@@ -54,8 +54,8 @@ Canonical direction remains in:
 
 1. Execute M001 first.
 2. M004 and M005 may execute independently in parallel with M001.
-3. Promote M002 after M001 closes.
-4. Promote M003 after M002 closes.
+3. M002 production implementation is conditionally closed; strict promotion follows M001's supported-Linux evidence.
+4. Promote M003 after M002 reaches strict closure.
 5. Promote M006 after M005 stabilizes manifest ownership.
 6. Promote M007 after M002, M003, M005, and M006 close; include M004 in final measurements when available.
 7. Promote M008 after all production milestones have accepted dispositions.

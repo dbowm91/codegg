@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M004 and M005 remain ready; M002 is not promoted until M001 reaches strict closure.
+Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 and M005 remain ready; M003 and later dependent milestones remain blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -493,8 +493,8 @@ The recommended execution order is:
 
 1. M001 immediately.
 2. M004 and M005 may execute in parallel with M001.
-3. M002 after M001 closes.
-4. M003 after M002 closes.
+3. M002 production implementation is complete, with strict milestone promotion after M001 closes.
+4. M003 after M002 reaches strict closure.
 5. M006 after M005 establishes dependency ownership.
 6. M007 after M002, M003, M005, and M006; include M004 in final measurements when available.
 7. M008 after all production milestones close.
