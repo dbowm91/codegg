@@ -25,13 +25,12 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | Corrective C001 ready; M006/M005 conditionally closed; M004 closed | C001 owns the remaining helper trust-channel and supported-Linux evidence needed to promote M003; M007–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | Corrective C001 conditionally closed; M006/M005 conditionally closed; M004 closed | C001 production correctness is accepted, but one supported-Linux enforcement result remains before M003 can be promoted; M007–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | Corrective C001 — sandbox helper trust channel and roadmap unblock | ready | `plans/implementation/runtime-safety-resource-footprint/009-sandbox-helper-trust-channel-corrective-unblock.md` | M001/M002 production implementations are present; this corrective pass owns the remaining substantive trust and Linux-evidence defects |
 
 ## Runtime-safety milestone dispositions
 
@@ -42,19 +41,20 @@ Canonical direction remains in:
 | M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | Included as a soft input to final M007 measurements |
 | M005 — dependency feature and namespace normalization | conditionally closed | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Production and hosted verification steps passed; runner cache/post-step disk exhaustion is operational evidence and is not an independent M007 implementation blocker |
 | M006 — deprecated parser and dependency maintenance | conditionally closed | `plans/closure/runtime-safety-resource-footprint/006-status.md` | Production and local full verification are accepted; unavailable exact-revision hosted dispatch is operational evidence and is not an independent M007 implementation blocker |
+| Corrective C001 — sandbox helper trust channel and roadmap unblock | conditionally closed | `plans/closure/runtime-safety-resource-footprint/009-status.md` | Production correction and independent security review passed; supported-Linux enforcement evidence remains before strict closure |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | Corrective C001 must close with trusted helper/status transport and one supported-Linux enforcement result; no separate per-milestone hosted rerun is required for promotion |
+| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | C001 production correction is complete, but its required supported-Linux enforcement result is not yet recorded; no separate per-milestone hosted rerun is required for promotion |
 | Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | M003 must close; M002/M005/M006 production dispositions are accepted and M004 remains a soft final-measurement input |
 | Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | Corrective C001 and M001–M007 must have accepted dispositions and compact closure records |
 
 ## Execution order
 
 1. Execute corrective C001.
-2. Close C001 only after trusted helper resolution, private setup-status transport, read-only-cwd behavior, focused verification, independent security review, and one supported-Linux Landlock run pass.
+2. Close C001 only after trusted helper resolution, private setup-status transport, read-only-cwd behavior, focused verification, independent security review, and one supported-Linux Landlock run pass. C001 is conditionally closed while that run is unavailable.
 3. Promote M003 to `ready` immediately after C001 closure; do not wait for duplicate cache-post-step or unavailable manual-dispatch evidence.
 4. Promote M007 after M003 closes. Use the accepted M002/M004/M005/M006 production state for representative measurements.
 5. Promote M008 after C001 and M001–M007 have accepted dispositions.

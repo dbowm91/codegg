@@ -22,6 +22,17 @@ M001's production implementation is complete and the unsafe fail-open paths are 
 
 Strict closure is conditional only because this Darwin workspace cannot execute the required supported-Linux enforcement run. The Linux integration fixture and non-Linux behavior are present and verified; no supported-Linux ABI result is claimed here.
 
+### Corrective disposition
+
+Corrective C001 is implemented in `013f157639b82d16a38aca2764c819b3d63bd355` and is recorded at
+`plans/closure/runtime-safety-resource-footprint/009-status.md`. It replaces
+the historical helper environment override and stderr-marker transport with
+trusted sibling resolution, a private bounded status channel, preserved target
+stderr, and spec plumbing outside target `cwd`. C001's source review found no
+critical/high/medium trust-channel defect, but the same supported-Linux runtime
+evidence remains outstanding; this historical M001 record therefore remains
+conditionally closed.
+
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result | Notes |

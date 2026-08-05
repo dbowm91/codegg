@@ -25,6 +25,16 @@ repository's hosted `verify` result is not available until an accepted remote
 revision is evaluated by the hosted workflow. No unresolved critical, high,
 or implementation-related medium correctness finding remains.
 
+### Corrective disposition
+
+Corrective C001 is implemented in `013f157639b82d16a38aca2764c819b3d63bd355` and is recorded at
+`plans/closure/runtime-safety-resource-footprint/009-status.md`. The canonical
+service now owns the private helper status channel, no longer parses or strips
+target stderr, creates the bounded spec outside target `cwd`, and uses
+installation-owned helper resolution. The executable/argv interface remains
+stable for M003, but strict downstream promotion still awaits the supported-
+Linux enforcement result.
+
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |

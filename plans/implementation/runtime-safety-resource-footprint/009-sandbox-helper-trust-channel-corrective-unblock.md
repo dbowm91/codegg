@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Corrective C001 — Sandbox Helper Trust Channel and Roadmap Unblock
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
@@ -20,6 +20,8 @@ Unblocks:
 - M008 — final planning and maintenance closure, after M007 closes.
 
 Repository baseline reviewed: `719a670fdb12b74ca29fb3f28cb04f97382325d4`
+
+Implementation commit: `013f157639b82d16a38aca2764c819b3d63bd355`
 
 Pull request context: PR #72, branch `planning/runtime-safety-resource-footprint`
 
