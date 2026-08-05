@@ -205,7 +205,7 @@ Dependency classes:
 - M002 has a hard dependency on M001 because the canonical process request/result must carry the corrected sandbox contract.
 - M003 has a hard dependency on M002 because argv preservation must terminate at the canonical executor rather than another ad hoc spawn path.
 - M004 has no hard dependency and may proceed in parallel with M001.
-- M005 has no hard dependency and may proceed in parallel with M001 and M004.
+- M005 has no hard dependency and may proceed in parallel with M001; M004 is already closed.
 - M006 has a soft dependency on M005 so dependency cleanup is not repeated, but it may begin after M005's manifest ownership decisions are stable.
 - M007 has hard dependencies on M002, M003, M005, and M006. It has a soft dependency on M004 because final representative build measurements should include the completed source cleanup.
 - M008 has hard dependencies on M001–M007. It is a compact reconciliation pass, not a new verification program.
@@ -492,7 +492,7 @@ Deferred unless new evidence warrants registration:
 The recommended execution order is:
 
 1. M001 immediately.
-2. M004 and M005 may execute in parallel with M001.
+2. M004 is closed; M005 may execute independently in parallel with M001.
 3. M002 production implementation is complete, with strict milestone promotion after M001 closes.
 4. M003 after M002 reaches strict closure.
 5. M006 after M005 establishes dependency ownership.

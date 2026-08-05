@@ -31,7 +31,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 and M004 |
+| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 |
 
 ## Runtime-safety milestone dispositions
 
