@@ -25,13 +25,13 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M005 closure review; M004 closed | Hosted verification is the remaining M005 evidence; M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M006 ready; M005 conditionally closed; M004 closed | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M007–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | closing | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | Production implementation landed; closure awaits hosted verification |
+| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | ready | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 manifest ownership is stable; soft dependency satisfied |
 
 ## Runtime-safety milestone dispositions
 
@@ -40,14 +40,13 @@ Canonical direction remains in:
 | M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | M002 remains blocked until supported-Linux enforcement evidence is accepted |
 | M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; strict promotion awaits M001's supported-Linux evidence and hosted verification |
 | M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | No downstream plan unblocked; M007 retains hard dependencies on M002, M003, M005, and M006 |
-| M005 — dependency feature and namespace normalization | closing | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Production implementation landed; hosted verification pending |
+| M005 — dependency feature and namespace normalization | conditionally closed | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Hosted verification steps passed; runner disk exhausted during cache/log post-step |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 | Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | M002 production contract is available, but strict M001/M002 closure still requires supported-Linux enforcement evidence and hosted verification |
-| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 production work landed; promote after M005 closure record is accepted |
 | Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | Hard dependencies on M002, M003, M005, and M006; M004 is a soft final-measurement dependency |
 | Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M001–M007 must have accepted dispositions and compact closure records |
 
@@ -57,7 +56,7 @@ Canonical direction remains in:
 2. M004 is closed; M005 may execute independently in parallel with M001.
 3. M002 production implementation is conditionally closed; strict promotion follows M001's supported-Linux evidence.
 4. Promote M003 after M002 reaches strict closure.
-5. Promote M006 after M005 stabilizes manifest ownership.
+5. M005 is conditionally closed; M006 is ready because its soft dependency on manifest ownership is satisfied.
 6. Promote M007 after M002, M003, M005, and M006 close; include M004 in final measurements when available.
 7. Promote M008 after all production milestones have accepted dispositions.
 
