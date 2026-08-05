@@ -25,13 +25,13 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M002 conditionally closed; M004 and M005 ready | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M004 active; M005 ready | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M004 — grep concurrency and context efficiency | ready | `plans/implementation/runtime-safety-resource-footprint/004-grep-concurrency-and-context-efficiency.md` | None; may execute in parallel with M001 |
+| Runtime safety, resource control, and footprint | M004 — grep concurrency and context efficiency | active | `plans/implementation/runtime-safety-resource-footprint/004-grep-concurrency-and-context-efficiency.md` | None; may execute in parallel with M001 |
 | Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 and M004 |
 
 ## Runtime-safety milestone dispositions
