@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M003 and M004 closed; M005/M006 hosted conditions are operational; M007 is ready and M008 remains blocked.
+Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M003 and M004 closed; M005/M006 hosted conditions are operational; M007 is closed with a measured no-split decision and M008 remains blocked on the supported-Linux condition.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -341,7 +341,7 @@ Exit conditions:
 
 ### Milestone 007 — Measurement-led binary topology and footprint reduction
 
-Status: ready
+Status: closed
 
 Class: polish and infrastructure
 

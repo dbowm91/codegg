@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 007 — Binary Topology and Footprint Reduction
 
-Status: ready
+Status: closed
 
 Source subsystem roadmap:
 
