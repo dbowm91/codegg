@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 and M005 remain ready; M003 and later dependent milestones remain blocked.
+Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 closed; M005 remains ready; M003 and later dependent milestones remain blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 

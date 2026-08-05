@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M004 closure review; M005 ready | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M005 ready; M004 closed | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
@@ -33,19 +33,13 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 and M004 |
 
-## Active closure work
-
-| Subsystem | Milestone | Status | Closure record | Implementation |
-|---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M004 — grep concurrency and context efficiency | closing | `plans/closure/runtime-safety-resource-footprint/004-status.md` | `7ffe198` |
-
 ## Runtime-safety milestone dispositions
 
 | Milestone | Status | Closure | Promotion decision |
 |---|---|---|---|
 | M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | M002 remains blocked until supported-Linux enforcement evidence is accepted |
 | M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; strict promotion awaits M001's supported-Linux evidence and hosted verification |
-| M004 — grep concurrency and context efficiency | closing | `plans/closure/runtime-safety-resource-footprint/004-status.md` | Closure review is in progress; no downstream plan is unblocked by this soft dependency closure |
+| M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | No downstream plan unblocked; M007 retains hard dependencies on M002, M003, M005, and M006 |
 
 ## Blocked work
 
@@ -59,7 +53,7 @@ Canonical direction remains in:
 ## Execution order
 
 1. Execute M001 first.
-2. M004 and M005 may execute independently in parallel with M001.
+2. M004 is closed; M005 may execute independently in parallel with M001.
 3. M002 production implementation is conditionally closed; strict promotion follows M001's supported-Linux evidence.
 4. Promote M003 after M002 reaches strict closure.
 5. Promote M006 after M005 stabilizes manifest ownership.
