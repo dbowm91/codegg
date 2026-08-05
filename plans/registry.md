@@ -25,13 +25,13 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M006 ready; M005 conditionally closed; M004 closed | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M007–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M006 active; M005 conditionally closed; M004 closed | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M007–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | ready | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 manifest ownership is stable; soft dependency satisfied |
+| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | active | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 manifest ownership is stable; soft dependency satisfied |
 
 ## Runtime-safety milestone dispositions
 

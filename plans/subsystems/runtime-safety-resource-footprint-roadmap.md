@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 closed; M005 conditionally closed pending hosted runner disk evidence; M006 ready; M003 and M007–M008 remain blocked.
+Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 closed; M005 conditionally closed pending hosted runner disk evidence; M006 active; M003 and M007–M008 remain blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -317,6 +317,8 @@ Exit conditions:
 - `cargo tree -e features` demonstrates the intended reductions.
 
 ### Milestone 006 — Deprecated parser and dependency maintenance
+
+Status: active
 
 Class: compatibility and maintenance
 
