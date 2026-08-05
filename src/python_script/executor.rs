@@ -11,7 +11,11 @@ use super::snapshot::WorkspaceSnapshot;
 use super::types::SandboxBackend;
 use super::types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
-    PythonRunStatus, PythonScriptRequest,
+    PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind, SandboxOutcome,
+};
+use crate::security::sandbox::{
+    sandbox_helper_path, SandboxLaunchSpec, SANDBOX_HELPER_ENFORCED_PREFIX,
+    SANDBOX_HELPER_ERROR_PREFIX,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
@@ -100,10 +104,25 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 
     // ── Phase 06: Policy resolution ──────────────────────────────────
     // Determine workspace root for profile construction
-    let workspace_root = request
-        .workspace_root
-        .clone()
-        .unwrap_or_else(|| cwd.clone());
+    let workspace_root = match request.workspace_root.as_deref() {
+        Some(root) => match root.canonicalize() {
+            Ok(root) => root,
+            Err(error) => {
+                return make_result(
+                    PythonRunStatus::SpawnError,
+                    String::new(),
+                    format!("workspace root could not be resolved: {error}"),
+                    start.elapsed(),
+                    request.mode,
+                    request.code.len(),
+                    PythonRiskAssessment::safe(),
+                    PythonCapabilityEnvelope::analyze(),
+                    script_body_hash,
+                );
+            }
+        },
+        None => cwd.clone(),
+    };
 
     let policy = resolve_policy(request.mode, &request.code, &workspace_root);
 
@@ -194,15 +213,92 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     let interpreter = find_python_interpreter();
     let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
-    // ── Phase 06: Apply OS-level sandbox if available ─────────────────
-    // On Linux with Landlock, set up filesystem sandbox before execution.
-    // The sandbox is applied in the child process via pre_exec.
-
     // Execute with timeout and minimal environment isolation.
     let original_dyld = std::env::var("DYLD_LIBRARY_PATH").ok();
-    let mut cmd = Command::new(&interpreter);
-    cmd.arg(script_file.to_string_lossy().to_string())
-        .current_dir(&cwd)
+    let mut cmd;
+    let mut sandbox_spec_path = None;
+    if policy.enforcement_backend == SandboxBackend::Landlock {
+        let target = resolve_executable_path(&interpreter).ok_or_else(|| {
+            format!("python interpreter could not be resolved for sandbox: {interpreter}")
+        });
+        let spec = target.and_then(|target| {
+            let (read_paths, write_paths) = build_landlock_paths(
+                &target,
+                &workspace_root,
+                &tmp_dir,
+                request.mode == PythonExecutionMode::Transform,
+            );
+            let spec = SandboxLaunchSpec {
+                target,
+                args: vec![script_file.to_string_lossy().to_string()],
+                read_paths,
+                write_paths,
+            };
+            let spec_path = tmp_dir.join(format!("sandbox_{script_id}.json"));
+            let encoded = serde_json::to_vec(&spec)
+                .map_err(|e| format!("sandbox specification encoding failed: {e}"))?;
+            std::fs::write(&spec_path, encoded)
+                .map_err(|e| format!("sandbox specification write failed: {e}"))?;
+            Ok((spec_path, spec))
+        });
+        match spec {
+            Ok((path, spec)) => {
+                let helper = match sandbox_helper_path() {
+                    Ok(path) => path,
+                    Err(reason) => {
+                        let _ = std::fs::remove_file(&path);
+                        let mut result = make_result(
+                            PythonRunStatus::SpawnError,
+                            String::new(),
+                            format!("sandbox helper unavailable: {reason}"),
+                            start.elapsed(),
+                            request.mode,
+                            request.code.len(),
+                            risk,
+                            capabilities,
+                            script_body_hash,
+                        );
+                        let mut failed_policy = policy.clone();
+                        failed_policy.outcome = Some(SandboxOutcome::Failed {
+                            kind: SandboxFailureKind::Helper,
+                            reason,
+                        });
+                        result.policy_decision = Some(failed_policy);
+                        return result;
+                    }
+                };
+                tracing::debug!(target = %spec.target.display(), "launching through sandbox helper");
+                cmd = Command::new(helper);
+                cmd.arg("--spec").arg(&path);
+                sandbox_spec_path = Some(path);
+            }
+            Err(reason) => {
+                let _ = std::fs::remove_file(tmp_dir.join(format!("sandbox_{script_id}.json")));
+                let mut result = make_result(
+                    PythonRunStatus::SpawnError,
+                    String::new(),
+                    format!("sandbox policy construction failed: {reason}"),
+                    start.elapsed(),
+                    request.mode,
+                    request.code.len(),
+                    risk,
+                    capabilities,
+                    script_body_hash,
+                );
+                let mut failed_policy = policy.clone();
+                failed_policy.outcome = Some(SandboxOutcome::Failed {
+                    kind: SandboxFailureKind::Policy,
+                    reason,
+                });
+                result.policy_decision = Some(failed_policy);
+                return result;
+            }
+        }
+    } else {
+        cmd = Command::new(&interpreter);
+        cmd.arg(script_file.to_string_lossy().to_string());
+    }
+    cmd.current_dir(&cwd)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", std::env::var("HOME").unwrap_or_default())
@@ -218,27 +314,6 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         )
         .env("DYLD_LIBRARY_PATH", original_dyld.unwrap_or_default())
         .kill_on_drop(true);
-
-    // Apply Landlock sandbox in child process (Linux only)
-    #[cfg(target_os = "linux")]
-    if policy.enforcement_backend == SandboxBackend::Landlock {
-        let allowed_paths =
-            std::sync::Arc::new(build_landlock_allowed_paths(&workspace_root, &tmp_dir));
-        let deny_paths = std::sync::Arc::new(build_landlock_deny_paths());
-        #[allow(unsafe_code)]
-        unsafe {
-            cmd.pre_exec(move || {
-                let sandbox = crate::security::sandbox::SandboxConfig::new()
-                    .with_enabled(true)
-                    .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
-                    .with_allowed_paths((*allowed_paths).clone())
-                    .with_deny_paths((*deny_paths).clone());
-                sandbox
-                    .enforce()
-                    .map_err(|e| std::io::Error::other(format!("landlock enforcement failed: {e}")))
-            });
-        }
-    }
 
     let run_result = match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(output)) => {
@@ -263,7 +338,24 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
         ),
     };
 
-    let (status, stdout, stderr) = run_result;
+    let (mut status, stdout, mut stderr) = run_result;
+
+    let mut policy = policy;
+    if policy.enforcement_backend == SandboxBackend::Landlock {
+        let (outcome, cleaned_stderr, setup_failed) = parse_helper_stderr(&stderr);
+        stderr = cleaned_stderr;
+        if setup_failed {
+            status = PythonRunStatus::SpawnError;
+        }
+        policy.outcome = Some(outcome);
+    } else if policy.enforcement_backend == SandboxBackend::PortableFallback {
+        policy.outcome = Some(SandboxOutcome::Fallback {
+            backend: SandboxBackend::PortableFallback,
+            reason: "Landlock is unavailable on this host".to_string(),
+        });
+    } else {
+        policy.outcome = Some(SandboxOutcome::Disabled);
+    }
 
     // Post-execution snapshot and diff for ALL modes.
     let (changed_files, status, stderr) = if let Some(pre) = &pre_snapshot {
@@ -314,6 +406,9 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 
     // Cleanup temp script (drop guard also handles this on cancellation)
     let _ = std::fs::remove_file(&script_file);
+    if let Some(path) = sandbox_spec_path {
+        let _ = std::fs::remove_file(path);
+    }
 
     PythonRunResult {
         status,
@@ -387,57 +482,101 @@ fn validate_cwd(cwd: &Path, workspace_root: Option<&Path>) -> Result<PathBuf, St
     Ok(canonical_cwd)
 }
 
-/// Build the list of paths allowed by Landlock for Python execution.
-/// Includes workspace root (read-only for Analyze/Verify, read-write for Transform),
-/// the temp script directory, and Python runtime paths.
-#[cfg(target_os = "linux")]
-fn build_landlock_allowed_paths(workspace_root: &Path, tmp_dir: &Path) -> Vec<String> {
-    let mut paths = vec![workspace_root.to_string_lossy().to_string()];
-    paths.push(tmp_dir.to_string_lossy().to_string());
+/// Build an allow-list. Landlock denies handled rights outside these roots;
+/// there is deliberately no pseudo-deny rule list.
+fn build_landlock_paths(
+    interpreter: &Path,
+    workspace_root: &Path,
+    tmp_dir: &Path,
+    writable: bool,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut read_paths = vec![workspace_root.to_path_buf(), tmp_dir.to_path_buf()];
+    let mut write_paths = Vec::new();
+    if writable {
+        write_paths.push(workspace_root.to_path_buf());
+    }
+    read_paths.push(interpreter.to_path_buf());
 
-    // Python interpreter and stdlib need to be readable/executable
-    if let Ok(output) = std::process::Command::new("python3")
+    if let Ok(output) = std::process::Command::new(interpreter)
         .arg("-c")
         .arg("import sys; print(sys.prefix)")
         .output()
     {
         let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if !prefix.is_empty() {
-            paths.push(prefix);
+            read_paths.push(PathBuf::from(prefix));
         }
     }
-
-    // Include /usr/lib and /usr/lib64 for shared libraries
     for lib_dir in &["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
-        if Path::new(lib_dir).exists() {
-            paths.push(lib_dir.to_string());
+        let path = Path::new(lib_dir);
+        if path.exists() {
+            read_paths.push(path.to_path_buf());
         }
     }
-
-    paths
+    for device in &["/dev/null", "/dev/urandom"] {
+        let path = Path::new(device);
+        if path.exists() {
+            read_paths.push(path.to_path_buf());
+        }
+    }
+    (read_paths, write_paths)
 }
 
-/// Build the list of paths denied by Landlock for Python execution.
-#[cfg(target_os = "linux")]
-fn build_landlock_deny_paths() -> Vec<String> {
-    let mut paths = Vec::new();
-    for deny in &["/proc", "/sys", "/dev", "/root", "/etc/ssh", "/etc/shadow"] {
-        if Path::new(deny).exists() {
-            paths.push(deny.to_string());
+fn resolve_executable_path(interpreter: &str) -> Option<PathBuf> {
+    let path = Path::new(interpreter);
+    if path.is_absolute() {
+        return path.canonicalize().ok();
+    }
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var)
+            .map(|dir| dir.join(interpreter))
+            .find(|candidate| candidate.is_file())
+            .and_then(|candidate| candidate.canonicalize().ok())
+    })
+}
+
+fn parse_helper_stderr(stderr: &str) -> (SandboxOutcome, String, bool) {
+    let mut cleaned = Vec::new();
+    let mut enforced_abi = None;
+    let mut failure = None;
+    for line in stderr.lines() {
+        if let Some(abi) = line.strip_prefix(SANDBOX_HELPER_ENFORCED_PREFIX) {
+            enforced_abi = abi.trim().parse::<u32>().ok();
+        } else if let Some(error) = line.strip_prefix(SANDBOX_HELPER_ERROR_PREFIX) {
+            failure = Some(error.to_string());
+        } else {
+            cleaned.push(line);
         }
     }
-    // Deny user SSH and credential directories
-    if let Ok(home) = std::env::var("HOME") {
-        let ssh_dir = format!("{home}/.ssh");
-        if Path::new(&ssh_dir).exists() {
-            paths.push(ssh_dir);
+    let outcome = if let Some(error) = failure {
+        let (kind, reason) = if error.starts_with("unavailable:") {
+            (SandboxFailureKind::Unavailable, error)
+        } else if error.starts_with("setup:") {
+            (SandboxFailureKind::Setup, error)
+        } else {
+            (SandboxFailureKind::Helper, error)
+        };
+        return (
+            SandboxOutcome::Failed { kind, reason },
+            cleaned.join("\n"),
+            true,
+        );
+    } else if let Some(abi) = enforced_abi {
+        SandboxOutcome::Enforced {
+            backend: SandboxBackend::Landlock,
+            abi,
         }
-        let aws_dir = format!("{home}/.aws");
-        if Path::new(&aws_dir).exists() {
-            paths.push(aws_dir);
-        }
-    }
-    paths
+    } else {
+        return (
+            SandboxOutcome::Failed {
+                kind: SandboxFailureKind::Helper,
+                reason: "sandbox helper exited without an outcome".to_string(),
+            },
+            stderr.to_string(),
+            true,
+        );
+    };
+    (outcome, cleaned.join("\n"), false)
 }
 
 /// Find the Python interpreter to use.
@@ -934,5 +1073,36 @@ mod tests {
         }
         #[cfg(not(target_os = "linux"))]
         assert!(!result.os_filesystem_isolation);
+    }
+
+    #[test]
+    fn helper_enforcement_marker_becomes_typed_outcome() {
+        let (outcome, stderr, failed) =
+            parse_helper_stderr("python warning\nCODEGG_SANDBOX_ENFORCED abi=4\n");
+        assert!(!failed);
+        assert!(stderr.contains("python warning"));
+        assert!(matches!(
+            outcome,
+            SandboxOutcome::Enforced {
+                backend: SandboxBackend::Landlock,
+                abi: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn helper_setup_failure_is_not_target_failure() {
+        let (outcome, stderr, failed) = parse_helper_stderr(
+            "CODEGG_SANDBOX_ERROR setup: add sandbox rule /missing: no such file\n",
+        );
+        assert!(failed);
+        assert!(stderr.is_empty());
+        assert!(matches!(
+            outcome,
+            SandboxOutcome::Failed {
+                kind: SandboxFailureKind::Setup,
+                ..
+            }
+        ));
     }
 }

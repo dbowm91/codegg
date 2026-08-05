@@ -21,6 +21,10 @@ name = "codegg-lsp-test-server"
 path = "crates/egglsp-test-server/src/main.rs"
 required-features = ["lsp-test-support"]
 
+[[bin]]
+name = "codegg-sandbox-helper"
+path = "src/bin/codegg-sandbox-helper.rs"
+
 [dependencies]
 # Core
 tokio = { version = "1", features = [
@@ -157,6 +161,10 @@ libc = "0.2"
 once_cell = "1"
 qrcode = "0.14.1"
 clap_complete = "4.6.2"
+
+# Maintained Landlock bindings.  The helper is only linked on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4.7", default-features = false }
 
 # Process group management (Unix only)
 [target.'cfg(unix)'.dependencies]

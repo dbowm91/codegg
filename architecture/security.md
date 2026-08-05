@@ -117,42 +117,23 @@ Used by:
 
 ### sandbox.rs - Landlock Sandboxing
 
-Linux-specific filesystem sandboxing using Landlock LSM:
+Linux enforcement is provided by the maintained `landlock` crate and is
+performed only by the private one-shot `codegg-sandbox-helper` process. The
+daemon never calls `restrict_self()`. The parent resolves and validates a
+bounded `SandboxLaunchSpec`, writes it to an ephemeral local file, and starts
+the helper. The helper adds every rule, requires `FullyEnforced` and
+`no_new_privs`, reports the effective ABI, and then replaces itself with the
+target through `exec`.
 
-```rust
-pub enum SandboxMode {
-    ReadOnly,           // Read-only access (flag: 1)
-    WorkspaceWrite,     // Read + write access (flag: 3)
-    DangerFullAccess,   // Read + write + execute access (flag: 7)
-}
+The policy is an allow-list. Paths outside the read/write roots are denied by
+the handled Landlock rights; `deny_paths` is retained only for source
+compatibility and is not represented as a zero-access rule. Raw syscall
+numbers and handwritten access masks are not used.
 
-impl SandboxMode {
-    pub fn access_flags(&self) -> u64  // Returns raw Landlock bitmask
-}
-
-pub struct SandboxConfig {
-    pub enabled: bool,
-    pub mode: SandboxMode,
-    pub allowed_paths: Vec<String>,
-    pub deny_paths: Vec<String>,
-}
-
-impl SandboxConfig {
-    pub fn new() -> Self
-    pub fn with_enabled(mut self, enabled: bool) -> Self
-    pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self
-    pub fn with_deny_paths(mut self, paths: Vec<String>) -> Self
-    pub fn is_available() -> bool  // Linux 5.13+ with landlock support
-    pub fn enforce(&self) -> Result<(), ToolError>
-}
-```
-
-**Access Flags** (raw bitmasks, not named constants):
-- `ReadOnly` → `1` (read files)
-- `WorkspaceWrite` → `3` (read + write files)
-- `DangerFullAccess` → `7` (read + write + execute files)
-
-**Configuration**: Landlock sandboxing is configured programmatically via `SandboxConfig` builder methods (`with_enabled()`, `with_allowed_paths()`, `with_deny_paths()`). Currently there is no TOML or file-based configuration for Landlock - the config must be set in code when initializing the bash tool.
+The typed launch contract distinguishes `Enforced { abi }`, unavailable,
+policy/setup failure, and disabled/fallback outcomes. Required requests must
+stop before target execution when the helper or kernel cannot enforce the
+rules. Best-effort callers may use the explicitly reported portable fallback.
 
 Helper functions:
 ```rust
@@ -161,7 +142,9 @@ pub fn get_default_allowed_paths() -> Vec<String>
 pub fn get_sensitive_paths() -> Vec<String>
 ```
 
-Used by: `bash` tool for Landlock sandbox enforcement
+Used by: the Python executor and the Bash tool through the one-shot helper.
+`SandboxConfig::enforce()` intentionally refuses to restrict the calling
+process; callers must use the child launch path.
 
 ## Security Flow
 

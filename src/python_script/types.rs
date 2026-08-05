@@ -199,6 +199,33 @@ impl std::fmt::Display for SandboxBackend {
     }
 }
 
+/// Typed result of the enforcement attempt.  A backend is only reported as
+/// enforced after the helper has applied every rule and `exec` is ready.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SandboxOutcome {
+    Enforced {
+        backend: SandboxBackend,
+        abi: u32,
+    },
+    Fallback {
+        backend: SandboxBackend,
+        reason: String,
+    },
+    Disabled,
+    Failed {
+        kind: SandboxFailureKind,
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SandboxFailureKind {
+    Unavailable,
+    Policy,
+    Setup,
+    Helper,
+}
+
 /// A specific capability that was denied by policy resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityViolation {
@@ -223,6 +250,9 @@ pub struct PythonPolicyDecision {
     pub os_filesystem_isolation: bool,
     /// Whether network isolation is active (always false until Landlock network support).
     pub os_network_isolation: bool,
+    /// Outcome observed during launch, when execution has started.
+    #[serde(default)]
+    pub outcome: Option<SandboxOutcome>,
 }
 
 /// Execution mode for Python scripts.

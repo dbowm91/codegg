@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,7 +25,9 @@ use crate::config::schema::CommandIntentMode;
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
 use crate::python_script::{PythonExecutionMode, PythonScriptRequest};
-use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
+use crate::security::sandbox::{
+    get_default_allowed_paths, get_sensitive_paths, sandbox_helper_path, SandboxConfig,
+};
 use crate::tool::{Tool, ToolCategory};
 
 /// What a single dispatch returned: the result text, raw process output,
@@ -505,8 +508,42 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
+        let cwd_owned = canonical_workdir
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok());
+        let cwd = cwd_owned.as_deref();
+        let sandbox_temp = if let Some(config) = self.landlock_sandbox.as_ref() {
+            if config.enabled {
+                let args = vec!["-c".to_string(), command.to_string()];
+                let spec = config.launch_spec("sh", &args, cwd)?;
+                let mut file = tempfile::NamedTempFile::new_in(cwd.unwrap_or(Path::new(".")))
+                    .map_err(|e| ToolError::Execution(format!("sandbox spec temp file: {e}")))?;
+                let encoded = serde_json::to_vec(&spec).map_err(|e| {
+                    ToolError::Execution(format!("sandbox spec encoding failed: {e}"))
+                })?;
+                file.write_all(&encoded)
+                    .map_err(|e| ToolError::Execution(format!("sandbox spec write failed: {e}")))?;
+                Some((sandbox_helper_path().map_err(ToolError::Execution)?, file))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let sandbox_spec_path = sandbox_temp
+            .as_ref()
+            .map(|(_, file)| file.path().to_path_buf());
+        let sandbox_helper = sandbox_temp.as_ref().map(|(helper, _)| helper.clone());
         let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new("sh");
+            let mut cmd = if let (Some(helper), Some(spec)) =
+                (sandbox_helper.as_ref(), sandbox_spec_path.as_ref())
+            {
+                let mut command = Command::new(helper);
+                command.arg("--spec").arg(spec);
+                command
+            } else {
+                Command::new("sh")
+            };
             cmd.env_clear();
             let preserve_vars = [
                 "PATH",
@@ -556,7 +593,21 @@ impl BashTool {
         .map_err(|e| ToolError::Execution(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let raw_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        if let Some(error) = raw_stderr.lines().find_map(|line| {
+            line.strip_prefix(crate::security::sandbox::SANDBOX_HELPER_ERROR_PREFIX)
+        }) {
+            return Err(ToolError::Execution(format!(
+                "sandbox helper failed: {error}"
+            )));
+        }
+        let stderr = raw_stderr
+            .lines()
+            .filter(|line| {
+                !line.starts_with(crate::security::sandbox::SANDBOX_HELPER_ENFORCED_PREFIX)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut result = String::new();
         if !stdout.is_empty() {
             result.push_str(&truncate_output(
@@ -1688,18 +1739,6 @@ impl Tool for BashTool {
             }
         }
 
-        if let Some(ref sandbox_config) = self.landlock_sandbox {
-            if sandbox_config.enabled {
-                let sandbox_config = sandbox_config.clone();
-                tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
-                    sandbox_config.enforce()?;
-                    Ok(())
-                })
-                .await
-                .map_err(|e| ToolError::Execution(format!("sandbox enforce failed: {}", e)))??;
-            }
-        }
-
         tracing::info!("Running: {command}");
         let start = std::time::Instant::now();
 
@@ -1714,7 +1753,11 @@ impl Tool for BashTool {
             let active_for_family = family.map(|f| cic.is_active_for_family(f)).unwrap_or(false);
             let plan_valid = plan.validate_for_active_routing().is_ok();
             let kill_switch_active = family.map(|f| self.check_kill_switches(f)).unwrap_or(true);
-            active_for_family && plan_valid && !kill_switch_active
+            let sandbox_enabled = self
+                .landlock_sandbox
+                .as_ref()
+                .is_some_and(|config| config.enabled);
+            active_for_family && plan_valid && !kill_switch_active && !sandbox_enabled
         } else {
             false
         };

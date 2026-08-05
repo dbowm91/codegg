@@ -106,6 +106,9 @@ pub fn project_python_run(result: &PythonRunResult) -> String {
             super::types::SandboxBackend::None => "None",
         };
         lines.push(format!("**Sandbox:** {sandbox_label}"));
+        if let Some(ref outcome) = decision.outcome {
+            lines.push(format!("**Sandbox outcome:** {outcome:?}"));
+        }
         if !decision.warnings.is_empty() {
             lines.push(format!(
                 "**Policy warnings:** {}",
@@ -510,6 +513,7 @@ mod tests {
             enforcement_backend: super::super::types::SandboxBackend::Landlock,
             os_filesystem_isolation: true,
             os_network_isolation: false,
+            outcome: None,
         });
         let text = project_python_run(&result);
         assert!(text.contains("Sandbox"));
@@ -528,6 +532,7 @@ mod tests {
             enforcement_backend: super::super::types::SandboxBackend::PortableFallback,
             os_filesystem_isolation: false,
             os_network_isolation: false,
+            outcome: None,
         });
         let text = project_python_run(&result);
         assert!(text.contains("Portable fallback"));

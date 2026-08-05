@@ -64,6 +64,9 @@ run_quick() {
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
 
+    echo "==> python3 scripts/check_sandbox_contract.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

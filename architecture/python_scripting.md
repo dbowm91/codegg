@@ -185,7 +185,7 @@ Full enforcement pipeline:
 1. Run AST risk analysis (`analyze_python_risk`)
 2. Build capability profile via `PythonCapabilityProfile::from_mode_risk_and_context()`
 3. Cross-check risk against profile for violations
-4. Resolve enforcement backend (Landlock on Linux, PortableFallback elsewhere)
+4. Resolve enforcement backend (Landlock on supported Linux, PortableFallback elsewhere)
 5. Produce `PythonPolicyDecision` with denied capabilities, warnings, and backend info
 
 ### Legacy Enforcement (backward compat)
@@ -226,9 +226,10 @@ Flow:
 8. **Pre-execution snapshot** for ALL modes (Analyze, Transform, Verify)
 9. Capture pre-execution file contents for diff generation
 10. Find python interpreter (`VIRTUAL_ENV` > `python3` > `python`)
-11. Execute with timeout, **minimal environment isolation** (`.env_clear()` + selective restore), and **OS-level sandbox**:
-    - **Linux with Landlock**: filesystem restrictions via `landlock_restrict_self()` syscall; allowed paths = workspace + tmp + Python prefix + /usr/lib; denied paths = /proc, /sys, /dev, root home, .ssh, .aws
-    - **Portable fallback**: env_clear + cwd containment + snapshot-based post-hoc change detection
+11. Execute with timeout, **minimal environment isolation** (`.env_clear()` + selective restore), and the selected filesystem policy:
+    - **Linux with Landlock**: the parent sends a bounded launch spec to `codegg-sandbox-helper`; the helper uses ABI-aware `landlock` crate rights, applies every workspace/runtime rule, verifies `FullyEnforced` and `no_new_privs`, reports the effective ABI, then `exec`s Python. Read-only mode grants workspace/runtime reads; Transform grants writes only to the workspace root.
+    - **Portable fallback**: env_clear + cwd containment + snapshot-based post-hoc change detection, explicitly reported as a fallback rather than Landlock.
+    - Sandbox setup failure is terminal for that launch; Python code is not started after a failed helper setup.
 12. **Post-execution snapshot and diff** for ALL modes:
     - Analyze/Verify: any file change is a policy violation → run failed with exit code -2
     - Transform: file changes are allowed and reported; textual diff generated
