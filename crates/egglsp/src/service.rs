@@ -1804,7 +1804,7 @@ impl LspService {
                     }
                 })
                 .collect();
-            futures::future::join_all(client_shutdown_futs).await;
+            futures_util::future::join_all(client_shutdown_futs).await;
         }
 
         // Force-terminate any straggler runtimes (e.g. a runtime
@@ -1856,7 +1856,7 @@ impl LspService {
                     }
                 })
                 .collect();
-            futures::future::join_all(straggler_futs).await;
+            futures_util::future::join_all(straggler_futs).await;
         }
 
         // Step 9: notify waiters of cancelled init tasks (if drain
@@ -3199,7 +3199,7 @@ impl LspService {
     ) -> impl FnMut(
         &LspClientDescriptor,
         u64,
-    ) -> futures::future::BoxFuture<
+    ) -> futures_util::future::BoxFuture<
         'static,
         Result<super::restart::UnpublishedReplacement, LspError>,
     > + Send
@@ -3886,14 +3886,14 @@ async fn await_init_task_completions(
     let total = tasks.len();
     let mut completed = 0usize;
 
-    let mut unordered: futures::stream::FuturesUnordered<
+    let mut unordered: futures_util::stream::FuturesUnordered<
         std::pin::Pin<
             Box<
                 dyn std::future::Future<Output = (InitTaskControl, Result<InitTaskExit, ()>)>
                     + Send,
             >,
         >,
-    > = futures::stream::FuturesUnordered::new();
+    > = futures_util::stream::FuturesUnordered::new();
 
     for mut ctrl in tasks.drain(..) {
         unordered.push(Box::pin(async move {
@@ -3921,7 +3921,7 @@ async fn await_init_task_completions(
         }));
     }
 
-    use futures::StreamExt;
+    use futures_util::StreamExt;
     let mut pending: Vec<InitTaskControl> = Vec::new();
     while let Some((ctrl, res)) = unordered.next().await {
         // `res` is `Result<InitTaskExit, ()>`:
@@ -4038,7 +4038,7 @@ async fn run_init_task_wrapper(
 
     // Catch panics so we can notify waiters and still send a
     // terminal exit.
-    use futures::FutureExt;
+    use futures_util::FutureExt;
     use std::panic::AssertUnwindSafe;
     let result = AssertUnwindSafe(inner).catch_unwind().await;
 

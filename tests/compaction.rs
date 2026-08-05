@@ -1214,7 +1214,7 @@ mod tests {
             _request: &codegg::provider::ChatRequest,
         ) -> Result<codegg::provider::EventStream, codegg::provider::ProviderError> {
             let text = self.response_text.clone();
-            let stream = futures::stream::iter(vec![
+            let stream = futures_util::stream::iter(vec![
                 Ok(codegg::provider::ChatEvent::TextDelta(Arc::new(text))),
                 Ok(codegg::provider::ChatEvent::Finish {
                     stop_reason: Arc::new("stop".to_string()),

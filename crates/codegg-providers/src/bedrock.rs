@@ -4,8 +4,8 @@ use crate::{
     Provider, TokenUsage, ToolCall, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
-use futures::stream::unfold;
-use futures::StreamExt;
+use futures_util::stream::unfold;
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use serde_json::json;
 use sha2::{Digest, Sha256};

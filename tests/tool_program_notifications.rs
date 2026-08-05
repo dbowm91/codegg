@@ -4,6 +4,8 @@
 //! claiming, acknowledging, suppression, expiry, session bounds, and
 //! idempotency.
 
+use sha2::{Digest, Sha256};
+
 use codegg::scheduler::tool_program_notifications::{
     NotificationState, ProgramHandle, ToolProgramNotification, ToolProgramNotificationService,
 };
@@ -25,7 +27,7 @@ fn make_notification(
         "{}|{}|program {} finished with status {}|{}",
         program_id, status, program_id, status, success
     );
-    let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
+    let payload_digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
     ToolProgramNotification {
         notification_id: program_id.to_string(),
         program_id: program_id.to_string(),

@@ -576,7 +576,7 @@ async fn broker_concurrent_execution_preserves_ordering() {
         }));
     }
 
-    let results: Vec<_> = futures::future::join_all(handles)
+    let results: Vec<_> = futures_util::future::join_all(handles)
         .await
         .into_iter()
         .map(|r| r.unwrap())
@@ -616,7 +616,7 @@ async fn broker_concurrent_reads_do_not_interfere() {
         }));
     }
 
-    let results: Vec<_> = futures::future::join_all(handles)
+    let results: Vec<_> = futures_util::future::join_all(handles)
         .await
         .into_iter()
         .map(|r| r.unwrap())

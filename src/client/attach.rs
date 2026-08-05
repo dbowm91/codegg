@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::time::sleep;
 use tokio::time::timeout;

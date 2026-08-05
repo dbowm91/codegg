@@ -7,9 +7,29 @@ pub mod patterns;
 use chrono::Utc;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+
+const PROJECT_NAMESPACE_DOMAIN: &[u8] = b"codegg-memory-namespace-v1\0";
+
+/// Returns the current durable namespace for project-scoped memories.
+///
+/// The domain separator makes this digest independent from other SHA-256
+/// uses in the application and the full digest avoids recreating the old
+/// truncated-hash collision space.
+pub fn project_namespace(project_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(PROJECT_NAMESPACE_DOMAIN);
+    hasher.update(project_identity.as_bytes());
+    format!("project/{:x}", hasher.finalize())
+}
+
+/// Returns the legacy MD5 namespace used before the SHA-256 migration.
+pub fn legacy_project_namespace(project_identity: &str) -> String {
+    format!("project/{:x}", md5::compute(project_identity.as_bytes()))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
@@ -188,6 +208,50 @@ impl MemoryStore {
             .collect::<Vec<_>>()
     }
 
+    /// Migrate a legacy project namespace into the current namespace.
+    ///
+    /// The operation is idempotent: existing current records win by ID,
+    /// migrated records are rewritten under the current namespace, and the
+    /// legacy directory is removed only after the new data has been saved.
+    pub fn migrate_project_namespace(&self, project_identity: &str) -> std::io::Result<()> {
+        if self.root.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let current_namespace = project_namespace(project_identity);
+        let legacy_namespace = legacy_project_namespace(project_identity);
+        if current_namespace == legacy_namespace {
+            return Ok(());
+        }
+
+        let mut migrated = false;
+        {
+            let mut memories = self.memories.lock();
+            let legacy_ids: Vec<String> = memories
+                .values()
+                .filter(|memory| memory.namespace == legacy_namespace)
+                .map(|memory| memory.id.clone())
+                .collect();
+
+            for id in legacy_ids {
+                if let Some(memory) = memories.get_mut(&id) {
+                    if memory.namespace == legacy_namespace {
+                        memory.namespace = current_namespace.clone();
+                        migrated = true;
+                    }
+                }
+            }
+        }
+
+        let legacy_dir = self.root.join(namespace_to_path(&legacy_namespace));
+        if migrated {
+            self.save()?;
+        }
+        if migrated && legacy_dir.exists() {
+            fs::remove_dir_all(legacy_dir)?;
+        }
+        Ok(())
+    }
+
     pub fn search(&self, query: &str) -> Vec<Memory> {
         let query_lower = query.to_lowercase();
         self.memories
@@ -209,7 +273,7 @@ impl MemoryStore {
     pub fn consolidate_session(
         &self,
         messages: &[crate::session::message::Message],
-        project_hash: &str,
+        project_identity: &str,
     ) -> Vec<Memory> {
         use crate::memory::patterns::PatternDetector;
 
@@ -217,7 +281,7 @@ impl MemoryStore {
         let all_matches = detector.detect_from_messages(messages);
         let scored = detector.aggregate_and_score(all_matches);
 
-        let namespace = format!("project/{}", project_hash);
+        let namespace = project_namespace(project_identity);
 
         let existing = self.list(&namespace);
         let existing_by_topic: HashMap<String, &Memory> = existing
@@ -596,5 +660,52 @@ mod tests {
         assert_eq!(memories[0].content, "Content of first memory");
         assert_eq!(memories[1].id, "memory2");
         assert_eq!(memories[1].content, "Content of second memory");
+    }
+
+    #[test]
+    fn project_namespace_is_domain_separated_full_sha256() {
+        let current = project_namespace("/workspace/example");
+        let repeated = project_namespace("/workspace/example");
+        let legacy = legacy_project_namespace("/workspace/example");
+
+        assert_eq!(current, repeated);
+        assert!(current.starts_with("project/"));
+        assert_eq!(current.len(), "project/".len() + 64);
+        assert_eq!(legacy.len(), "project/".len() + 32);
+        assert_ne!(current, legacy);
+    }
+
+    #[test]
+    fn legacy_project_namespace_migrates_idempotently() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = MemoryStore {
+            root: temp_dir.path().to_path_buf(),
+            memories: Mutex::new(HashMap::new()),
+            auto_save: Mutex::new(true),
+        };
+        let identity = "/workspace/migrate-me";
+        let legacy_namespace = legacy_project_namespace(identity);
+        let current_namespace = project_namespace(identity);
+        let memory = Memory::new(legacy_namespace.clone(), "legacy memory");
+        let memory_id = memory.id.clone();
+
+        store.add(memory);
+        assert!(temp_dir
+            .path()
+            .join(namespace_to_path(&legacy_namespace))
+            .join("MEMORY.md")
+            .exists());
+
+        store.migrate_project_namespace(identity).unwrap();
+        store.migrate_project_namespace(identity).unwrap();
+
+        let migrated = store.list(&current_namespace);
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].id, memory_id);
+        assert_eq!(migrated[0].content, "legacy memory");
+        assert!(!temp_dir
+            .path()
+            .join(namespace_to_path(&legacy_namespace))
+            .exists());
     }
 }

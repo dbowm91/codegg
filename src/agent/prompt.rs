@@ -295,7 +295,7 @@ pub async fn load_agent_prompt_async(agent: &Agent, config: &Config, model_id: &
                 .iter()
                 .map(|url| fetch_remote_instruction(url))
                 .collect();
-            let results = futures::future::join_all(futures).await;
+            let results = futures_util::future::join_all(futures).await;
 
             for (url, result) in urls.iter().zip(results) {
                 match result {

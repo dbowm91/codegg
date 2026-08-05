@@ -1329,12 +1329,12 @@ impl ResponsesTransport {
         let max_buffer = self.config.max_sse_buffer_size;
 
         let byte_stream = response.bytes_stream();
-        let stream = futures::stream::unfold(
+        let stream = futures_util::stream::unfold(
             (byte_stream, String::new()),
             move |(mut byte_stream, mut buffer)| {
                 let cancelled = cancelled.clone();
                 async move {
-                    use futures::StreamExt;
+                    use futures_util::StreamExt;
 
                     // Check cancellation
                     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {

@@ -10,6 +10,8 @@
 
 #![cfg(test)]
 
+use sha2::{Digest, Sha256};
+
 mod common;
 
 use codegg::scheduler::tool_program_notifications::{
@@ -33,7 +35,7 @@ fn make_notification(
         "{}|{}|program {} finished with status {}|{}",
         program_id, status, program_id, status, success
     );
-    let payload_digest = format!("{:x}", md5::compute(payload.as_bytes()));
+    let payload_digest = format!("{:x}", Sha256::digest(payload.as_bytes()));
     codegg::scheduler::tool_program_notifications::ToolProgramNotification {
         notification_id: program_id.to_string(),
         program_id: program_id.to_string(),

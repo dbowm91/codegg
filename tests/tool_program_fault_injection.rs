@@ -7,7 +7,7 @@ use codegg_core::tool_program::{
     compile_program, BrokerCallback, CallRequest, CallResult, InterpreterError, MeteredInterpreter,
     ProgramStatus, ProgramValue, RuntimeLimits,
 };
-use futures::future::FutureExt;
+use futures_util::future::FutureExt;
 
 /// Broker that fails on specific tool names.
 struct FaultBroker {

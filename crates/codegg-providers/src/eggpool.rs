@@ -4,7 +4,7 @@
 //! types.  It is the providers-side seam used by those layers to validate an
 //! endpoint and obtain a small, deterministic model catalog.
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 use reqwest::redirect::Policy;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

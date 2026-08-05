@@ -5,8 +5,8 @@ use crate::{
     ContentPart, EventStream, Message, ModelInfo, Provider, ResponseFormat, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
-use futures::stream::unfold;
-use futures::StreamExt;
+use futures_util::stream::unfold;
+use futures_util::StreamExt;
 use serde_json::json;
 
 #[derive(Debug, Clone)]

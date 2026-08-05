@@ -716,7 +716,7 @@ impl RemoteClient {
             let mut data_lines = Vec::new();
             const MAX_BUFFER_SIZE: usize = 1024 * 1024; // 1MB limit
 
-            use futures::StreamExt;
+            use futures_util::StreamExt;
             loop {
                 tokio::select! {
                     biased;

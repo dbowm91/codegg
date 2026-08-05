@@ -10113,11 +10113,8 @@ impl App {
             }
         };
 
-        let project_hash = format!(
-            "{:x}",
-            md5::compute(self.session_state.project_dir.as_bytes())
-        );
-        let project_namespace = format!("project/{}", project_hash);
+        let project_namespace = crate::memory::project_namespace(&self.session_state.project_dir);
+        let _ = mem_store.migrate_project_namespace(&self.session_state.project_dir);
 
         match action {
             None | Some(("list", "")) => {
@@ -10225,7 +10222,7 @@ impl App {
                 let message_store = self.message_store.clone();
                 let core_client = self.core_client.clone();
                 let mem_store_clone = mem_store.clone();
-                let project_hash_clone = project_hash.clone();
+                let project_identity = self.session_state.project_dir.clone();
                 self.messages_state
                     .toasts
                     .info("Consolidating session memories...");
@@ -10256,8 +10253,9 @@ impl App {
                         if messages.is_empty() {
                             return;
                         }
+                        let _ = mem_store_clone.migrate_project_namespace(&project_identity);
                         let new_memories =
-                            mem_store_clone.consolidate_session(&messages, &project_hash_clone);
+                            mem_store_clone.consolidate_session(&messages, &project_identity);
                         tracing::info!("Manual consolidation: {} new memories", new_memories.len());
                     });
             }
@@ -10411,10 +10409,7 @@ impl App {
         if text.is_empty() {
             return;
         }
-        use arboard::Clipboard;
-        if let Ok(mut clip) = Clipboard::new() {
-            let _ = clip.set_text(&text);
-        }
+        let _ = crate::util::clipboard::copy_to_clipboard(&text);
     }
 
     fn cycle_model_forward(&mut self) {

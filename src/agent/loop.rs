@@ -2231,7 +2231,7 @@ impl AgentLoop {
         let usage_store = self.usage_store.clone();
         let pricing_service = crate::util::pricing::PricingService::new();
 
-        use futures::StreamExt;
+        use futures_util::StreamExt;
         let mut stream = stream;
         const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
         loop {
@@ -4759,7 +4759,7 @@ impl AgentLoop {
                 }
             });
         }
-        let mcp_results = futures::future::join_all(mcp_futures).await;
+        let mcp_results = futures_util::future::join_all(mcp_futures).await;
         for result in mcp_results {
             tool_results.push(result);
         }
@@ -5320,7 +5320,7 @@ impl AgentLoop {
                 (idx_for_results, id, result)
             });
         }
-        let all_results = futures::future::join_all(futures).await;
+        let all_results = futures_util::future::join_all(futures).await;
         results.extend(all_results);
 
         const MAX_TOOL_RESULT_BYTES_FALLBACK: usize = 512 * 1024; // 512KB per tool result

@@ -14,11 +14,10 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
             .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
-    let project_hash = format!(
-        "{:x}",
-        md5::compute(app.session_state.project_dir.as_bytes())
-    );
-    let project_namespace = format!("project/{}", project_hash);
+    let project_namespace = crate::memory::project_namespace(&app.session_state.project_dir);
+    if let Some(store) = app.memory_store.as_ref() {
+        let _ = store.migrate_project_namespace(&app.session_state.project_dir);
+    }
     let req_prefs = crate::core::new_request(
         format!("memory-list-{}", uuid::Uuid::new_v4()),
         CoreRequest::MemoryList {
@@ -39,7 +38,7 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
             .unwrap_or_default(),
         _ => Vec::new(),
     };
-    let proj = match core_client.request(req_proj).await {
+    let mut proj = match core_client.request(req_proj).await {
         Ok(CoreResponse::Json { data }) => data
             .get("memories")
             .and_then(|v| v.as_array())
@@ -47,6 +46,22 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
             .unwrap_or_default(),
         _ => Vec::new(),
     };
+    if proj.is_empty() {
+        let legacy_request = crate::core::new_request(
+            format!("memory-list-{}", uuid::Uuid::new_v4()),
+            CoreRequest::MemoryList {
+                namespace: crate::memory::legacy_project_namespace(&app.session_state.project_dir),
+            },
+        );
+        proj = match core_client.request(legacy_request).await {
+            Ok(CoreResponse::Json { data }) => data
+                .get("memories")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+    }
     let total = prefs.len() + proj.len();
     if total == 0 {
         app.messages_state
@@ -261,6 +276,9 @@ pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
 pub(crate) fn start_memory_summary(app: &mut App) {
     let core_client = app.core_client.clone();
     let project_dir = app.session_state.project_dir.clone();
+    if let Some(store) = app.memory_store.as_ref() {
+        let _ = store.migrate_project_namespace(&project_dir);
+    }
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -277,8 +295,7 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                 });
             };
 
-            let project_hash = format!("{:x}", md5::compute(project_dir.as_bytes()));
-            let project_namespace = format!("project/{}", project_hash);
+            let project_namespace = crate::memory::project_namespace(&project_dir);
             let req_prefs = crate::core::new_request(
                 format!("memory-list-{}", uuid::Uuid::new_v4()),
                 CoreRequest::MemoryList {
@@ -299,7 +316,7 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
-            let proj = match core_client.request(req_proj).await {
+            let mut proj = match core_client.request(req_proj).await {
                 Ok(CoreResponse::Json { data }) => data
                     .get("memories")
                     .and_then(|v| v.as_array())
@@ -307,6 +324,22 @@ pub(crate) fn start_memory_summary(app: &mut App) {
                     .unwrap_or_default(),
                 _ => Vec::new(),
             };
+            if proj.is_empty() {
+                let legacy_request = crate::core::new_request(
+                    format!("memory-list-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::MemoryList {
+                        namespace: crate::memory::legacy_project_namespace(&project_dir),
+                    },
+                );
+                proj = match core_client.request(legacy_request).await {
+                    Ok(CoreResponse::Json { data }) => data
+                        .get("memories")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+            }
             let total = prefs.len() + proj.len();
             if total == 0 {
                 return Some(TuiCommand::MemoryResult {

@@ -11,7 +11,7 @@ use crate::tui::app::SessionStatus;
 use crate::tui::terminal::{create_terminal, TerminalGuard};
 use crate::tui::{app, AppTerminal};
 use crossterm::event::{Event, EventStream, KeyEventKind};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -352,7 +352,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 if let Some(ref mut watcher) = app.config_watcher {
                     watcher.recv().await
                 } else {
-                    futures::future::pending().await
+                    futures_util::future::pending().await
                 }
             } => {
                 match config_result {
@@ -372,7 +372,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 if let Some(delay) = next_wake {
                     tokio::time::sleep(delay).await;
                 } else {
-                    futures::future::pending::<()>().await;
+                    futures_util::future::pending::<()>().await;
                 }
             } => {
                 if let Some(debounce_start) = app.ui_state.resize_debounce {
@@ -399,7 +399,7 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 if let Some(ref mut rx) = app.remote_event_rx {
                     rx.recv().await
                 } else {
-                    futures::future::pending().await
+                    futures_util::future::pending().await
                 }
             } => {
                 tracing::debug!(target: "codegg::tui::events", "processing remote event");

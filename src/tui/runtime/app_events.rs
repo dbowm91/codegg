@@ -261,8 +261,6 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                         crate::tui::task_lifecycle::TuiTaskKind::Memory,
                         "memory_consolidation",
                         async move {
-                            let project_hash =
-                                format!("{:x}", md5::compute(project_dir.as_bytes()));
                             let messages = if let (Some(client), Some(sid)) =
                                 (core_client, session_id.clone())
                             {
@@ -283,7 +281,8 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                             };
                             if !messages.is_empty() {
                                 if let Some(ref mem) = memory_store {
-                                    mem.consolidate_session(&messages, &project_hash);
+                                    let _ = mem.migrate_project_namespace(&project_dir);
+                                    mem.consolidate_session(&messages, &project_dir);
                                     tracing::info!(
                                         "Auto-consolidated session {} memories",
                                         messages.len()

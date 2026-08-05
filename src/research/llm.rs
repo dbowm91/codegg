@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, Provider};
 

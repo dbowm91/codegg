@@ -1,6 +1,6 @@
 use crate::provider::{ChatRequest, ContentPart, Message, Provider};
 use eggcontext::estimate_tokens_sync as egg_estimate_tokens_sync;
-use futures::StreamExt;
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 /// # Compaction Invariant

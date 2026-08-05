@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use grep::regex::RegexMatcher;
+use grep_regex::RegexMatcher;
 use grep_searcher::{Searcher, Sink, SinkMatch};
 use ignore::WalkBuilder;
 use serde_json::json;
@@ -462,7 +462,7 @@ async fn run_search_batches(
 
     let joined = tokio::time::timeout(
         Duration::from_secs(30),
-        futures::future::join_all(worker_futures),
+        futures_util::future::join_all(worker_futures),
     )
     .await;
     let worker_results = match joined {

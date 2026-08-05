@@ -1,5 +1,5 @@
 use axum::response::sse::{Event, Sse};
-use futures::stream::Stream;
+use futures_util::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;

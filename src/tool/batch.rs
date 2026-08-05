@@ -126,7 +126,7 @@ impl Tool for BatchTool {
             futures.push(fut);
         }
 
-        let results = futures::future::join_all(futures).await;
+        let results = futures_util::future::join_all(futures).await;
 
         let mut output = String::from("Batch results:\n");
         for (i, result) in results.iter().enumerate() {

@@ -175,7 +175,7 @@ mod tests {
                 self.fail_count.fetch_sub(1, Ordering::SeqCst);
                 return Err(ProviderError::api("429", "rate limited"));
             }
-            Ok(Box::pin(futures::stream::once(async {
+            Ok(Box::pin(futures_util::stream::once(async {
                 Ok(ChatEvent::Finish {
                     stop_reason: "stop".to_string().into(),
                     usage: TokenUsage::default(),

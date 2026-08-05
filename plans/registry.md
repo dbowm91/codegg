@@ -25,13 +25,13 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M005 ready; M004 closed | M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
+| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M005 closure review; M004 closed | Hosted verification is the remaining M005 evidence; M001/M002 retain supported-Linux or hosted evidence conditions; M003 and M006–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 |
+| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | closing | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | Production implementation landed; closure awaits hosted verification |
 
 ## Runtime-safety milestone dispositions
 
@@ -40,13 +40,14 @@ Canonical direction remains in:
 | M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | M002 remains blocked until supported-Linux enforcement evidence is accepted |
 | M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; strict promotion awaits M001's supported-Linux evidence and hosted verification |
 | M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | No downstream plan unblocked; M007 retains hard dependencies on M002, M003, M005, and M006 |
+| M005 — dependency feature and namespace normalization | closing | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Production implementation landed; hosted verification pending |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
 | Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | M002 production contract is available, but strict M001/M002 closure still requires supported-Linux enforcement evidence and hosted verification |
-| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 must stabilize dependency/manifest ownership before parser migration |
+| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 production work landed; promote after M005 closure record is accepted |
 | Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | Hard dependencies on M002, M003, M005, and M006; M004 is a soft final-measurement dependency |
 | Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M001–M007 must have accepted dispositions and compact closure records |
 

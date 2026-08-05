@@ -1,6 +1,6 @@
 use crate::error::ProviderError;
 use crate::{ChatEvent, EventStream, TokenUsage, ToolCall, MAX_BUFFER_SIZE};
-use futures::StreamExt;
+use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -951,7 +951,7 @@ where
 
     let stream = response.bytes_stream();
 
-    Ok(Box::pin(futures::stream::unfold(
+    Ok(Box::pin(futures_util::stream::unfold(
         (stream, buffer),
         move |(mut stream, mut buffer)| async move {
             loop {

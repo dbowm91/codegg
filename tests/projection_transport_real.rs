@@ -27,7 +27,7 @@ use codegg::server::ws::{
 };
 use codegg::server::{ServerState, WsRateLimiter};
 use codegg_core::projection_replay::seam::ProjectionBindingContext;
-use futures::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;

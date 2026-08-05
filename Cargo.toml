@@ -60,11 +60,12 @@ reqwest = { version = "0.12", default-features = false, features = ["stream", "j
 
 # Async / Streams
 tokio-stream = { version = "0.1", features = ["sync"] }
-futures = "0.3"
+futures-util = { version = "0.3", features = ["sink"] }
+futures-executor = "0.3"
 async-trait = "0.1"
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono", "json"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # File operations
@@ -75,8 +76,6 @@ ignore = "0.4"
 tempfile = "3"
 
 # Search
-grep = "0.3"
-grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 
@@ -107,7 +106,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 
 # Clipboard (optional, platform-specific)
-arboard = { version = "3", optional = true }
+arboard = { version = "3", default-features = false, optional = true }
 
 # Desktop notifications
 notify-rust = "4"
@@ -154,7 +153,6 @@ subtle = "2"
 # Plugins (feature-gated)
 wasmtime = { version = "36", optional = true }
 wasmtime-wasi = { version = "36", optional = true }
-md5 = "0.8.0"
 socket2 = "0.5"
 similar = "3.0.0"
 libc = "0.2"

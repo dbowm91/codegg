@@ -5,7 +5,7 @@
 //! authentication, request formatting, streaming responses, and error handling.
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
@@ -1085,7 +1085,7 @@ mod tests {
             Box::new(TestProvider)
         }
         async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-            Ok(Box::pin(futures::stream::empty()))
+            Ok(Box::pin(futures_util::stream::empty()))
         }
         async fn models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
             Ok(vec![])

@@ -3,7 +3,7 @@ use codegg::provider::{
     ChatEvent, ChatRequest, EventStream, ModelInfo, Provider, ProviderError, ProviderRegistry,
     TokenUsage,
 };
-use futures::StreamExt;
+use futures_util::StreamExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct MockProvider {
@@ -62,12 +62,12 @@ impl Provider for MockProvider {
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
         let responses = self.responses.clone();
-        let stream = futures::stream::iter(
+        let stream = futures_util::stream::iter(
             responses
                 .into_iter()
                 .map(|text| Ok::<_, ProviderError>(ChatEvent::TextDelta(text.into()))),
         )
-        .chain(futures::stream::once(async {
+        .chain(futures_util::stream::once(async {
             Ok(ChatEvent::Finish {
                 stop_reason: "stop".to_string().into(),
                 usage: TokenUsage {
@@ -104,7 +104,7 @@ impl Provider for ErrorMockProvider {
     }
 
     async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-        let stream = futures::stream::once(async {
+        let stream = futures_util::stream::once(async {
             Err::<ChatEvent, ProviderError>(ProviderError::Api {
                 code: "simulated".to_string(),
                 message: "simulated error".to_string(),
@@ -151,7 +151,7 @@ impl Provider for RateLimitMockProvider {
         if count >= self.limit {
             return Err(ProviderError::RateLimit);
         }
-        let stream = futures::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
+        let stream = futures_util::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
             stop_reason: "stop".to_string().into(),
             usage: TokenUsage::default(),
         })]);
@@ -242,7 +242,7 @@ impl Provider for RetryableErrorMockProvider {
                 url: "mock://".to_string(),
             });
         }
-        let stream = futures::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
+        let stream = futures_util::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
             stop_reason: "stop".to_string().into(),
             usage: TokenUsage::default(),
         })]);
@@ -274,7 +274,7 @@ async fn test_mock_provider_streams_text() {
     let mut stream = provider.stream(&request).await.unwrap();
     let mut collected = Vec::new();
 
-    while let Some(event) = futures::StreamExt::next(&mut stream).await {
+    while let Some(event) = futures_util::StreamExt::next(&mut stream).await {
         collected.push(event.unwrap());
     }
 
@@ -313,7 +313,7 @@ async fn test_mock_provider_error_stream() {
     };
 
     let mut stream = provider.stream(&request).await.unwrap();
-    let event = futures::StreamExt::next(&mut stream).await.unwrap();
+    let event = futures_util::StreamExt::next(&mut stream).await.unwrap();
     assert!(event.is_err());
 }
 
@@ -366,7 +366,7 @@ async fn test_mock_provider_with_tool_call_events() {
         }
 
         async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-            let stream = futures::stream::iter(vec![
+            let stream = futures_util::stream::iter(vec![
                 Ok(ChatEvent::TextDelta("Let me use a tool".to_string().into())),
                 Ok(ChatEvent::ToolCall(codegg::provider::ToolCall {
                     id: "call_1".to_string().into(),
@@ -403,7 +403,7 @@ async fn test_mock_provider_with_tool_call_events() {
     let mut stream = provider.stream(&request).await.unwrap();
     let mut events = Vec::new();
 
-    while let Some(event) = futures::StreamExt::next(&mut stream).await {
+    while let Some(event) = futures_util::StreamExt::next(&mut stream).await {
         events.push(event.unwrap());
     }
 
@@ -430,7 +430,7 @@ async fn test_mock_provider_reasoning_delta() {
         }
 
         async fn stream(&self, _request: &ChatRequest) -> Result<EventStream, ProviderError> {
-            let stream = futures::stream::iter(vec![
+            let stream = futures_util::stream::iter(vec![
                 Ok(ChatEvent::ReasoningDelta(
                     "Let me think about this...".to_string().into(),
                 )),
@@ -471,7 +471,7 @@ async fn test_mock_provider_reasoning_delta() {
     let mut stream = provider.stream(&request).await.unwrap();
     let mut events = Vec::new();
 
-    while let Some(event) = futures::StreamExt::next(&mut stream).await {
+    while let Some(event) = futures_util::StreamExt::next(&mut stream).await {
         events.push(event.unwrap());
     }
 

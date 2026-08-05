@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 closed; M005 remains ready; M003 and later dependent milestones remain blocked.
+Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M002 conditionally closed for production implementation pending the same Linux evidence and hosted verification; M004 closed; M005 is in closing review; M003 and later dependent milestones remain blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -294,6 +294,8 @@ Exit conditions:
 - focused stress tests demonstrate bounded concurrency without introducing long-running benchmarks.
 
 ### Milestone 005 — Dependency feature normalization and namespace cleanup
+
+Status: closing review
 
 Class: infrastructure and footprint
 

@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 005 — Dependency Feature and Namespace Normalization
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
