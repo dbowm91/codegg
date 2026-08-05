@@ -101,7 +101,7 @@ pub struct ToolResult {
 | **write** | `write.rs` | Create or overwrite files. Runs auto-formatting after write if configured. |
 | **edit** | `edit.rs` | Surgically search and replace text with 8 matching strategies (exact, line-trimmed, whitespace-normalized, block-anchored, indentation-flexible, escape-normalized, trimmed-boundary, context-aware). |
 | **glob** | `glob.rs` | Find files matching glob patterns. Uses `ignore` crate for gitignore compliance. |
-| **grep** | `grep.rs` | Search file contents using regular expressions with context lines. Concurrent search with semaphore limiting (max 100 concurrent). |
+| **grep** | `grep.rs` | Search file contents using regular expressions with context lines. Uses at most 100 deterministic blocking worker batches; each worker holds its semaphore permit for the complete batch and context is read once per matched file. |
 | **list** | `list.rs` | List directory tree with ignore patterns. Limited to 300 files by default. |
 | **diff** | `diff.rs` | Show differences between two file versions. Supports unified diff format and line ranges. |
 | **replace** | `replace.rs` | Find and replace using regex. Replaces all occurrences by default. Supports capture groups ($1, $2). |
