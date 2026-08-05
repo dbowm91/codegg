@@ -25,21 +25,26 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M001, M004, and M005 ready | M002–M003 and M006–M008 are dependency ordered below |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M001 conditionally closed; M004 and M005 ready | M002 remains blocked on M001's supported-Linux evidence; M003 and M006–M008 remain dependency ordered below |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M001 — Landlock and sandbox contract correction | ready | `plans/implementation/runtime-safety-resource-footprint/001-landlock-and-sandbox-contract-correction.md` | None; highest-priority security correction; independent closure review required |
 | Runtime safety, resource control, and footprint | M004 — grep concurrency and context efficiency | ready | `plans/implementation/runtime-safety-resource-footprint/004-grep-concurrency-and-context-efficiency.md` | None; may execute in parallel with M001 |
 | Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 and M004 |
+
+## Runtime-safety milestone dispositions
+
+| Milestone | Status | Closure | Promotion decision |
+|---|---|---|---|
+| M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | M002 remains blocked until supported-Linux enforcement evidence is accepted |
 
 ## Blocked work
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M002 — canonical bounded process execution | blocked | `plans/implementation/runtime-safety-resource-footprint/002-canonical-bounded-process-execution.md` | Hard dependency on M001's accepted sandbox request/outcome contract |
+| Runtime safety, resource control, and footprint | M002 — canonical bounded process execution | blocked | `plans/implementation/runtime-safety-resource-footprint/002-canonical-bounded-process-execution.md` | M001 production contract landed, but strict M001 closure still requires supported-Linux enforcement evidence |
 | Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | Hard dependency on M002's canonical executor |
 | Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 must stabilize dependency/manifest ownership before parser migration |
 | Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | Hard dependencies on M002, M003, M005, and M006; M004 is a soft final-measurement dependency |

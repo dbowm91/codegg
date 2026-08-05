@@ -2,6 +2,8 @@
 
 Status: active
 
+Current disposition: M001 conditionally closed pending supported-Linux enforcement evidence; M004 and M005 remain ready; M002 is not promoted until M001 reaches strict closure.
+
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
 Long-term references:
