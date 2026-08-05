@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 004 — Grep Concurrency and Context Efficiency
 
-Status: active
+Status: implemented
 
 Source subsystem roadmap:
 
