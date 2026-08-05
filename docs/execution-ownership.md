@@ -65,8 +65,12 @@ also rejects `.output()`, `.wait_with_output()`, and direct process creation
 that bypasses `ManagedProcessService`. Run
 `python3 scripts/check_execution_ownership.py --self-test` to verify the
 negative fixture remains rejected. The managed-process service itself is the
-only direct-spawn owner for these paths. The Python interpreter-prefix probe is
-an annotated, 64 KiB-capped setup probe; it is not the user execution path.
+only direct-spawn owner for these paths. Sandbox helper launches remain private
+one-shot plumbing beneath that service: helper identity is installation-owned,
+the launch spec is an owner-only temporary file outside target `cwd`, and
+setup/exec status travels over a bounded descriptor that is closed before the
+target `exec`. The Python interpreter-prefix probe is an annotated, 64 KiB-capped
+setup probe; it is not the user execution path.
 
 ## Migration trajectory
 

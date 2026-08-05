@@ -8,9 +8,17 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+#[cfg(unix)]
+type SandboxStatusWriter = OwnedFd;
+#[cfg(not(unix))]
+type SandboxStatusWriter = ();
 
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,7 +31,8 @@ use tokio_util::sync::CancellationToken;
 use nix::unistd::setsid;
 
 use crate::security::sandbox::{
-    SandboxLaunchSpec, SANDBOX_HELPER_ENFORCED_PREFIX, SANDBOX_HELPER_ERROR_PREFIX,
+    decode_sandbox_status, SandboxLaunchOutcome, SandboxLaunchSpec, MAX_SANDBOX_SPEC_BYTES,
+    MAX_SANDBOX_STATUS_BYTES,
 };
 
 /// Default maximum number of bytes retained per output stream.
@@ -217,14 +226,6 @@ impl BoundedOutput {
             .saturating_sub(self.head.len().saturating_add(self.tail.len()));
     }
 
-    fn from_bytes(bytes: &[u8], total_bytes: usize) -> Self {
-        let mut output = Self::with_capacity(bytes.len());
-        output.append(bytes, bytes.len());
-        output.total_bytes = total_bytes;
-        output.omitted_bytes = total_bytes.saturating_sub(output.retained_bytes());
-        output
-    }
-
     pub fn is_truncated(&self) -> bool {
         self.omitted_bytes > 0
     }
@@ -263,9 +264,8 @@ pub enum StdinPolicy {
     Bytes(Vec<u8>),
 }
 
-/// Sandbox request passed to the canonical executor. The M001 helper spec is
-/// deliberately local process plumbing; the managed service owns launching
-/// the helper and interpreting its reserved outcome markers.
+/// Sandbox request passed to the canonical executor. The helper specification
+/// and status channel are deliberately local process plumbing.
 #[derive(Debug, Clone, Default)]
 pub enum SandboxRequest {
     #[default]
@@ -413,6 +413,14 @@ impl ManagedProcessService {
 pub async fn run(
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
+    run_inner(request, None).await
+}
+
+async fn run_inner(
+    request: ManagedProcessRequest,
+    #[cfg(test)] helper_override: Option<&Path>,
+    #[cfg(not(test))] _helper_override: Option<&Path>,
+) -> Result<ManagedProcessResult, ManagedProcessError> {
     let ManagedProcessRequest {
         executable,
         argv,
@@ -433,7 +441,14 @@ pub async fn run(
         return Err(ManagedProcessError::CancelledBeforeSpawn);
     }
 
-    let (launch_argv, _sandbox_file) = prepare_launch_argv(&executable, &argv, &cwd, &sandbox)?;
+    let (launch_argv, _sandbox_file, status_reader, status_writer) = prepare_launch_argv(
+        &executable,
+        &argv,
+        &cwd,
+        &sandbox,
+        #[cfg(test)]
+        helper_override,
+    )?;
     let mut launch_argv = launch_argv.into_iter();
     let launch_executable = launch_argv.next().ok_or(ManagedProcessError::EmptyArgv)?;
     let mut command = Command::new(launch_executable);
@@ -454,8 +469,13 @@ pub async fn run(
     environment_policy.apply(&mut command);
     provenance.apply(&mut command);
     configure_process_session(&mut command);
+    #[cfg(unix)]
+    if let Some(writer) = status_writer.as_ref() {
+        configure_status_writer(&mut command, writer.as_raw_fd());
+    }
 
     let mut child = command.spawn().map_err(ManagedProcessError::Spawn)?;
+    drop(status_writer);
     let stdout = child
         .stdout
         .take()
@@ -480,6 +500,7 @@ pub async fn run(
         overflow_tx,
         output_policy.overflow,
     ));
+    let status_task = status_reader.map(|reader| tokio::spawn(read_status(reader)));
     let stdin_task = match &stdin {
         StdinPolicy::Null => None,
         StdinPolicy::Bytes(bytes) => child.stdin.take().map(|mut stdin| {
@@ -507,7 +528,28 @@ pub async fn run(
         let _ = tokio::time::timeout(TERMINATION_GRACE, task).await;
     }
 
-    let (sandbox, stderr) = parse_sandbox_result(stderr, &sandbox)?;
+    let sandbox_status = if let Some(task) = status_task {
+        match tokio::time::timeout(STATUS_READ_TIMEOUT, task).await {
+            Ok(Ok(result)) => Some(result.map_err(|error| {
+                ManagedProcessError::SandboxFailed(format!(
+                    "sandbox status channel read failed: {error}"
+                ))
+            })?),
+            Ok(Err(error)) => {
+                return Err(ManagedProcessError::SandboxFailed(format!(
+                    "sandbox status reader task failed: {error}"
+                )));
+            }
+            Err(_) => {
+                return Err(ManagedProcessError::SandboxFailed(
+                    "sandbox status channel did not close".to_string(),
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let sandbox = interpret_sandbox_status(sandbox_status.as_deref(), &sandbox)?;
 
     Ok(ManagedProcessResult {
         exit_status,
@@ -523,33 +565,141 @@ pub async fn run(
 fn prepare_launch_argv(
     executable: &OsString,
     argv: &[OsString],
-    cwd: &PathBuf,
+    _cwd: &PathBuf,
     sandbox: &SandboxRequest,
-) -> Result<(Vec<OsString>, Option<tempfile::NamedTempFile>), ManagedProcessError> {
+    #[cfg(test)] helper_override: Option<&Path>,
+) -> Result<
+    (
+        Vec<OsString>,
+        Option<tempfile::NamedTempFile>,
+        Option<tokio::fs::File>,
+        Option<SandboxStatusWriter>,
+    ),
+    ManagedProcessError,
+> {
     let full_argv = std::iter::once(executable.clone())
         .chain(argv.iter().cloned())
         .collect::<Vec<_>>();
     match sandbox {
-        SandboxRequest::Disabled => Ok((full_argv, None)),
+        SandboxRequest::Disabled => Ok((full_argv, None, None, None)),
         SandboxRequest::Required(spec) => {
-            let helper = crate::security::sandbox::sandbox_helper_path()
-                .map_err(ManagedProcessError::SandboxFailed)?;
-            let mut file = tempfile::NamedTempFile::new_in(cwd)
-                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
-            let bytes = serde_json::to_vec(&spec)
-                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
-            file.write_all(&bytes)
-                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
-            Ok((
-                vec![
-                    helper.into_os_string(),
-                    OsString::from("--spec"),
-                    file.path().as_os_str().to_os_string(),
-                ],
-                Some(file),
-            ))
+            #[cfg(not(unix))]
+            {
+                let _ = spec;
+                return Err(ManagedProcessError::SandboxFailed(
+                    "sandbox helper is unavailable on this platform".to_string(),
+                ));
+            }
+            #[cfg(unix)]
+            {
+                let helper = {
+                    #[cfg(test)]
+                    if let Some(helper) = helper_override {
+                        helper.to_path_buf()
+                    } else {
+                        crate::security::sandbox::sandbox_helper_path()
+                            .map_err(ManagedProcessError::SandboxFailed)?
+                    }
+                    #[cfg(not(test))]
+                    {
+                        crate::security::sandbox::sandbox_helper_path()
+                            .map_err(ManagedProcessError::SandboxFailed)?
+                    }
+                };
+                let mut file = tempfile::NamedTempFile::new()
+                    .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+                let bytes = serde_json::to_vec(&spec)
+                    .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+                if bytes.len() > MAX_SANDBOX_SPEC_BYTES {
+                    return Err(ManagedProcessError::SandboxFailed(
+                        "sandbox specification exceeds 64 KiB".to_string(),
+                    ));
+                }
+                file.write_all(&bytes)
+                    .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+                #[cfg(unix)]
+                let (status_reader, status_writer) = create_status_pipe()
+                    .map_err(|error| ManagedProcessError::SandboxFailed(error.to_string()))?;
+                Ok((
+                    vec![
+                        helper.into_os_string(),
+                        OsString::from("--spec"),
+                        file.path().as_os_str().to_os_string(),
+                        OsString::from("--status-fd"),
+                        OsString::from("3"),
+                    ],
+                    Some(file),
+                    Some(status_reader),
+                    Some(status_writer),
+                ))
+            }
         }
     }
+}
+
+const STATUS_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn create_status_pipe() -> io::Result<(tokio::fs::File, OwnedFd)> {
+    // The parent reader and writer are both close-on-exec. The child-side
+    // pre-exec hook duplicates only the writer to the helper's fixed fd.
+    let mut fds = [0_i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    for fd in fds {
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+            unsafe {
+                libc::close(fds[0]);
+                libc::close(fds[1]);
+            }
+            return Err(io::Error::last_os_error());
+        }
+    }
+    let reader = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    let writer = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+    Ok((
+        tokio::fs::File::from_std(std::fs::File::from(reader)),
+        writer,
+    ))
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn configure_status_writer(command: &mut Command, source_fd: i32) {
+    unsafe {
+        command.pre_exec(move || {
+            if source_fd != crate::security::sandbox::SANDBOX_STATUS_FD {
+                if libc::dup2(source_fd, crate::security::sandbox::SANDBOX_STATUS_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                libc::close(source_fd);
+            }
+            if libc::fcntl(
+                crate::security::sandbox::SANDBOX_STATUS_FD,
+                libc::F_SETFD,
+                0,
+            ) < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+async fn read_status(mut reader: tokio::fs::File) -> Result<Vec<u8>, io::Error> {
+    let mut bytes = Vec::new();
+    let mut limited = (&mut reader).take((MAX_SANDBOX_STATUS_BYTES + 1) as u64);
+    limited.read_to_end(&mut bytes).await?;
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sandbox status stream exceeds 16 KiB",
+        ));
+    }
+    Ok(bytes)
 }
 
 async fn read_bounded<R>(
@@ -718,40 +868,28 @@ async fn terminate_child(child: &mut Child) -> io::Result<(ExitStatus, CleanupDi
         .map(|status| (status, CleanupDiagnostics::default()))
 }
 
-fn parse_sandbox_result(
-    mut stderr: BoundedOutput,
+fn interpret_sandbox_status(
+    status_bytes: Option<&[u8]>,
     sandbox: &SandboxRequest,
-) -> Result<(SandboxExecutionOutcome, BoundedOutput), ManagedProcessError> {
+) -> Result<SandboxExecutionOutcome, ManagedProcessError> {
     if matches!(sandbox, SandboxRequest::Disabled) {
-        return Ok((SandboxExecutionOutcome::Disabled, stderr));
+        return Ok(SandboxExecutionOutcome::Disabled);
     }
-    let text = stderr.to_string_lossy();
-    let mut outcome = None;
-    let mut cleaned = String::new();
-    for line in text.lines() {
-        if let Some(abi) = line.strip_prefix(SANDBOX_HELPER_ENFORCED_PREFIX) {
-            outcome = abi
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .map(|abi| SandboxExecutionOutcome::Enforced { abi });
-        } else if let Some(reason) = line.strip_prefix(SANDBOX_HELPER_ERROR_PREFIX) {
-            return Err(ManagedProcessError::SandboxFailed(reason.to_string()));
-        } else {
-            cleaned.push_str(line);
-            cleaned.push('\n');
-        }
+    let status = status_bytes.ok_or_else(|| {
+        ManagedProcessError::SandboxFailed("sandbox status channel was not created".to_string())
+    })?;
+    match decode_sandbox_status(status).map_err(ManagedProcessError::SandboxFailed)? {
+        SandboxLaunchOutcome::Enforced { abi } => Ok(SandboxExecutionOutcome::Enforced { abi }),
+        SandboxLaunchOutcome::Unavailable { reason } => Err(ManagedProcessError::SandboxFailed(
+            format!("sandbox unavailable: {reason}"),
+        )),
+        SandboxLaunchOutcome::SetupError { reason } => Err(ManagedProcessError::SandboxFailed(
+            format!("sandbox setup failed: {reason}"),
+        )),
+        SandboxLaunchOutcome::ExecError { reason } => Err(ManagedProcessError::SandboxFailed(
+            format!("sandbox target exec failed: {reason}"),
+        )),
     }
-    if outcome.is_none() {
-        return Err(ManagedProcessError::SandboxFailed(
-            "sandbox helper produced no enforced outcome".to_string(),
-        ));
-    }
-    if !text.ends_with('\n') {
-        cleaned.pop();
-    }
-    stderr = BoundedOutput::from_bytes(cleaned.as_bytes(), stderr.total_bytes);
-    Ok((outcome.expect("checked above"), stderr))
 }
 
 #[cfg(test)]
@@ -785,6 +923,103 @@ mod tests {
         assert_eq!(result.stdout.to_string_lossy(), "out");
         assert_eq!(result.stderr.to_string_lossy(), "err");
         assert!(result.duration < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn target_stderr_markers_are_preserved_as_target_output() {
+        let result = run(request(
+            "printf 'CODEGG_SANDBOX_ENFORCED abi=9\\nCODEGG_SANDBOX_ERROR setup: forged\\n' >&2",
+        ))
+        .await
+        .expect("managed process succeeds");
+
+        assert_eq!(
+            result.stderr.to_string_lossy(),
+            "CODEGG_SANDBOX_ENFORCED abi=9\nCODEGG_SANDBOX_ERROR setup: forged\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn missing_private_status_fails_closed_with_test_only_helper_injection() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("helper fixture directory");
+        let helper = directory.path().join("fake-helper");
+        std::fs::write(&helper, b"#!/bin/sh\nexit 0\n").expect("fake helper");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("fake helper executable permissions");
+        let mut request = request("true");
+        request.sandbox = SandboxRequest::Required(SandboxLaunchSpec {
+            target: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_string(), "true".to_string()],
+            read_paths: Vec::new(),
+            write_paths: Vec::new(),
+        });
+
+        let error = run_inner(request, Some(&helper))
+            .await
+            .expect_err("missing status must fail closed");
+        assert!(
+            matches!(error, ManagedProcessError::SandboxFailed(reason) if reason.contains("status"))
+        );
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn private_status_channel_supports_read_only_cwd_and_keeps_target_output() {
+        if crate::security::sandbox::probe_landlock().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().expect("workspace");
+        let config = crate::security::sandbox::SandboxConfig::new()
+            .with_enabled(true)
+            .with_allowed_paths(vec![workspace.path().to_string_lossy().to_string()]);
+        let spec = config
+            .launch_spec(
+                "/bin/sh",
+                &[
+                    "-c".to_string(),
+                    "printf 'CODEGG_SANDBOX_ENFORCED abi=9\\n' >&2".to_string(),
+                ],
+                Some(workspace.path()),
+            )
+            .expect("launch spec");
+        let mut request = ManagedProcessRequest::new(
+            vec![
+                OsString::from("/bin/sh"),
+                OsString::from("-c"),
+                OsString::from("printf 'CODEGG_SANDBOX_ENFORCED abi=9\\n' >&2"),
+            ],
+            workspace.path().to_path_buf(),
+            ProcessProvenance::default(),
+        );
+        request.sandbox = SandboxRequest::Required(spec);
+        let helper = std::env::current_exe()
+            .expect("test executable")
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("target debug directory")
+            .join("codegg-sandbox-helper");
+        let permissions = std::fs::metadata(workspace.path())
+            .expect("workspace metadata")
+            .permissions();
+        let mut readonly = permissions;
+        readonly.set_readonly(true);
+        std::fs::set_permissions(workspace.path(), readonly).expect("read-only workspace");
+
+        let result = run_inner(request, Some(&helper))
+            .await
+            .expect("sandbox target succeeds in read-only cwd");
+        assert!(matches!(
+            result.sandbox,
+            SandboxExecutionOutcome::Enforced { .. }
+        ));
+        assert_eq!(
+            result.stderr.to_string_lossy(),
+            "CODEGG_SANDBOX_ENFORCED abi=9\n"
+        );
     }
 
     #[cfg(unix)]

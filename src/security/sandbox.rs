@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum SandboxMode {
     #[default]
@@ -149,39 +152,172 @@ pub struct SandboxLaunchSpec {
     pub write_paths: Vec<PathBuf>,
 }
 
-/// The result reported by the one-shot helper before it execs the target.
+/// One-shot helper status. `Enforced` is a setup event; the other variants
+/// are terminal events. The parent accepts `Enforced` followed by EOF for a
+/// successful target exec, or `Enforced` followed by `ExecError` when exec
+/// returns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SandboxLaunchOutcome {
     Enforced { abi: u32 },
     Unavailable { reason: String },
     SetupError { reason: String },
+    ExecError { reason: String },
 }
 
-pub const SANDBOX_HELPER_ENFORCED_PREFIX: &str = "CODEGG_SANDBOX_ENFORCED abi=";
-pub const SANDBOX_HELPER_ERROR_PREFIX: &str = "CODEGG_SANDBOX_ERROR ";
+/// Version for the private helper status frame. This is local process
+/// plumbing, not a public or durable protocol.
+pub const SANDBOX_STATUS_VERSION: u8 = 1;
+pub const MAX_SANDBOX_STATUS_BYTES: usize = 16 * 1024;
+pub const MAX_SANDBOX_SPEC_BYTES: usize = 64 * 1024;
 
-/// Return the private helper executable path. Tests use the second candidate
-/// because Cargo places test binaries under `target/debug/deps`.
-pub fn sandbox_helper_path() -> Result<PathBuf, String> {
-    if let Ok(path) = std::env::var("CODEGG_SANDBOX_HELPER") {
-        let path = PathBuf::from(path);
-        if path.is_file() {
-            return Ok(path);
+#[cfg(unix)]
+pub const SANDBOX_STATUS_FD: i32 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxStatusFrame {
+    pub version: u8,
+    pub outcome: SandboxLaunchOutcome,
+}
+
+/// Encode one bounded, length-prefixed status frame.
+pub fn encode_sandbox_status(outcome: SandboxLaunchOutcome) -> Result<Vec<u8>, String> {
+    let payload = serde_json::to_vec(&SandboxStatusFrame {
+        version: SANDBOX_STATUS_VERSION,
+        outcome,
+    })
+    .map_err(|error| format!("encode sandbox status: {error}"))?;
+    let frame_len = 4usize
+        .checked_add(payload.len())
+        .ok_or_else(|| "sandbox status frame length overflowed".to_string())?;
+    if frame_len > MAX_SANDBOX_STATUS_BYTES {
+        return Err("sandbox status frame exceeds 16 KiB".to_string());
+    }
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| "sandbox status payload length exceeds u32".to_string())?;
+    let mut frame = Vec::with_capacity(frame_len);
+    frame.extend_from_slice(&payload_len.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    Ok(frame)
+}
+
+/// Decode the complete private status stream and enforce its small state
+/// machine. A target that writes to the channel, a helper that emits a
+/// duplicate terminal state, or a truncated/oversized stream fails closed.
+pub fn decode_sandbox_status(bytes: &[u8]) -> Result<SandboxLaunchOutcome, String> {
+    if bytes.is_empty() {
+        return Err("sandbox helper produced no status frame".to_string());
+    }
+    if bytes.len() > MAX_SANDBOX_STATUS_BYTES {
+        return Err("sandbox status stream exceeds 16 KiB".to_string());
+    }
+
+    let mut cursor = 0usize;
+    let mut setup_abi = None;
+    let mut terminal = None;
+    while cursor < bytes.len() {
+        let length_end = cursor
+            .checked_add(4)
+            .ok_or_else(|| "sandbox status length overflowed".to_string())?;
+        if length_end > bytes.len() {
+            return Err("sandbox status frame has a truncated length prefix".to_string());
+        }
+        let payload_len = u32::from_be_bytes(
+            bytes[cursor..length_end]
+                .try_into()
+                .map_err(|_| "sandbox status length prefix is invalid".to_string())?,
+        ) as usize;
+        if payload_len == 0 || payload_len > MAX_SANDBOX_STATUS_BYTES - 4 {
+            return Err("sandbox status frame has an invalid length".to_string());
+        }
+        cursor = length_end;
+        let payload_end = cursor
+            .checked_add(payload_len)
+            .ok_or_else(|| "sandbox status payload length overflowed".to_string())?;
+        if payload_end > bytes.len() {
+            return Err("sandbox status frame is truncated".to_string());
+        }
+        let frame: SandboxStatusFrame = serde_json::from_slice(&bytes[cursor..payload_end])
+            .map_err(|error| format!("sandbox status frame is malformed: {error}"))?;
+        if frame.version != SANDBOX_STATUS_VERSION {
+            return Err(format!(
+                "unsupported sandbox status version {}",
+                frame.version
+            ));
+        }
+        cursor = payload_end;
+
+        match frame.outcome {
+            SandboxLaunchOutcome::Enforced { abi } => {
+                if setup_abi.replace(abi).is_some() || terminal.is_some() {
+                    return Err("sandbox helper produced a duplicate setup status".to_string());
+                }
+            }
+            terminal_outcome @ (SandboxLaunchOutcome::Unavailable { .. }
+            | SandboxLaunchOutcome::SetupError { .. }
+            | SandboxLaunchOutcome::ExecError { .. }) => {
+                if terminal.is_some() {
+                    return Err("sandbox helper produced duplicate terminal status".to_string());
+                }
+                if setup_abi.is_some()
+                    && !matches!(&terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
+                {
+                    return Err("sandbox helper produced a terminal status after setup".to_string());
+                }
+                if matches!(&terminal_outcome, SandboxLaunchOutcome::ExecError { .. })
+                    && setup_abi.is_none()
+                {
+                    return Err("sandbox exec failure was reported before setup".to_string());
+                }
+                terminal = Some(terminal_outcome);
+            }
         }
     }
+
+    if let Some(outcome) = terminal {
+        if setup_abi.is_none() && matches!(outcome, SandboxLaunchOutcome::ExecError { .. }) {
+            return Err("sandbox exec failure had no enforced setup".to_string());
+        }
+        return Ok(outcome);
+    }
+    setup_abi
+        .map(|abi| SandboxLaunchOutcome::Enforced { abi })
+        .ok_or_else(|| "sandbox helper produced no terminal status".to_string())
+}
+
+/// Return the private helper executable from the installation-owned sibling
+/// location. Inherited environment, PATH, and cwd are deliberately not part
+/// of this resolution rule.
+pub fn sandbox_helper_path() -> Result<PathBuf, String> {
     let current = std::env::current_exe().map_err(|e| format!("current executable: {e}"))?;
-    let candidates = [
-        current.parent().map(|p| p.join("codegg-sandbox-helper")),
-        current
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.join("codegg-sandbox-helper")),
-    ];
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|path| path.is_file())
-        .ok_or_else(|| "codegg-sandbox-helper executable was not found".to_string())
+    resolve_trusted_helper(&current)
+}
+
+fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> {
+    let current = current
+        .canonicalize()
+        .map_err(|error| format!("CodeGG executable could not be resolved: {error}"))?;
+    let install_root = current
+        .parent()
+        .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
+        .canonicalize()
+        .map_err(|error| format!("CodeGG installation directory could not be resolved: {error}"))?;
+    let candidate = install_root.join("codegg-sandbox-helper");
+    let helper = candidate
+        .canonicalize()
+        .map_err(|error| format!("trusted sandbox helper could not be resolved: {error}"))?;
+    if helper.parent() != Some(install_root.as_path()) {
+        return Err("trusted sandbox helper escaped the installation directory".to_string());
+    }
+    let metadata = std::fs::metadata(&helper)
+        .map_err(|error| format!("trusted sandbox helper metadata unavailable: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err("trusted sandbox helper is not a regular file".to_string());
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err("trusted sandbox helper is not executable".to_string());
+    }
+    Ok(helper)
 }
 
 fn resolve_executable(path: &Path) -> Option<PathBuf> {
@@ -487,5 +623,42 @@ mod tests {
             "symlink in path should be rejected: {:?}",
             result
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trusted_helper_resolution_ignores_inherited_override() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let install = tempfile::tempdir().expect("installation directory");
+        let executable = install.path().join("codegg");
+        let helper = install.path().join("codegg-sandbox-helper");
+        std::fs::write(&executable, b"codegg").expect("executable fixture");
+        std::fs::write(&helper, b"helper").expect("helper fixture");
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755))
+            .expect("helper executable permissions");
+
+        let variable = ["CODEGG", "SANDBOX", "HELPER"].join("_");
+        let substitution = install.path().join("substituted-helper");
+        std::fs::write(&substitution, b"substitution").expect("substitution fixture");
+        std::env::set_var(&variable, &substitution);
+        let resolved = resolve_trusted_helper(&executable).expect("trusted sibling helper");
+        std::env::remove_var(variable);
+
+        assert_eq!(resolved, helper.canonicalize().expect("canonical helper"));
+    }
+
+    #[test]
+    fn status_decoder_rejects_malformed_duplicate_and_oversized_frames() {
+        let enforced = encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 9 })
+            .expect("enforced frame");
+        let setup = encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: "bad rule".to_string(),
+        })
+        .expect("setup frame");
+        assert!(decode_sandbox_status(&enforced[..enforced.len() - 1]).is_err());
+        assert!(decode_sandbox_status(&[enforced.clone(), enforced.clone()].concat()).is_err());
+        assert!(decode_sandbox_status(&[enforced, setup].concat()).is_err());
+        assert!(decode_sandbox_status(&vec![0_u8; MAX_SANDBOX_STATUS_BYTES + 1]).is_err());
     }
 }

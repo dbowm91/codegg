@@ -8,15 +8,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::sandbox::resolve_policy;
 use super::snapshot::WorkspaceSnapshot;
-#[cfg(target_os = "linux")]
-use super::types::SandboxBackend;
 use super::types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
     PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind, SandboxOutcome,
 };
 use crate::security::sandbox::SandboxLaunchSpec;
 #[cfg(test)]
-use crate::security::sandbox::{SANDBOX_HELPER_ENFORCED_PREFIX, SANDBOX_HELPER_ERROR_PREFIX};
+use crate::security::sandbox::{
+    decode_sandbox_status, encode_sandbox_status, SandboxLaunchOutcome,
+};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_SCRIPT_LENGTH: usize = 500_000;
@@ -567,51 +567,6 @@ fn resolve_executable_path(interpreter: &str) -> Option<PathBuf> {
     })
 }
 
-#[cfg(test)]
-fn parse_helper_stderr(stderr: &str) -> (SandboxOutcome, String, bool) {
-    let mut cleaned = Vec::new();
-    let mut enforced_abi = None;
-    let mut failure = None;
-    for line in stderr.lines() {
-        if let Some(abi) = line.strip_prefix(SANDBOX_HELPER_ENFORCED_PREFIX) {
-            enforced_abi = abi.trim().parse::<u32>().ok();
-        } else if let Some(error) = line.strip_prefix(SANDBOX_HELPER_ERROR_PREFIX) {
-            failure = Some(error.to_string());
-        } else {
-            cleaned.push(line);
-        }
-    }
-    let outcome = if let Some(error) = failure {
-        let (kind, reason) = if error.starts_with("unavailable:") {
-            (SandboxFailureKind::Unavailable, error)
-        } else if error.starts_with("setup:") {
-            (SandboxFailureKind::Setup, error)
-        } else {
-            (SandboxFailureKind::Helper, error)
-        };
-        return (
-            SandboxOutcome::Failed { kind, reason },
-            cleaned.join("\n"),
-            true,
-        );
-    } else if let Some(abi) = enforced_abi {
-        SandboxOutcome::Enforced {
-            backend: SandboxBackend::Landlock,
-            abi,
-        }
-    } else {
-        return (
-            SandboxOutcome::Failed {
-                kind: SandboxFailureKind::Helper,
-                reason: "sandbox helper exited without an outcome".to_string(),
-            },
-            stderr.to_string(),
-            true,
-        );
-    };
-    (outcome, cleaned.join("\n"), false)
-}
-
 /// Find the Python interpreter to use.
 /// Priority: VIRTUAL_ENV > python3 > python
 fn find_python_interpreter() -> String {
@@ -1109,33 +1064,26 @@ mod tests {
     }
 
     #[test]
-    fn helper_enforcement_marker_becomes_typed_outcome() {
-        let (outcome, stderr, failed) =
-            parse_helper_stderr("python warning\nCODEGG_SANDBOX_ENFORCED abi=4\n");
-        assert!(!failed);
-        assert!(stderr.contains("python warning"));
-        assert!(matches!(
-            outcome,
-            SandboxOutcome::Enforced {
-                backend: SandboxBackend::Landlock,
-                abi: 4
-            }
-        ));
+    fn helper_status_becomes_typed_outcome() {
+        let frame =
+            encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 4 }).expect("status frame");
+        assert_eq!(
+            decode_sandbox_status(&frame).expect("typed status"),
+            SandboxLaunchOutcome::Enforced { abi: 4 }
+        );
     }
 
     #[test]
-    fn helper_setup_failure_is_not_target_failure() {
-        let (outcome, stderr, failed) = parse_helper_stderr(
-            "CODEGG_SANDBOX_ERROR setup: add sandbox rule /missing: no such file\n",
-        );
-        assert!(failed);
-        assert!(stderr.is_empty());
-        assert!(matches!(
-            outcome,
-            SandboxOutcome::Failed {
-                kind: SandboxFailureKind::Setup,
-                ..
+    fn helper_setup_failure_is_typed_and_separate_from_target_exit() {
+        let frame = encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: "missing rule".to_string(),
+        })
+        .expect("status frame");
+        assert_eq!(
+            decode_sandbox_status(&frame).expect("typed status"),
+            SandboxLaunchOutcome::SetupError {
+                reason: "missing rule".to_string()
             }
-        ));
+        );
     }
 }

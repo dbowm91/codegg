@@ -119,11 +119,20 @@ Used by:
 
 Linux enforcement is provided by the maintained `landlock` crate and is
 performed only by the private one-shot `codegg-sandbox-helper` process. The
-daemon never calls `restrict_self()`. The parent resolves and validates a
-bounded `SandboxLaunchSpec`, writes it to an ephemeral local file, and starts
-the helper. The helper adds every rule, requires `FullyEnforced` and
-`no_new_privs`, reports the effective ABI, and then replaces itself with the
-target through `exec`.
+daemon never calls `restrict_self()`. The parent resolves the helper only as
+the canonical regular executable sibling of the running CodeGG binary;
+inherited environment variables, `PATH`, and the target cwd cannot select it.
+The parent serializes a bounded `SandboxLaunchSpec` to an owner-only ephemeral
+file in the system temporary directory, outside the target cwd, and starts the
+helper with a private status pipe.
+
+The helper adds every rule, requires `FullyEnforced` and `no_new_privs`, and
+writes a versioned, length-bounded typed setup frame to that pipe. It marks the
+status writer close-on-exec before replacing itself with the target. An exec
+failure is reported as a separate terminal frame. The managed parent accepts
+only the expected setup/exec state sequence, fails closed on missing,
+malformed, duplicate, oversized, or contradictory frames, and never scans or
+strips target stdout/stderr for sandbox control text.
 
 The policy is an allow-list. Paths outside the read/write roots are denied by
 the handled Landlock rights; `deny_paths` is retained only for source

@@ -326,7 +326,10 @@ bounded output, and `CODEGG_JOB_ID`/`CODEGG_ATTEMPT_ID` provenance. The
 service retains independent stdout/stderr head-plus-tail buffers (256 KiB per
 stream by default), drains both pipes concurrently, and reports truncation,
 timeout, cancellation, output-limit termination, sandbox-helper failure, and
-cleanup diagnostics distinctly. On Unix, finite executions run in a child
+cleanup diagnostics distinctly. Explicit sandbox launches use the
+installation-owned helper sibling, an owner-only system-temp launch spec
+capped at 64 KiB, and a private versioned status pipe capped at 16 KiB;
+target output is never a control channel. On Unix, finite executions run in a child
 session; cancellation and timeout send SIGTERM, wait a bounded grace period,
 then SIGKILL the verified process group and reap the direct child. Other
 platforms retain direct-child cleanup only. Shell, TestRunner, and SubAgentPool
