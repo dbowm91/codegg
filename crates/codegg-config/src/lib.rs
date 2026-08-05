@@ -1,9 +1,13 @@
+pub mod document;
 pub mod encryption;
 pub mod error;
 pub mod paths;
 pub mod schema;
 pub mod watcher;
 
+pub use document::{
+    parse_yaml, DocumentErrorClass, DocumentFormat, DocumentParseError, StructuredValue,
+};
 pub use error::{AppError, ConfigError};
 pub use paths::{
     find_project_config, find_project_config_from, global_config_path, interpolate_env_vars,

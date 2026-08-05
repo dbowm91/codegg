@@ -149,7 +149,8 @@ async fn parse_skill_file(path: &Path) -> Result<Option<Skill>, AppError> {
     };
 
     let fm: SkillFrontmatter =
-        serde_yaml::from_str(&frontmatter).map_err(|e| AppError::Other(e.into()))?;
+        codegg_config::parse_yaml(path.display().to_string(), frontmatter.as_bytes())
+            .map_err(|e| AppError::Other(anyhow::anyhow!(e)))?;
 
     let name = fm.name.unwrap_or_else(|| {
         path.file_stem()

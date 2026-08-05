@@ -24,7 +24,7 @@ pub struct SkillCandidate {
     pub content_digest: String,
     pub frontmatter_raw: String,
     pub body: String,
-    pub metadata: HashMap<String, serde_yaml::Value>,
+    pub metadata: HashMap<String, serde_json::Value>,
     pub resources: Vec<ResourceDescriptor>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -38,7 +38,7 @@ pub struct EffectiveSkill {
     pub source_path: PathBuf,
     pub package_root: PathBuf,
     pub content_digest: String,
-    pub metadata: HashMap<String, serde_yaml::Value>,
+    pub metadata: HashMap<String, serde_json::Value>,
     pub resources: Vec<ResourceDescriptor>,
     pub body: String,
     pub precedence_rank: u32,

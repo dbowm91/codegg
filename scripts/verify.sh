@@ -55,6 +55,9 @@ run_quick() {
     echo "==> python3 scripts/check_builtin_agents.py"
     (cd "$REPO_ROOT" && python3 scripts/check_builtin_agents.py)
 
+    echo "==> python3 scripts/check_yaml_parser_boundary.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_yaml_parser_boundary.py)
+
     echo "==> python3 scripts/check-tokio-test-flavors.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py --self-test)
 
