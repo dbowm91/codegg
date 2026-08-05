@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 003 — Typed Argv and Shell-Routing Convergence
 
-Status: closing
+Status: closed
 
 Source subsystem roadmap:
 

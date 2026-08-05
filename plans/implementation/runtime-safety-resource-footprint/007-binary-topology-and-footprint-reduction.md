@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 007 — Binary Topology and Footprint Reduction
 
-Status: blocked on M002, M003, M005, and M006
+Status: ready
 
 Source subsystem roadmap:
 

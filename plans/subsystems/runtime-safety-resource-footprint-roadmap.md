@@ -2,7 +2,7 @@
 
 Status: active
 
-Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M004 closed; M005/M006 hosted conditions are operational; M003 is closing and M007–M008 remain blocked.
+Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M003 and M004 closed; M005/M006 hosted conditions are operational; M007 is ready and M008 remains blocked.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -255,7 +255,7 @@ Exit conditions:
 
 ### Milestone 003 — Typed argv preservation and shell-routing convergence
 
-Status: closing
+Status: closed
 
 Class: invariant and correctness
 
@@ -340,6 +340,8 @@ Exit conditions:
 - dependency maintenance remains a periodic/manual maintainer action, not a new CI lane.
 
 ### Milestone 007 — Measurement-led binary topology and footprint reduction
+
+Status: ready
 
 Class: polish and infrastructure
 
@@ -500,9 +502,9 @@ The recommended execution order is:
 1. M001 immediately.
 2. M004 is closed; M005 may execute independently in parallel with M001.
 3. M002 production implementation is complete, with strict milestone promotion after M001 closes.
-4. M003 after M002 reaches strict closure.
+4. M003 is closed; its typed argv contract is the accepted input to M007.
 5. M006 after M005 establishes dependency ownership.
-6. M007 after M002, M003, M005, and M006; include M004 in final measurements when available.
+6. M007 is dependency-ready after M002, M003, M005, and M006; include M004 in final measurements.
 7. M008 after all production milestones close.
 
 Agents should implement one milestone plan at a time, inspect current code before editing, preserve unrelated changes, and stop rather than redesign adjacent subsystems when a plan's stated boundary is insufficient.

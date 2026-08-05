@@ -25,13 +25,14 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M003 closure review; C001/M001/M002 conditionally closed; M004 closed; M005/M006 conditionally closed | Closure evidence for M003 is being recorded; supported-Linux Landlock evidence remains an operational requirement for strict sandbox and final M008 closure |
+| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M007 ready; C001/M001/M002 conditionally closed; M003/M004 closed; M005/M006 conditionally closed | M007 is dependency-ready; supported-Linux Landlock evidence remains an operational requirement for strict sandbox and final M008 closure |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | closing | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md`; promotion disposition: `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` | Production implementation landed at `bc3efd8`; closure evidence is being recorded; supported-Linux evidence is operational and does not block M003 closure |
+| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | closed | `plans/closure/runtime-safety-resource-footprint/003-status.md` | Production implementation `bc3efd8`; no unresolved M003 finding |
+| Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | ready | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | M002/M003/M005/M006 hard dependencies accepted; M004 soft measurement input closed |
 
 ## Runtime-safety milestone dispositions
 
@@ -39,7 +40,7 @@ Canonical direction remains in:
 |---|---|---|---|
 | M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | C001 production correction is accepted; one supported-Linux enforcement result remains for strict closure but does not block M003 |
 | M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; its executable/argv and managed-process interface is accepted for M003; strict sandbox evidence remains operational |
-| M003 — typed argv and shell-routing convergence | ready | target: `plans/closure/runtime-safety-resource-footprint/003-status.md` | Promoted by `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md`; implement against the accepted M002 interface without redesigning the sandbox boundary |
+| M003 — typed argv and shell-routing convergence | closed | `plans/closure/runtime-safety-resource-footprint/003-status.md` | `bc3efd8` accepted; no unresolved M003 finding; M007 promoted to ready |
 | M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | Included as a soft input to final M007 measurements |
 | M005 — dependency feature and namespace normalization | conditionally closed | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Production and hosted verification steps passed; runner cache/post-step disk exhaustion is operational evidence and is not an independent M007 implementation blocker |
 | M006 — deprecated parser and dependency maintenance | conditionally closed | `plans/closure/runtime-safety-resource-footprint/006-status.md` | Production and local full verification are accepted; unavailable exact-revision hosted dispatch is operational evidence and is not an independent M007 implementation blocker |
@@ -49,14 +50,13 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | M003 must close; accepted M002/M004/M005/M006 production dispositions are sufficient for implementation once M003 closes |
 | Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M003–M007 must have accepted dispositions and the supported-Linux Landlock result must be recorded; existing M001/M002/C001 conditional records may then be reconciled to strict closure |
 
 ## Execution order
 
-1. Execute M003 against the accepted M002 executable/argv and managed-process interface.
+1. M003 is closed against the accepted M002 executable/argv and managed-process interface.
 2. Keep the supported-Linux Landlock fixture as an operational closure item. Run it when a suitable Linux host or normal hosted path is available; do not delay M003 or create another corrective milestone.
-3. Promote M007 after M003 closes. Use the accepted M002/M004/M005/M006 production state for representative measurements.
+3. Execute M007 using the accepted M002/M003/M004/M005/M006 production state for representative measurements.
 4. Promote M008 after M007 closes and the supported-Linux Landlock result is recorded.
 5. During M008, reconcile M001/M002/C001 strict closure, compact the registry, and retain manual release plus minimal verification policy.
 
