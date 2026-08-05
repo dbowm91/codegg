@@ -1,9 +1,10 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
-use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::sandbox::resolve_policy;
 use super::snapshot::WorkspaceSnapshot;
@@ -13,13 +14,23 @@ use super::types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
     PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind, SandboxOutcome,
 };
-use crate::security::sandbox::{
-    sandbox_helper_path, SandboxLaunchSpec, SANDBOX_HELPER_ENFORCED_PREFIX,
-    SANDBOX_HELPER_ERROR_PREFIX,
-};
+use crate::security::sandbox::SandboxLaunchSpec;
+#[cfg(test)]
+use crate::security::sandbox::{SANDBOX_HELPER_ENFORCED_PREFIX, SANDBOX_HELPER_ERROR_PREFIX};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_SCRIPT_LENGTH: usize = 500_000;
+
+fn python_environment_policy() -> crate::managed_process::EnvironmentPolicy {
+    crate::managed_process::EnvironmentPolicy::sanitized()
+        .allow_inherited_var("PATH")
+        .allow_inherited_var("HOME")
+        .allow_inherited_var("LANG")
+        .allow_inherited_var("LC_ALL")
+        .allow_inherited_var("VIRTUAL_ENV")
+        .allow_inherited_var("PYTHONPATH")
+        .allow_inherited_var("DYLD_LIBRARY_PATH")
+}
 
 /// Helper to create a PythonRunResult with enforcement evidence fields defaulting.
 #[allow(clippy::too_many_arguments)]
@@ -64,6 +75,15 @@ fn make_result(
 
 /// Execute a Python script request, returning a structured result.
 pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunResult {
+    execute_python_script_with_cancellation(request, CancellationToken::new()).await
+}
+
+/// Execute Python through the canonical managed-process service with the
+/// caller's cancellation owner wired to process-tree cleanup.
+pub async fn execute_python_script_with_cancellation(
+    request: &PythonScriptRequest,
+    cancellation: CancellationToken,
+) -> PythonRunResult {
     let start = Instant::now();
 
     // Compute script body hash for reproducibility tracking
@@ -214,14 +234,12 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
     // Execute with timeout and minimal environment isolation.
-    let original_dyld = std::env::var("DYLD_LIBRARY_PATH").ok();
-    let mut cmd;
-    let mut sandbox_spec_path = None;
+    let mut sandbox_spec = None;
     if policy.enforcement_backend == SandboxBackend::Landlock {
         let target = resolve_executable_path(&interpreter).ok_or_else(|| {
             format!("python interpreter could not be resolved for sandbox: {interpreter}")
         });
-        let spec = target.and_then(|target| {
+        let spec = target.map(|target| {
             let (read_paths, write_paths) = build_landlock_paths(
                 &target,
                 &workspace_root,
@@ -234,46 +252,14 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
                 read_paths,
                 write_paths,
             };
-            let spec_path = tmp_dir.join(format!("sandbox_{script_id}.json"));
-            let encoded = serde_json::to_vec(&spec)
-                .map_err(|e| format!("sandbox specification encoding failed: {e}"))?;
-            std::fs::write(&spec_path, encoded)
-                .map_err(|e| format!("sandbox specification write failed: {e}"))?;
-            Ok((spec_path, spec))
+            spec
         });
         match spec {
-            Ok((path, spec)) => {
-                let helper = match sandbox_helper_path() {
-                    Ok(path) => path,
-                    Err(reason) => {
-                        let _ = std::fs::remove_file(&path);
-                        let mut result = make_result(
-                            PythonRunStatus::SpawnError,
-                            String::new(),
-                            format!("sandbox helper unavailable: {reason}"),
-                            start.elapsed(),
-                            request.mode,
-                            request.code.len(),
-                            risk,
-                            capabilities,
-                            script_body_hash,
-                        );
-                        let mut failed_policy = policy.clone();
-                        failed_policy.outcome = Some(SandboxOutcome::Failed {
-                            kind: SandboxFailureKind::Helper,
-                            reason,
-                        });
-                        result.policy_decision = Some(failed_policy);
-                        return result;
-                    }
-                };
+            Ok(spec) => {
                 tracing::debug!(target = %spec.target.display(), "launching through sandbox helper");
-                cmd = Command::new(helper);
-                cmd.arg("--spec").arg(&path);
-                sandbox_spec_path = Some(path);
+                sandbox_spec = Some(spec);
             }
             Err(reason) => {
-                let _ = std::fs::remove_file(tmp_dir.join(format!("sandbox_{script_id}.json")));
                 let mut result = make_result(
                     PythonRunStatus::SpawnError,
                     String::new(),
@@ -295,59 +281,97 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
             }
         }
     } else {
-        cmd = Command::new(&interpreter);
-        cmd.arg(script_file.to_string_lossy().to_string());
+        // The canonical request below launches the interpreter directly.
     }
-    cmd.current_dir(&cwd)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .env("LANG", std::env::var("LANG").unwrap_or_default())
-        .env("LC_ALL", std::env::var("LC_ALL").unwrap_or_default())
-        .env(
-            "VIRTUAL_ENV",
-            std::env::var("VIRTUAL_ENV").unwrap_or_default(),
-        )
-        .env(
-            "PYTHONPATH",
-            std::env::var("PYTHONPATH").unwrap_or_default(),
-        )
-        .env("DYLD_LIBRARY_PATH", original_dyld.unwrap_or_default())
-        .kill_on_drop(true);
+    let mut process = crate::managed_process::ManagedProcessRequest::new(
+        vec![
+            interpreter.clone().into(),
+            script_file.to_string_lossy().to_string().into(),
+        ],
+        cwd.clone(),
+        crate::managed_process::ProcessProvenance::new(
+            "python-script",
+            request.session_id.clone().unwrap_or_default(),
+        ),
+    );
+    process.timeout = Some(timeout);
+    process.cancellation = cancellation;
+    process.output_policy =
+        crate::managed_process::OutputPolicy::new(crate::managed_process::DEFAULT_MAX_OUTPUT_BYTES);
+    process.environment_policy = python_environment_policy();
+    process.sandbox = match sandbox_spec {
+        Some(spec) => crate::managed_process::SandboxRequest::Required(spec),
+        None => crate::managed_process::SandboxRequest::Disabled,
+    };
 
-    let run_result = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let status = match output.status.code() {
+    let managed = match crate::managed_process::ManagedProcessService::run(process).await {
+        Ok(result) => result,
+        Err(error) => {
+            let mut result = make_result(
+                PythonRunStatus::SpawnError,
+                String::new(),
+                error.to_string(),
+                start.elapsed(),
+                request.mode,
+                request.code.len(),
+                risk,
+                capabilities,
+                script_body_hash,
+            );
+            let mut failed_policy = policy.clone();
+            if matches!(
+                &error,
+                crate::managed_process::ManagedProcessError::SandboxFailed(_)
+            ) {
+                failed_policy.outcome = Some(SandboxOutcome::Failed {
+                    kind: SandboxFailureKind::Helper,
+                    reason: error.to_string(),
+                });
+            }
+            result.policy_decision = Some(failed_policy);
+            return result;
+        }
+    };
+
+    let stdout = managed.stdout.to_string_lossy();
+    let stderr = managed.stderr.to_string_lossy();
+    let run_result = match managed.termination {
+        crate::managed_process::TerminationReason::Exited => {
+            let status = match managed.exit_status.code() {
                 Some(0) => PythonRunStatus::Success,
                 Some(code) => PythonRunStatus::Failed(code),
                 None => PythonRunStatus::Failed(-1),
             };
             (status, stdout, stderr)
         }
-        Ok(Err(e)) => (
-            PythonRunStatus::SpawnError,
-            String::new(),
-            format!("failed to spawn python: {e}"),
-        ),
-        Err(_) => (
+        crate::managed_process::TerminationReason::TimedOut => (
             PythonRunStatus::TimedOut,
-            String::new(),
-            format!("python script timed out after {}s", timeout.as_secs()),
+            stdout,
+            format!(
+                "{stderr}\npython script timed out after {}s",
+                timeout.as_secs()
+            ),
+        ),
+        crate::managed_process::TerminationReason::Cancelled => (
+            PythonRunStatus::Failed(-4),
+            stdout,
+            format!("{stderr}\nexecution cancelled"),
+        ),
+        crate::managed_process::TerminationReason::OutputLimitExceeded { stream } => (
+            PythonRunStatus::Failed(-5),
+            stdout,
+            format!("{stderr}\noutput limit exceeded on {stream:?}"),
         ),
     };
 
-    let (mut status, stdout, mut stderr) = run_result;
+    let (status, stdout, stderr) = run_result;
 
     let mut policy = policy;
-    if policy.enforcement_backend == SandboxBackend::Landlock {
-        let (outcome, cleaned_stderr, setup_failed) = parse_helper_stderr(&stderr);
-        stderr = cleaned_stderr;
-        if setup_failed {
-            status = PythonRunStatus::SpawnError;
-        }
-        policy.outcome = Some(outcome);
+    if let crate::managed_process::SandboxExecutionOutcome::Enforced { abi } = managed.sandbox {
+        policy.outcome = Some(SandboxOutcome::Enforced {
+            backend: SandboxBackend::Landlock,
+            abi,
+        });
     } else if policy.enforcement_backend == SandboxBackend::PortableFallback {
         policy.outcome = Some(SandboxOutcome::Fallback {
             backend: SandboxBackend::PortableFallback,
@@ -406,9 +430,6 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 
     // Cleanup temp script (drop guard also handles this on cancellation)
     let _ = std::fs::remove_file(&script_file);
-    if let Some(path) = sandbox_spec_path {
-        let _ = std::fs::remove_file(path);
-    }
 
     PythonRunResult {
         status,
@@ -497,12 +518,23 @@ fn build_landlock_paths(
     }
     read_paths.push(interpreter.to_path_buf());
 
-    if let Ok(output) = std::process::Command::new(interpreter)
+    // This is a bounded interpreter-discovery probe, not the user script
+    // execution path. Keep it synchronous and capped because it runs before
+    // the canonical managed launch is assembled.
+    // execution-ownership: definition_or_adapter
+    let probe = std::process::Command::new(interpreter)
         .arg("-c")
         .arg("import sys; print(sys.prefix)")
-        .output()
-    {
-        let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = probe {
+        let mut bytes = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
+        }
+        let _ = child.wait();
+        let prefix = String::from_utf8_lossy(&bytes).trim().to_string();
         if !prefix.is_empty() {
             read_paths.push(PathBuf::from(prefix));
         }
@@ -535,6 +567,7 @@ fn resolve_executable_path(interpreter: &str) -> Option<PathBuf> {
     })
 }
 
+#[cfg(test)]
 fn parse_helper_stderr(stderr: &str) -> (SandboxOutcome, String, bool) {
     let mut cleaned = Vec::new();
     let mut enforced_abi = None;

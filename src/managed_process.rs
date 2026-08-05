@@ -7,19 +7,24 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(unix)]
 use nix::unistd::setsid;
+
+use crate::security::sandbox::{
+    SandboxLaunchSpec, SANDBOX_HELPER_ENFORCED_PREFIX, SANDBOX_HELPER_ERROR_PREFIX,
+};
 
 /// Default maximum number of bytes retained per output stream.
 pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
@@ -113,15 +118,50 @@ impl EnvironmentPolicy {
     }
 }
 
+/// Overflow behavior for a bounded output stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowPolicy {
+    /// Keep draining the pipe, retaining only the configured head/tail.
+    ContinueDrain,
+    /// Terminate the process group as soon as either stream exceeds its cap.
+    Terminate,
+}
+
+/// Which output stream exceeded its configured limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
 /// Bounded capture settings for stdout and stderr.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutputPolicy {
-    pub max_bytes: usize,
+    pub stdout_limit: usize,
+    pub stderr_limit: usize,
+    pub overflow: OverflowPolicy,
 }
 
 impl OutputPolicy {
     pub const fn new(max_bytes: usize) -> Self {
-        Self { max_bytes }
+        Self {
+            stdout_limit: max_bytes,
+            stderr_limit: max_bytes,
+            overflow: OverflowPolicy::ContinueDrain,
+        }
+    }
+
+    pub const fn with_limits(stdout_limit: usize, stderr_limit: usize) -> Self {
+        Self {
+            stdout_limit,
+            stderr_limit,
+            overflow: OverflowPolicy::ContinueDrain,
+        }
+    }
+
+    pub const fn terminate_on_overflow(mut self) -> Self {
+        self.overflow = OverflowPolicy::Terminate;
+        self
     }
 }
 
@@ -177,6 +217,14 @@ impl BoundedOutput {
             .saturating_sub(self.head.len().saturating_add(self.tail.len()));
     }
 
+    fn from_bytes(bytes: &[u8], total_bytes: usize) -> Self {
+        let mut output = Self::with_capacity(bytes.len());
+        output.append(bytes, bytes.len());
+        output.total_bytes = total_bytes;
+        output.omitted_bytes = total_bytes.saturating_sub(output.retained_bytes());
+        output
+    }
+
     pub fn is_truncated(&self) -> bool {
         self.omitted_bytes > 0
     }
@@ -207,6 +255,24 @@ pub struct ProcessProvenance {
     pub attempt_id: String,
 }
 
+/// Stdin behavior for a finite managed process.
+#[derive(Debug, Clone, Default)]
+pub enum StdinPolicy {
+    #[default]
+    Null,
+    Bytes(Vec<u8>),
+}
+
+/// Sandbox request passed to the canonical executor. The M001 helper spec is
+/// deliberately local process plumbing; the managed service owns launching
+/// the helper and interpreting its reserved outcome markers.
+#[derive(Debug, Clone, Default)]
+pub enum SandboxRequest {
+    #[default]
+    Disabled,
+    Required(SandboxLaunchSpec),
+}
+
 impl ProcessProvenance {
     pub fn new(job_id: impl Into<String>, attempt_id: impl Into<String>) -> Self {
         Self {
@@ -233,26 +299,40 @@ impl ProcessProvenance {
 /// Request to run one non-shell argv process.
 #[derive(Debug, Clone)]
 pub struct ManagedProcessRequest {
+    pub executable: OsString,
     pub argv: Vec<OsString>,
     pub cwd: PathBuf,
     pub environment_policy: EnvironmentPolicy,
+    pub stdin: StdinPolicy,
     pub timeout: Option<Duration>,
     pub cancellation: CancellationToken,
     pub output_policy: OutputPolicy,
+    pub sandbox: SandboxRequest,
     pub provenance: ProcessProvenance,
 }
 
 impl ManagedProcessRequest {
     pub fn new(argv: Vec<OsString>, cwd: PathBuf, provenance: ProcessProvenance) -> Self {
+        let mut argv = argv.into_iter();
+        let executable = argv.next().unwrap_or_default();
         Self {
-            argv,
+            executable,
+            argv: argv.collect(),
             cwd,
             environment_policy: EnvironmentPolicy::default(),
+            stdin: StdinPolicy::Null,
             timeout: None,
             cancellation: CancellationToken::new(),
             output_policy: OutputPolicy::default(),
+            sandbox: SandboxRequest::Disabled,
             provenance,
         }
+    }
+
+    pub fn full_argv(&self) -> Vec<OsString> {
+        std::iter::once(self.executable.clone())
+            .chain(self.argv.iter().cloned())
+            .collect()
     }
 }
 
@@ -262,6 +342,24 @@ pub enum TerminationReason {
     Exited,
     TimedOut,
     Cancelled,
+    OutputLimitExceeded { stream: OutputStream },
+}
+
+/// Sandbox result observed by the canonical process service.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxExecutionOutcome {
+    Disabled,
+    Enforced { abi: u32 },
+}
+
+/// Diagnostics from process-group cleanup. Errors are retained on the result
+/// so a target exit is never confused with cleanup failure.
+#[derive(Debug, Clone, Default)]
+pub struct CleanupDiagnostics {
+    pub process_group_established: bool,
+    pub graceful_signal_sent: bool,
+    pub forced_signal_sent: bool,
+    pub errors: Vec<String>,
 }
 
 /// Captured result from a managed process.
@@ -272,6 +370,8 @@ pub struct ManagedProcessResult {
     pub stderr: BoundedOutput,
     pub duration: Duration,
     pub termination: TerminationReason,
+    pub sandbox: SandboxExecutionOutcome,
+    pub cleanup: CleanupDiagnostics,
 }
 
 #[derive(Debug, Error)]
@@ -288,6 +388,8 @@ pub enum ManagedProcessError {
     ReadOutput(#[source] io::Error),
     #[error("managed process output reader task failed: {0}")]
     OutputReaderTask(String),
+    #[error("managed process sandbox failed: {0}")]
+    SandboxFailed(String),
 }
 
 /// Stateless entry point for scheduler-owned process execution.
@@ -312,28 +414,43 @@ pub async fn run(
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
     let ManagedProcessRequest {
+        executable,
         argv,
         cwd,
         environment_policy,
+        stdin,
         timeout: process_timeout,
         cancellation,
         output_policy,
+        sandbox,
         provenance,
     } = request;
 
-    let executable = argv.first().ok_or(ManagedProcessError::EmptyArgv)?;
+    if executable.is_empty() {
+        return Err(ManagedProcessError::EmptyArgv);
+    }
     if cancellation.is_cancelled() {
         return Err(ManagedProcessError::CancelledBeforeSpawn);
     }
 
-    let mut command = Command::new(executable);
+    let (launch_argv, _sandbox_file) = prepare_launch_argv(&executable, &argv, &cwd, &sandbox)?;
+    let mut launch_argv = launch_argv.into_iter();
+    let launch_executable = launch_argv.next().ok_or(ManagedProcessError::EmptyArgv)?;
+    let mut command = Command::new(launch_executable);
     command
-        .args(&argv[1..])
+        .args(launch_argv)
         .current_dir(cwd)
-        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    match &stdin {
+        StdinPolicy::Null => {
+            command.stdin(std::process::Stdio::null());
+        }
+        StdinPolicy::Bytes(_) => {
+            command.stdin(std::process::Stdio::piped());
+        }
+    }
     environment_policy.apply(&mut command);
     provenance.apply(&mut command);
     configure_process_session(&mut command);
@@ -348,15 +465,49 @@ pub async fn run(
         .take()
         .ok_or_else(|| ManagedProcessError::ReadOutput(io::Error::other("stderr was not piped")))?;
 
-    let max_output_bytes = output_policy.max_bytes;
-    let stdout_task = tokio::spawn(read_bounded(stdout, max_output_bytes));
-    let stderr_task = tokio::spawn(read_bounded(stderr, max_output_bytes));
+    let (overflow_tx, mut overflow_rx) = mpsc::unbounded_channel();
+    let stdout_task = tokio::spawn(read_bounded(
+        stdout,
+        output_policy.stdout_limit,
+        OutputStream::Stdout,
+        overflow_tx.clone(),
+        output_policy.overflow,
+    ));
+    let stderr_task = tokio::spawn(read_bounded(
+        stderr,
+        output_policy.stderr_limit,
+        OutputStream::Stderr,
+        overflow_tx,
+        output_policy.overflow,
+    ));
+    let stdin_task = match &stdin {
+        StdinPolicy::Null => None,
+        StdinPolicy::Bytes(bytes) => child.stdin.take().map(|mut stdin| {
+            let bytes = bytes.clone();
+            tokio::spawn(async move {
+                let result = stdin.write_all(&bytes).await;
+                drop(stdin);
+                result
+            })
+        }),
+    };
     let started = Instant::now();
 
-    let (exit_status, termination) =
-        wait_for_child(&mut child, &cancellation, process_timeout).await?;
+    let (exit_status, termination, cleanup) = wait_for_child(
+        &mut child,
+        &cancellation,
+        process_timeout,
+        &mut overflow_rx,
+        output_policy.overflow,
+    )
+    .await?;
     let stdout = join_output(stdout_task).await?;
     let stderr = join_output(stderr_task).await?;
+    if let Some(task) = stdin_task {
+        let _ = tokio::time::timeout(TERMINATION_GRACE, task).await;
+    }
+
+    let (sandbox, stderr) = parse_sandbox_result(stderr, &sandbox)?;
 
     Ok(ManagedProcessResult {
         exit_status,
@@ -364,10 +515,50 @@ pub async fn run(
         stderr,
         duration: started.elapsed(),
         termination,
+        sandbox,
+        cleanup,
     })
 }
 
-async fn read_bounded<R>(mut reader: R, cap: usize) -> Result<BoundedOutput, io::Error>
+fn prepare_launch_argv(
+    executable: &OsString,
+    argv: &[OsString],
+    cwd: &PathBuf,
+    sandbox: &SandboxRequest,
+) -> Result<(Vec<OsString>, Option<tempfile::NamedTempFile>), ManagedProcessError> {
+    let full_argv = std::iter::once(executable.clone())
+        .chain(argv.iter().cloned())
+        .collect::<Vec<_>>();
+    match sandbox {
+        SandboxRequest::Disabled => Ok((full_argv, None)),
+        SandboxRequest::Required(spec) => {
+            let helper = crate::security::sandbox::sandbox_helper_path()
+                .map_err(ManagedProcessError::SandboxFailed)?;
+            let mut file = tempfile::NamedTempFile::new_in(cwd)
+                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+            let bytes = serde_json::to_vec(&spec)
+                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+            file.write_all(&bytes)
+                .map_err(|e| ManagedProcessError::SandboxFailed(e.to_string()))?;
+            Ok((
+                vec![
+                    helper.into_os_string(),
+                    OsString::from("--spec"),
+                    file.path().as_os_str().to_os_string(),
+                ],
+                Some(file),
+            ))
+        }
+    }
+}
+
+async fn read_bounded<R>(
+    mut reader: R,
+    cap: usize,
+    stream: OutputStream,
+    overflow_tx: mpsc::UnboundedSender<OutputStream>,
+    overflow_policy: OverflowPolicy,
+) -> Result<BoundedOutput, io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -378,7 +569,11 @@ where
         if read == 0 {
             return Ok(output);
         }
+        let was_truncated = output.is_truncated();
         output.append(&buffer[..read], cap);
+        if !was_truncated && output.is_truncated() && overflow_policy == OverflowPolicy::Terminate {
+            let _ = overflow_tx.send(stream);
+        }
     }
 }
 
@@ -396,7 +591,9 @@ async fn wait_for_child(
     child: &mut Child,
     cancellation: &CancellationToken,
     process_timeout: Option<Duration>,
-) -> Result<(ExitStatus, TerminationReason), ManagedProcessError> {
+    overflow_rx: &mut mpsc::UnboundedReceiver<OutputStream>,
+    overflow_policy: OverflowPolicy,
+) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
     let timeout_future = async move {
         match process_timeout {
             Some(duration) => sleep(duration).await,
@@ -408,16 +605,21 @@ async fn wait_for_child(
     tokio::select! {
         status = child.wait() => {
             status
-                .map(|status| (status, TerminationReason::Exited))
+                .map(|status| (status, TerminationReason::Exited, CleanupDiagnostics::default()))
                 .map_err(ManagedProcessError::Wait)
         }
         _ = cancellation.cancelled() => {
-            let status = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
-            Ok((status, TerminationReason::Cancelled))
+            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::Cancelled, cleanup))
         }
         _ = &mut timeout_future => {
-            let status = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
-            Ok((status, TerminationReason::TimedOut))
+            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::TimedOut, cleanup))
+        }
+        stream = overflow_rx.recv(), if overflow_policy == OverflowPolicy::Terminate => {
+            let stream = stream.unwrap_or(OutputStream::Stdout);
+            let (status, cleanup) = terminate_child(child).await.map_err(ManagedProcessError::Wait)?;
+            Ok((status, TerminationReason::OutputLimitExceeded { stream }, cleanup))
         }
     }
 }
@@ -441,31 +643,115 @@ fn configure_process_session(_command: &mut Command) {}
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-async fn terminate_child(child: &mut Child) -> io::Result<ExitStatus> {
+async fn terminate_child(child: &mut Child) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
     let pid = child.id();
+    let mut cleanup = CleanupDiagnostics {
+        process_group_established: pid.is_some(),
+        ..CleanupDiagnostics::default()
+    };
     if let Some(pid) = pid {
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+        signal_process_group(pid, libc::SIGTERM, &mut cleanup);
+        let waited = tokio::time::timeout(TERMINATION_GRACE, child.wait()).await;
+        if let Ok(status) = waited {
+            // The direct child can exit while descendants keep the session
+            // alive. Always complete the grace interval and issue the forced
+            // group signal before returning from cancellation/timeout.
+            sleep(TERMINATION_GRACE).await;
+            signal_process_group(pid, libc::SIGKILL, &mut cleanup);
+            return status.map(|status| (status, cleanup));
         }
+        signal_process_group(pid, libc::SIGKILL, &mut cleanup);
     } else {
         child.start_kill()?;
     }
+    child.wait().await.map(|status| (status, cleanup))
+}
 
-    sleep(TERMINATION_GRACE).await;
-    if let Some(pid) = pid {
-        unsafe {
-            libc::kill(-(pid as i32), libc::SIGKILL);
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn signal_process_group(pid: u32, signal: libc::c_int, cleanup: &mut CleanupDiagnostics) {
+    let pid = pid as libc::pid_t;
+    let group = unsafe { libc::getpgid(pid) };
+    if group == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        // The session leader may already have exited while its descendants
+        // keep the process group alive. The group was established by the
+        // successful setsid pre-exec hook, so the retained PGID remains a
+        // safe cleanup target; do not mistake a missing leader for a missing
+        // process group.
+        let result = unsafe { libc::kill(-pid, signal) };
+        if result == 0 {
+            if signal == libc::SIGTERM {
+                cleanup.graceful_signal_sent = true;
+            } else {
+                cleanup.forced_signal_sent = true;
+            }
         }
-    } else {
-        child.start_kill()?;
+        return;
     }
-    child.wait().await
+    if group != pid {
+        cleanup.errors.push(format!(
+            "refused process-group signal: child pgid {group} did not match child pid {pid}"
+        ));
+        return;
+    }
+    let result = unsafe { libc::kill(-pid, signal) };
+    if result == 0 {
+        if signal == libc::SIGTERM {
+            cleanup.graceful_signal_sent = true;
+        } else {
+            cleanup.forced_signal_sent = true;
+        }
+    } else if io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+        cleanup.errors.push(format!(
+            "process-group signal {signal} failed: {}",
+            io::Error::last_os_error()
+        ));
+    }
 }
 
 #[cfg(not(unix))]
-async fn terminate_child(child: &mut Child) -> io::Result<ExitStatus> {
+async fn terminate_child(child: &mut Child) -> io::Result<(ExitStatus, CleanupDiagnostics)> {
     child.kill().await?;
-    child.wait().await
+    child
+        .wait()
+        .await
+        .map(|status| (status, CleanupDiagnostics::default()))
+}
+
+fn parse_sandbox_result(
+    mut stderr: BoundedOutput,
+    sandbox: &SandboxRequest,
+) -> Result<(SandboxExecutionOutcome, BoundedOutput), ManagedProcessError> {
+    if matches!(sandbox, SandboxRequest::Disabled) {
+        return Ok((SandboxExecutionOutcome::Disabled, stderr));
+    }
+    let text = stderr.to_string_lossy();
+    let mut outcome = None;
+    let mut cleaned = String::new();
+    for line in text.lines() {
+        if let Some(abi) = line.strip_prefix(SANDBOX_HELPER_ENFORCED_PREFIX) {
+            outcome = abi
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(|abi| SandboxExecutionOutcome::Enforced { abi });
+        } else if let Some(reason) = line.strip_prefix(SANDBOX_HELPER_ERROR_PREFIX) {
+            return Err(ManagedProcessError::SandboxFailed(reason.to_string()));
+        } else {
+            cleaned.push_str(line);
+            cleaned.push('\n');
+        }
+    }
+    if outcome.is_none() {
+        return Err(ManagedProcessError::SandboxFailed(
+            "sandbox helper produced no enforced outcome".to_string(),
+        ));
+    }
+    if !text.ends_with('\n') {
+        cleaned.pop();
+    }
+    stderr = BoundedOutput::from_bytes(cleaned.as_bytes(), stderr.total_bytes);
+    Ok((outcome.expect("checked above"), stderr))
 }
 
 #[cfg(test)]
@@ -538,6 +824,44 @@ mod tests {
             result.stdout.omitted_bytes + result.stdout.retained_bytes(),
             100_000
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stdout_and_stderr_have_independent_limits_and_invalid_utf8_is_lossy() {
+        let mut request = request("printf '\\377\\376'; head -c 4096 /dev/zero; printf 'e' >&2; head -c 4096 /dev/zero >&2");
+        request.output_policy = OutputPolicy::with_limits(32, 48);
+        let result = run(request).await.expect("dual-stream result");
+
+        assert!(result.stdout.is_truncated());
+        assert!(result.stderr.is_truncated());
+        assert!(result.stdout.retained_bytes() <= 32);
+        assert!(result.stderr.retained_bytes() <= 48);
+        assert!(result.stdout.to_string_lossy().contains('\u{fffd}'));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminate_on_overflow_reports_the_stream() {
+        let mut request = request("head -c 100000 /dev/zero");
+        request.output_policy = OutputPolicy::new(64).terminate_on_overflow();
+        let result = run(request).await.expect("overflow result");
+        assert_eq!(
+            result.termination,
+            TerminationReason::OutputLimitExceeded {
+                stream: OutputStream::Stdout
+            }
+        );
+        assert!(result.stdout.retained_bytes() <= 64);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stdin_is_written_by_the_managed_service() {
+        let mut request = request("read value; printf '%s' \"$value\"");
+        request.stdin = StdinPolicy::Bytes(b"managed-input\n".to_vec());
+        let result = run(request).await.expect("stdin result");
+        assert_eq!(result.stdout.to_string_lossy(), "managed-input");
     }
 
     #[test]

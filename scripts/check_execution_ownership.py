@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -119,6 +120,49 @@ LINE_ANNOTATION = re.compile(
     r"definition_or_adapter|deferred_domain_executor|test_only|"
     r"forbidden_bypass)"
 )
+
+# These are finite, scheduler-governed production surfaces. They must use
+# ManagedProcessService rather than collecting output or owning a second
+# subprocess lifecycle. The service itself is the sole direct-spawn owner.
+CANONICAL_FINITE_PATHS = {
+    "src/tool/bash.rs",
+    "src/python_script/executor.rs",
+    "src/scheduler/executors.rs",
+}
+CANONICAL_EXECUTOR_PATH = "src/managed_process.rs"
+
+
+def forbidden_finite_process_lines(rel_path: str, lines: list[str]) -> list[str]:
+    if rel_path not in CANONICAL_FINITE_PATHS:
+        return []
+    failures: list[str] = []
+    for index, line in enumerate(lines):
+        if is_comment_line(line):
+            continue
+        if re.search(r"\.output\s*\(\s*\)|\.wait_with_output\s*\(", line):
+            failures.append(f"{rel_path}:{index + 1}: unbounded output collection")
+        if re.search(
+            r"\b(?:tokio::process::Command|std::process::Command|StdCommand)::new\s*\(",
+            line,
+        ):
+            prev = lines[index - 1] if index > 0 else None
+            if rel_path != CANONICAL_EXECUTOR_PATH and annotate_owner(line, prev) != "definition_or_adapter":
+                failures.append(f"{rel_path}:{index + 1}: direct process spawn bypasses ManagedProcessService")
+    return failures
+
+
+def run_self_test() -> int:
+    with tempfile.TemporaryDirectory() as directory:
+        fixture = Path(directory) / "fixture.rs"
+        fixture.write_text("let output = command.output().await;\n", encoding="utf-8")
+        detected = forbidden_finite_process_lines(
+            "src/tool/bash.rs", fixture.read_text(encoding="utf-8").splitlines()
+        )
+        if not detected:
+            print("execution-ownership self-test failed: fixture was not rejected")
+            return 1
+    print("execution-ownership self-test ok")
+    return 0
 
 
 def load_manifest() -> list[dict]:
@@ -225,6 +269,8 @@ def annotate_owner(line_text: str, prev_line: str | None) -> str | None:
 
 
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return run_self_test()
     sites = load_manifest()
     bad_owners: list[str] = []
     forbidden_paths: list[str] = []
@@ -269,6 +315,11 @@ def main() -> int:
                                 f"execution-ownership annotation and "
                                 f"{rel} is not classified in manifest"
                             )
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        failures.extend(forbidden_finite_process_lines(rel, content.splitlines()))
 
     if bad_owners:
         print("execution-ownership: manifest has unknown owners:")
