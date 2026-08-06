@@ -25,17 +25,17 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | Corrective C002 ready; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 conditionally closed | Production roadmap implementation is complete. C002 owns branch reconciliation, truthful PR metadata, one final hosted verify, one supported-Linux Landlock result, and the UTF-8 argv documentation disposition. |
+| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | Corrective C002 active; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 conditionally closed | Production roadmap implementation is complete. C002 owns branch reconciliation, truthful PR metadata, one final hosted verify, one supported-Linux Landlock result, and the UTF-8 argv documentation disposition. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | Corrective C002 — final integration and evidence closure | ready | `plans/implementation/runtime-safety-resource-footprint/010-final-integration-and-evidence-closure.md` | M001–M008/C001 production dispositions accepted; PR #72 branch integration and two external evidence items remain. |
+| Runtime safety, resource control, and footprint | Corrective C002 — final integration and evidence closure | active | `plans/implementation/runtime-safety-resource-footprint/010-final-integration-and-evidence-closure.md` | M001–M008/C001 production dispositions accepted; PR #72 branch integration and two external evidence items are being closed. |
 
 ## Active closure work
 
-No implementation is active yet. C002 is ready for handoff and is the sole registered runtime-safety item.
+C002 is the sole active runtime-safety item; its closure evidence is being gathered.
 
 ## Blocked work
 

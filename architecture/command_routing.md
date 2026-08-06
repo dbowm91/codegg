@@ -47,6 +47,11 @@ pub enum RoutingDecision {
 
 `RouteToGit` is the unified git routing variant, replacing the former pattern where `GitReadOnly` routed through `RouteToNativeTool` (egggit) and `GitMutating` routed through `RouteToManagedProcess`. All git commands now map to `RouteToGit`.
 
+Native routing carries the supported UTF-8 `NativeCommand` strings directly to
+the managed-process boundary. Empty, whitespace, quoted, and shell-special
+UTF-8 arguments remain literal; arbitrary non-UTF-8 Unix argv is outside the
+current string-based durable/protocol contract.
+
 ## Routing Resolution
 
 ```rust

@@ -24,11 +24,19 @@ The existing durable job schema already had separate typed argv and shell
 payloads, so no storage or protocol migration was required. No authority,
 scheduler, shell-parser framework, or user-facing command feature was added.
 
+The supported typed command representation is UTF-8 `String`/`Vec<String>`.
+It preserves every supported executable and argument value exactly through the
+planner, router, durable payload, and managed-process boundary, including empty,
+whitespace, quoting, and shell-special UTF-8 content. It does not promise
+arbitrary non-UTF-8 Unix argv/path bytes; that compatibility expansion is
+deferred product work because the current durable and protocol representations
+are string-based.
+
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| Typed executable and argv remain separate | `NativeCommand`; `ExecutionBackend::ManagedArgv`; `RoutingDecision::RouteToManagedProcess`; Bash adapter calls `full_argv()` only at the M002 boundary | pass |
+| Typed executable and UTF-8 argv remain separate | `NativeCommand`; `ExecutionBackend::ManagedArgv`; `RoutingDecision::RouteToManagedProcess`; Bash adapter calls `full_argv()` only at the M002 boundary | pass |
 | Quoted, whitespace, escaped, empty, and special arguments survive | `parse_shell_words`; shell-shape tests for quoted spaces, escaped spaces, empty arguments, literal shell characters, and quoted newline/tab | pass |
 | Native execution does not shell-expand arguments | Native dispatch constructs `ManagedProcessRequest` from typed argv; no `sh -c` in native/managed routes | pass |
 | No lossy native reparsing | `scripts/check_execution_ownership.py --self-test` and regular guard; governed source paths contain no argv whitespace reconstruction | pass |
@@ -115,6 +123,8 @@ string and optional shell invocation argv. Existing explicit shell commands,
 Git managed fallbacks, scheduler job payloads, and public output annotations
 remain compatible. Diagnostic command rendering now quotes values that would
 otherwise be ambiguous, without changing the executed argv.
+Arbitrary non-UTF-8 Unix argv remains outside the current string-based
+durable/protocol contract and is not silently claimed as supported.
 
 ## 8. Security review
 

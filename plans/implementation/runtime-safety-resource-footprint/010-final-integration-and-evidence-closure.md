@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Corrective C002 — Final Integration and Evidence Closure
 
-Status: ready
+Status: active
 
 Source subsystem roadmap:
 

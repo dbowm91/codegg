@@ -27,6 +27,12 @@ pub struct NativeCommand {
 }
 ```
 
+`NativeCommand` is lossless for the supported UTF-8 command representation:
+the executable and each argument remain separate strings through planning and
+managed execution. The current durable/protocol boundary does not represent
+arbitrary non-UTF-8 Unix argv/path bytes; such compatibility is deferred rather
+than silently treated as lossless.
+
 `GitExecutionRequest` carries a typed git operation (from codegg-git's parser), the raw argv, the command origin, and a risk set — replacing the former `NativeTool { "egggit" }` (for reads) and `GitMutating { "git", argv }` (for mutations) with a unified backend. All git commands — both reads and mutations — now plan through `ExecutionBackend::Git`.
 
 Methods: `label()` → `&str`, `is_executable()` → `bool`.
