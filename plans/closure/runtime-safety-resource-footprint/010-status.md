@@ -9,7 +9,7 @@ Source subsystem roadmap: `plans/subsystems/runtime-safety-resource-footprint-ro
 Pull request: [#72](https://github.com/dbowm91/codegg/pull/72), branch
 `planning/runtime-safety-resource-footprint`
 
-Final reconciled PR head under verification: `26483e1bd49adad43627e9ebedac63832b2dfdbf`
+Final reconciled production-code head under verification: `ab3e17a64b6f9c13d04cceb1eebb51add78e875b`
 
 Final production-code revision: `ab3e17a64b6f9c13d04cceb1eebb51add78e875b`
 
