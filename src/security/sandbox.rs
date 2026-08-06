@@ -334,7 +334,7 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 pub fn probe_landlock() -> Result<(), String> {
-    use landlock::{Access, AccessFs, CompatLevel, Compatible, Ruleset, ABI};
+    use landlock::{AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
     Ruleset::default()
         .handle_access(AccessFs::from_read(ABI::V1))
         .map_err(|e| format!("Landlock access selection failed: {e}"))?
@@ -352,7 +352,7 @@ pub fn probe_landlock() -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
     use landlock::{
-        Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+        AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
