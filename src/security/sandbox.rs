@@ -301,6 +301,20 @@ fn resolve_trusted_helper(current: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "CodeGG executable has no installation directory".to_string())?
         .canonicalize()
         .map_err(|error| format!("CodeGG installation directory could not be resolved: {error}"))?;
+    // Cargo places unit-test executables in `target/debug/deps`, while the
+    // sibling helper is built in `target/debug`. This adjustment is compiled
+    // only into test builds; installed production binaries retain the strict
+    // same-directory trust rule above.
+    #[cfg(test)]
+    let install_root = if install_root.file_name().is_some_and(|name| name == "deps") {
+        install_root
+            .parent()
+            .ok_or_else(|| "Cargo test executable has no target directory".to_string())?
+            .canonicalize()
+            .map_err(|error| format!("Cargo target directory could not be resolved: {error}"))?
+    } else {
+        install_root
+    };
     let candidate = install_root.join("codegg-sandbox-helper");
     let helper = candidate
         .canonicalize()
@@ -336,9 +350,9 @@ fn resolve_executable(path: &Path) -> Option<PathBuf> {
 pub fn probe_landlock() -> Result<(), String> {
     use landlock::{AccessFs, CompatLevel, Compatible, Ruleset, RulesetAttr, ABI};
     Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(AccessFs::from_read(ABI::V1))
         .map_err(|e| format!("Landlock access selection failed: {e}"))?
-        .set_compatibility(CompatLevel::HardRequirement)
         .create()
         .map(|_| ())
         .map_err(|e| format!("Landlock unavailable: {e}"))
@@ -356,11 +370,17 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
-    let abi = ABI::V9;
+    // ABI 1 is the minimum Landlock filesystem contract and is available on
+    // every Landlock-capable kernel. Newer rights are intentionally not
+    // requested dynamically: a partial ruleset must never be reported as
+    // enforced, and the helper's outcome still records the kernel's
+    // effective ABI for observability.
+    let abi = ABI::V1;
     let read_access = AccessFs::from_read(abi);
     let write_access = AccessFs::from_all(abi);
     let handled = AccessFs::from_all(abi);
     let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
         .handle_access(handled)
         .map_err(|e| format!("Landlock ruleset access selection failed: {e}"))?
         .create()
@@ -393,7 +413,6 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
     }
 
     let status = ruleset
-        .set_compatibility(CompatLevel::HardRequirement)
         .restrict_self()
         .map_err(|e| format!("Landlock restriction failed: {e}"))?;
     if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
