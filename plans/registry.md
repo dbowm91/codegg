@@ -31,7 +31,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | Corrective C002 — final integration and evidence closure | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/010-final-integration-and-evidence-closure.md` | PR #72 is reconciled and ready; only the named supported-Linux Landlock evidence capture remains. |
 
 ## Active closure work
 
@@ -95,6 +94,7 @@ These rows preserve only the latest closed control points. Detailed predecessor 
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Latest closure linked from source roadmap |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Latest closure linked from source roadmap |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Latest closure linked from source roadmap |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
 
 ## Deferred unregistered product work
 

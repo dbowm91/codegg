@@ -9,19 +9,20 @@ Source subsystem roadmap: `plans/subsystems/runtime-safety-resource-footprint-ro
 Pull request: [#72](https://github.com/dbowm91/codegg/pull/72), branch
 `planning/runtime-safety-resource-footprint`
 
-Final reconciled PR head under verification: `8fdcf875a9ac2bf628cae16bdf381e8b036e861b`
+Final reconciled PR head under verification: `ab3e17a64b6f9c13d04cceb1eebb51add78e875b`
 
-Final production-code revision: `d781fdc0f4ab314b7faa485c1995e10af310d823`
+Final production-code revision: `ab3e17a64b6f9c13d04cceb1eebb51add78e875b`
 
 ## 1. Executive finding
 
 The final integration pass reconciled the branch with the remote `main`,
 corrected the workstream PR metadata, retained the accepted M001–M008/C001
-implementation, and fixed the Linux-only compile and current-Clippy defects
-exposed by hosted verification. The remaining conditional item is evidence
-capture for the supported-Linux Landlock fixture: the existing bounded CI job
-runs the fixture as part of workspace tests, but does not emit the kernel,
-effective ABI, or captured-vs-skipped fixture outcome needed by the plan.
+implementation, and fixed the Linux-only compile, current-Clippy, helper-path,
+and Landlock-ABI defects exposed by hosted verification. The remaining
+conditional item is evidence capture for the supported-Linux Landlock fixture:
+the existing bounded CI job runs the fixture as part of workspace tests, but
+does not emit the kernel, effective ABI, or captured-vs-skipped fixture outcome
+needed by the plan.
 
 No critical, high, or product-correctness medium finding remains open. No
 additional product milestone or C003 is warranted.
@@ -46,7 +47,7 @@ After reconciliation, `origin/main...HEAD` was `0 49`.
 |---|---|---|
 | Branch reconciled with remote `main` | Merge `27bf5ae6`; branch is no longer behind | Complete |
 | PR metadata and review state | PR #72 title/body describe the full workstream; PR is ready for review | Complete |
-| Normal hosted verification | CI run [#1402](https://github.com/dbowm91/codegg/actions/runs/31114404862) on final head `8fdcf875` | Pending hosted conclusion |
+| Normal hosted verification | CI run [#31115315986](https://github.com/dbowm91/codegg/actions/runs/31115315986) on `c9754f99` exposed eight Linux unit-test defects; corrective head `ab3e17a6` has run [#31118736389](https://github.com/dbowm91/codegg/actions/runs/31118736389) stuck in runner setup and was canceled before checkout | Pending a successful hosted conclusion |
 | Linux Landlock enforcement | Existing `sandbox_landlock` fixture is included in workspace tests; default CI does not expose kernel/ABI or skip/enforcement evidence | Conditional |
 | M003 argv wording | Implementation and architecture docs now state lossless supported UTF-8 representation and the arbitrary non-UTF-8 limitation | Complete |
 
@@ -58,6 +59,12 @@ After reconciliation, `origin/main...HEAD` was `0 49`.
   explicit shell routing.
 - Added the `PreparedLaunchArgv` alias required by current Clippy without
   changing the process contract.
+- Made Cargo unit-test helper discovery resolve `target/debug/deps` to the
+  test target's trusted `target/debug` sibling without changing production
+  installation resolution. Landlock now builds a hard-required ABI-1 ruleset
+  before adding paths, avoiding false `PartiallyEnforced` results on kernels
+  newer than Landlock but older than the crate's latest ABI; the helper still
+  reports the kernel's effective ABI.
 - Retained bounded grep admission/context extraction, dependency and parser
   maintenance, memory namespace corrections, the measured single-binary
   decision, and minimal CI/manual-release policy.
@@ -75,16 +82,20 @@ Passed locally on the reconciled tree:
 - sandbox-contract guard self-test and regular guard
 - `scripts/verify.sh quick`
 - workspace Clippy with `-D warnings` after the final process-result type alias
+- focused sandbox/Python tests and the ABI/helper-path correction
 
 The Darwin host cannot run the Linux-only `sandbox_landlock` fixture or provide
-Linux kernel evidence. The hosted CI result is the authoritative combined-tree
-verification once run #1401 completes.
+Linux kernel evidence. Hosted run `31115315986` reached the workspace test
+phase and failed on the now-corrected helper-path and ABI defects. Run
+`31118736389` failed during runner setup before checkout and supplies no
+repository evidence. A fresh normal PR-triggered run on `ab3e17a6` is required
+for the final hosted result.
 
 ## 6. Unresolved findings and promotion rule
 
 | Severity | Finding | Required action |
 |---|---|---|
-| medium evidence | Kernel version, effective Landlock ABI, and captured-vs-skipped fixture outcomes are not recoverable from the existing default CI log | Run only `cargo test --test sandbox_landlock -- --test-threads=1` on one Landlock-capable Linux host and record the required outcomes; then promote M001/M002/C001/M008 and this roadmap to strict `closed` |
+| medium evidence | Kernel version, effective Landlock ABI, and captured-vs-skipped fixture outcomes are not recoverable from the existing default CI log; one corrective hosted attempt also failed before checkout | Complete one successful normal hosted verify and run only `cargo test --test sandbox_landlock -- --test-threads=1` on one Landlock-capable Linux host, then promote M001/M002/C001/M008 and this roadmap to strict `closed` |
 | none | No production correctness or security finding was introduced by this pass | No corrective plan |
 
 This is the conditional-closure path explicitly allowed by C002. It is an

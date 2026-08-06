@@ -3,9 +3,10 @@
 Status: conditionally closed
 
 Current disposition: C002 completed branch reconciliation, PR metadata, local
-verification, and hosted-verification scheduling. M001/M002/C001/M008 retain
-one named supported-Linux Landlock evidence condition; M003/M004/M007 are
-closed. No critical, high, or product-correctness medium finding remains open.
+verification, and the corrective helper-path/Landlock-ABI implementation.
+M001/M002/C001/M008 retain one named supported-Linux Landlock evidence
+condition pending a successful hosted verify; M003/M004/M007 are closed. No
+critical, high, or product-correctness medium finding remains open.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
