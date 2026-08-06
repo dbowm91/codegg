@@ -111,6 +111,16 @@ The dependency graph was audited after reconciliation. M003 is already
 satisfied hard or interface dependency, so no additional plan became ready.
 The deferred arbitrary non-UTF-8 transport remains unregistered product work.
 
+Predecessor dispositions are recorded at:
+
+| Plan | Disposition record |
+|---|---|
+| M001 | `plans/closure/runtime-safety-resource-footprint/001-status.md` |
+| M002 | `plans/closure/runtime-safety-resource-footprint/002-status.md` |
+| M003 | `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` and `003-status.md` |
+| C001 | `plans/closure/runtime-safety-resource-footprint/009-status.md` |
+| M008 | `plans/closure/runtime-safety-resource-footprint/008-status.md` |
+
 The registry and roadmap retain one explicit conditional runtime-safety
 disposition, remove C002 from active/dependency-ready work, and link this
 record. C003 is not created.
