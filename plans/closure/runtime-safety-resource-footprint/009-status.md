@@ -194,3 +194,10 @@ the named supported-Linux evidence condition remains.
 Final recommendation: conditionally closed; promote C001 and M001/M002 to
 strict `closed` and M003 to `ready` after the one required supported-Linux
 enforcement result is recorded.
+
+## C002 final-integration addendum
+
+C002 reconciled PR #72 with remote `main` and retained C001's accepted helper
+trust-channel implementation. The final default CI job is not a substitute for
+the missing kernel/ABI and enforcement-versus-skip record, so C001 remains
+conditionally closed pending the one named supported-Linux fixture execution.

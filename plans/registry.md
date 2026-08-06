@@ -25,33 +25,35 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | closing | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | Corrective C002 active; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 conditionally closed | Production roadmap implementation is complete. C002 owns branch reconciliation, truthful PR metadata, one final hosted verify, one supported-Linux Landlock result, and the UTF-8 argv documentation disposition. |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 retain the single named Linux evidence condition | Implementation, reconciliation, documentation, and local verification are complete. The only remaining condition is one supported-Linux Landlock fixture record with kernel, ABI, and enforcement outcomes. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | Corrective C002 — final integration and evidence closure | active | `plans/implementation/runtime-safety-resource-footprint/010-final-integration-and-evidence-closure.md` | M001–M008/C001 production dispositions accepted; PR #72 branch integration and two external evidence items are being closed. |
+| Runtime safety, resource control, and footprint | Corrective C002 — final integration and evidence closure | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/010-final-integration-and-evidence-closure.md` | PR #72 is reconciled and ready; only the named supported-Linux Landlock evidence capture remains. |
 
 ## Active closure work
 
-C002 is the sole active runtime-safety item; its closure evidence is being gathered.
+C002 is conditionally closed; its single remaining evidence condition is recorded
+in `plans/closure/runtime-safety-resource-footprint/010-status.md`.
 
 ## Blocked work
 
-No registered runtime-safety plan is blocked. C002 can begin immediately.
+No registered runtime-safety plan is blocked. No downstream registered plan
+became newly ready in this closure pass.
 
 The supported-Linux Landlock fixture and final hosted verify are named C002 acceptance criteria. They are not reasons to add another workflow lane, evidence-transfer milestone, or release process.
 
 ## Execution order
 
-1. Execute C002 by merging current `main` into `planning/runtime-safety-resource-footprint` without force-rewriting the accepted 41-commit evidence chain.
+1. Execute C002 by merging current `main` into `planning/runtime-safety-resource-footprint` without force-rewriting the accepted evidence chain.
 2. Resolve duplicated planning history by retaining the latest closure state and preserve accepted production code unless `main` contains a newer independent correction.
 3. Correct PR #72 title/body to represent the complete M001–M008/C001 workstream and keep it draft until the reconciled head is stable.
 4. Use the existing normal PR-triggered `verify` workflow on the final reconciled head; do not add a workflow lane or matrix.
 5. Run the existing `sandbox_landlock` fixture once on a Landlock-capable Linux kernel, reusing the hosted run when it supplies real enforcement, kernel, ABI, and fixture evidence.
 6. Qualify M003 documentation to state that the current typed command model is lossless for the supported UTF-8 representation, not arbitrary non-UTF-8 Unix argv, unless source review proves an existing stronger public contract.
-7. Reconcile M001/M002/M003/C001/M008 closure records, add `plans/closure/runtime-safety-resource-footprint/010-status.md`, and promote the roadmap to strict `closed` only when the named evidence exists.
+7. Reconcile M001/M002/M003/C001/M008 closure records and the final C002 closure record; promote the roadmap to strict `closed` only when the named evidence exists.
 8. If Linux evidence alone remains unavailable, leave C002/M008 conditionally closed on that exact item and do not create C003.
 
 Promotion requires updating this registry rather than treating a conditionally closed workstream as implicitly complete.

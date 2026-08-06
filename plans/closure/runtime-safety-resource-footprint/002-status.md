@@ -171,3 +171,11 @@ M007, and M008 remain blocked by their independently listed dependencies.
   M001–M007.
 - No downstream status was silently changed; M004 and M005 remain the only
   dependency-ready runtime-safety plans.
+
+## C002 final-integration addendum
+
+C002 reconciled the accepted M002 implementation with remote `main` in merge
+`27bf5ae6` and scheduled the final PR verification on `d781fdc`. The hosted
+workspace test is not sufficient by itself to recover the required Linux
+kernel/ABI and enforcement-versus-skip evidence, so M002 remains conditionally
+closed on that single external evidence item.

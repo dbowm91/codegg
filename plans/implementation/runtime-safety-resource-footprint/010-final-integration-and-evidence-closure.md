@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Corrective C002 — Final Integration and Evidence Closure
 
-Status: active
+Status: conditionally closed
 
 Source subsystem roadmap:
 
@@ -18,7 +18,7 @@ Predecessor dispositions:
 - M008 — conditionally closed;
 - corrective C001 — conditionally closed.
 
-Repository baseline reviewed: `18ce24b9e3456692f2764967391823124537ff2a`
+Repository baseline reviewed: `27bf5ae6f172defaf1f0be79566d0f94f7859498`
 
 Pull request context: PR #72, branch `planning/runtime-safety-resource-footprint`
 

@@ -139,3 +139,12 @@ M001 is conditionally closed. Its production sandbox request/outcome contract is
 - Keep M002 blocked on strict M001 closure evidence; do not promote it implicitly.
 - Leave M003 and M006–M008 blocked on their existing dependencies.
 - Keep the runtime-safety roadmap `active` with M001 conditional and M004/M005 ready.
+
+## C002 final-integration addendum
+
+C002 reconciled the accepted M001 implementation with remote `main` in merge
+`27bf5ae6` and attached PR #72 to the final workstream verification. The
+supported-Linux condition remains unchanged: the existing default CI job does
+not expose the kernel, effective ABI, or captured-vs-skipped fixture outcome.
+M001 therefore remains conditionally closed pending one named Linux fixture
+record; no implementation defect or new corrective plan was found.

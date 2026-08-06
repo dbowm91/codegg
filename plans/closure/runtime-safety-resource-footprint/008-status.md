@@ -219,3 +219,11 @@ hard or interface dependency.
   became ready, and no new corrective plan was warranted.
 - Retained manual release ownership, one bounded CI job, the minimal quick/full
   verification policy, and the explicit future Linux evidence condition.
+
+## C002 final-integration addendum
+
+C002 completed the branch reconciliation, PR metadata correction, and final
+verification scheduling on `d781fdc`. M008 remains conditionally closed only
+because the existing bounded workflow does not emit the supported-Linux
+Landlock kernel, effective ABI, and fixture outcome details required for strict
+closure. No workflow lane, artifact mechanism, or C003 was added.
