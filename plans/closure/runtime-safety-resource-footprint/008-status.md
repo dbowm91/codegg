@@ -16,7 +16,10 @@ Implementation commits:
 
 - `20555d94` — reconcile runtime-safety documentation, static-guard ownership,
   and bounded local/hosted verification
-- closure/status transition commit is recorded in Git history with this record
+- `c29caf4` — record the conditional closure, roadmap disposition, and registry
+  audit
+- `d8ecd30` — remove the incidental internal grep batch count from the stable
+  tool contract
 
 ## 1. Executive finding
 
