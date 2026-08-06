@@ -91,7 +91,11 @@ pub struct ToolResult {
 }
 ```
 
-## Built-in Tools (40 total in default registry)
+## Built-in Tools
+
+The default registry contains the product's built-in tools; the exact visible
+set varies with configuration and optional features. Use the registry and
+`tool_search` documentation as the source of truth rather than a fixed count.
 
 ### File Operations
 

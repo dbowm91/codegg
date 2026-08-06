@@ -139,6 +139,24 @@ the handled Landlock rights; `deny_paths` is retained only for source
 compatibility and is not represented as a zero-access rule. Raw syscall
 numbers and handwritten access masks are not used.
 
+#### Platform and enforcement outcomes
+
+The maintained Landlock backend is supported on Linux hosts whose kernel
+exposes the required ABI and filesystem rules. The helper reports the
+effective ABI only after all rules are installed, full enforcement is active,
+and `no_new_privs` is set. A required sandbox request fails before the target
+starts when the helper is missing, the host cannot provide the required ABI,
+policy construction fails, or the status channel is incomplete. There is no
+silent downgrade from a required request.
+
+On non-Linux hosts, or on Linux hosts without usable Landlock, Python's
+portable fallback uses a sanitized environment, workspace-contained cwd, and
+snapshot-based post-execution checks. It is not an OS filesystem sandbox and
+must be reported as a fallback. Read-only profiles permit workspace/runtime
+reads; workspace-write profiles permit writes only under the workspace root.
+The daemon itself is never confined by a child-only Landlock policy: only the
+one-shot helper applies the policy to its target process.
+
 The typed launch contract distinguishes `Enforced { abi }`, unavailable,
 policy/setup failure, and disabled/fallback outcomes. Required requests must
 stop before target execution when the helper or kernel cannot enforce the

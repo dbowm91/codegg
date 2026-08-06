@@ -157,7 +157,7 @@ Gracefully closes the connection pool using async pool shutdown. The `self` para
 
 Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
 
-Migration versions v1-v30 are supported, covering:
+Migration versions v1-v35 are supported, covering:
 - v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
 - v2: Additional indexes
 - v3: cached_models table
@@ -215,6 +215,14 @@ Migration versions v1-v30 are supported, covering:
   locators, optional lineage keys, typed status, and catalog/workspace links.
   The last completed generation remains authoritative when a scan fails or is
   cancelled. Retention may prune old runs/observations but never catalog rows.
+- v30 adds bounded runtime-asset refresh provenance for restart/operator
+  continuity; snapshot bodies remain reconstructible from explicit context.
+- v31 adds provider lifecycle, reference, tombstone, and audit tables while
+  retaining the historical provider state as a compatibility projection.
+- v32 adds durable session/project projection streams, events, and checkpoints.
+- v33–v34 add the durable Tool Program domain and terminal notification claims.
+- v35 adds nullable typed lineage columns and an index for Tool Program child
+  jobs; existing rows remain compatible.
 
 ## See Also
 

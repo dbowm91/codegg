@@ -336,7 +336,8 @@ def main() -> int:
         if not is_classified(sites, rel):
             try:
                 content = path.read_text(encoding="utf-8")
-            except OSError:
+            except OSError as error:
+                failures.append(f"{rel}: could not read source for ownership scan: {error}")
                 continue
             lines = content.splitlines()
             for i, line in enumerate(lines):
@@ -355,7 +356,8 @@ def main() -> int:
                             )
         try:
             content = path.read_text(encoding="utf-8")
-        except OSError:
+        except OSError as error:
+            failures.append(f"{rel}: could not read source for boundary scan: {error}")
             continue
         failures.extend(forbidden_finite_process_lines(rel, content.splitlines()))
         failures.extend(forbidden_lossy_argv_lines(rel, content.splitlines()))

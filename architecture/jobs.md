@@ -82,12 +82,13 @@ Terminal states never transition. `AttemptState::Interrupted` is used during dae
 
 ## Storage Schema
 
-Migration v23 adds five tables. Domain Identity migration v25 adds the
-canonical project/repository binding tables, Provider Connections
-migration v26 adds provisioning/health/model catalog state, and
-Provider Connections migration v27 adds optional session
-connection/model selection columns (additive on `sessions`).
-`STORAGE_LAYOUT_VERSION = 27`.
+Migration v23 adds the workspace/catalog marker and migration v24 adds the
+provider connection tables. Domain Identity migration v25 adds the canonical
+project/repository binding tables; migration v26 adds provider
+provisioning/health/model catalog state. Later additive migrations add project
+catalog/discovery metadata (v28–v30), provider lifecycle/reference/tombstone
+state (v31), projection replay state (v32), Tool Program state (v33–v34), and
+typed child-job lineage columns (v35). `STORAGE_LAYOUT_VERSION = 35`.
 
 ```sql
 CREATE TABLE job (

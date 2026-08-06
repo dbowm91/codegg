@@ -59,6 +59,12 @@ For each match, the guard requires either:
 
 Adding a new unclassified site fails CI.
 
+The guard is fail-closed for malformed manifests, forbidden owner classes,
+unreadable production source, unclassified spawn/dispatch sites, unbounded
+finite-process collection, and lossy argv reparsing. Its `--self-test` checks
+one negative output-collection fixture and one negative argv fixture; the
+normal invocation scans the checked-in source and manifest.
+
 For the finite scheduler-governed command surfaces (`src/tool/bash.rs`,
 `src/python_script/executor.rs`, and `src/scheduler/executors.rs`), the guard
 also rejects `.output()`, `.wait_with_output()`, and direct process creation

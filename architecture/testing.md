@@ -1,6 +1,11 @@
 # Testing Architecture
 
-Codegg's test suite contains ~409 tests across 162 files with wildly different resource profiles. Unbounded parallelism has been observed to spawn 50-70 threads plus many subprocesses, with some processes consuming 1-2 GiB of memory. The canonical verification commands use limited parallelism:
+CodeGG's workspace test suite has substantially different resource profiles.
+Unbounded parallelism has been observed to spawn many threads plus subprocesses,
+with some processes consuming substantial memory. The repository intentionally
+does not maintain a fragile exact global test total; command output at a
+specific revision is the authoritative count. The canonical verification
+commands use limited parallelism:
 
 ```bash
 scripts/verify.sh quick    # cheap sanity for ordinary iteration
@@ -17,7 +22,7 @@ This document defines the test taxonomy, resource model, and guidance for adding
 | `storage` | SQLite pool ops, session CRUD, snapshot capture/restore | Serial or low parallelism | `tests/session_crud.rs`, `tests/snapshot.rs`, `goal::store` |
 | `process-heavy` | Fake LSP stdio, supervisor restart, daemon sockets, subprocess spawning | Serial (`--test-threads=1`) | `tests/lsp.rs`, `tests/lsp_composite_stdio.rs`, `tests/supervisor_restart_stdio.rs` |
 | `plugin-heavy` | Wasmtime runtime, plugin install/registry/management | Serial | `tests/plugin.rs`, `src/plugin/management.rs` |
-| `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs` (139), `tests/python_sandbox_adversarial.rs` (57), `tests/context_projection_adversarial.rs` (90) |
+| `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs`, `tests/python_sandbox_adversarial.rs`, `tests/context_projection_adversarial.rs` |
 | `workspace` | Two-workspace isolation and unbound session rejection | Serial | `tests/workspace_isolation.rs` |
 | `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
 | `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` (adds clippy, production-feature check) |
@@ -126,7 +131,13 @@ Classify every new test against these resource classes before writing it:
 | `workspace` | `current_thread` | `isolated_pool()` | Serial | Default | Workspace isolation, unbound session rejection |
 | `release-full` | varies | varies | Serial | Default | Full workspace `--all-features` sweep |
 
-**Quick decision**: If the test spawns `tokio::process::Command` or `tokio::spawn`, use `multi_thread`. If it touches SQLite, use `isolated_pool()`. If it needs installed binaries, it's `real-lsp` (never in default CI). Adversarial tests (command routing, Python sandbox, context projection) are `current_thread` and serial — they exercise security boundaries with crafted inputs.
+**Quick decision**: If the test spawns `tokio::process::Command` or needs
+concurrent background tasks, use an explicitly bounded `multi_thread` runtime;
+otherwise prefer `current_thread`. If it touches SQLite, use
+`isolated_pool()`. If it needs installed binaries, it is `real-lsp` (never in
+default CI). Test binaries that require serial resource use run with
+`--test-threads=1`; this does not imply that every async test uses a
+single-threaded Tokio runtime.
 
 ## Local Commands
 
@@ -222,7 +233,12 @@ The job runs these steps in order:
 6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
 7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-These steps match the commands in `scripts/verify.sh quick` (steps 1-5) and `scripts/verify.sh full` (steps 1-7 plus a production-feature check). CI runs a subset of the full verification — it omits the production-feature compile check (`server,plugins,lsp-test-support`) because that requires `--features` which is heavier than default-feature compilation.
+The local quick script additionally runs the generated-agent checks, YAML
+parser boundary, sandbox contract, and execution-ownership guard before the
+workspace check. CI runs the same cheap boundary guards in its single job,
+then adds Clippy and the workspace tests. CI omits the production-feature
+compile check (`server,plugins,lsp-test-support`) because that requires
+`--features` and is heavier than default-feature compilation.
 
 Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally via the change-specific matrix documented in `scripts/verify.sh` and this file.
 
@@ -274,14 +290,16 @@ See `AGENTS.md` for the full test command catalog.
 
 ## CI Lane Roadmap Decision
 
-**Decision: Conservative keep** — maintain the current single-job serial test lane.
+**Decision: Conservative keep** — maintain the current single-job bounded test lane.
 
-The closure pass evaluation determined that splitting the CI into resource lanes (fast, storage, process-heavy, plugin-heavy) would add complexity without sufficient benefit at the current test count (~1,219 tests). The conservative approach is retained because:
+The closure pass evaluation determined that splitting CI into resource lanes
+(fast, storage, process-heavy, plugin-heavy) would add complexity without a
+concrete measured need. The conservative approach is retained because:
 
 1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
 2. **Regression guards are in place** — `check-tokio-test-flavors.py` prevents new bare tokio tests, and `audit_tokio_tests.py` identifies concurrency-sensitive tests.
 3. **Limited parallelism is reliable** — `--test-threads=1` balances speed with resource control.
-4. **Wall-clock is acceptable** — the full serial suite completes within CI timeout limits.
+4. **Wall-clock is acceptable** — the bounded suite completes within CI timeout limits.
 
 ### Future Considerations
 

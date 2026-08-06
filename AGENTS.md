@@ -72,12 +72,12 @@ Changes to server/plugin modules need `--all-features` testing. LSP integration 
 
 ## Test Resource Budget
 
-The workspace test matrix is large (~409 tests across 162 files). Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
+The workspace test matrix is large and has substantially different resource profiles. Prefer the narrowest crate, test file, or test name that covers a change before reaching for a workspace-wide run.
 
 The canonical local entry points are `scripts/verify.sh quick` and `scripts/verify.sh full`. When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=14
+CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
 ```
 
 `--test-threads=14` limits concurrent test execution per binary. `CARGO_BUILD_JOBS=1` prevents the compile/link fan-out that drives the RAM and iowait spikes.
@@ -199,7 +199,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ## CI Pipeline
 
-CI runs on push/PR to `main` (pull requests only; direct `dev` pushes no longer trigger routine CI). One bounded `verify` job checks generated agent assets, tokio test-flavor guard self-test, tokio test-flavor baseline regression, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, parser/sandbox/execution static guards, tokio test-flavor guards, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 
