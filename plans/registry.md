@@ -23,42 +23,32 @@ Canonical direction remains in:
 
 ## Active subsystem roadmaps
 
-| Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
-|---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M008 blocked; M007 closed; C001/M001/M002 conditionally closed; M003/M004 closed; M005/M006 conditionally closed | M007 no-split closure accepted; supported-Linux Landlock evidence remains an operational requirement for final M008 closure |
+No runtime-safety subsystem roadmap remains active. Its roadmap is retained as
+the durable workstream index with a conditionally closed status.
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Status | Implementation plan | Dependencies |
-|---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | closed | `plans/closure/runtime-safety-resource-footprint/003-status.md` | Production implementation `bc3efd8`; no unresolved M003 finding |
+No runtime-safety implementation plan is currently dependency-ready.
 
-## Runtime-safety milestone dispositions
+## Active closure work
 
-| Milestone | Status | Closure | Promotion decision |
-|---|---|---|---|
-| M001 — Landlock and sandbox contract correction | conditionally closed | `plans/closure/runtime-safety-resource-footprint/001-status.md` | C001 production correction is accepted; one supported-Linux enforcement result remains for strict closure but does not block M003 |
-| M002 — canonical bounded process execution | conditionally closed | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Production implementation landed in `6e5fbfd`; its executable/argv and managed-process interface is accepted for M003; strict sandbox evidence remains operational |
-| M003 — typed argv and shell-routing convergence | closed | `plans/closure/runtime-safety-resource-footprint/003-status.md` | `bc3efd8` accepted; no unresolved M003 finding; M007 promoted to ready |
-| M004 — grep concurrency and context efficiency | closed | `plans/closure/runtime-safety-resource-footprint/004-status.md` | Included as a soft input to final M007 measurements |
-| M005 — dependency feature and namespace normalization | conditionally closed | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Production and hosted verification steps passed; runner cache/post-step disk exhaustion is operational evidence and is not an independent M007 implementation blocker |
-| M006 — deprecated parser and dependency maintenance | conditionally closed | `plans/closure/runtime-safety-resource-footprint/006-status.md` | Production and local full verification are accepted; unavailable exact-revision hosted dispatch is operational evidence and is not an independent M007 implementation blocker |
-| M007 — binary topology and footprint reduction | closed | `plans/closure/runtime-safety-resource-footprint/007-status.md` | `d1cf4db` accepted; measured no-split decision; no feature deletion or topology migration |
-| Corrective C001 — sandbox helper trust channel and roadmap unblock | conditionally closed | `plans/closure/runtime-safety-resource-footprint/009-status.md`; promotion: `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` | Production correction and independent security review passed; supported-Linux enforcement evidence remains for strict closure and M008, not for M003 implementation |
+No runtime-safety closure work remains active. M008 is recorded under recently
+closed work as conditionally closed because its named external evidence is not
+available on this host.
 
 ## Blocked work
 
-| Subsystem | Milestone | Status | Implementation plan | Blocker |
-|---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M007 is accepted; M001/M002/C001 conditional records and the supported-Linux Landlock result must still be reconciled |
+No registered runtime-safety work is blocked. The supported-Linux Landlock
+fixture and final hosted verify remain evidence conditions for strict closure,
+not unregistered implementation work.
 
 ## Execution order
 
-1. M003 is closed against the accepted M002 executable/argv and managed-process interface.
-2. Keep the supported-Linux Landlock fixture as an operational closure item. Run it when a suitable Linux host or normal hosted path is available; do not delay M003 or create another corrective milestone.
-3. M007 is closed with a measured no-split result using the accepted M002/M003/M004/M005/M006 production state.
-4. Promote M008 after the supported-Linux Landlock result is recorded; M007 is no longer a blocker.
-5. During M008, reconcile M001/M002/C001 strict closure, compact the registry, and retain manual release plus minimal verification policy.
+1. Keep the supported-Linux Landlock fixture as an operational evidence item;
+   run it on one Landlock-capable Linux host when available.
+2. If the fixture and final hosted verify later pass, update the existing
+   closure records with factual evidence and promote the roadmap to strict
+   `closed`; do not create another implementation milestone for that evidence.
 
 Promotion requires updating this registry rather than treating a blocked plan as implicitly ready.
 
@@ -87,6 +77,7 @@ These rows preserve only the latest closed control points. Detailed predecessor 
 
 | Subsystem | Status | Latest controlling document | Closure |
 |---|---|---|---|
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | `plans/closure/runtime-safety-resource-footprint/008-status.md` |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | `plans/closure/tool-programs/019-status.md`; corrective M020 also closed |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | `plans/closure/provider-connections/007-status.md` |

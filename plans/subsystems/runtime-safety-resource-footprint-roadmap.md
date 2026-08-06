@@ -1,8 +1,12 @@
 # Runtime Safety, Resource Control, and Footprint Roadmap
 
-Status: active
+Status: conditionally closed
 
-Current disposition: C001 is conditionally closed for production correctness pending one supported-Linux enforcement result; M001 and M002 retain linked conditional dispositions; M003 and M004 closed; M005/M006 hosted conditions are operational; M007 is closed with a measured no-split decision and M008 remains blocked on the supported-Linux condition.
+Current disposition: M008 is conditionally closed for production and governance
+reconciliation. M001/M002/C001 retain one named supported-Linux Landlock evidence
+condition; M003/M004/M007 are closed; M005/M006 hosted conditions remain
+operational evidence conditions. No critical, high, or product-correctness
+medium finding remains open.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
 
@@ -214,6 +218,8 @@ Dependency classes:
 
 ### Milestone 001 — Maintained Landlock enforcement and sandbox-contract correction
 
+Status: conditionally closed; see `plans/closure/runtime-safety-resource-footprint/001-status.md` and corrective C001.
+
 Class: invariant and security correctness
 
 Implementation plan:
@@ -234,6 +240,8 @@ Exit conditions:
 - focused Linux tests skip only for a recorded unsupported-kernel reason.
 
 ### Milestone 002 — Canonical bounded process execution and process-tree cleanup
+
+Status: conditionally closed; see `plans/closure/runtime-safety-resource-footprint/002-status.md` and corrective C001.
 
 Class: invariant and infrastructure
 
@@ -276,6 +284,8 @@ Exit conditions:
 - focused tests cover representative argv and fallback cases.
 
 ### Milestone 004 — Grep concurrency and context-extraction correctness
+
+Status: closed; see `plans/closure/runtime-safety-resource-footprint/004-status.md`.
 
 Class: infrastructure and performance correctness
 
@@ -363,6 +373,8 @@ Exit conditions:
 - if not implemented, the plan closes with a measured no-split decision rather than forcing architecture churn.
 
 ### Milestone 008 — Planning, verification, and maintenance closure
+
+Status: conditionally closed; see `plans/closure/runtime-safety-resource-footprint/008-status.md`.
 
 Class: polish and governance
 
@@ -508,3 +520,17 @@ The recommended execution order is:
 7. M008 after all production milestones close.
 
 Agents should implement one milestone plan at a time, inspect current code before editing, preserve unrelated changes, and stop rather than redesign adjacent subsystems when a plan's stated boundary is insufficient.
+
+## 13. Milestone status table
+
+| Milestone | Status | Implementation plan | Closure record | Remaining condition |
+|---|---|---|---|---|
+| M001 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/001-landlock-and-sandbox-contract-correction.md` | `plans/closure/runtime-safety-resource-footprint/001-status.md` | Supported-Linux Landlock fixture |
+| M002 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/002-canonical-bounded-process-execution.md` | `plans/closure/runtime-safety-resource-footprint/002-status.md` | Inherits M001/C001 evidence condition |
+| M003 | closed | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | `plans/closure/runtime-safety-resource-footprint/003-status.md` | None |
+| M004 | closed | `plans/implementation/runtime-safety-resource-footprint/004-grep-concurrency-and-context-efficiency.md` | `plans/closure/runtime-safety-resource-footprint/004-status.md` | None |
+| M005 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | `plans/closure/runtime-safety-resource-footprint/005-status.md` | Hosted post-step operational evidence |
+| M006 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | `plans/closure/runtime-safety-resource-footprint/006-status.md` | Hosted-run availability evidence |
+| M007 | closed | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | `plans/closure/runtime-safety-resource-footprint/007-status.md` | None; no-split decision accepted |
+| C001 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/009-sandbox-helper-trust-channel-corrective-unblock.md` | `plans/closure/runtime-safety-resource-footprint/009-status.md` | Supported-Linux Landlock fixture |
+| M008 | conditionally closed | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | `plans/closure/runtime-safety-resource-footprint/008-status.md` | Supported-Linux fixture and final hosted verify |
