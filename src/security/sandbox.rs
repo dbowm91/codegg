@@ -353,7 +353,7 @@ pub fn probe_landlock() -> Result<(), String> {
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
     use landlock::{
         Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreatedAttr, RulesetStatus, ABI,
+        RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
     let abi = ABI::V9;
@@ -366,7 +366,7 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         .create()
         .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
 
-    let mut add_path = |path: &Path, access| -> Result<(), String> {
+    let add_path = |ruleset: RulesetCreated, path: &Path, access| {
         if !path.exists() {
             return Err(format!(
                 "required sandbox path does not exist: {}",
@@ -380,17 +380,16 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         } else {
             access
         };
-        ruleset = ruleset
+        ruleset
             .add_rule(PathBeneath::new(fd, access))
-            .map_err(|e| format!("add sandbox rule {}: {e}", path.display()))?;
-        Ok(())
+            .map_err(|e| format!("add sandbox rule {}: {e}", path.display()))
     };
 
     for path in &spec.read_paths {
-        add_path(path, read_access)?;
+        ruleset = add_path(ruleset, path, read_access)?;
     }
     for path in &spec.write_paths {
-        add_path(path, write_access)?;
+        ruleset = add_path(ruleset, path, write_access)?;
     }
 
     let status = ruleset
