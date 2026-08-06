@@ -352,7 +352,7 @@ pub fn probe_landlock() -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
     use landlock::{
-        AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
