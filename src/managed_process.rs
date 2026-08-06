@@ -577,21 +577,20 @@ async fn run_inner(
     })
 }
 
+type PreparedLaunchArgv = (
+    Vec<OsString>,
+    Option<tempfile::NamedTempFile>,
+    Option<tokio::fs::File>,
+    Option<SandboxStatusWriter>,
+);
+
 fn prepare_launch_argv(
     executable: &OsString,
     argv: &[OsString],
     _cwd: &PathBuf,
     sandbox: &SandboxRequest,
     #[cfg(test)] helper_override: Option<&Path>,
-) -> Result<
-    (
-        Vec<OsString>,
-        Option<tempfile::NamedTempFile>,
-        Option<tokio::fs::File>,
-        Option<SandboxStatusWriter>,
-    ),
-    ManagedProcessError,
-> {
+) -> Result<PreparedLaunchArgv, ManagedProcessError> {
     let full_argv = std::iter::once(executable.clone())
         .chain(argv.iter().cloned())
         .collect::<Vec<_>>();
