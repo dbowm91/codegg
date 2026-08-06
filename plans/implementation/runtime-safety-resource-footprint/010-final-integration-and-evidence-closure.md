@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Corrective C002 — Final Integration and Evidence Closure
 
-Status: conditionally closed
+Status: implemented — see `plans/closure/runtime-safety-resource-footprint/010-status.md`
 
 Source subsystem roadmap:
 

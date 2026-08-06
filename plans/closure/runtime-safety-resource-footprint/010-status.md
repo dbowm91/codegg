@@ -9,7 +9,9 @@ Source subsystem roadmap: `plans/subsystems/runtime-safety-resource-footprint-ro
 Pull request: [#72](https://github.com/dbowm91/codegg/pull/72), branch
 `planning/runtime-safety-resource-footprint`
 
-Final production revision under verification: `d781fdc0f4ab314b7faa485c1995e10af310d823`
+Final reconciled PR head under verification: `8fdcf875a9ac2bf628cae16bdf381e8b036e861b`
+
+Final production-code revision: `d781fdc0f4ab314b7faa485c1995e10af310d823`
 
 ## 1. Executive finding
 
@@ -44,7 +46,7 @@ After reconciliation, `origin/main...HEAD` was `0 49`.
 |---|---|---|
 | Branch reconciled with remote `main` | Merge `27bf5ae6`; branch is no longer behind | Complete |
 | PR metadata and review state | PR #72 title/body describe the full workstream; PR is ready for review | Complete |
-| Normal hosted verification | CI run [#1401](https://github.com/dbowm91/codegg/actions/runs/31113996941) on `d781fdc`; final conclusion is recorded when the run completes | Pending hosted conclusion |
+| Normal hosted verification | CI run [#1402](https://github.com/dbowm91/codegg/actions/runs/31114404862) on final head `8fdcf875` | Pending hosted conclusion |
 | Linux Landlock enforcement | Existing `sandbox_landlock` fixture is included in workspace tests; default CI does not expose kernel/ABI or skip/enforcement evidence | Conditional |
 | M003 argv wording | Implementation and architecture docs now state lossless supported UTF-8 representation and the arbitrary non-UTF-8 limitation | Complete |
 

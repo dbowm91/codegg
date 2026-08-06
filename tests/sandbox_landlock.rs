@@ -94,9 +94,11 @@ fn base_spec(root: &Path, script: &str, writable: bool) -> SandboxLaunchSpec {
         target,
         args: vec!["-c".to_string(), script.to_string()],
         read_paths,
-        write_paths: writable
-            .then(|| vec![root.to_path_buf()])
-            .unwrap_or_default(),
+        write_paths: if writable {
+            vec![root.to_path_buf()]
+        } else {
+            Vec::new()
+        },
     }
 }
 
