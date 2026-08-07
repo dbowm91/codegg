@@ -191,7 +191,7 @@ Require live daemon identity before signalling and replace handwritten JSON esca
 
 ### M003 — TUI text-layout correctness and render deduplication
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md`
 
