@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 001 — Landlock and Sandbox Contract Correction
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 

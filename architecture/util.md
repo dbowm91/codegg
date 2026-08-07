@@ -25,6 +25,10 @@ pub fn read_from_clipboard() -> Option<String>;
 
 **Feature Gate**: `arboard` must be enabled in Cargo.toml for clipboard support.
 
+The optional `arboard` dependency is configured with `default-features = false`:
+CodeGG uses its text clipboard API and does not enable arboard's image-data
+stack. This is independent of the separate `image` feature for TUI rendering.
+
 ### fuzzy.rs
 
 Fuzzy string matching utilities using `strsim` crate for Levenshtein distance.

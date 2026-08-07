@@ -130,50 +130,59 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    if let Ok(cfg) = serde_yaml::from_str::<CommandConfig>(&frontmatter) {
-        let is_process = cfg.runtime == Some(CommandRuntimeKind::Process);
-        let process = if is_process {
-            let command = cfg.command.ok_or_else(|| {
-                format!("command '{name}' has runtime 'process' but no 'command' field")
-            })?;
-            Some(ProcessCommandSpec {
-                command,
-                args: cfg.args.unwrap_or_default(),
-                stdin: cfg.stdin.unwrap_or_default(),
-                stdout: cfg.stdout.unwrap_or_default(),
-                timeout_ms: cfg.timeout_ms.unwrap_or(5000),
-                cwd: cfg.cwd,
-                env: cfg.env.unwrap_or_default(),
-                output: cfg.output.unwrap_or_default(),
-            })
-        } else {
-            None
-        };
-
-        let template = if cfg.template.is_empty() {
-            if is_process {
-                String::new()
+    let typed_error = match codegg_config::parse_yaml::<CommandConfig>(
+        path.display().to_string(),
+        frontmatter.as_bytes(),
+    ) {
+        Ok(cfg) => {
+            let is_process = cfg.runtime == Some(CommandRuntimeKind::Process);
+            let process = if is_process {
+                let command = cfg.command.ok_or_else(|| {
+                    format!("command '{name}' has runtime 'process' but no 'command' field")
+                })?;
+                Some(ProcessCommandSpec {
+                    command,
+                    args: cfg.args.unwrap_or_default(),
+                    stdin: cfg.stdin.unwrap_or_default(),
+                    stdout: cfg.stdout.unwrap_or_default(),
+                    timeout_ms: cfg.timeout_ms.unwrap_or(5000),
+                    cwd: cfg.cwd,
+                    env: cfg.env.unwrap_or_default(),
+                    output: cfg.output.unwrap_or_default(),
+                })
             } else {
-                body.trim().to_string()
-            }
-        } else {
-            cfg.template
-        };
+                None
+            };
 
-        #[allow(deprecated)]
-        return Ok(Command {
-            name,
-            description: cfg.description,
-            template,
-            agent: cfg.agent,
-            model: cfg.model,
-            subtask: cfg.subtask,
-            source: path.to_string_lossy().to_string(),
-            process,
-        });
-    }
+            let template = if cfg.template.is_empty() {
+                if is_process {
+                    String::new()
+                } else {
+                    body.trim().to_string()
+                }
+            } else {
+                cfg.template
+            };
 
-    if let Ok(cfg) = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter) {
+            #[allow(deprecated)]
+            return Ok(Command {
+                name,
+                description: cfg.description,
+                template,
+                agent: cfg.agent,
+                model: cfg.model,
+                subtask: cfg.subtask,
+                source: path.to_string_lossy().to_string(),
+                process,
+            });
+        }
+        Err(error) => error,
+    };
+
+    if let Ok(cfg) = codegg_config::parse_yaml::<serde_json::Value>(
+        path.display().to_string(),
+        frontmatter.as_bytes(),
+    ) {
         let runtime = cfg
             .get("runtime")
             .and_then(|v| v.as_str())
@@ -192,7 +201,7 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
                 command,
                 args: cfg
                     .get("args")
-                    .and_then(|v| v.as_sequence())
+                    .and_then(|v| v.as_array())
                     .map(|seq| {
                         seq.iter()
                             .filter_map(|v| v.as_str().map(String::from))
@@ -224,7 +233,7 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
                 cwd: cfg.get("cwd").and_then(|v| v.as_str()).map(String::from),
                 env: cfg
                     .get("env")
-                    .and_then(|v| v.as_sequence())
+                    .and_then(|v| v.as_array())
                     .map(|seq| {
                         seq.iter()
                             .filter_map(|v| v.as_str().map(String::from))
@@ -233,7 +242,7 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
                     .unwrap_or_default(),
                 output: cfg
                     .get("output")
-                    .and_then(|v| v.as_sequence())
+                    .and_then(|v| v.as_array())
                     .map(|seq| {
                         seq.iter()
                             .filter_map(|v| v.as_str().map(String::from))
@@ -274,7 +283,7 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
         });
     }
 
-    Err("failed to parse frontmatter".to_string())
+    Err(format!("failed to parse frontmatter: {typed_error}"))
 }
 
 pub fn resolve_commands_from_config(
@@ -440,6 +449,22 @@ mod tests {
         assert!(load_command_from_file(&tmp.path().join("nocfm.md"))
             .await
             .is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_malformed_yaml_reports_source_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        tokio::fs::write(
+            tmp.path().join("broken.md"),
+            "---\ndescription: [broken\n---\nbody",
+        )
+        .await
+        .unwrap();
+        let error = load_command_from_file(&tmp.path().join("broken.md"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("YAML compatibility"));
+        assert!(error.contains("line"));
     }
 
     #[tokio::test(flavor = "current_thread")]

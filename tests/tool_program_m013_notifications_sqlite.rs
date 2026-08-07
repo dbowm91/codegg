@@ -14,6 +14,7 @@ mod common;
 use codegg::scheduler::tool_program_notifications::{
     NotificationState, NotificationStoreError, ToolProgramNotificationService,
 };
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 fn make_notification(
@@ -40,7 +41,7 @@ fn make_notification(
         failure_class: None,
         success,
         classification,
-        payload_digest: format!("{:x}", md5::compute(program_id.as_bytes())),
+        payload_digest: format!("{:x}", Sha256::digest(program_id.as_bytes())),
         program_handle: codegg::scheduler::tool_program_notifications::ProgramHandle {
             program_id: program_id.to_string(),
             job_id: format!("j-{}", program_id),

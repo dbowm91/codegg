@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 002 — Canonical Bounded Process Execution
 
-Status: blocked on M001
+Status: implemented
 
 Source subsystem roadmap:
 
@@ -12,6 +12,8 @@ Hard dependency:
 - M001 — Landlock and sandbox contract correction must close so this milestone can carry the accepted sandbox request/outcome contract through the canonical executor.
 
 Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
+
+Implementation commit: `6e5fbfd`
 
 Primary class: execution invariant and shared infrastructure
 

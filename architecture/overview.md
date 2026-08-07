@@ -2,6 +2,18 @@
 
 CodeGG is a high-performance AI coding agent built in Rust, designed for terminal-based interaction with deep IDE and LSP integration. This document provides a bird's eye view of the entire system and serves as an index to detailed architecture documents.
 
+## Deployment topology
+
+The supported distribution remains one `codegg` executable per target. The
+daemon is a user-scoped singleton discovered and started by that executable;
+the TUI and daemon share the same business-logic libraries and invocation
+contracts. Runtime-safety milestone M007 measured the dependency and release
+profiles and retained this no-split topology because a daemon/TUI split did
+not produce a material deployment improvement without adding packaging or
+ownership complexity. Future role-specific binaries require a new measured
+deployment constraint and compatibility plan; they are not an advertised
+installation mode.
+
 ## System Architecture
 
 ```

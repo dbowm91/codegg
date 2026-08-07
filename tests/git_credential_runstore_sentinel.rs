@@ -97,7 +97,7 @@ fn persist_mutation_to_store(
         ownership: RunOwnership::DelegatedBackend,
         asset_provenance: None,
     };
-    futures::executor::block_on(async {
+    futures_executor::block_on(async {
         let handle = store.begin_run(draft).await.expect("begin_run");
         if !result.stdout.is_empty() {
             store

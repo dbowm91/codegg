@@ -98,7 +98,9 @@ The parser auto-detects portable vs native frontmatter. Direct `.md` files in `.
 ### Digest Computation
 
 Content digests are SHA-256 hashes computed over:
-1. Canonical frontmatter (serialized YAML)
+1. Existing frontmatter is read through the centralized YAML compatibility
+   codec; new generated configuration/assets use the subsystem's canonical
+   TOML or JSON/JSON5 format.
 2. Body with CRLF→LF normalization
 
 This ensures format-stable, content-stable digests across platforms.

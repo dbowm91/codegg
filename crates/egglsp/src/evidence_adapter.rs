@@ -39,7 +39,7 @@
 //!    validates that the recorded operation matches the caller's
 //!    expectation (a `debug_assert!` in debug builds; a documented
 //!    no-op match in release builds — the slot is still cleared).
-//! 3. No `tokio::join!`, `futures::join!`, or `tokio::spawn` may
+//! 3. No `tokio::join!`, `futures_util::join!`, or `tokio::spawn` may
 //!    invoke two provider methods on the same adapter concurrently.
 //!    Each `collect_context` / `collect_hunk_context` invocation in
 //!    [`crate::evidence_collector`] already obeys this contract —
@@ -982,7 +982,7 @@ mod tests {
 
     /// Pass 3: `collect_context` and `collect_hunk_context` dispatch
     /// provider calls sequentially — there is no `join!`, `tokio::spawn`,
-    /// or `futures::join_all` over the provider in the canonical
+    /// or `futures_util::join_all` over the provider in the canonical
     /// collector code. This test exercises the same sequential pattern
     /// against the adapter to verify the contract is observable: each
     /// call overwrites the previous provenance slot exactly once.

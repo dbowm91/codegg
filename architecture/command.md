@@ -75,6 +75,10 @@ pub struct CommandConfig {
 
 ### File Format (Markdown with YAML Frontmatter)
 
+Command frontmatter is a read-only compatibility input parsed through the
+centralized `codegg-config` document codec. New generated command definitions
+should use the canonical subsystem format.
+
 **Template command** (existing behavior):
 ```markdown
 ---

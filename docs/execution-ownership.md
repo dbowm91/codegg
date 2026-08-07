@@ -59,6 +59,25 @@ For each match, the guard requires either:
 
 Adding a new unclassified site fails CI.
 
+The guard is fail-closed for malformed manifests, forbidden owner classes,
+unreadable production source, unclassified spawn/dispatch sites, unbounded
+finite-process collection, and lossy argv reparsing. Its `--self-test` checks
+one negative output-collection fixture and one negative argv fixture; the
+normal invocation scans the checked-in source and manifest.
+
+For the finite scheduler-governed command surfaces (`src/tool/bash.rs`,
+`src/python_script/executor.rs`, and `src/scheduler/executors.rs`), the guard
+also rejects `.output()`, `.wait_with_output()`, and direct process creation
+that bypasses `ManagedProcessService`. Run
+`python3 scripts/check_execution_ownership.py --self-test` to verify the
+negative fixture remains rejected. The managed-process service itself is the
+only direct-spawn owner for these paths. Sandbox helper launches remain private
+one-shot plumbing beneath that service: helper identity is installation-owned,
+the launch spec is an owner-only temporary file outside target `cwd`, and
+setup/exec status travels over a bounded descriptor that is closed before the
+target `exec`. The Python interpreter-prefix probe is an annotated, 64 KiB-capped
+setup probe; it is not the user execution path.
+
 ## Migration trajectory
 
 The deferred-domain-executor sites are documented compatibility

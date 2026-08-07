@@ -108,7 +108,7 @@ reason = "ManagedProcessService is invoked only by ManagedArgvExecutor"
 [[site]]
 path = "src/test_runner/runner.rs"
 owner = "definition_or_adapter"
-reason = "resolve_and_run_test is invoked only by TestJobExecutor"
+reason = "resolve_and_run_test is invoked only by TestJobExecutor; explicit finite lifecycle exemption because line-oriented parser logs and stall-timeout supervision are domain-owned"
 
 [[site]]
 path = "src/job_dispatcher.rs"

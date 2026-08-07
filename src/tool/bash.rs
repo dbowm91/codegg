@@ -3,11 +3,9 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-
-use std::time::Duration;
-use tokio::process::Command;
 
 use crate::command_intent::{classify_command, CommandIntentKind};
 use crate::command_outcome::{
@@ -16,6 +14,7 @@ use crate::command_outcome::{
 use crate::command_planner::plan_execution;
 use crate::command_planner::CommandPlan;
 use crate::command_planner::ExecutionBackend;
+use crate::command_planner::NativeCommand;
 use crate::command_routing::resolve_routing;
 use crate::command_routing::RoutingDecision;
 use crate::config::schema::CommandIntentConfig;
@@ -26,6 +25,7 @@ use crate::preflight::{PreflightDecision, PreflightService};
 use crate::python_script::{PythonExecutionMode, PythonScriptRequest};
 use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
 use crate::tool::{Tool, ToolCategory};
+use std::time::Duration;
 
 /// What a single dispatch returned: the result text, raw process output,
 /// the actual executor that ran it, and an optional `RunId` proving that
@@ -44,6 +44,42 @@ pub struct DispatchOutcome {
 }
 
 const MAX_COMMAND_LENGTH: usize = 100_000;
+
+fn bash_environment_policy() -> crate::managed_process::EnvironmentPolicy {
+    let preserved = [
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "CARGO_INCREMENTAL",
+        "CARGO_TERM_COLOR",
+        "CARGO_TERM_PROGRESS",
+        "RUSTFLAGS",
+        "RUSTDOCFLAGS",
+        "NVM_DIR",
+        "PYENV_ROOT",
+        "VIRTUAL_ENV",
+        "PYTHONPATH",
+        "JAVA_HOME",
+        "GOPATH",
+        "GOBIN",
+    ];
+    let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
+    for name in preserved {
+        policy = policy.allow_inherited_var(OsString::from(name));
+    }
+    for (name, _) in std::env::vars() {
+        if name.starts_with("CARGO_PROFILE_") || name.starts_with("npm_config_") {
+            policy = policy.allow_inherited_var(OsString::from(name));
+        }
+    }
+    policy
+}
 
 /// Routing metadata attached to bash output when command intent routing is enabled.
 #[derive(Debug, Clone)]
@@ -505,58 +541,57 @@ impl BashTool {
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<(String, std::process::Output), ToolError> {
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new("sh");
-            cmd.env_clear();
-            let preserve_vars = [
-                "PATH",
-                "HOME",
-                "USER",
-                "SHELL",
-                "LANG",
-                "LC_ALL",
-                "TERM",
-                "CARGO_HOME",
-                "RUSTUP_HOME",
-                "CARGO_INCREMENTAL",
-                "CARGO_TERM_COLOR",
-                "CARGO_TERM_PROGRESS",
-                "RUSTFLAGS",
-                "RUSTDOCFLAGS",
-                "CARGO_PROFILE_*",
-                "npm_config_*",
-                "NVM_DIR",
-                "PYENV_ROOT",
-                "VIRTUAL_ENV",
-                "PYTHONPATH",
-                "JAVA_HOME",
-                "GOPATH",
-                "GOBIN",
-            ];
-            for var in &preserve_vars {
-                if let Some(prefix) = var.strip_suffix('*') {
-                    for (key, value) in std::env::vars() {
-                        if key.starts_with(prefix) {
-                            cmd.env(&key, &value);
-                        }
-                    }
-                } else if let Some(value) = std::env::var_os(var) {
-                    cmd.env(var, &value);
+        let cwd_owned = canonical_workdir
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok());
+        let cwd = cwd_owned.clone().ok_or_else(|| {
+            ToolError::Execution("managed shell cwd could not be resolved".into())
+        })?;
+        let sandbox = if let Some(config) = self.landlock_sandbox.as_ref() {
+            if config.enabled {
+                let args = vec!["-c".to_string(), command.to_string()];
+                crate::managed_process::SandboxRequest::Required(config.launch_spec(
+                    "sh",
+                    &args,
+                    Some(&cwd),
+                )?)
+            } else {
+                crate::managed_process::SandboxRequest::Disabled
+            }
+        } else {
+            crate::managed_process::SandboxRequest::Disabled
+        };
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            vec!["sh".into(), "-c".into(), command.into()],
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.environment_policy = bash_environment_policy();
+        request.timeout = Some(timeout);
+        request.output_policy = crate::managed_process::OutputPolicy::with_limits(
+            self.max_output_bytes,
+            self.max_output_bytes,
+        );
+        request.sandbox = sandbox;
+        let managed = crate::managed_process::ManagedProcessService::run(request)
+            .await
+            .map_err(|error| match error {
+                crate::managed_process::ManagedProcessError::SandboxFailed(reason) => {
+                    ToolError::Execution(format!("sandbox helper failed: {reason}"))
                 }
-            }
-            cmd.arg("-c").arg(command);
-            if let Some(dir) = canonical_workdir {
-                cmd.current_dir(dir);
-            }
-            cmd.kill_on_drop(true);
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(command.to_string()))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                crate::managed_process::ManagedProcessError::CancelledBeforeSpawn => {
+                    ToolError::Execution("managed shell cancelled before spawn".into())
+                }
+                other => ToolError::Execution(other.to_string()),
+            })?;
+        if matches!(
+            managed.termination,
+            crate::managed_process::TerminationReason::TimedOut
+        ) {
+            return Err(ToolError::Timeout(command.to_string()));
+        }
+        let stdout = managed.stdout.to_string_lossy();
+        let stderr = managed.stderr.to_string_lossy();
         let mut result = String::new();
         if !stdout.is_empty() {
             result.push_str(&truncate_output(
@@ -575,11 +610,19 @@ impl BashTool {
                 self.max_output_bytes,
             ));
         }
+        if managed.stdout.is_truncated() || managed.stderr.is_truncated() {
+            result.push_str("\n[output truncated by managed process limits]");
+        }
         result.push_str(&format!(
             "\n\n[exit code: {}]",
-            output.status.code().unwrap_or(-1)
+            managed.exit_status.code().unwrap_or(-1)
         ));
 
+        let output = synth_output(
+            managed.exit_status.code().unwrap_or(-1),
+            managed.stdout.as_bytes(),
+            managed.stderr.as_bytes(),
+        );
         Ok((result, output))
     }
 
@@ -622,7 +665,9 @@ impl BashTool {
                     source: codegg_core::jobs::JobSource::Interactive,
                     priority: codegg_core::jobs::JobPriority::Interactive,
                     payload: codegg_core::jobs::JobPayload::Test {
-                        command: argv.join(" "),
+                        command: NativeCommand::from_argv(argv.to_vec())
+                            .map(|command| command.display())
+                            .unwrap_or_default(),
                         argv: argv.to_vec(),
                         cwd: Some(run_cwd.to_string_lossy().into_owned()),
                         scope: Some("bash-dispatch".into()),
@@ -683,43 +728,40 @@ impl BashTool {
     /// instead of `sh -c`, bypassing shell interpretation.
     async fn dispatch_to_native_tool(
         &self,
-        command: &str,
+        command: &NativeCommand,
         canonical_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<DispatchOutcome, ToolError> {
-        let argv: Vec<&str> = command.split_whitespace().collect();
-        if argv.is_empty() {
-            let (result, output) = self
-                .execute_via_raw_shell(command, canonical_workdir, timeout)
-                .await?;
-            return Ok(DispatchOutcome {
-                result,
-                output,
-                executor: ActualExecutor::RawShell {
-                    command: command.to_string(),
-                    argv: vec!["sh".to_string(), "-c".to_string(), command.to_string()],
-                },
-                delegated_run_id: None,
-            });
+        if command.executable.is_empty() {
+            return Err(ToolError::Execution(
+                "native command has an empty executable".to_string(),
+            ));
         }
 
-        let argv_owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-        let tool_name = argv_owned[0].clone();
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new(argv[0]);
-            cmd.args(&argv[1..]);
-            if let Some(dir) = canonical_workdir {
-                cmd.current_dir(dir);
-            }
-            cmd.kill_on_drop(true);
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(command.to_string()))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let argv_owned = command.full_argv();
+        let tool_name = command.executable.clone();
+        let cwd = canonical_workdir
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| ToolError::Execution("native tool cwd could not be resolved".into()))?;
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            argv_owned.iter().map(|arg| arg.into()).collect(),
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.timeout = Some(timeout);
+        request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
+        let managed = crate::managed_process::ManagedProcessService::run(request)
+            .await
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        if matches!(
+            managed.termination,
+            crate::managed_process::TerminationReason::TimedOut
+        ) {
+            return Err(ToolError::Timeout(command.display()));
+        }
+        let stdout = managed.stdout.to_string_lossy();
+        let stderr = managed.stderr.to_string_lossy();
         let mut result = stdout;
         if !stderr.is_empty() {
             if !result.is_empty() {
@@ -729,8 +771,13 @@ impl BashTool {
         }
         result.push_str(&format!(
             "\n\n[exit code: {}]",
-            output.status.code().unwrap_or(-1)
+            managed.exit_status.code().unwrap_or(-1)
         ));
+        let output = synth_output(
+            managed.exit_status.code().unwrap_or(-1),
+            managed.stdout.as_bytes(),
+            managed.stderr.as_bytes(),
+        );
 
         self.record_routing_metric(RoutingMetric {
             family: CommandIntentFamily::GitRead,
@@ -1115,25 +1162,35 @@ impl BashTool {
         timeout: Duration,
         origin_label: &str,
     ) -> Result<DispatchOutcome, ToolError> {
-        use crate::git_mutations::GitEnvPolicy;
         let argv_owned = argv.to_vec();
-        let cwd_owned: Option<std::path::PathBuf> = cwd.map(|p| p.to_path_buf());
-
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = GitEnvPolicy::default().apply(
-                &argv_owned,
-                cwd_owned
-                    .as_deref()
-                    .unwrap_or_else(|| std::path::Path::new(".")),
-            );
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(argv.join(" ")))?
-        .map_err(|e| ToolError::Execution(format!("git managed argv: {e}")))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let cwd_owned = cwd
+            .map(|p| p.to_path_buf())
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| {
+                ToolError::Execution("git managed argv cwd could not be resolved".into())
+            })?;
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            argv_owned.iter().map(OsString::from).collect(),
+            cwd_owned.clone(),
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.timeout = Some(timeout);
+        request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
+        request.environment_policy = crate::managed_process::EnvironmentPolicy::sanitized()
+            .with_var("GIT_EDITOR", "true")
+            .with_var("GIT_SEQUENCE_EDITOR", "true")
+            .with_var("GPG_TTY", "");
+        let managed = crate::managed_process::ManagedProcessService::run(request)
+            .await
+            .map_err(|e| ToolError::Execution(format!("git managed argv: {e}")))?;
+        if matches!(
+            managed.termination,
+            crate::managed_process::TerminationReason::TimedOut
+        ) {
+            return Err(ToolError::Timeout(argv.join(" ")));
+        }
+        let stdout = managed.stdout.to_string_lossy();
+        let stderr = managed.stderr.to_string_lossy();
         let mut result = stdout;
         if !stderr.is_empty() {
             if !result.is_empty() {
@@ -1143,16 +1200,21 @@ impl BashTool {
         }
         result.push_str(&format!(
             "\n\n[exit code: {}] [origin: {}]",
-            output.status.code().unwrap_or(-1),
+            managed.exit_status.code().unwrap_or(-1),
             origin_label
         ));
+        let output = synth_output(
+            managed.exit_status.code().unwrap_or(-1),
+            managed.stdout.as_bytes(),
+            managed.stderr.as_bytes(),
+        );
 
         Ok(DispatchOutcome {
             result,
             output,
             executor: ActualExecutor::ManagedArgv {
                 argv: argv_owned,
-                cwd: cwd_owned,
+                cwd: Some(cwd_owned),
             },
             delegated_run_id: None,
         })
@@ -1162,16 +1224,16 @@ impl BashTool {
     /// failure is returned to the caller; this path never falls back to shell.
     async fn dispatch_to_managed_process(
         &self,
-        argv: &[String],
+        command: &NativeCommand,
         cwd: Option<&Path>,
         timeout: Duration,
         kind: codegg_core::jobs::JobKind,
     ) -> Result<DispatchOutcome, ToolError> {
-        if argv.is_empty() {
-            return Err(ToolError::Execution("empty argv".to_string()));
+        if command.executable.is_empty() {
+            return Err(ToolError::Execution("empty executable".to_string()));
         }
 
-        let argv_owned = argv.to_vec();
+        let argv_owned = command.full_argv();
         let Some(submission) = self.submission.clone() else {
             return Err(ToolError::Execution(
                 "managed process execution requires the daemon scheduler".into(),
@@ -1195,7 +1257,7 @@ impl BashTool {
                     source: codegg_core::jobs::JobSource::Interactive,
                     priority: codegg_core::jobs::JobPriority::Interactive,
                     payload: codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv: argv.to_vec(),
+                        argv: argv_owned.clone(),
                         cwd: Some(cwd_owned.to_string_lossy().into_owned()),
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
@@ -1374,14 +1436,14 @@ impl BashTool {
                 self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
                     .await
             }
-            RoutingDecision::RouteToManagedProcess { argv, cwd, .. } => {
+            RoutingDecision::RouteToManagedProcess { command, cwd, .. } => {
                 let kind = match _plan.intent.kind {
                     CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
                     CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
                     CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
                     _ => codegg_core::jobs::JobKind::ManagedProcess,
                 };
-                self.dispatch_to_managed_process(argv, Some(cwd), timeout, kind)
+                self.dispatch_to_managed_process(command, Some(cwd), timeout, kind)
                     .await
             }
             RoutingDecision::RouteToGit { request, .. } => {
@@ -1688,18 +1750,6 @@ impl Tool for BashTool {
             }
         }
 
-        if let Some(ref sandbox_config) = self.landlock_sandbox {
-            if sandbox_config.enabled {
-                let sandbox_config = sandbox_config.clone();
-                tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
-                    sandbox_config.enforce()?;
-                    Ok(())
-                })
-                .await
-                .map_err(|e| ToolError::Execution(format!("sandbox enforce failed: {}", e)))??;
-            }
-        }
-
         tracing::info!("Running: {command}");
         let start = std::time::Instant::now();
 
@@ -1714,7 +1764,11 @@ impl Tool for BashTool {
             let active_for_family = family.map(|f| cic.is_active_for_family(f)).unwrap_or(false);
             let plan_valid = plan.validate_for_active_routing().is_ok();
             let kill_switch_active = family.map(|f| self.check_kill_switches(f)).unwrap_or(true);
-            active_for_family && plan_valid && !kill_switch_active
+            let sandbox_enabled = self
+                .landlock_sandbox
+                .as_ref()
+                .is_some_and(|config| config.enabled);
+            active_for_family && plan_valid && !kill_switch_active && !sandbox_enabled
         } else {
             false
         };

@@ -1,21 +1,36 @@
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
-use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::sandbox::resolve_policy;
 use super::snapshot::WorkspaceSnapshot;
-#[cfg(target_os = "linux")]
-use super::types::SandboxBackend;
 use super::types::{
     PythonCapabilityEnvelope, PythonExecutionMode, PythonRiskAssessment, PythonRunResult,
-    PythonRunStatus, PythonScriptRequest,
+    PythonRunStatus, PythonScriptRequest, SandboxBackend, SandboxFailureKind, SandboxOutcome,
+};
+use crate::security::sandbox::SandboxLaunchSpec;
+#[cfg(test)]
+use crate::security::sandbox::{
+    decode_sandbox_status, encode_sandbox_status, SandboxLaunchOutcome,
 };
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_SCRIPT_LENGTH: usize = 500_000;
+
+fn python_environment_policy() -> crate::managed_process::EnvironmentPolicy {
+    crate::managed_process::EnvironmentPolicy::sanitized()
+        .allow_inherited_var("PATH")
+        .allow_inherited_var("HOME")
+        .allow_inherited_var("LANG")
+        .allow_inherited_var("LC_ALL")
+        .allow_inherited_var("VIRTUAL_ENV")
+        .allow_inherited_var("PYTHONPATH")
+        .allow_inherited_var("DYLD_LIBRARY_PATH")
+}
 
 /// Helper to create a PythonRunResult with enforcement evidence fields defaulting.
 #[allow(clippy::too_many_arguments)]
@@ -60,6 +75,15 @@ fn make_result(
 
 /// Execute a Python script request, returning a structured result.
 pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunResult {
+    execute_python_script_with_cancellation(request, CancellationToken::new()).await
+}
+
+/// Execute Python through the canonical managed-process service with the
+/// caller's cancellation owner wired to process-tree cleanup.
+pub async fn execute_python_script_with_cancellation(
+    request: &PythonScriptRequest,
+    cancellation: CancellationToken,
+) -> PythonRunResult {
     let start = Instant::now();
 
     // Compute script body hash for reproducibility tracking
@@ -100,10 +124,25 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
 
     // ── Phase 06: Policy resolution ──────────────────────────────────
     // Determine workspace root for profile construction
-    let workspace_root = request
-        .workspace_root
-        .clone()
-        .unwrap_or_else(|| cwd.clone());
+    let workspace_root = match request.workspace_root.as_deref() {
+        Some(root) => match root.canonicalize() {
+            Ok(root) => root,
+            Err(error) => {
+                return make_result(
+                    PythonRunStatus::SpawnError,
+                    String::new(),
+                    format!("workspace root could not be resolved: {error}"),
+                    start.elapsed(),
+                    request.mode,
+                    request.code.len(),
+                    PythonRiskAssessment::safe(),
+                    PythonCapabilityEnvelope::analyze(),
+                    script_body_hash,
+                );
+            }
+        },
+        None => cwd.clone(),
+    };
 
     let policy = resolve_policy(request.mode, &request.code, &workspace_root);
 
@@ -194,76 +233,153 @@ pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunRe
     let interpreter = find_python_interpreter();
     let timeout = Duration::from_secs(request.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
 
-    // ── Phase 06: Apply OS-level sandbox if available ─────────────────
-    // On Linux with Landlock, set up filesystem sandbox before execution.
-    // The sandbox is applied in the child process via pre_exec.
-
     // Execute with timeout and minimal environment isolation.
-    let original_dyld = std::env::var("DYLD_LIBRARY_PATH").ok();
-    let mut cmd = Command::new(&interpreter);
-    cmd.arg(script_file.to_string_lossy().to_string())
-        .current_dir(&cwd)
-        .env_clear()
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
-        .env("LANG", std::env::var("LANG").unwrap_or_default())
-        .env("LC_ALL", std::env::var("LC_ALL").unwrap_or_default())
-        .env(
-            "VIRTUAL_ENV",
-            std::env::var("VIRTUAL_ENV").unwrap_or_default(),
-        )
-        .env(
-            "PYTHONPATH",
-            std::env::var("PYTHONPATH").unwrap_or_default(),
-        )
-        .env("DYLD_LIBRARY_PATH", original_dyld.unwrap_or_default())
-        .kill_on_drop(true);
-
-    // Apply Landlock sandbox in child process (Linux only)
-    #[cfg(target_os = "linux")]
+    let mut sandbox_spec = None;
     if policy.enforcement_backend == SandboxBackend::Landlock {
-        let allowed_paths =
-            std::sync::Arc::new(build_landlock_allowed_paths(&workspace_root, &tmp_dir));
-        let deny_paths = std::sync::Arc::new(build_landlock_deny_paths());
-        #[allow(unsafe_code)]
-        unsafe {
-            cmd.pre_exec(move || {
-                let sandbox = crate::security::sandbox::SandboxConfig::new()
-                    .with_enabled(true)
-                    .with_mode(crate::security::sandbox::SandboxMode::ReadOnly)
-                    .with_allowed_paths((*allowed_paths).clone())
-                    .with_deny_paths((*deny_paths).clone());
-                sandbox
-                    .enforce()
-                    .map_err(|e| std::io::Error::other(format!("landlock enforcement failed: {e}")))
-            });
+        let target = resolve_executable_path(&interpreter).ok_or_else(|| {
+            format!("python interpreter could not be resolved for sandbox: {interpreter}")
+        });
+        let spec = target.map(|target| {
+            let (read_paths, write_paths) = build_landlock_paths(
+                &target,
+                &workspace_root,
+                &tmp_dir,
+                request.mode == PythonExecutionMode::Transform,
+            );
+            let spec = SandboxLaunchSpec {
+                target,
+                args: vec![script_file.to_string_lossy().to_string()],
+                read_paths,
+                write_paths,
+            };
+            spec
+        });
+        match spec {
+            Ok(spec) => {
+                tracing::debug!(target = %spec.target.display(), "launching through sandbox helper");
+                sandbox_spec = Some(spec);
+            }
+            Err(reason) => {
+                let mut result = make_result(
+                    PythonRunStatus::SpawnError,
+                    String::new(),
+                    format!("sandbox policy construction failed: {reason}"),
+                    start.elapsed(),
+                    request.mode,
+                    request.code.len(),
+                    risk,
+                    capabilities,
+                    script_body_hash,
+                );
+                let mut failed_policy = policy.clone();
+                failed_policy.outcome = Some(SandboxOutcome::Failed {
+                    kind: SandboxFailureKind::Policy,
+                    reason,
+                });
+                result.policy_decision = Some(failed_policy);
+                return result;
+            }
         }
+    } else {
+        // The canonical request below launches the interpreter directly.
     }
+    let mut process = crate::managed_process::ManagedProcessRequest::new(
+        vec![
+            interpreter.clone().into(),
+            script_file.to_string_lossy().to_string().into(),
+        ],
+        cwd.clone(),
+        crate::managed_process::ProcessProvenance::new(
+            "python-script",
+            request.session_id.clone().unwrap_or_default(),
+        ),
+    );
+    process.timeout = Some(timeout);
+    process.cancellation = cancellation;
+    process.output_policy =
+        crate::managed_process::OutputPolicy::new(crate::managed_process::DEFAULT_MAX_OUTPUT_BYTES);
+    process.environment_policy = python_environment_policy();
+    process.sandbox = match sandbox_spec {
+        Some(spec) => crate::managed_process::SandboxRequest::Required(spec),
+        None => crate::managed_process::SandboxRequest::Disabled,
+    };
 
-    let run_result = match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let status = match output.status.code() {
+    let managed = match crate::managed_process::ManagedProcessService::run(process).await {
+        Ok(result) => result,
+        Err(error) => {
+            let mut result = make_result(
+                PythonRunStatus::SpawnError,
+                String::new(),
+                error.to_string(),
+                start.elapsed(),
+                request.mode,
+                request.code.len(),
+                risk,
+                capabilities,
+                script_body_hash,
+            );
+            let mut failed_policy = policy.clone();
+            if matches!(
+                &error,
+                crate::managed_process::ManagedProcessError::SandboxFailed(_)
+            ) {
+                failed_policy.outcome = Some(SandboxOutcome::Failed {
+                    kind: SandboxFailureKind::Helper,
+                    reason: error.to_string(),
+                });
+            }
+            result.policy_decision = Some(failed_policy);
+            return result;
+        }
+    };
+
+    let stdout = managed.stdout.to_string_lossy();
+    let stderr = managed.stderr.to_string_lossy();
+    let run_result = match managed.termination {
+        crate::managed_process::TerminationReason::Exited => {
+            let status = match managed.exit_status.code() {
                 Some(0) => PythonRunStatus::Success,
                 Some(code) => PythonRunStatus::Failed(code),
                 None => PythonRunStatus::Failed(-1),
             };
             (status, stdout, stderr)
         }
-        Ok(Err(e)) => (
-            PythonRunStatus::SpawnError,
-            String::new(),
-            format!("failed to spawn python: {e}"),
-        ),
-        Err(_) => (
+        crate::managed_process::TerminationReason::TimedOut => (
             PythonRunStatus::TimedOut,
-            String::new(),
-            format!("python script timed out after {}s", timeout.as_secs()),
+            stdout,
+            format!(
+                "{stderr}\npython script timed out after {}s",
+                timeout.as_secs()
+            ),
+        ),
+        crate::managed_process::TerminationReason::Cancelled => (
+            PythonRunStatus::Failed(-4),
+            stdout,
+            format!("{stderr}\nexecution cancelled"),
+        ),
+        crate::managed_process::TerminationReason::OutputLimitExceeded { stream } => (
+            PythonRunStatus::Failed(-5),
+            stdout,
+            format!("{stderr}\noutput limit exceeded on {stream:?}"),
         ),
     };
 
     let (status, stdout, stderr) = run_result;
+
+    let mut policy = policy;
+    if let crate::managed_process::SandboxExecutionOutcome::Enforced { abi } = managed.sandbox {
+        policy.outcome = Some(SandboxOutcome::Enforced {
+            backend: SandboxBackend::Landlock,
+            abi,
+        });
+    } else if policy.enforcement_backend == SandboxBackend::PortableFallback {
+        policy.outcome = Some(SandboxOutcome::Fallback {
+            backend: SandboxBackend::PortableFallback,
+            reason: "Landlock is unavailable on this host".to_string(),
+        });
+    } else {
+        policy.outcome = Some(SandboxOutcome::Disabled);
+    }
 
     // Post-execution snapshot and diff for ALL modes.
     let (changed_files, status, stderr) = if let Some(pre) = &pre_snapshot {
@@ -387,57 +503,68 @@ fn validate_cwd(cwd: &Path, workspace_root: Option<&Path>) -> Result<PathBuf, St
     Ok(canonical_cwd)
 }
 
-/// Build the list of paths allowed by Landlock for Python execution.
-/// Includes workspace root (read-only for Analyze/Verify, read-write for Transform),
-/// the temp script directory, and Python runtime paths.
-#[cfg(target_os = "linux")]
-fn build_landlock_allowed_paths(workspace_root: &Path, tmp_dir: &Path) -> Vec<String> {
-    let mut paths = vec![workspace_root.to_string_lossy().to_string()];
-    paths.push(tmp_dir.to_string_lossy().to_string());
+/// Build an allow-list. Landlock denies handled rights outside these roots;
+/// there is deliberately no pseudo-deny rule list.
+fn build_landlock_paths(
+    interpreter: &Path,
+    workspace_root: &Path,
+    tmp_dir: &Path,
+    writable: bool,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut read_paths = vec![workspace_root.to_path_buf(), tmp_dir.to_path_buf()];
+    let mut write_paths = Vec::new();
+    if writable {
+        write_paths.push(workspace_root.to_path_buf());
+    }
+    read_paths.push(interpreter.to_path_buf());
 
-    // Python interpreter and stdlib need to be readable/executable
-    if let Ok(output) = std::process::Command::new("python3")
+    // This is a bounded interpreter-discovery probe, not the user script
+    // execution path. Keep it synchronous and capped because it runs before
+    // the canonical managed launch is assembled.
+    // execution-ownership: definition_or_adapter
+    let probe = std::process::Command::new(interpreter)
         .arg("-c")
         .arg("import sys; print(sys.prefix)")
-        .output()
-    {
-        let prefix = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = probe {
+        let mut bytes = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
+        }
+        let _ = child.wait();
+        let prefix = String::from_utf8_lossy(&bytes).trim().to_string();
         if !prefix.is_empty() {
-            paths.push(prefix);
+            read_paths.push(PathBuf::from(prefix));
         }
     }
-
-    // Include /usr/lib and /usr/lib64 for shared libraries
     for lib_dir in &["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
-        if Path::new(lib_dir).exists() {
-            paths.push(lib_dir.to_string());
+        let path = Path::new(lib_dir);
+        if path.exists() {
+            read_paths.push(path.to_path_buf());
         }
     }
-
-    paths
+    for device in &["/dev/null", "/dev/urandom"] {
+        let path = Path::new(device);
+        if path.exists() {
+            read_paths.push(path.to_path_buf());
+        }
+    }
+    (read_paths, write_paths)
 }
 
-/// Build the list of paths denied by Landlock for Python execution.
-#[cfg(target_os = "linux")]
-fn build_landlock_deny_paths() -> Vec<String> {
-    let mut paths = Vec::new();
-    for deny in &["/proc", "/sys", "/dev", "/root", "/etc/ssh", "/etc/shadow"] {
-        if Path::new(deny).exists() {
-            paths.push(deny.to_string());
-        }
+fn resolve_executable_path(interpreter: &str) -> Option<PathBuf> {
+    let path = Path::new(interpreter);
+    if path.is_absolute() {
+        return path.canonicalize().ok();
     }
-    // Deny user SSH and credential directories
-    if let Ok(home) = std::env::var("HOME") {
-        let ssh_dir = format!("{home}/.ssh");
-        if Path::new(&ssh_dir).exists() {
-            paths.push(ssh_dir);
-        }
-        let aws_dir = format!("{home}/.aws");
-        if Path::new(&aws_dir).exists() {
-            paths.push(aws_dir);
-        }
-    }
-    paths
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var)
+            .map(|dir| dir.join(interpreter))
+            .find(|candidate| candidate.is_file())
+            .and_then(|candidate| candidate.canonicalize().ok())
+    })
 }
 
 /// Find the Python interpreter to use.
@@ -934,5 +1061,29 @@ mod tests {
         }
         #[cfg(not(target_os = "linux"))]
         assert!(!result.os_filesystem_isolation);
+    }
+
+    #[test]
+    fn helper_status_becomes_typed_outcome() {
+        let frame =
+            encode_sandbox_status(SandboxLaunchOutcome::Enforced { abi: 4 }).expect("status frame");
+        assert_eq!(
+            decode_sandbox_status(&frame).expect("typed status"),
+            SandboxLaunchOutcome::Enforced { abi: 4 }
+        );
+    }
+
+    #[test]
+    fn helper_setup_failure_is_typed_and_separate_from_target_exit() {
+        let frame = encode_sandbox_status(SandboxLaunchOutcome::SetupError {
+            reason: "missing rule".to_string(),
+        })
+        .expect("status frame");
+        assert_eq!(
+            decode_sandbox_status(&frame).expect("typed status"),
+            SandboxLaunchOutcome::SetupError {
+                reason: "missing rule".to_string()
+            }
+        );
     }
 }

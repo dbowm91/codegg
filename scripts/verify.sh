@@ -55,6 +55,9 @@ run_quick() {
     echo "==> python3 scripts/check_builtin_agents.py"
     (cd "$REPO_ROOT" && python3 scripts/check_builtin_agents.py)
 
+    echo "==> python3 scripts/check_yaml_parser_boundary.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_yaml_parser_boundary.py)
+
     echo "==> python3 scripts/check-tokio-test-flavors.py --self-test"
     (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py --self-test)
 
@@ -63,6 +66,15 @@ run_quick() {
 
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
+
+    echo "==> python3 scripts/check_sandbox_contract.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
+
+    echo "==> python3 scripts/check_execution_ownership.py --self-test"
+    (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py --self-test)
+
+    echo "==> python3 scripts/check_execution_ownership.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)

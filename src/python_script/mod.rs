@@ -19,7 +19,7 @@ pub use types::{
     CapabilityViolation, ExecutableRule, PythonCapabilityEnvelope, PythonCapabilityProfile,
     PythonExecutionMode, PythonPolicyDecision, PythonRiskAssessment, PythonRiskLevel,
     PythonRiskScanner, PythonRunResult, PythonRunStatus, PythonScriptRequest, PythonScriptSource,
-    SandboxBackend, SandboxRequirement,
+    SandboxBackend, SandboxFailureKind, SandboxOutcome, SandboxRequirement,
 };
 
 #[cfg(test)]

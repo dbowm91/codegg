@@ -82,12 +82,13 @@ Terminal states never transition. `AttemptState::Interrupted` is used during dae
 
 ## Storage Schema
 
-Migration v23 adds five tables. Domain Identity migration v25 adds the
-canonical project/repository binding tables, Provider Connections
-migration v26 adds provisioning/health/model catalog state, and
-Provider Connections migration v27 adds optional session
-connection/model selection columns (additive on `sessions`).
-`STORAGE_LAYOUT_VERSION = 27`.
+Migration v23 adds the workspace/catalog marker and migration v24 adds the
+provider connection tables. Domain Identity migration v25 adds the canonical
+project/repository binding tables; migration v26 adds provider
+provisioning/health/model catalog state. Later additive migrations add project
+catalog/discovery metadata (v28–v30), provider lifecycle/reference/tombstone
+state (v31), projection replay state (v32), Tool Program state (v33–v34), and
+typed child-job lineage columns (v35). `STORAGE_LAYOUT_VERSION = 35`.
 
 ```sql
 CREATE TABLE job (
@@ -322,9 +323,20 @@ generation.
 `ManagedArgvExecutor` is only an adapter. Non-shell argv work delegates to
 `ManagedProcessService`, which supplies sanitized noninteractive environment
 defaults, process-group/session cleanup, timeout/cancellation handling,
-bounded output, and `CODEGG_JOB_ID`/`CODEGG_ATTEMPT_ID` provenance. Shell,
-TestRunner, and SubAgentPool retain their domain semantics behind typed
-executors.
+bounded output, and `CODEGG_JOB_ID`/`CODEGG_ATTEMPT_ID` provenance. The
+service retains independent stdout/stderr head-plus-tail buffers (256 KiB per
+stream by default), drains both pipes concurrently, and reports truncation,
+timeout, cancellation, output-limit termination, sandbox-helper failure, and
+cleanup diagnostics distinctly. Explicit sandbox launches use the
+installation-owned helper sibling, an owner-only system-temp launch spec
+capped at 64 KiB, and a private versioned status pipe capped at 16 KiB;
+target output is never a control channel. On Unix, finite executions run in a child
+session; cancellation and timeout send SIGTERM, wait a bounded grace period,
+then SIGKILL the verified process group and reap the direct child. Other
+platforms retain direct-child cleanup only. Shell, TestRunner, and SubAgentPool
+retain their domain semantics behind typed executors; TestRunner is an
+explicit lifecycle exemption because it streams parser input into durable
+line-oriented test logs and owns stall-timeout semantics.
 
 ### Tool program child-job composition (M007)
 

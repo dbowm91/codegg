@@ -73,6 +73,7 @@ pub fn resolve_policy(
         enforcement_backend: backend,
         os_filesystem_isolation: os_fs_isolation,
         os_network_isolation: os_net_isolation,
+        outcome: None,
     }
 }
 
@@ -80,6 +81,9 @@ pub fn resolve_policy(
 fn resolve_enforcement_backend(
     profile: &PythonCapabilityProfile,
 ) -> (SandboxBackend, bool, bool, Vec<String>) {
+    if profile.sandbox_requirement == super::types::SandboxRequirement::None {
+        return (SandboxBackend::None, false, false, Vec::new());
+    }
     #[cfg(target_os = "linux")]
     {
         if crate::security::sandbox::SandboxConfig::is_available() {

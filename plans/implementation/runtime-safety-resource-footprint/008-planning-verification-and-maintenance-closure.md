@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 008 — Planning, Verification, and Maintenance Closure
 
-Status: blocked on M001–M007
+Status: implemented — see `plans/closure/runtime-safety-resource-footprint/008-status.md`
 
 Source subsystem roadmap:
 
@@ -11,7 +11,7 @@ Hard dependencies:
 
 - M001 through M007 must each have an accepted implementation disposition and compact closure record.
 
-Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
+Repository baseline reviewed: `bd9678dd0bf679ada8d5e59a62e57c6efe05fe39`
 
 Primary class: documentation, verification, and governance reconciliation
 

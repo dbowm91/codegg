@@ -8,7 +8,7 @@ use codegg_core::tool_program::{
     compile_program, BrokerCallback, BudgetSnapshot, CallRequest, CallResult, InterpreterError,
     MeteredInterpreter, ProgramStatus, ProgramValue, RuntimeLimits,
 };
-use futures::future::FutureExt;
+use futures_util::future::FutureExt;
 
 /// Broker that counts calls to detect replay.
 struct CountingBroker {

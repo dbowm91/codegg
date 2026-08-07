@@ -1,17 +1,22 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 003 — Typed Argv and Shell-Routing Convergence
 
-Status: blocked on M002
+Status: closed
 
 Source subsystem roadmap:
 
 - `plans/subsystems/runtime-safety-resource-footprint-roadmap.md`
 - Milestone 003
 
-Hard dependency:
+Interface dependency:
 
-- M002 — canonical bounded process execution must close.
+- M002 — the canonical bounded process executable/argv and managed-process interface is implemented and accepted for this milestone.
+- Corrective C001 — production helper trust-channel corrections are implemented; the remaining supported-Linux Landlock run is an operational strict-closure condition and does not block M003 implementation.
 
-Repository baseline reviewed: `4d540ce315c9ef2a1c07544cd42df0efc43708e1`
+Promotion disposition:
+
+- `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md`
+
+Repository baseline reviewed: `0f3bf0b78e5de2dd03742f542d990590f0a32833`
 
 Primary class: command correctness and authority simplification
 
@@ -27,7 +32,7 @@ The target execution routes are:
 
 ```text
 Native argv route
-  executable + Vec<OsString>
+  executable + UTF-8 argument vector
   no shell parsing or string reconstruction
 
 Explicit shell route
@@ -51,7 +56,7 @@ This milestone must not:
 - redesign the broader tool registry, scheduler, Tool Programs language, Git subsystem, or Bash translation architecture;
 - add a second process executor beside M002;
 - add command aliases or user-facing shell features unrelated to correctness;
-- normalize every command into UTF-8 strings when the platform accepts `OsString`;
+- claim arbitrary platform-byte preservation when the supported command boundary is UTF-8 `String`/`Vec<String>`;
 - add broad parser fuzzing or a shell compatibility matrix;
 - change release/CI policy.
 
@@ -248,7 +253,7 @@ Compatibility:
 1. remove `split_whitespace()` and equivalent reparsing;
 2. pass typed argv directly to M002;
 3. update deterministic translators to emit argv vectors;
-4. preserve platform `OsString` handling;
+4. preserve the supported UTF-8 executable/argv representation end to end; record arbitrary non-UTF-8 Unix argv as outside this milestone;
 5. add focused diagnostics for invalid executable/argument values.
 
 ### Work package D — Explicit shell path
@@ -319,6 +324,7 @@ The guard should allow ordinary text parsing unrelated to process argv. Scope it
 M003 is complete only when:
 
 - native commands carry executable plus typed argv end to end;
+- the supported UTF-8 command representation is preserved end to end; arbitrary non-UTF-8 Unix argv is explicitly outside the current contract;
 - no governed native path uses `split_whitespace()` or equivalent lossy reparsing;
 - explicit shell route is represented distinctly;
 - native errors do not silently fall back to shell;
@@ -328,20 +334,21 @@ M003 is complete only when:
 - old persisted shell strings remain shell semantics through compatibility decode;
 - quoted, empty, special-character, and space-containing argument tests pass;
 - the static negative fixture is detected;
-- `scripts/verify.sh quick` and the existing hosted verification pass;
+- `scripts/verify.sh quick` passes;
+- the existing hosted verification is referenced when the normal trigger produces a run, but unavailable dispatch is not an implementation blocker;
 - no tool authority expansion, scheduler redesign, or new shell parser framework is introduced.
 
 ## 14. Stop conditions
 
 Stop and report blocked when:
 
-- M002 is not closed;
+- the accepted M002 executable/argv or managed-process interface is absent, materially changed, or found defective;
 - the durable job schema cannot represent typed argv without a breaking migration;
 - existing public APIs ambiguously overload one field for both argv and shell programs and require a compatibility decision;
 - a translator's ownership belongs to another subsystem and cannot be changed without reopening its public contract;
 - implementation would require parsing arbitrary shell syntax to preserve behavior.
 
-Prefer one compatibility adapter or narrow prerequisite plan over broad shell-parser work.
+The outstanding supported-Linux C001 evidence condition is not a stop condition for this milestone. Prefer one compatibility adapter or narrow prerequisite plan over broad shell-parser work.
 
 ## 15. Required closure evidence
 
@@ -355,5 +362,6 @@ Prefer one compatibility adapter or narrow prerequisite plan over broad shell-pa
 - risk/approval stability evidence;
 - durable compatibility disposition;
 - static guard negative proof;
-- focused commands, quick verification, and hosted run reference;
+- focused commands and quick verification;
+- hosted run reference when the normal trigger produces one, with absence classified operational rather than implementation-blocking;
 - unresolved findings by severity.

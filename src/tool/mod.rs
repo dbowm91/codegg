@@ -1193,7 +1193,7 @@ mod backend_report_tests {
         assert_eq!(lsp.name(), "lsp");
         // Calling should fail with the configured reason.
         let result =
-            futures::executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
+            futures_executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1213,7 +1213,7 @@ mod backend_report_tests {
         let sec = registry
             .get("security")
             .expect("disabled security stub should be registered");
-        let result = futures::executor::block_on(
+        let result = futures_executor::block_on(
             sec.execute(serde_json::json!({"action": "classify_command"})),
         );
         assert!(result.is_err());
@@ -1266,7 +1266,7 @@ mod backend_report_tests {
         );
         // Calling the stub still surfaces a clear reason.
         let result =
-            futures::executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
+            futures_executor::block_on(lsp.execute(serde_json::json!({"operation": "hover"})));
         let err = result.unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1314,7 +1314,7 @@ mod backend_report_tests {
             !defs.iter().any(|d| d.name == "security"),
             "security should NOT be model-visible when fallback is off"
         );
-        let result = futures::executor::block_on(
+        let result = futures_executor::block_on(
             sec.execute(serde_json::json!({"action": "classify_command"})),
         );
         let err = result.unwrap_err();

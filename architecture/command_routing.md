@@ -28,14 +28,14 @@ pub enum RoutingDecision {
     },
     RouteToNativeTool {
         tool_name: String,
-        command: String,
+        command: NativeCommand,
     },
     RouteToGit {
         request: GitExecutionRequest,
         timeout_secs: Option<u64>,
     },
     RouteToManagedProcess {
-        argv: Vec<String>,
+        command: NativeCommand,
         cwd: PathBuf,
         timeout_secs: Option<u64>,
     },
@@ -46,6 +46,11 @@ pub enum RoutingDecision {
 ```
 
 `RouteToGit` is the unified git routing variant, replacing the former pattern where `GitReadOnly` routed through `RouteToNativeTool` (egggit) and `GitMutating` routed through `RouteToManagedProcess`. All git commands now map to `RouteToGit`.
+
+Native routing carries the supported UTF-8 `NativeCommand` strings directly to
+the managed-process boundary. Empty, whitespace, quoted, and shell-special
+UTF-8 arguments remain literal; arbitrary non-UTF-8 Unix argv is outside the
+current string-based durable/protocol contract.
 
 ## Routing Resolution
 
@@ -59,9 +64,9 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 |---------|----------------|
 | `TestRunner { validated_command }` | `RouteToTestRunner { argv, scope_label: "command-intent:<label>", validated_command }` |
 | `PythonScript { script, mode_guess }` | `RouteToPythonScripting { script, mode, timeout_secs }` |
-| `NativeTool { tool_name }` | `RouteToNativeTool { tool_name, command }` |
+| `NativeTool { tool_name, command }` | `RouteToNativeTool { tool_name, command }` |
 | `Git { request }` | `RouteToGit { request, timeout_secs }` |
-| `ManagedArgv { argv, cwd }` | `RouteToManagedProcess { argv, cwd, timeout_secs }` |
+| `ManagedArgv { command, cwd }` | `RouteToManagedProcess { command, cwd, timeout_secs }` |
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |
 

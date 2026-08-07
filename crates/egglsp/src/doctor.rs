@@ -380,7 +380,7 @@ mod tests {
     fn doctor_report_missing_file() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("missing.py");
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert_eq!(report.detected_language.as_deref(), Some("python"));
@@ -398,7 +398,7 @@ mod tests {
         fs::write(&file, "fn main() {}").unwrap();
         let allowed = Path::new("/completely/different/path");
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file,
             Some(allowed),
             None,
@@ -422,7 +422,7 @@ mod tests {
         let file = tmp.path().join("data.weirdext");
         fs::write(&file, "").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(report.detected_language.is_none());
@@ -439,7 +439,7 @@ mod tests {
         let file = tmp.path().join("orphan.py");
         fs::write(&file, "print('hello')").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(report.selected_root.is_none());
@@ -456,7 +456,7 @@ mod tests {
         let file = src.join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert_eq!(report.detected_language.as_deref(), Some("rust"));
@@ -472,7 +472,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "memory", 5, 2, 1, None,
         ));
         assert_eq!(report.cache_mode, "memory");
@@ -488,7 +488,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         let rendered = render_doctor_report(&report);
@@ -527,7 +527,7 @@ mod tests {
             preview_applied_count: 1,
             ..Default::default()
         };
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file,
             None,
             None,
@@ -563,7 +563,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(
@@ -589,7 +589,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert_eq!(report.server_profile.as_deref(), Some("rust-analyzer"));
@@ -617,7 +617,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(report.capability_summary.is_none());
@@ -640,7 +640,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(
@@ -663,7 +663,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "memory", 0, 5, 3, None,
         ));
         assert_eq!(report.preview_count, 5);
@@ -688,7 +688,7 @@ mod tests {
         let file = tmp.path().join("a.weirdext");
         fs::write(&file, "").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file, None, None, "disabled", 0, 0, 0, None,
         ));
         assert!(
@@ -723,7 +723,7 @@ mod tests {
             preview_applied_count: 0,
             ..Default::default()
         };
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file,
             None,
             None,
@@ -748,7 +748,7 @@ mod tests {
         let file = tmp.path().join("main.rs");
         fs::write(&file, "fn main() {}").unwrap();
 
-        let report = futures::executor::block_on(build_doctor_report(
+        let report = futures_executor::block_on(build_doctor_report(
             &file,
             None,
             None,

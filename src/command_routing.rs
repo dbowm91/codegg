@@ -1,5 +1,5 @@
 use crate::command_intent::plan::GitExecutionRequest;
-use crate::command_planner::{CommandPlan, ExecutionBackend, PythonModeGuess};
+use crate::command_planner::{CommandPlan, ExecutionBackend, NativeCommand, PythonModeGuess};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
@@ -19,10 +19,10 @@ pub enum RoutingDecision {
     },
     RouteToNativeTool {
         tool_name: String,
-        command: String,
+        command: NativeCommand,
     },
     RouteToManagedProcess {
-        argv: Vec<String>,
+        command: NativeCommand,
         cwd: std::path::PathBuf,
         timeout_secs: Option<u64>,
     },
@@ -39,13 +39,11 @@ pub enum RoutingDecision {
 pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
     match &plan.backend {
         ExecutionBackend::TestRunner { validated_command } => {
-            let argv: Vec<String> = plan.intent.parsed_argv.clone().unwrap_or_else(|| {
-                plan.intent
-                    .command
-                    .split_whitespace()
-                    .map(String::from)
-                    .collect()
-            });
+            let Some(argv) = plan.intent.parsed_argv.clone() else {
+                return RoutingDecision::Rejected {
+                    reason: "test command has no typed argv; use explicit shell mode".to_string(),
+                };
+            };
             let scope_label = format!("command-intent:{}", plan.intent.kind.label());
             RoutingDecision::RouteToTestRunner {
                 argv,
@@ -60,12 +58,12 @@ pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
                 timeout_secs: plan.timeout_secs,
             }
         }
-        ExecutionBackend::NativeTool { tool_name } => RoutingDecision::RouteToNativeTool {
+        ExecutionBackend::NativeTool { tool_name, command } => RoutingDecision::RouteToNativeTool {
             tool_name: tool_name.clone(),
-            command: plan.intent.command.clone(),
+            command: command.clone(),
         },
-        ExecutionBackend::ManagedArgv { argv, cwd } => RoutingDecision::RouteToManagedProcess {
-            argv: argv.clone(),
+        ExecutionBackend::ManagedArgv { command, cwd } => RoutingDecision::RouteToManagedProcess {
+            command: command.clone(),
             cwd: cwd.clone(),
             timeout_secs: plan.timeout_secs,
         },
@@ -204,8 +202,8 @@ mod tests {
         let plan = plan_execution(&intent);
         let decision = resolve_routing(&plan);
         match decision {
-            RoutingDecision::RouteToManagedProcess { argv, .. } => {
-                assert_eq!(argv, vec!["rg", "fn main", "src/"]);
+            RoutingDecision::RouteToManagedProcess { command, .. } => {
+                assert_eq!(command.full_argv(), vec!["rg", "fn main", "src/"]);
             }
             _ => panic!("expected RouteToManagedProcess"),
         }

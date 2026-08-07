@@ -456,9 +456,9 @@ pub fn parse_shell_words(command: &str) -> ShellShape {
             }
         }
         ParseState::InWord | ParseState::BackslashEscape => {
-            if !current.is_empty() {
-                words.push(current);
-            }
+            // `InWord` also represents a quoted empty argument (`''` or
+            // `""`), which must survive as an empty argv element.
+            words.push(current);
         }
         ParseState::BetweenWords => {}
     }
@@ -561,6 +561,30 @@ mod tests {
         assert_eq!(
             parse_shell_words("echo hello\\ world"),
             ShellShape::SimpleArgv(vec!["echo".into(), "hello world".into()])
+        );
+    }
+
+    #[test]
+    fn empty_quoted_argument_is_preserved() {
+        assert_eq!(
+            parse_shell_words("printf '%s' ''"),
+            ShellShape::SimpleArgv(vec!["printf".into(), "%s".into(), "".into()])
+        );
+    }
+
+    #[test]
+    fn special_characters_inside_quotes_are_literal() {
+        assert_eq!(
+            parse_shell_words("printf '%s' '*$;|>()[ ]'"),
+            ShellShape::SimpleArgv(vec!["printf".into(), "%s".into(), "*$;|>()[ ]".into()])
+        );
+    }
+
+    #[test]
+    fn quoted_newline_and_tab_are_preserved() {
+        assert_eq!(
+            parse_shell_words("printf '%s' 'line\n\tvalue'"),
+            ShellShape::SimpleArgv(vec!["printf".into(), "%s".into(), "line\n\tvalue".into()])
         );
     }
 

@@ -322,6 +322,9 @@ impl JobExecutor for ManagedArgvExecutor {
         let status = match output.termination {
             crate::managed_process::TerminationReason::Cancelled => ExecutorStatus::Cancelled,
             crate::managed_process::TerminationReason::TimedOut => ExecutorStatus::TimedOut,
+            crate::managed_process::TerminationReason::OutputLimitExceeded { .. } => {
+                ExecutorStatus::Failed
+            }
             crate::managed_process::TerminationReason::Exited if output.exit_status.success() => {
                 ExecutorStatus::Completed
             }
@@ -693,41 +696,13 @@ impl JobExecutor for PythonJobExecutor {
             .progress(ctx.job_id(), "python: launching process")
             .await;
 
-        // Execute with the cancellation token wired through timeout
-        let cancellation = ctx.cancellation.clone();
-        let result = tokio::select! {
-            _ = cancellation.cancelled() => {
-                crate::python_script::types::PythonRunResult {
-                    status: crate::python_script::types::PythonRunStatus::Failed(-4),
-                    stdout: String::new(),
-                    stderr: "execution cancelled".to_string(),
-                    duration: started.elapsed(),
-                    mode,
-                    script_length: request.code.len(),
-                    risk: crate::python_script::types::PythonRiskAssessment::safe(),
-                    capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
-                    changed_files: vec![],
-                    interpreter: String::new(),
-                    diff: None,
-                    script_body_hash: {
-                        use sha2::Digest;
-                        Some(format!("{:x}", sha2::Sha256::digest(request.code.as_bytes())))
-                    },
-                    stdout_label: None,
-                    stderr_label: None,
-                    diff_label: None,
-                    policy_decision: None,
-                    denied_capabilities: vec![],
-                    os_filesystem_isolation: false,
-                    os_network_isolation: false,
-                    effective_read_roots: vec![],
-                    effective_write_roots: vec![],
-                    allowed_subprocesses: vec![],
-                    enforcement_warnings: vec![],
-                }
-            }
-            result = crate::python_script::executor::execute_python_script(&request) => result,
-        };
+        // The canonical process service owns cancellation and descendant
+        // cleanup; do not drop an in-flight execution future as a substitute.
+        let result = crate::python_script::executor::execute_python_script_with_cancellation(
+            &request,
+            ctx.cancellation.clone(),
+        )
+        .await;
 
         // Emit progress: persisting artifacts
         let _ = ctx

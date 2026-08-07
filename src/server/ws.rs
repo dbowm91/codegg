@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use futures::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::{JoinError, JoinHandle};
@@ -2270,7 +2270,7 @@ async fn deliver_tui_outbound<S>(
     connection_cancellation: &CancellationToken,
 ) -> Result<(), S::Error>
 where
-    S: futures::Sink<WsMessage> + Unpin,
+    S: futures_util::Sink<WsMessage> + Unpin,
 {
     let OutboundMessage {
         message,
@@ -2352,7 +2352,7 @@ async fn deliver_core_outbound<S>(
     connection_cancellation: &CancellationToken,
 ) -> Result<(), S::Error>
 where
-    S: futures::Sink<WsMessage> + Unpin,
+    S: futures_util::Sink<WsMessage> + Unpin,
 {
     let OutboundMessage {
         message,
@@ -4647,7 +4647,7 @@ mod tests {
         messages: Vec<WsMessage>,
     }
 
-    impl futures::Sink<WsMessage> for RecordingSink {
+    impl futures_util::Sink<WsMessage> for RecordingSink {
         type Error = std::convert::Infallible;
 
         fn poll_ready(

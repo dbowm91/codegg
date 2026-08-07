@@ -159,7 +159,7 @@ mod tests {
             estimated_tokens: 10,
         };
         // Synchronously block on the async put - this is fine in sync test context
-        futures::executor::block_on(store.put(artifact)).unwrap();
+        futures_executor::block_on(store.put(artifact)).unwrap();
         store
     }
 

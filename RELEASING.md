@@ -364,6 +364,11 @@ gh release create v<VERSION> \
 
 Build targets (one binary per target, hosted release remains optional):
 
+The current release artifact is the single `codegg` executable for each target;
+there are no separately packaged daemon and TUI binaries. This matches the
+measured no-split topology decision and preserves the user-scoped singleton
+daemon discovery contract.
+
 ```bash
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin

@@ -459,7 +459,7 @@ mod tests {
             let id = id.clone();
             async move { manager.resolve(&id).await.unwrap() }
         });
-        let providers = futures::future::join_all(futures).await;
+        let providers = futures_util::future::join_all(futures).await;
 
         assert_eq!(providers.len(), 32);
         assert_eq!(factory.calls.load(Ordering::SeqCst), 1);

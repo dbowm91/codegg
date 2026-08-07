@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use futures::Stream;
+use futures_util::Stream;
 use std::pin::Pin;
 
 use crate::auth_types::Credential;

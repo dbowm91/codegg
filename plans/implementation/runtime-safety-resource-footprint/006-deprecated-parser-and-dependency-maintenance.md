@@ -1,6 +1,6 @@
 # Runtime Safety, Resource Control, and Footprint Milestone 006 — Deprecated Parser and Dependency Maintenance
 
-Status: blocked on M005
+Status: implemented
 
 Source subsystem roadmap:
 

@@ -14,9 +14,9 @@ pub(crate) struct PortableFrontmatter {
     pub license: Option<String>,
     pub compatibility: Option<String>,
     #[serde(default)]
-    pub metadata: HashMap<String, serde_yaml::Value>,
+    pub metadata: HashMap<String, serde_json::Value>,
     #[serde(rename = "allowed-tools")]
-    pub allowed_tools: Option<serde_yaml::Value>,
+    pub allowed_tools: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -31,7 +31,7 @@ pub(crate) struct NativeFrontmatter {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RawFrontmatter {
     #[serde(flatten)]
-    inner: HashMap<String, serde_yaml::Value>,
+    inner: HashMap<String, serde_json::Value>,
 }
 
 pub fn parse_candidate(
@@ -74,73 +74,78 @@ pub fn parse_candidate(
 
     let mut diagnostics = Vec::new();
 
-    let (name, description, metadata) = match source_kind {
-        SourceKind::CodeGGNativeCompat | SourceKind::CodeGGProject
-            if !has_portable_fields(&frontmatter_str) =>
-        {
-            let fm: NativeFrontmatter = serde_yaml::from_str(&frontmatter_str).map_err(|e| {
-                Diagnostic::error(
-                    format!("failed to parse frontmatter: {e}"),
-                    location.clone(),
-                )
-            })?;
-            let name = fm.name.unwrap_or_else(|| {
-                skill_file
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
-            let description = fm.description.unwrap_or_default();
-            let mut meta = HashMap::new();
-            if let Some(v) = fm.version {
-                meta.insert("version".to_string(), serde_yaml::Value::String(v));
+    let (name, description, metadata) =
+        match source_kind {
+            SourceKind::CodeGGNativeCompat | SourceKind::CodeGGProject
+                if !has_portable_fields(&frontmatter_str) =>
+            {
+                let fm: NativeFrontmatter =
+                    codegg_config::parse_yaml(location.clone(), frontmatter_str.as_bytes())
+                        .map_err(|e| {
+                            Diagnostic::error(
+                                format!("failed to parse frontmatter: {e}"),
+                                location.clone(),
+                            )
+                        })?;
+                let name = fm.name.unwrap_or_else(|| {
+                    skill_file
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
+                let description = fm.description.unwrap_or_default();
+                let mut meta = HashMap::new();
+                if let Some(v) = fm.version {
+                    meta.insert("version".to_string(), serde_json::Value::String(v));
+                }
+                if !fm.tags.is_empty() {
+                    meta.insert(
+                        "tags".to_string(),
+                        serde_json::Value::Array(
+                            fm.tags.into_iter().map(serde_json::Value::String).collect(),
+                        ),
+                    );
+                }
+                (name, description, meta)
             }
-            if !fm.tags.is_empty() {
-                meta.insert(
-                    "tags".to_string(),
-                    serde_yaml::Value::Sequence(
-                        fm.tags.into_iter().map(serde_yaml::Value::String).collect(),
-                    ),
-                );
-            }
-            (name, description, meta)
-        }
-        _ => {
-            let fm: PortableFrontmatter = serde_yaml::from_str(&frontmatter_str).map_err(|e| {
-                Diagnostic::error(
-                    format!("failed to parse frontmatter: {e}"),
-                    location.clone(),
-                )
-            })?;
-            let name = fm.name.ok_or_else(|| {
-                Diagnostic::error("missing required field: name".to_string(), location.clone())
-            })?;
-            let description = fm.description.ok_or_else(|| {
-                Diagnostic::error(
-                    "missing required field: description".to_string(),
-                    location.clone(),
-                )
-            })?;
-            let mut meta = fm.metadata;
-            if let Some(lic) = fm.license {
-                meta.insert("license".to_string(), serde_yaml::Value::String(lic));
-            }
-            if let Some(compat) = fm.compatibility {
-                meta.insert(
-                    "compatibility".to_string(),
-                    serde_yaml::Value::String(compat),
-                );
-            }
-            if let Some(tools) = fm.allowed_tools {
-                meta.insert("allowed-tools".to_string(), tools);
-                diagnostics.push(Diagnostic::warning(
+            _ => {
+                let fm: PortableFrontmatter =
+                    codegg_config::parse_yaml(location.clone(), frontmatter_str.as_bytes())
+                        .map_err(|e| {
+                            Diagnostic::error(
+                                format!("failed to parse frontmatter: {e}"),
+                                location.clone(),
+                            )
+                        })?;
+                let name = fm.name.ok_or_else(|| {
+                    Diagnostic::error("missing required field: name".to_string(), location.clone())
+                })?;
+                let description = fm.description.ok_or_else(|| {
+                    Diagnostic::error(
+                        "missing required field: description".to_string(),
+                        location.clone(),
+                    )
+                })?;
+                let mut meta = fm.metadata;
+                if let Some(lic) = fm.license {
+                    meta.insert("license".to_string(), serde_json::Value::String(lic));
+                }
+                if let Some(compat) = fm.compatibility {
+                    meta.insert(
+                        "compatibility".to_string(),
+                        serde_json::Value::String(compat),
+                    );
+                }
+                if let Some(tools) = fm.allowed_tools {
+                    meta.insert("allowed-tools".to_string(), tools);
+                    diagnostics.push(Diagnostic::warning(
                     "allowed-tools is preserved as metadata only; it does not grant permissions",
                     location.clone(),
                 ));
+                }
+                (name, description, meta)
             }
-            (name, description, meta)
-        }
-    };
+        };
 
     let normalized_name = normalize_name(&name, config)?;
 
@@ -176,7 +181,9 @@ pub fn parse_candidate(
 }
 
 fn has_portable_fields(frontmatter: &str) -> bool {
-    if let Ok(raw) = serde_yaml::from_str::<RawFrontmatter>(frontmatter) {
+    if let Ok(raw) =
+        codegg_config::parse_yaml::<RawFrontmatter>("skill frontmatter", frontmatter.as_bytes())
+    {
         raw.inner.contains_key("name") && raw.inner.contains_key("description")
     } else {
         false

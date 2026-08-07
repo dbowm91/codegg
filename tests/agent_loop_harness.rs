@@ -303,7 +303,7 @@ impl Provider for ScriptedProvider {
         };
         *idx += 1;
 
-        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
         Ok(Box::pin(stream))
     }
 
@@ -1297,7 +1297,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
             };
             *count += 1;
 
-            let stream = futures::stream::iter(events.into_iter().map(Ok));
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok));
             Ok(Box::pin(stream))
         }
 
@@ -1824,7 +1824,7 @@ impl Provider for RetryThenSuccessProvider {
             )]
         };
 
-        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
         Ok(Box::pin(stream))
     }
 
@@ -1920,7 +1920,7 @@ impl Provider for RepeatedRateLimitProvider {
             return Err(ProviderError::RateLimit);
         }
 
-        let stream = futures::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
+        let stream = futures_util::stream::iter(vec![Ok::<_, ProviderError>(ChatEvent::Finish {
             stop_reason: "stop".to_string().into(),
             usage: TokenUsage::default(),
         })]);
@@ -1975,7 +1975,7 @@ impl Provider for RepeatedStreamErrorProvider {
                 stop_reason: "stop".to_string().into(),
                 usage: TokenUsage::default(),
             }];
-            let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
             Ok(Box::pin(stream))
         }
     }
@@ -2028,7 +2028,7 @@ impl Provider for RepeatedTimeoutProvider {
                 stop_reason: "stop".to_string().into(),
                 usage: TokenUsage::default(),
             }];
-            let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
             Ok(Box::pin(stream))
         }
     }
@@ -2249,7 +2249,7 @@ impl Provider for FollowUpProvider {
         };
         *idx += 1;
 
-        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
         Ok(Box::pin(stream))
     }
 
@@ -3049,7 +3049,7 @@ impl Provider for RequestRecordingProvider {
             ]
         };
         *idx += 1;
-        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
         Ok(Box::pin(stream))
     }
 
@@ -3103,7 +3103,7 @@ impl Provider for DeterministicSubagentProvider {
                 usage: TokenUsage::default(),
             },
         ];
-        let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+        let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
         Ok(Box::pin(stream))
     }
 

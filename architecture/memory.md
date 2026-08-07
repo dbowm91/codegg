@@ -14,7 +14,7 @@ The `memory` module provides persistent memory for session-to-session learning.
 
 **Key Responsibilities**:
 - Store memories across sessions with file-based persistence
-- Namespace-based organization (`user/preferences`, `project/{hash}/conventions`)
+- Namespace-based organization (`user/preferences`, `project/{sha256}/conventions`)
 - Importance scoring and pattern-based consolidation
 - Memory superseding to prevent unbounded growth
 - During-session memory creation for immediate learning
@@ -57,7 +57,8 @@ impl MemoryStore {
     pub fn search(&self, query: &str) -> Vec<Memory>
     pub fn delete(&self, id: &str) -> Option<Memory>
     pub fn save(&self) -> std::io::Result<()>
-    pub fn consolidate_session(&self, messages: &[Message], project_hash: &str) -> Vec<Memory>
+    pub fn migrate_project_namespace(&self, project_identity: &str) -> std::io::Result<()>
+    pub fn consolidate_session(&self, messages: &[Message], project_identity: &str) -> Vec<Memory>
     pub fn get_memory_summary(&self, namespace: &str, max_memories: usize) -> String
 }
 ```
@@ -72,9 +73,16 @@ Memories stored as Markdown files with YAML frontmatter. File operations use `fl
 │   └── preferences/
 │       └── MEMORY.md
 └── project/
-    └── {project_hash}/
+    └── {project_namespace}/
         └── MEMORY.md
 ```
+
+Project namespaces use the full, domain-separated SHA-256 digest of the
+stable project identity. On first access, the store migrates the legacy
+MD5-derived namespace idempotently and removes its old directory after the
+new file is saved. Remote TUI summaries retain a legacy-namespace read
+fallback for daemons that were already running during the compatibility
+window.
 
 ### File Locking
 

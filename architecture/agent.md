@@ -360,7 +360,9 @@ Loads agents from multiple sources (in priority order):
 
 **Safety envelope**: Agent permissions are bounded by the most restrictive level across agent, session, config, and hard-deny layers.
 
-Markdown agent files use YAML frontmatter:
+Markdown agent files retain YAML frontmatter for compatibility. It is parsed
+through the centralized `codegg-config` document codec; new generated agent
+definitions use TOML:
 
 ```yaml
 ---

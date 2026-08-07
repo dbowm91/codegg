@@ -255,7 +255,7 @@ mod real_build_tool_definitions_tests {
                 stop_reason: "stop".to_string().into(),
                 usage: TokenUsage::default(),
             }];
-            let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
             Ok(Box::pin(stream))
         }
 

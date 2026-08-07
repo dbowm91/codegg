@@ -778,7 +778,8 @@ pub fn load_agent_from_file(path: &Path) -> Result<Option<FileAgent>, AgentError
     };
 
     let mut agent_cfg: AgentConfig =
-        serde_yaml::from_str(&frontmatter).map_err(|e| AgentError::Invalid(e.to_string()))?;
+        codegg_config::parse_yaml(path.display().to_string(), frontmatter.as_bytes())
+            .map_err(|e| AgentError::Invalid(e.to_string()))?;
 
     // Body-as-prompt: use markdown body as prompt when no explicit prompt or prompt_file
     let body = body.trim().to_string();
@@ -797,9 +798,10 @@ pub fn load_agent_from_file(path: &Path) -> Result<Option<FileAgent>, AgentError
 
     // Check for TOML-only keys in markdown frontmatter
     {
-        let raw: serde_yaml::Value =
-            serde_yaml::from_str(&frontmatter).map_err(|e| AgentError::Invalid(e.to_string()))?;
-        if let Some(mapping) = raw.as_mapping() {
+        let raw: serde_json::Value =
+            codegg_config::parse_yaml(path.display().to_string(), frontmatter.as_bytes())
+                .map_err(|e| AgentError::Invalid(e.to_string()))?;
+        if let Some(mapping) = raw.as_object() {
             // TOML-only features that have no effect in markdown files.
             // 'disable' is NOT here — it's a valid AgentConfig field.
             let toml_only_keys = [
@@ -1749,6 +1751,20 @@ Some body content
         std::fs::write(tmp.path().join("nofm.md"), "Just content").unwrap();
         let agents = load_agents_from_dir(tmp.path()).unwrap();
         assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_malformed_yaml_reports_source_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("broken.md"),
+            "---\nname: [broken\n---\nbody",
+        )
+        .unwrap();
+        let error = load_agent_from_file(&tmp.path().join("broken.md")).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("YAML compatibility"));
+        assert!(message.contains("line"));
     }
 
     #[test]

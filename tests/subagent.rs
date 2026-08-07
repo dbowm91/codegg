@@ -67,7 +67,7 @@ mod tests {
             };
             *idx += 1;
 
-            let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+            let stream = futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
             Ok(Box::pin(stream))
         }
 
@@ -632,7 +632,8 @@ mod tests {
                     },
                 ];
 
-                let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+                let stream =
+                    futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
                 Ok(Box::pin(stream))
             }
 
@@ -820,7 +821,8 @@ mod tests {
                     },
                 ];
 
-                let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+                let stream =
+                    futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
                 Ok(Box::pin(stream))
             }
 
@@ -1270,7 +1272,8 @@ mod tests {
                         usage: TokenUsage::default(),
                     },
                 ];
-                let stream = futures::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
+                let stream =
+                    futures_util::stream::iter(events.into_iter().map(Ok::<_, ProviderError>));
                 Ok(Box::pin(stream))
             }
 

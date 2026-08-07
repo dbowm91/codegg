@@ -17,7 +17,7 @@ Canonical direction remains in:
 - **blocked** — a named dependency or evidence requirement prevents progress.
 - **closing** — implementation landed and closure evidence is being gathered.
 - **closed** — closure record accepted.
-- **conditionally closed** — substantial work landed, but a named correctness finding prevents strict closure.
+- **conditionally closed** — substantial work landed, but a named correctness or operational evidence condition remains.
 - **superseded** — replaced by another document.
 - **archived** — no longer active and retained for traceability.
 
@@ -25,37 +25,37 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | active | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | M001, M004, and M005 ready | M002–M003 and M006–M008 are dependency ordered below |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 retain the single named Linux evidence condition | Implementation, reconciliation, documentation, and local verification are complete. The only remaining condition is one supported-Linux Landlock fixture record with kernel, ABI, and enforcement outcomes. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M001 — Landlock and sandbox contract correction | ready | `plans/implementation/runtime-safety-resource-footprint/001-landlock-and-sandbox-contract-correction.md` | None; highest-priority security correction; independent closure review required |
-| Runtime safety, resource control, and footprint | M004 — grep concurrency and context efficiency | ready | `plans/implementation/runtime-safety-resource-footprint/004-grep-concurrency-and-context-efficiency.md` | None; may execute in parallel with M001 |
-| Runtime safety, resource control, and footprint | M005 — dependency feature and namespace normalization | ready | `plans/implementation/runtime-safety-resource-footprint/005-dependency-feature-and-namespace-normalization.md` | None; may execute in parallel with M001 and M004 |
+
+## Active closure work
+
+C002 is conditionally closed; its single remaining evidence condition is recorded
+in `plans/closure/runtime-safety-resource-footprint/010-status.md`.
 
 ## Blocked work
 
-| Subsystem | Milestone | Status | Implementation plan | Blocker |
-|---|---|---|---|---|
-| Runtime safety, resource control, and footprint | M002 — canonical bounded process execution | blocked | `plans/implementation/runtime-safety-resource-footprint/002-canonical-bounded-process-execution.md` | Hard dependency on M001's accepted sandbox request/outcome contract |
-| Runtime safety, resource control, and footprint | M003 — typed argv and shell-routing convergence | blocked | `plans/implementation/runtime-safety-resource-footprint/003-typed-argv-and-shell-routing-convergence.md` | Hard dependency on M002's canonical executor |
-| Runtime safety, resource control, and footprint | M006 — deprecated parser and dependency maintenance | blocked | `plans/implementation/runtime-safety-resource-footprint/006-deprecated-parser-and-dependency-maintenance.md` | M005 must stabilize dependency/manifest ownership before parser migration |
-| Runtime safety, resource control, and footprint | M007 — binary topology and footprint reduction | blocked | `plans/implementation/runtime-safety-resource-footprint/007-binary-topology-and-footprint-reduction.md` | Hard dependencies on M002, M003, M005, and M006; M004 is a soft final-measurement dependency |
-| Runtime safety, resource control, and footprint | M008 — planning, verification, and maintenance closure | blocked | `plans/implementation/runtime-safety-resource-footprint/008-planning-verification-and-maintenance-closure.md` | M001–M007 must have accepted dispositions and compact closure records |
+No registered runtime-safety plan is blocked. No downstream registered plan
+became newly ready in this closure pass.
+
+The supported-Linux Landlock fixture and final hosted verify are named C002 acceptance criteria. They are not reasons to add another workflow lane, evidence-transfer milestone, or release process.
 
 ## Execution order
 
-1. Execute M001 first.
-2. M004 and M005 may execute independently in parallel with M001.
-3. Promote M002 after M001 closes.
-4. Promote M003 after M002 closes.
-5. Promote M006 after M005 stabilizes manifest ownership.
-6. Promote M007 after M002, M003, M005, and M006 close; include M004 in final measurements when available.
-7. Promote M008 after all production milestones have accepted dispositions.
+1. Execute C002 by merging current `main` into `planning/runtime-safety-resource-footprint` without force-rewriting the accepted evidence chain.
+2. Resolve duplicated planning history by retaining the latest closure state and preserve accepted production code unless `main` contains a newer independent correction.
+3. Correct PR #72 title/body to represent the complete M001–M008/C001 workstream and keep it draft until the reconciled head is stable.
+4. Use the existing normal PR-triggered `verify` workflow on the final reconciled head; do not add a workflow lane or matrix.
+5. Run the existing `sandbox_landlock` fixture once on a Landlock-capable Linux kernel, reusing the hosted run when it supplies real enforcement, kernel, ABI, and fixture evidence.
+6. Qualify M003 documentation to state that the current typed command model is lossless for the supported UTF-8 representation, not arbitrary non-UTF-8 Unix argv, unless source review proves an existing stronger public contract.
+7. Reconcile M001/M002/M003/C001/M008 closure records and the final C002 closure record; promote the roadmap to strict `closed` only when the named evidence exists.
+8. If Linux evidence alone remains unavailable, leave C002/M008 conditionally closed on that exact item and do not create C003.
 
-Promotion requires updating this registry rather than treating a blocked plan as implicitly ready.
+Promotion requires updating this registry rather than treating a conditionally closed workstream as implicitly complete.
 
 ## Workstream closure policy
 
@@ -69,10 +69,15 @@ Runtime-safety milestones use one compact closure record each:
 - `plans/closure/runtime-safety-resource-footprint/006-status.md`
 - `plans/closure/runtime-safety-resource-footprint/007-status.md`
 - `plans/closure/runtime-safety-resource-footprint/008-status.md`
+- `plans/closure/runtime-safety-resource-footprint/009-status.md` — corrective C001
+- `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` — dependency classification correction; not a milestone
+- `plans/closure/runtime-safety-resource-footprint/010-status.md` — final integration/evidence closure target
 
-M001 requires independent security review. M002 requires a second correctness review of output bounds and process-tree cleanup. Ordinary successful closure of M003–M008 does not require a separate ratification plan or evidence-transfer milestone. A reproducible high/medium defect receives one narrow corrective plan linked to its owning milestone.
+M001 requires independent security review. M002 requires a second correctness review of output bounds and process-tree cleanup. Corrective C001 requires independent security review of helper discovery, setup-status isolation, and fail-closed behavior. Those reviews are already accepted for production implementation.
 
-Verification follows the existing minimal contract: focused mechanism checks, one `scripts/verify.sh quick` result on the accepted executable revision, and one existing hosted `verify` result where applicable. No duplicate local full-workspace run, release/package evidence, new CI lane, matrix, artifact, benchmark gate, or automated publication is required.
+C002 requires no additional ratification plan. A reproducible hosted-test or Linux-enforcement failure is handled as a concrete defect within C002. Unavailable external evidence may leave one conditional closure record but must not create another plan.
+
+Verification remains minimal: focused mechanism/static checks after conflict resolution, one `scripts/verify.sh quick` result on the reconciled executable revision, one existing hosted `verify` run on the final PR head, and one supported-Linux fixture execution. No duplicate local full-workspace run, new CI lane, matrix, artifact, benchmark gate, continuous size gate, automated publication, or release cadence is required.
 
 ## Recently closed subsystem lines
 
@@ -89,11 +94,13 @@ These rows preserve only the latest closed control points. Detailed predecessor 
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Latest closure linked from source roadmap |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Latest closure linked from source roadmap |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Latest closure linked from source roadmap |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
 
 ## Deferred unregistered product work
 
 These remain outside the active correctness/footprint handoff until a concrete product priority or dependency makes them ready:
 
+- arbitrary non-UTF-8 command/protocol transport unless elevated by an explicit supported-platform contract;
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
 - plugin-specific `ProjectionEvent::PluginUi` semantics;
