@@ -183,7 +183,7 @@ Correct the output-cap bug, bind SSRF validation to the actual connection destin
 
 ### M002 — Daemon stop identity and CLI JSON correctness
 
-Status: closing
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/002-daemon-stop-identity-and-cli-json-correctness.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M002-M007
+Status: blocked on M003-M007
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 
