@@ -25,59 +25,68 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed; M003/M004/M007 closed; M001/M002/M005/M006/M008/C001 retain the single named Linux evidence condition | Implementation, reconciliation, documentation, and local verification are complete. The only remaining condition is one supported-Linux Landlock fixture record with kernel, ABI, and enforcement outcomes. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M001-M007 ready; M008 blocked on M001-M007 | Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the post-audit workstream. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
+| Post-audit correctness, simplification, and footprint | M001 | ready | `plans/implementation/post-audit-correctness-simplification/001-untrusted-http-safety-and-bounded-streaming.md` | none |
+| Post-audit correctness, simplification, and footprint | M002 | ready | `plans/implementation/post-audit-correctness-simplification/002-daemon-stop-identity-and-cli-json-correctness.md` | none |
+| Post-audit correctness, simplification, and footprint | M003 | ready | `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md` | none |
+| Post-audit correctness, simplification, and footprint | M004 | ready | `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md` | none; soft final-measurement dependency on M003 when it lands first |
+| Post-audit correctness, simplification, and footprint | M005 | ready | `plans/implementation/post-audit-correctness-simplification/005-routine-ci-and-static-guard-simplification.md` | none; reconcile final stack env with M006 |
+| Post-audit correctness, simplification, and footprint | M006 | ready | `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md` | none; soft CI reconciliation with M005 |
+| Post-audit correctness, simplification, and footprint | M007 | ready | `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md` | none |
 
 ## Active closure work
 
-C002 is conditionally closed; its single remaining evidence condition is recorded
-in `plans/closure/runtime-safety-resource-footprint/010-status.md`.
+No post-audit milestone is in closure yet.
+
+Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
 ## Blocked work
 
-No registered runtime-safety plan is blocked. No downstream registered plan
-became newly ready in this closure pass.
+| Subsystem | Milestone | Status | Implementation plan | Blocker |
+|---|---|---|---|---|
+| Post-audit correctness, simplification, and footprint | M008 | blocked | `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md` | hard dependency on closure of M001-M007 |
 
-The supported-Linux Landlock fixture and final hosted verify are named C002 acceptance criteria. They are not reasons to add another workflow lane, evidence-transfer milestone, or release process.
+No M001-M007 milestone is blocked at registration time.
 
 ## Execution order
 
-1. Execute C002 by merging current `main` into `planning/runtime-safety-resource-footprint` without force-rewriting the accepted evidence chain.
-2. Resolve duplicated planning history by retaining the latest closure state and preserve accepted production code unless `main` contains a newer independent correction.
-3. Correct PR #72 title/body to represent the complete M001–M008/C001 workstream and keep it draft until the reconciled head is stable.
-4. Use the existing normal PR-triggered `verify` workflow on the final reconciled head; do not add a workflow lane or matrix.
-5. Run the existing `sandbox_landlock` fixture once on a Landlock-capable Linux kernel, reusing the hosted run when it supplies real enforcement, kernel, ABI, and fixture evidence.
-6. Qualify M003 documentation to state that the current typed command model is lossless for the supported UTF-8 representation, not arbitrary non-UTF-8 Unix argv, unless source review proves an existing stronger public contract.
-7. Reconcile M001/M002/M003/C001/M008 closure records and the final C002 closure record; promote the roadmap to strict `closed` only when the named evidence exists.
-8. If Linux evidence alone remains unavailable, leave C002/M008 conditionally closed on that exact item and do not create C003.
+The post-audit plans are independently executable, but the preferred handoff order prioritizes security/correctness before polish:
 
-Promotion requires updating this registry rather than treating a conditionally closed workstream as implicitly complete.
+1. M001 — correct untrusted HTTP output limits, bounded streaming, and actual-address SSRF pinning.
+2. M002 — make daemon stop identity-safe and replace handwritten CLI JSON escaping.
+3. M003 — correct multiline reasoning-tag scanning, Unicode wrapping/counting, and ShareDialog render duplication.
+4. M004 — apply measured no-feature-loss dependency/default-feature slimming and upstream review.
+5. M005 — remove invalid/redundant routine CI and static-guard machinery while retaining high-value checks.
+6. M006 — reproduce and correct the daemon-socket stack issue, then remove the global 32 MiB stack workaround.
+7. M007 — collapse only execution-model pass-through layers that prove to own no distinct invariant.
+8. M008 — integrate, measure, obtain one final hosted verify result, reconcile docs/registry, and close the workstream.
+
+M001-M007 may be implemented in parallel only when branch coordination prevents overlapping edits. M005 and M006 both touch CI/testing documentation and should be reconciled carefully if executed concurrently.
+
+The runtime-safety supported-Linux Landlock evidence condition may be collected independently at any time. It does not block M001-M008 and must not cause this roadmap to absorb another sandbox implementation phase.
 
 ## Workstream closure policy
 
-Runtime-safety milestones use one compact closure record each:
+Post-audit milestones use one compact closure record each under:
 
-- `plans/closure/runtime-safety-resource-footprint/001-status.md`
-- `plans/closure/runtime-safety-resource-footprint/002-status.md`
-- `plans/closure/runtime-safety-resource-footprint/003-status.md`
-- `plans/closure/runtime-safety-resource-footprint/004-status.md`
-- `plans/closure/runtime-safety-resource-footprint/005-status.md`
-- `plans/closure/runtime-safety-resource-footprint/006-status.md`
-- `plans/closure/runtime-safety-resource-footprint/007-status.md`
-- `plans/closure/runtime-safety-resource-footprint/008-status.md`
-- `plans/closure/runtime-safety-resource-footprint/009-status.md` — corrective C001
-- `plans/closure/runtime-safety-resource-footprint/009-m003-promotion-disposition.md` — dependency classification correction; not a milestone
-- `plans/closure/runtime-safety-resource-footprint/010-status.md` — final integration/evidence closure target
+- `plans/closure/post-audit-correctness-simplification/001-status.md`
+- `plans/closure/post-audit-correctness-simplification/002-status.md`
+- `plans/closure/post-audit-correctness-simplification/003-status.md`
+- `plans/closure/post-audit-correctness-simplification/004-status.md`
+- `plans/closure/post-audit-correctness-simplification/005-status.md`
+- `plans/closure/post-audit-correctness-simplification/006-status.md`
+- `plans/closure/post-audit-correctness-simplification/007-status.md`
+- `plans/closure/post-audit-correctness-simplification/008-status.md`
 
-M001 requires independent security review. M002 requires a second correctness review of output bounds and process-tree cleanup. Corrective C001 requires independent security review of helper discovery, setup-status isolation, and fail-closed behavior. Those reviews are already accepted for production implementation.
+M001 requires explicit security evidence for address pinning and bounded body collection. M002 requires lifecycle evidence that stale/mismatched daemon metadata cannot signal an unrelated PID. M006 requires evidence from the previously failing stack path with the global override unset. M008 owns the single final broad integration/measurement pass.
 
-C002 requires no additional ratification plan. A reproducible hosted-test or Linux-enforcement failure is handled as a concrete defect within C002. Unavailable external evidence may leave one conditional closure record but must not create another plan.
-
-Verification remains minimal: focused mechanism/static checks after conflict resolution, one `scripts/verify.sh quick` result on the reconciled executable revision, one existing hosted `verify` run on the final PR head, and one supported-Linux fixture execution. No duplicate local full-workspace run, new CI lane, matrix, artifact, benchmark gate, continuous size gate, automated publication, or release cadence is required.
+Verification remains minimal: focused tests for each changed boundary, `scripts/verify.sh quick` for production/manifests, and one existing hosted `verify` run on the integrated final head. No new CI lane, matrix, artifact, benchmark/coverage/size gate, scheduled audit, automatic publication, or release cadence is required.
 
 ## Recently closed subsystem lines
 
@@ -98,9 +107,13 @@ These rows preserve only the latest closed control points. Detailed predecessor 
 
 ## Deferred unregistered product work
 
-These remain outside the active correctness/footprint handoff until a concrete product priority or dependency makes them ready:
+These remain outside the active corrective/simplification handoff until a concrete product priority or new evidence makes them ready:
 
 - arbitrary non-UTF-8 command/protocol transport unless elevated by an explicit supported-platform contract;
+- binary topology split or separate daemon/TUI packaging without new measured deployment need;
+- replacing RustPython with a custom Tool Program parser;
+- generalized HTTP/provider-client unification;
+- broad Comrak/MSRV migration;
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
 - plugin-specific `ProjectionEvent::PluginUi` semantics;
@@ -109,5 +122,5 @@ These remain outside the active correctness/footprint handoff until a concrete p
 - production hosted Tool Program transport;
 - seccomp, namespace, container, or remote-execution sandbox expansion;
 - persistent search indexing;
-- automatic dependency-update bots or continuous binary-size gates;
+- automatic dependency-update bots or continuous binary-size/audit gates;
 - release automation or a fixed release cadence.
