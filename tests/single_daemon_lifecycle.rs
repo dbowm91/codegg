@@ -272,3 +272,138 @@ async fn status_reports_daemon_identity_with_metadata() {
     let _ = d.wait().await;
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn stop_requires_matching_live_daemon_identity() {
+    let root = temp_root("stop-mismatch");
+    let paths = DaemonPaths::with_root(root.clone());
+
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+
+    let mut daemon = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn daemon");
+    assert!(
+        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        "daemon never became ready"
+    );
+
+    let mut metadata = read_metadata_for_paths(&paths).expect("daemon metadata");
+    let original_id = metadata.daemon_id.clone();
+    metadata.daemon_id = "codegg-stale-metadata".to_string();
+    std::fs::write(
+        &paths.metadata_path,
+        serde_json::to_string_pretty(&metadata).expect("serialize metadata"),
+    )
+    .expect("replace metadata");
+
+    let stop_out = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("daemon stop");
+    assert!(
+        !stop_out.status.success(),
+        "mismatched stop unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&stop_out.stderr);
+    assert!(
+        stderr.contains("does not match metadata identity"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no signal sent"), "{stderr}");
+
+    assert!(
+        wait_for_daemon_ready(&paths, Duration::from_secs(2)).await,
+        "identity mismatch must not terminate the live daemon"
+    );
+
+    // Restore the metadata so the daemon's normal ownership cleanup remains
+    // representative of the production path before terminating the fixture.
+    metadata.daemon_id = original_id;
+    std::fs::write(
+        &paths.metadata_path,
+        serde_json::to_string_pretty(&metadata).expect("restore metadata"),
+    )
+    .expect("restore metadata");
+    let _ = daemon.kill().await;
+    let _ = daemon.wait().await;
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stop_signals_the_current_daemon_after_identity_match() {
+    let root = temp_root("stop-current");
+    let paths = DaemonPaths::with_root(root.clone());
+
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+
+    let mut daemon = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn daemon");
+    assert!(
+        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        "daemon never became ready"
+    );
+
+    let stop_out = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("daemon stop");
+    assert!(
+        stop_out.status.success(),
+        "current daemon stop failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&stop_out.stdout),
+        String::from_utf8_lossy(&stop_out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&stop_out.stdout).contains("Sent SIGTERM"));
+
+    let exit = tokio::time::timeout(Duration::from_secs(10), daemon.wait())
+        .await
+        .expect("daemon did not exit after SIGTERM")
+        .expect("wait for daemon");
+    assert!(
+        !exit.success(),
+        "SIGTERM should terminate the daemon process"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}

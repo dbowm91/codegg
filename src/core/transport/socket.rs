@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify};
 
 use crate::core::CoreClient;
 use crate::error::AppError;
@@ -21,6 +21,9 @@ pub struct SocketCoreClient {
     /// reader task once the handshake completes; readers should not assume it
     /// is set before the first `ServerHello` frame is processed.
     client_id: Arc<Mutex<Option<String>>>,
+    /// Daemon identity negotiated by the server's `ServerHello`.
+    server_daemon_id: Arc<Mutex<Option<String>>>,
+    server_hello_notify: Arc<Notify>,
 }
 
 impl SocketCoreClient {
@@ -46,6 +49,8 @@ impl SocketCoreClient {
             pending: Arc::clone(&pending),
             event_bus: event_bus.clone(),
             client_id: Arc::new(Mutex::new(None)),
+            server_daemon_id: Arc::new(Mutex::new(None)),
+            server_hello_notify: Arc::new(Notify::new()),
         };
 
         client.spawn_reader(reader, pending, event_bus);
@@ -169,6 +174,8 @@ impl SocketCoreClient {
         // the negotiated client_id and send a default global Subscribe frame
         // after the handshake.
         let client_id_slot = Arc::clone(&self.client_id);
+        let server_daemon_id_slot = Arc::clone(&self.server_daemon_id);
+        let server_hello_notify = Arc::clone(&self.server_hello_notify);
         let write_stream = Arc::clone(&self.write_stream);
 
         tokio::spawn(async move {
@@ -203,6 +210,9 @@ impl SocketCoreClient {
                                         hello.protocol_version,
                                         hello.client_id
                                     );
+                                    *server_daemon_id_slot.lock().await =
+                                        Some(hello.daemon_id.clone());
+                                    server_hello_notify.notify_waiters();
                                     // Record the negotiated id so callers can
                                     // correlate the connection in the daemon's
                                     // `ClientRegistry`.
@@ -245,6 +255,25 @@ impl SocketCoreClient {
                 }
             }
         });
+    }
+
+    /// Return the live daemon identity negotiated by `ServerHello`.
+    pub async fn daemon_id(&self) -> Result<String, AppError> {
+        loop {
+            if let Some(daemon_id) = self.server_daemon_id.lock().await.clone() {
+                return Ok(daemon_id);
+            }
+
+            let notified = self.server_hello_notify.notified();
+            if let Some(daemon_id) = self.server_daemon_id.lock().await.clone() {
+                return Ok(daemon_id);
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), notified)
+                .await
+                .map_err(|_| {
+                    AppError::Other(anyhow::anyhow!("socket core did not receive ServerHello"))
+                })?;
+        }
     }
 }
 

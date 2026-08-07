@@ -183,7 +183,7 @@ Correct the output-cap bug, bind SSRF validation to the actual connection destin
 
 ### M002 — Daemon stop identity and CLI JSON correctness
 
-Status: ready
+Status: closing
 
 Plan: `plans/implementation/post-audit-correctness-simplification/002-daemon-stop-identity-and-cli-json-correctness.md`
 

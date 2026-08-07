@@ -410,16 +410,36 @@ impl OutputFormat {
     pub fn format(&self, content: &str) -> String {
         match self {
             OutputFormat::Text => content.to_string(),
-            OutputFormat::Json => {
-                let escaped = content
-                    .replace('\\', "\\\\")
-                    .replace('"', "\\\"")
-                    .replace('\n', "\\n")
-                    .replace('\r', "\\r")
-                    .replace('\t', "\\t");
-                format!(r#"{{"response": "{}"}}"#, escaped)
-            }
+            OutputFormat::Json => serde_json::to_string(&serde_json::json!({
+                "response": content,
+            }))
+            .expect("serializing a CLI response string cannot fail"),
         }
+    }
+}
+
+#[cfg(test)]
+mod output_format_tests {
+    use super::OutputFormat;
+
+    #[test]
+    fn json_round_trips_all_supported_string_content() {
+        let content = "quotes: \" \\\nline\ncarriage\rtab\tbackspace\u{0008}form-feed\u{000c}\u{0000}\u{001f} unicode: café 🥚";
+        let encoded = OutputFormat::Json.format(content);
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+
+        assert_eq!(value["response"], content);
+    }
+
+    #[test]
+    fn json_preserves_empty_strings_and_text_output() {
+        let encoded = OutputFormat::Json.format("");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+        assert_eq!(value["response"], "");
+        assert_eq!(
+            OutputFormat::Text.format("ordinary output"),
+            "ordinary output"
+        );
     }
 }
 
@@ -568,71 +588,57 @@ async fn main() -> Result<(), AppError> {
                     } else {
                         DaemonPaths::resolve()
                     };
-                    let pid_file = paths.socket_path.with_extension("pid");
-                    let md = codegg::core::instance::read_metadata_for_paths(&paths);
-
-                    // Try the metadata record first; fall back to the
-                    // legacy PID file. Verify the socket actually answers
-                    // before signaling — never trust a stale PID alone.
-                    let candidate_pid: Option<u32> = if let Some(ref m) = md {
-                        Some(m.pid)
-                    } else {
-                        tokio::fs::read_to_string(&pid_file)
-                            .await
-                            .ok()
-                            .and_then(|s| s.trim().parse::<u32>().ok())
+                    let metadata = match codegg::core::instance::read_metadata_for_paths(&paths) {
+                        Some(metadata) => metadata,
+                        None => {
+                            return Err(AppError::Other(anyhow::anyhow!(
+                                "cannot safely stop daemon at {}: metadata is missing; refusing to use the legacy PID file without live identity evidence",
+                                paths.root.display()
+                            )));
+                        }
                     };
 
-                    match candidate_pid {
-                        Some(pid) => {
-                            // Probe socket to confirm daemon is alive.
-                            let probe = codegg::core::transport::SocketCoreClient::connect(
-                                &paths.endpoint_uri(),
-                            )
-                            .await;
-                            match probe {
-                                Ok(_client) => {
-                                    let kill_result =
-                                        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-                                    if kill_result == 0 {
-                                        println!(
-                                            "Sent SIGTERM to daemon (PID {}, generation {})",
-                                            pid,
-                                            md.as_ref()
-                                                .map(|m| m.generation.as_str())
-                                                .unwrap_or("?")
-                                        );
-                                        let _ = tokio::fs::remove_file(&pid_file).await;
-                                    } else {
-                                        eprintln!(
-                                            "Daemon process {} not found (may have already exited)",
-                                            pid
-                                        );
-                                        let _ = tokio::fs::remove_file(&pid_file).await;
-                                        let _ = tokio::fs::remove_file(&paths.socket_path).await;
-                                    }
-                                }
-                                Err(_) => {
-                                    eprintln!(
-                                        "PID {} present but daemon socket {} is unreachable; not signaling.",
-                                        pid,
-                                        paths.socket_path.display()
-                                    );
-                                    eprintln!(
-                                        "Use 'codegg daemon status' for diagnostics or remove stale paths manually."
-                                    );
-                                    std::process::exit(1);
-                                }
-                            }
-                        }
-                        None => {
-                            eprintln!(
-                                "No daemon metadata or PID file found at {}",
-                                paths.root.display()
-                            );
-                            eprintln!("Is the daemon running?");
-                        }
+                    let client = codegg::core::transport::SocketCoreClient::connect(
+                        &paths.endpoint_uri(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon at {}: endpoint {} is unreachable; no signal sent: {}",
+                            paths.root.display(),
+                            paths.endpoint_uri(),
+                            e
+                        ))
+                    })?;
+                    let live_daemon_id = client.daemon_id().await.map_err(|e| {
+                        AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon: endpoint did not provide live identity; no signal sent: {}",
+                            e
+                        ))
+                    })?;
+
+                    if live_daemon_id != metadata.daemon_id {
+                        return Err(AppError::Other(anyhow::anyhow!(
+                            "cannot safely stop daemon: live daemon identity {} does not match metadata identity {}; no signal sent",
+                            live_daemon_id, metadata.daemon_id
+                        )));
                     }
+
+                    let pid = metadata.pid;
+                    let kill_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                    if kill_result != 0 {
+                        return Err(AppError::Other(anyhow::anyhow!(
+                            "daemon identity {} was verified, but SIGTERM to PID {} failed: {}",
+                            metadata.daemon_id,
+                            pid,
+                            std::io::Error::last_os_error()
+                        )));
+                    }
+
+                    println!(
+                        "Sent SIGTERM to daemon (PID {}, generation {})",
+                        pid, metadata.generation
+                    );
                 }
                 DaemonCommand::Status { endpoint } => {
                     use codegg::core::instance::DaemonPaths;
