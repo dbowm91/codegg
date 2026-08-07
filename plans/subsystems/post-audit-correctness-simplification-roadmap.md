@@ -175,7 +175,7 @@ Dependency classes:
 
 ### M001 — Untrusted HTTP safety and bounded streaming
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/001-untrusted-http-safety-and-bounded-streaming.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M001-M007
+Status: blocked on M002-M007
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 

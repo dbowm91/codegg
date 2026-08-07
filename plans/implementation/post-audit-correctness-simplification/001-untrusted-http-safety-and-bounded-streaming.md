@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 001 — Untrusted HTTP Safety and Bounded Streaming
 
-Status: active
+Status: implemented
 
 Source subsystem roadmap:
 
