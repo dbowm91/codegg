@@ -32,7 +32,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M003 | ready | `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md` | none |
+| Post-audit correctness, simplification, and footprint | M003 | active | `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md` | none |
 | Post-audit correctness, simplification, and footprint | M004 | ready | `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md` | none; soft final-measurement dependency on M003 when it lands first |
 | Post-audit correctness, simplification, and footprint | M005 | ready | `plans/implementation/post-audit-correctness-simplification/005-routine-ci-and-static-guard-simplification.md` | none; reconcile final stack env with M006 |
 | Post-audit correctness, simplification, and footprint | M006 | ready | `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md` | none; soft CI reconciliation with M005 |

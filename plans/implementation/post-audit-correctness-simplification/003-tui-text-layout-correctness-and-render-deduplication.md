@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 003 — TUI Text-Layout Correctness and Render Deduplication
 
-Status: ready
+Status: active
 
 Source subsystem roadmap:
 

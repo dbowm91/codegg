@@ -270,86 +270,11 @@ struct LastRenderCache {
     lines: Vec<Line<'static>>,
 }
 
-/// Greedy word-wrap counter. Returns the number of visual lines a string of
-/// the given (Unicode-aware) display width occupies when wrapped at `width`.
-/// Word-wrap is greedy: words that fit on the current line stay there; a
-/// word that would overflow starts a new line. Words longer than `width`
-/// (URLs, long paths) are hard-broken mid-character to match
-/// [`wrap_to_strings`]. Empty input returns 1 line (matches a blank
-/// paragraph).
+/// Return the number of visual lines produced by [`wrap_to_strings`]. Keeping
+/// estimation on the rendering path prevents scroll/layout drift when display
+/// width differs from the number of Unicode scalar values.
 fn wrap_count(s: &str, width: u16) -> usize {
-    let width = width as usize;
-    if width == 0 {
-        return s.lines().count().max(1);
-    }
-    if s.is_empty() {
-        return 1;
-    }
-    let mut count = 1usize;
-    let mut col = 0usize;
-    let mut word_w = 0usize;
-    let mut word_chars = 0usize;
-    let flush_word =
-        |count: &mut usize, col: &mut usize, word_w: &mut usize, word_chars: &mut usize| {
-            if *word_chars == 0 {
-                return;
-            }
-            // Place the word on the current line if there's room (with leading
-            // space), else start a new line.
-            if *col == 0 {
-                *col = *word_w;
-            } else if *col + 1 + *word_w <= width {
-                *col += 1 + *word_w;
-            } else {
-                *count += 1;
-                *col = *word_w;
-            }
-            // Hard-break: the word is wider than the wrap width. It needs
-            // ceil(word_w / width) visual lines. We've already counted the
-            // first one (col was set to word_w above), so add the extras.
-            if *col > width {
-                let extras = word_w.div_ceil(width) - 1;
-                *count += extras;
-                *col = *word_w - extras * width;
-            }
-            *word_w = 0;
-            *word_chars = 0;
-        };
-    for ch in s.chars() {
-        if ch == '\n' {
-            flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
-            count += 1;
-            col = 0;
-        } else if ch.is_whitespace() {
-            flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
-            if col < width {
-                col += 1;
-            } else {
-                count += 1;
-                col = 0;
-            }
-        } else {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            // If the next char wouldn't fit on the current line and we're
-            // mid-word, wait until the word ends to break (so we don't
-            // break in the middle of a word we could fit on the next line).
-            if col > 0 && col + cw > width && word_chars == 0 {
-                count += 1;
-                col = 0;
-            }
-            if cw > 0 {
-                word_w += cw;
-                word_chars += 1;
-            }
-        }
-    }
-    flush_word(&mut count, &mut col, &mut word_w, &mut word_chars);
-    // Trailing newline → final empty line shouldn't count
-    if s.ends_with('\n') && count > 1 {
-        count - 1
-    } else {
-        count
-    }
+    wrap_to_strings(s, width).len()
 }
 
 /// Split a string into wrapped lines of at most `width` display columns each.
@@ -367,145 +292,93 @@ fn wrap_to_strings(s: &str, width: u16) -> Vec<String> {
     if width == 0 || s.is_empty() {
         return vec![s.to_string()];
     }
-    let mut out: Vec<String> = Vec::new();
-    let mut line = String::new();
-    let mut col = 0usize;
-    let mut word = String::new();
-    let mut word_w = 0usize;
-    let place_word = |word: &str,
-                      word_w: usize,
-                      line: &mut String,
-                      col: &mut usize,
-                      out: &mut Vec<String>|
-     -> Option<String> {
-        if word.is_empty() {
-            return None;
-        }
-        if *col == 0 {
-            *line += word;
-            *col = word_w;
-        } else {
-            // Strip any trailing whitespace the previous whitespace-pass
-            // added, so we don't end up with "hello  world" (double
-            // space) when the line was already at "hello " from a literal
-            // space in the input.
-            while line.ends_with(' ') || line.ends_with('\t') {
-                line.pop();
+    fn hard_break_word(word: &str, width: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        let mut chunk = String::new();
+        let mut chunk_width = 0;
+        for ch in word.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if ch_width > 0 && chunk_width + ch_width > width && !chunk.is_empty() {
+                chunks.push(std::mem::take(&mut chunk));
+                chunk_width = 0;
             }
-            *col = line.chars().count();
-            if *col + 1 + word_w <= width {
-                *line += " ";
-                *line += word;
-                *col += 1 + word_w;
+            chunk.push(ch);
+            chunk_width += ch_width;
+        }
+        if !chunk.is_empty() || chunks.is_empty() {
+            chunks.push(chunk);
+        }
+        chunks
+    }
+
+    fn wrap_logical_line(line: &str, width: usize) -> Vec<String> {
+        let mut wrapped = Vec::new();
+        let mut current = String::new();
+        let mut current_width = 0;
+        let mut word = String::new();
+
+        let flush_word = |word: &mut String,
+                          current: &mut String,
+                          current_width: &mut usize,
+                          wrapped: &mut Vec<String>| {
+            if word.is_empty() {
+                return;
+            }
+            let chunks = hard_break_word(word, width);
+            let word_width = chunks
+                .first()
+                .map(|chunk| {
+                    chunk
+                        .chars()
+                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                        .sum::<usize>()
+                })
+                .unwrap_or(0);
+            let is_hard_break = chunks.len() > 1;
+
+            if current.is_empty() {
+                // Start a new line below. The final chunk remains current so
+                // a following word can still share its line.
+            } else if !is_hard_break && *current_width + 1 + word_width <= width {
+                current.push(' ');
+                *current_width += 1;
             } else {
-                out.push(std::mem::take(line));
-                *line += word;
-                *col = word_w;
+                wrapped.push(std::mem::take(current));
+                *current_width = 0;
             }
-        }
-        // Hard-break: if the line is wider than `width` cols (a single
-        // word overflowed), chop it into `width`-col chunks. The leftover
-        // chars on the line are returned to the caller so they can be
-        // combined with the next chars of the word (otherwise a 50-char
-        // word would fragment into many 1-char lines).
-        let mut did_hard_break = false;
-        while *col > width && !line.is_empty() {
-            let take_bytes = line
-                .char_indices()
-                .nth(width)
-                .map(|(i, _)| i)
-                .unwrap_or(line.len());
-            let chunk: String = line.drain(..take_bytes).collect();
-            let chunk_chars = chunk.chars().count();
-            out.push(chunk);
-            *col -= chunk_chars;
-            did_hard_break = true;
-        }
-        if did_hard_break && !line.is_empty() {
-            Some(std::mem::take(line))
-        } else {
-            None
-        }
-    };
-    for ch in s.chars() {
-        if ch == '\n' {
-            if !word.is_empty() {
-                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
-                    word = leftover;
-                    word_w = word.chars().count();
+
+            for (idx, chunk) in chunks.iter().enumerate() {
+                if idx + 1 == chunks.len() {
+                    current.push_str(chunk);
+                    *current_width += chunk
+                        .chars()
+                        .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                        .sum::<usize>();
                 } else {
-                    word.clear();
-                    word_w = 0;
+                    wrapped.push(chunk.clone());
                 }
             }
-            out.push(std::mem::take(&mut line));
-            col = 0;
-        } else if ch.is_whitespace() {
-            if !word.is_empty() {
-                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
-                    word = leftover;
-                    word_w = word.chars().count();
-                    col = 0;
-                } else {
-                    word.clear();
-                    word_w = 0;
-                }
-            }
-            if col < width {
-                line.push(ch);
-                col += 1;
+            word.clear();
+        };
+
+        for ch in line.chars() {
+            if ch.is_whitespace() {
+                flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
             } else {
-                out.push(std::mem::take(&mut line));
-                col = 0;
-            }
-        } else {
-            let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if cw == 0 {
                 word.push(ch);
-                continue;
-            }
-            if col + cw > width && col > 0 {
-                out.push(std::mem::take(&mut line));
-                col = 0;
-            }
-            word.push(ch);
-            word_w += cw;
-            if word_w > width {
-                if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
-                    word = leftover;
-                    word_w = word.chars().count();
-                    col = 0;
-                } else {
-                    word.clear();
-                    word_w = 0;
-                }
             }
         }
+        flush_word(&mut word, &mut current, &mut current_width, &mut wrapped);
+        wrapped.push(current);
+        wrapped
     }
-    if !word.is_empty() {
-        if let Some(leftover) = place_word(&word, word_w, &mut line, &mut col, &mut out) {
-            out.push(leftover);
-        }
+
+    let mut lines = Vec::new();
+    let logical_lines = s.strip_suffix('\n').unwrap_or(s).split('\n');
+    for logical_line in logical_lines {
+        lines.extend(wrap_logical_line(logical_line, width));
     }
-    if !line.is_empty() || out.is_empty() {
-        out.push(line);
-    }
-    // Trim trailing whitespace from every output line (so a wrap doesn't
-    // double-space between words or leave a trailing space at line-end).
-    for line in &mut out {
-        while line.ends_with(' ') || line.ends_with('\t') {
-            line.pop();
-        }
-    }
-    // Trim trailing blank line caused by a terminal '\n'
-    if s.ends_with('\n') {
-        if let Some(last) = out.last() {
-            if last.is_empty() {
-                out.pop();
-            }
-        }
-    }
-    out
+    lines
 }
 
 fn extract_tool_target(name: &str, input: &str) -> String {
@@ -555,43 +428,46 @@ fn extract_tool_target(name: &str, input: &str) -> String {
 }
 
 fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
-    let tags = if start {
-        vec!["<think>", "<thought>", "<thinking>"]
+    let tags: &[&str] = if start {
+        &["<think>", "<thought>", "<thinking>"]
     } else {
-        vec!["</think>", "</thought>", "</thinking>"]
+        &["</think>", "</thought>", "</thinking>"]
     };
 
     let mut best_match: Option<(usize, usize)> = None;
     let mut in_code_block = false;
-    let mut char_pos = 0;
+    let mut line_start = 0;
 
-    for line in text.lines() {
-        let line_len = line.len() + 1;
-
+    for line in text.split('\n') {
         if line.trim().starts_with("```") {
             in_code_block = !in_code_block;
         }
 
         if !in_code_block {
-            let lower = line.to_lowercase();
-            for tag in &tags {
-                let mut search_from = 0;
-                while let Some(pos) = lower[search_from..].find(tag) {
-                    let abs_pos = char_pos + search_from + pos;
-                    let after_pos = abs_pos + tag.len();
-                    let valid_boundary = after_pos >= line.len()
-                        || line.as_bytes()[after_pos] == b'>'
-                        || line.as_bytes()[after_pos] == b'\n'
-                        || !line.as_bytes()[after_pos].is_ascii_alphanumeric();
-                    if valid_boundary && (best_match.is_none() || abs_pos < best_match.unwrap().0) {
-                        best_match = Some((abs_pos, tag.len()));
+            for (local_pos, _) in line.char_indices() {
+                for tag in tags {
+                    let Some(candidate) =
+                        line.get(local_pos..).and_then(|rest| rest.get(..tag.len()))
+                    else {
+                        continue;
+                    };
+                    if !candidate.eq_ignore_ascii_case(tag) {
+                        continue;
                     }
-                    search_from += pos + 1;
+                    let after_pos = local_pos + tag.len();
+                    let valid_boundary = after_pos >= line.len()
+                        || !line.as_bytes()[after_pos].is_ascii_alphanumeric();
+                    if valid_boundary {
+                        let abs_pos = line_start + local_pos;
+                        if best_match.is_none_or(|(best_pos, _)| abs_pos < best_pos) {
+                            best_match = Some((abs_pos, tag.len()));
+                        }
+                    }
                 }
             }
         }
 
-        char_pos += line_len;
+        line_start += line.len() + 1;
     }
 
     best_match
@@ -3601,6 +3477,73 @@ mod tests {
         // hard-break, just one visual line.
         assert_eq!(wrap_count(&"a".repeat(20), 20), 1);
         assert_eq!(wrap_count(&"a".repeat(21), 20), 2);
+    }
+
+    #[test]
+    fn wrapping_uses_display_width_for_wide_and_combining_text() {
+        let cases = [
+            ("界界界", 4, vec!["界界", "界"]),
+            ("a界b", 3, vec!["a界", "b"]),
+            ("e\u{301}e\u{301}", 1, vec!["e\u{301}", "e\u{301}"]),
+            ("a\n\nb", 2, vec!["a", "", "b"]),
+        ];
+
+        for (input, width, expected) in cases {
+            let lines = wrap_to_strings(input, width);
+            assert_eq!(lines, expected, "input={input:?} width={width}");
+            assert_eq!(lines.len(), wrap_count(input, width));
+            for line in &lines {
+                assert!(
+                    UnicodeWidthStr::width(line.as_str()) <= width as usize,
+                    "line {line:?} exceeds display width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrapping_preserves_utf8_codepoint_boundaries_at_width_one() {
+        let input = "😀界e\u{301}";
+        let lines = wrap_to_strings(input, 1);
+
+        assert_eq!(lines, vec!["😀", "界", "e\u{301}"]);
+        assert_eq!(lines.len(), wrap_count(input, 1));
+        assert_eq!(lines.concat(), input);
+    }
+
+    #[test]
+    fn find_any_tag_uses_line_local_boundaries_and_absolute_results() {
+        let start = "prefix\n  <thinking> Unicode é";
+        assert_eq!(
+            find_any_tag(start, true),
+            Some((start.find("<thinking>").unwrap(), "<thinking>".len()))
+        );
+
+        let end = "é before\n</thought>!";
+        assert_eq!(
+            find_any_tag(end, false),
+            Some((end.find("</thought>").unwrap(), "</thought>".len()))
+        );
+    }
+
+    #[test]
+    fn find_any_tag_preserves_boundaries_and_fenced_code_exclusion() {
+        assert_eq!(
+            find_any_tag("<thinkingx> <think>!", true),
+            Some((12, "<think>".len()))
+        );
+
+        let text = "```\n<think> ignored\n```\n<think> first\n<thinking> second";
+        assert_eq!(
+            find_any_tag(text, true),
+            Some((text.rfind("<think>").unwrap(), "<think>".len()))
+        );
+
+        let multiple = "é\n<thinking> later\n<think> earlier-by-tag-order";
+        assert_eq!(
+            find_any_tag(multiple, true),
+            Some((multiple.find("<thinking>").unwrap(), "<thinking>".len()))
+        );
     }
 
     #[test]
