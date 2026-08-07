@@ -5,25 +5,36 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Duration;
+
+use crate::security::ssrf::validate_url_target;
+use crate::security::untrusted_http::read_body_bounded;
 
 const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
 pub struct UrlSource {
-    client: reqwest::Client,
+    timeout: Duration,
 }
 
 impl UrlSource {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+        Self {
+            timeout: Duration::from_secs(30),
+        }
     }
 
     async fn fetch_url(&self, url: &str) -> Result<SourceRecord> {
-        let response = self
-            .client
+        let target = validate_url_target(url)
+            .map_err(|e| ResearchError::UrlFetch(format!("SSRF protection: {e}")))?;
+        let client = reqwest::Client::builder()
+            .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve_to_addrs(target.host(), target.addresses())
+            .build()
+            .map_err(|e| ResearchError::UrlFetch(format!("failed to create HTTP client: {e}")))?;
+
+        let response = client
             .get(url)
             .send()
             .await
@@ -41,25 +52,10 @@ impl UrlSource {
             .unwrap_or("")
             .to_string();
 
-        let content_length = response.content_length().map(|v| v as usize);
-        if let Some(len) = content_length {
-            if len > MAX_RESPONSE_BYTES {
-                return Err(ResearchError::UrlFetch(format!(
-                    "response too large: {len} bytes (max {MAX_RESPONSE_BYTES})"
-                )));
-            }
-        }
-
-        let bytes = response
-            .bytes()
+        let bytes = read_body_bounded(response, MAX_RESPONSE_BYTES)
             .await
-            .map_err(|e| ResearchError::UrlFetch(format!("failed to read body: {e}")))?;
-
-        let truncated = if bytes.len() > MAX_RESPONSE_BYTES {
-            &bytes[..MAX_RESPONSE_BYTES]
-        } else {
-            &bytes
-        };
+            .map_err(|e| ResearchError::UrlFetch(e.to_string()))?;
+        let truncated = &bytes;
 
         let content_hash = format!("{:x}", Sha256::digest(truncated));
 
@@ -98,7 +94,7 @@ impl UrlSource {
             },
             notes: vec![format!(
                 "fetched {} bytes, content-type: {}",
-                bytes.len(),
+                truncated.len(),
                 content_type
             )],
         })

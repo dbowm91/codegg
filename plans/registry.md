@@ -32,7 +32,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M001 | ready | `plans/implementation/post-audit-correctness-simplification/001-untrusted-http-safety-and-bounded-streaming.md` | none |
+| Post-audit correctness, simplification, and footprint | M001 | active | `plans/implementation/post-audit-correctness-simplification/001-untrusted-http-safety-and-bounded-streaming.md` | implementation and closure in progress |
 | Post-audit correctness, simplification, and footprint | M002 | ready | `plans/implementation/post-audit-correctness-simplification/002-daemon-stop-identity-and-cli-json-correctness.md` | none |
 | Post-audit correctness, simplification, and footprint | M003 | ready | `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md` | none |
 | Post-audit correctness, simplification, and footprint | M004 | ready | `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md` | none; soft final-measurement dependency on M003 when it lands first |

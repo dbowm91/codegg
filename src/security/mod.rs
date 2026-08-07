@@ -29,6 +29,7 @@ pub mod runtime;
 pub mod sandbox;
 pub mod service;
 pub mod ssrf;
+pub(crate) mod untrusted_http;
 pub mod workflow;
 
 pub mod command {
