@@ -1,5 +1,6 @@
-use crate::command_intent::plan::GitExecutionRequest;
-use crate::command_planner::{CommandPlan, ExecutionBackend, NativeCommand, PythonModeGuess};
+use crate::command_intent::plan::{
+    CommandPlan, ExecutionBackend, GitExecutionRequest, NativeCommand, PythonModeGuess,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingDecision {
@@ -85,7 +86,7 @@ pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision {
 mod tests {
     use super::*;
     use crate::command_intent::classify_command;
-    use crate::command_planner::plan_execution;
+    use crate::command_intent::plan::plan_execution;
 
     #[test]
     fn test_command_routes_to_test_runner() {
