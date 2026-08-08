@@ -25,21 +25,20 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M004-M007 ready; M008 blocked on M004-M007 | M001-M003 are closed. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M004 active; M005-M007 ready; M008 blocked on M004-M007 | M001-M003 are closed. M004 implementation is in progress. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the post-audit workstream. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M004 | ready | `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md` | none; former soft final-measurement dependency on closed M003 is satisfied |
 | Post-audit correctness, simplification, and footprint | M005 | ready | `plans/implementation/post-audit-correctness-simplification/005-routine-ci-and-static-guard-simplification.md` | none; reconcile final stack env with M006 |
 | Post-audit correctness, simplification, and footprint | M006 | ready | `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md` | none; soft CI reconciliation with M005 |
 | Post-audit correctness, simplification, and footprint | M007 | ready | `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md` | none |
 
 ## Active closure work
 
-No post-audit milestone is in closure. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`.
+M004 implementation is active; closure evidence will be recorded in `plans/closure/post-audit-correctness-simplification/004-status.md`. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`.
 
 Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
@@ -47,7 +46,7 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M008 | blocked | `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md` | hard dependency on closure of M003-M007 |
+| Post-audit correctness, simplification, and footprint | M008 | blocked | `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md` | hard dependency on closure of M004-M007 |
 
 No M001-M007 milestone is blocked at registration time.
 

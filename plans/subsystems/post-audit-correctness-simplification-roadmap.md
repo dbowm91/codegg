@@ -199,7 +199,7 @@ Fix thinking-tag offset handling, unify Unicode-aware wrapping/counting, and rem
 
 ### M004 — Dependency feature slimming and upstream maintenance review
 
-Status: ready
+Status: active
 
 Plan: `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md`
 

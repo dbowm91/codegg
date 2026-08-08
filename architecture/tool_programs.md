@@ -461,7 +461,9 @@ Ownership: `crates/codegg-core/src/tool_program/` — submodules:
 |------------|---------|---------|------|---------|------------|
 | `rustpython-parser` | 0.4.0 | MIT | 1.72.1 | Parse Python source to AST | Yes — no exec |
 
-Features used: `default` (location + malachite-bigint). ~15 transitive crates.
+Features used: `all-nodes-with-ranges` and `malachite-bigint` with default
+features disabled. The frontend does not use RustPython's optional location or
+fold APIs. ~15 transitive crates.
 No network, filesystem, or async dependencies. No pyo3 or CPython bindings.
 
 ### Agent-Facing Examples

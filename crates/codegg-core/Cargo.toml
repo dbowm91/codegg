@@ -43,8 +43,10 @@ tokio-util = "0.7"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 
-# Restricted-Python parser for Tool Programs (M004)
-rustpython-parser = { version = "0.4.0", features = ["all-nodes-with-ranges"] }
+# Restricted-Python parser for Tool Programs (M004). The parser's generic AST
+# ranges and integer constants do not require its optional location/fold
+# surface, so retain only the features used by CodeGG's parse-only frontend.
+rustpython-parser = { version = "0.4.0", default-features = false, features = ["all-nodes-with-ranges", "malachite-bigint"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
