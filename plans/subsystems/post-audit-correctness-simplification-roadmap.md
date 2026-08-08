@@ -215,7 +215,7 @@ Delete the invalid Tokio-flavor baseline/scanner machinery, remove redundant hos
 
 ### M006 — Test stack and resource-root-cause correction
 
-Status: active
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md`
 

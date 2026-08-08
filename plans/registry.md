@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M006 active; M007 ready; M008 blocked | M001-M005 are closed. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M007 ready; M008 blocked on M007 | M001-M006 are closed. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the post-audit workstream. |
 
 ## Dependency-ready implementation plans
@@ -34,13 +34,9 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Post-audit correctness, simplification, and footprint | M007 | ready | `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md` | none |
 
-## Active implementation plans
-
-- Post-audit correctness, simplification, and footprint M006 — `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md`. The stack root cause is localized; source correction and final verification are in progress.
-
 ## Active closure work
 
-No post-audit milestone is currently in closure. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`; M004 is closed in `plans/closure/post-audit-correctness-simplification/004-status.md`; M005 is closed in `plans/closure/post-audit-correctness-simplification/005-status.md`.
+No post-audit milestone is currently in closure. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`; M004 is closed in `plans/closure/post-audit-correctness-simplification/004-status.md`; M005 is closed in `plans/closure/post-audit-correctness-simplification/005-status.md`; M006 is closed in `plans/closure/post-audit-correctness-simplification/006-status.md`.
 
 Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
@@ -90,6 +86,7 @@ Verification remains minimal: focused tests for each changed boundary, `scripts/
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Post-audit correctness, simplification, and footprint | M006 — test stack and resource-root-cause correction | closed | `plans/closure/post-audit-correctness-simplification/006-status.md` | `a4402db` |
 | Post-audit correctness, simplification, and footprint | M005 — routine CI and static-guard simplification | closed | `plans/closure/post-audit-correctness-simplification/005-status.md` | `0993d953` |
 | Post-audit correctness, simplification, and footprint | M004 — dependency feature slimming and upstream maintenance review | closed | `plans/closure/post-audit-correctness-simplification/004-status.md` | `b437f8eb` |
 
