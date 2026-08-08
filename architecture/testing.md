@@ -33,7 +33,7 @@ The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning 
 
 - **LSP tests** spawn fake language-server subprocesses per test, create temp Rust workspaces, write scenario files, and exercise async shutdown/restart. A single test binary (`tests/lsp.rs`) has 84 tests that each spawn a subprocess.
 - **Plugin tests** may instantiate Wasmtime runtime state.
-- **Tokio default flavor** is multi-threaded. Bare `#[tokio::test]` creates a multi-threaded runtime with default worker threads. `check-tokio-test-flavors.py` is a baseline-aware regression guard: historical bare tests are tracked in `scripts/tokio-test-flavor-baseline.txt`; newly added bare tests fail verification. `audit_tokio_tests.py` identifies concurrency-sensitive tests. Converting to `current_thread` eliminates overhead for tests that don't need concurrent workers.
+- **Tokio default flavor** is single-threaded/current-thread. Bare `#[tokio::test]` already has the lightweight default runtime; `audit_tokio_tests.py` remains available to identify tests that need explicit concurrency review. Use an explicit multi-threaded flavor only when a test genuinely requires worker-thread concurrency.
 - **SQLite migration churn** — `isolated_pool()` runs full migrations on every call. Some test files add redundant `migrate()` calls on top.
 
 ## Tokio Runtime Flavor Rules
@@ -41,13 +41,13 @@ The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning 
 ### Default: `current_thread`
 
 ```rust
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_something() {
     // ...
 }
 ```
 
-Use `current_thread` unless the test explicitly requires concurrent worker threads. This is the default for:
+This default is appropriate for:
 - Pure unit tests and parsing
 - SQLite pool operations (in-memory)
 - In-memory registry tests (PluginRegistry, PermissionRegistry, etc.)
@@ -226,19 +226,22 @@ Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` th
 The job runs these steps in order:
 
 1. Generated-agent schema/source checks (`generate_builtin_agents.py --check`, `check_builtin_agents.py`)
-2. Tokio test-flavor regression guard (`check-tokio-test-flavors.py`)
-3. `codegg-core` boundary guard (`check-core-boundary.sh`)
-4. Formatting (`cargo fmt --check --all`)
-5. Workspace check (`cargo check --workspace --all-targets --locked`)
+2. `codegg-core` boundary guard (`check-core-boundary.sh`)
+3. Sandbox contract guard (`check_sandbox_contract.py`)
+4. Execution ownership guard (`check_execution_ownership.py`)
+5. Formatting (`cargo fmt --check --all`)
 6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
 7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-The local quick script additionally runs the generated-agent checks, YAML
-parser boundary, sandbox contract, and execution-ownership guard before the
-workspace check. CI runs the same cheap boundary guards in its single job,
-then adds Clippy and the workspace tests. CI omits the production-feature
-compile check (`server,plugins,lsp-test-support`) because that requires
-`--features` and is heavier than default-feature compilation.
+The local quick script additionally runs the generated-agent checks, core
+boundary, sandbox contract, and execution-ownership guard before the workspace
+check. CI runs the same cheap boundary guards in its single job, then uses
+Clippy as the default-feature workspace compile/type-check gate before the
+workspace tests. The sandbox and execution-ownership guard self-tests remain
+useful local maintenance commands but are not unconditional routine
+verification steps. CI omits the production-feature compile check
+(`server,plugins,lsp-test-support`) because that requires `--features` and is
+heavier than default-feature compilation.
 
 Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally via the change-specific matrix documented in `scripts/verify.sh` and this file.
 
@@ -297,7 +300,7 @@ The closure pass evaluation determined that splitting CI into resource lanes
 concrete measured need. The conservative approach is retained because:
 
 1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
-2. **Regression guards are in place** — `check-tokio-test-flavors.py` prevents new bare tokio tests, and `audit_tokio_tests.py` identifies concurrency-sensitive tests.
+2. **The runtime default is documented directly** — Tokio's bare test macro uses a current-thread runtime; `audit_tokio_tests.py` remains available for concurrency-sensitive test review.
 3. **Limited parallelism is reliable** — `--test-threads=1` balances speed with resource control.
 4. **Wall-clock is acceptable** — the bounded suite completes within CI timeout limits.
 

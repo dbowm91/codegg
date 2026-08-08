@@ -459,7 +459,7 @@ fn find_any_tag(text: &str, start: bool) -> Option<(usize, usize)> {
                         || !line.as_bytes()[after_pos].is_ascii_alphanumeric();
                     if valid_boundary {
                         let abs_pos = line_start + local_pos;
-                        if best_match.is_none_or(|(best_pos, _)| abs_pos < best_pos) {
+                        if best_match.map_or(true, |(best_pos, _)| abs_pos < best_pos) {
                             best_match = Some((abs_pos, tag.len()));
                         }
                     }

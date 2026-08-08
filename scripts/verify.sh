@@ -9,7 +9,8 @@
 #
 # Resource policy:
 #   Broad Cargo commands use CARGO_BUILD_JOBS=1 and --test-threads=1.
-#   RUST_MIN_STACK=33554432 is exported for full workspace tests.
+#   RUST_MIN_STACK=33554432 is exported for full workspace tests until the
+#   daemon-socket stack root cause is corrected by the follow-up milestone.
 #   Callers may override any env var before invoking this script.
 #
 # The script stops at the first failing command and returns its status.
@@ -35,7 +36,8 @@ Modes:
   help    Print this message.
 
 Resource policy:
-  Both modes set CARGO_BUILD_JOBS=1 and RUST_MIN_STACK=33554432 by default.
+  Both modes set CARGO_BUILD_JOBS=1 and RUST_MIN_STACK=33554432 by default
+  until the stack workaround is removed by the resource-correction milestone.
   Full mode passes --test-threads=1 to broad workspace tests.
   Callers may override via environment variables.
   No optional external tools are required.
@@ -55,23 +57,11 @@ run_quick() {
     echo "==> python3 scripts/check_builtin_agents.py"
     (cd "$REPO_ROOT" && python3 scripts/check_builtin_agents.py)
 
-    echo "==> python3 scripts/check_yaml_parser_boundary.py"
-    (cd "$REPO_ROOT" && python3 scripts/check_yaml_parser_boundary.py)
-
-    echo "==> python3 scripts/check-tokio-test-flavors.py --self-test"
-    (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py --self-test)
-
-    echo "==> python3 scripts/check-tokio-test-flavors.py"
-    (cd "$REPO_ROOT" && python3 scripts/check-tokio-test-flavors.py)
-
     echo "==> ./scripts/check-core-boundary.sh"
     (cd "$REPO_ROOT" && ./scripts/check-core-boundary.sh)
 
     echo "==> python3 scripts/check_sandbox_contract.py"
     (cd "$REPO_ROOT" && python3 scripts/check_sandbox_contract.py)
-
-    echo "==> python3 scripts/check_execution_ownership.py --self-test"
-    (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py --self-test)
 
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)

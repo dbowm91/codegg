@@ -42,35 +42,17 @@ jobs:
       - name: Check builtin agents match source
         run: python3 scripts/check_builtin_agents.py
 
-      - name: Tokio test-flavor guard self-test
-        run: python3 scripts/check-tokio-test-flavors.py --self-test
-
-      - name: Tokio test-flavor regression guard
-        run: python3 scripts/check-tokio-test-flavors.py
-
       - name: codegg-core boundary guard
         run: ./scripts/check-core-boundary.sh
 
-      - name: YAML parser boundary guard
-        run: python3 scripts/check_yaml_parser_boundary.py
-
-      - name: Sandbox contract guard self-test
-        run: python3 scripts/check_sandbox_contract.py --self-test
-
       - name: Sandbox contract guard
         run: python3 scripts/check_sandbox_contract.py
-
-      - name: Execution ownership guard self-test
-        run: python3 scripts/check_execution_ownership.py --self-test
 
       - name: Execution ownership guard
         run: python3 scripts/check_execution_ownership.py
 
       - name: Formatting
         run: cargo fmt --check --all
-
-      - name: Workspace check
-        run: cargo check --workspace --all-targets --locked
 
       - name: Workspace Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 005 — Routine CI and Static-Guard Simplification
 
-Status: ready
+Status: active
 
 Source subsystem roadmap:
 
