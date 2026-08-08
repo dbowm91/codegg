@@ -223,7 +223,7 @@ Identify the actual stack-heavy daemon-socket path, make the smallest code/test-
 
 ### M007 — Execution-model pass-through and duplication cleanup
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M006-M007
+Status: ready
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 
