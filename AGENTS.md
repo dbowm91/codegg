@@ -197,7 +197,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ## CI Pipeline
 
-CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, the codegg-core boundary, sandbox and execution-ownership invariants, formatting, default-feature workspace compilation/type checking through Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. Guard self-tests are manual maintenance commands, not routine CI steps. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, the codegg-core boundary, sandbox and execution-ownership invariants, formatting, default-feature workspace compilation/type checking through Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. Guard self-tests are manual maintenance commands, not routine CI steps. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 

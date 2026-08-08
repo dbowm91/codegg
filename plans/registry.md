@@ -25,15 +25,18 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M006-M007 ready; M008 blocked on M006-M007 | M001-M005 are closed. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M006 active; M007 ready; M008 blocked | M001-M005 are closed. Independent corrective/simplification work against merged baseline `0323d68`; preserve single daemon, single binary, manual release, and one-job CI posture. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the post-audit workstream. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M006 | ready | `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md` | none; reconcile final stack environment with closed M005 CI changes |
 | Post-audit correctness, simplification, and footprint | M007 | ready | `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md` | none |
+
+## Active implementation plans
+
+- Post-audit correctness, simplification, and footprint M006 — `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md`. The stack root cause is localized; source correction and final verification are in progress.
 
 ## Active closure work
 

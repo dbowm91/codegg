@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 006 — Test Stack and Resource Root-Cause Correction
 
-Status: ready
+Status: active
 
 Source subsystem roadmap:
 

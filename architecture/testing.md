@@ -153,7 +153,7 @@ cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 cargo test -p codegg-core
 
 # Capped workspace validation (what verify.sh full runs internally)
-RUST_MIN_STACK=33554432 CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
+CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
 
 # LSP integration (fake server, serial)
 cargo test -p egglsp --features lsp-test-support --test scenario_engine
@@ -221,7 +221,7 @@ diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile timing 
 
 ## CI Structure
 
-Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` that runs for pull requests and pushes to `main`. It uses default features, bounded Cargo resources (`CARGO_BUILD_JOBS=1`, `RUST_MIN_STACK=33554432`, `--test-threads=1`), and performs no release, artifact, cross-build, audit, or example work.
+Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` that runs for pull requests and pushes to `main`. It uses default features, bounded Cargo resources (`CARGO_BUILD_JOBS=1`, `--test-threads=1`), and performs no release, artifact, cross-build, audit, or example work.
 
 The job runs these steps in order:
 

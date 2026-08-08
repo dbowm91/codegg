@@ -9,8 +9,6 @@
 #
 # Resource policy:
 #   Broad Cargo commands use CARGO_BUILD_JOBS=1 and --test-threads=1.
-#   RUST_MIN_STACK=33554432 is exported for full workspace tests until the
-#   daemon-socket stack root cause is corrected by the follow-up milestone.
 #   Callers may override any env var before invoking this script.
 #
 # The script stops at the first failing command and returns its status.
@@ -22,7 +20,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # ── Broad-test resource contract (matches CI) ───────────────────────────────
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}"
-export RUST_MIN_STACK="${RUST_MIN_STACK:-33554432}"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 usage() {
@@ -36,8 +33,7 @@ Modes:
   help    Print this message.
 
 Resource policy:
-  Both modes set CARGO_BUILD_JOBS=1 and RUST_MIN_STACK=33554432 by default
-  until the stack workaround is removed by the resource-correction milestone.
+  Both modes set CARGO_BUILD_JOBS=1 by default.
   Full mode passes --test-threads=1 to broad workspace tests.
   Callers may override via environment variables.
   No optional external tools are required.
@@ -75,7 +71,7 @@ run_quick() {
 # ── Full tier ───────────────────────────────────────────────────────────────
 run_full() {
     echo "==> Full verification"
-    echo "==> Broad-test environment: CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS RUST_MIN_STACK=$RUST_MIN_STACK --test-threads=1"
+    echo "==> Broad-test environment: CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS --test-threads=1"
 
     # Quick checks first
     run_quick
