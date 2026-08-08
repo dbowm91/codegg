@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint — Corrective Closure Addendum
 
-Status: active corrective closure
+Status: blocked on hosted verification
 
 Source roadmap:
 
@@ -12,18 +12,18 @@ Source closure:
 
 Repository/PR state reviewed:
 
-- `main`: `8bcc15e0663d610a132bc16c2f35fe637421a1b1`
+- `main`: `8a556f05ab2f446ab8577f568bfb90912e49274e`
 - implementation PR: #73 (`planning/post-audit-correctness-simplification` -> `main`)
-- reviewed PR head: `a3c22d129f7b0c2fe462e435acfe77daa39ab48f`
-- PR state at review: open, mergeable, draft
+- final PR head: `4d105162ef39bbaa9a438e1f4b2d9060b10f3277`
+- PR state: merged, ready for review, merge commit `8a556f05ab2f446ab8577f568bfb90912e49274e`
 
 ## 1. Why this addendum exists
 
-M001-M008 production work is substantially complete and individually closed, but the
-workstream was marked strictly closed before its integration state matched that claim.
-PR #73 still contains the implementation outside `main`, its title/body describe only
-the original M003 TUI slice, and the latest documentation-only head may have a newer
-hosted CI run than the production head cited by M008.
+M001-M008 production work is substantially complete and individually closed. At the
+initial C001 review, the workstream was marked strictly closed before its integration
+state matched that claim: PR #73 was outside `main` and its title/body described only
+the original M003 TUI slice. C001 corrected and merged that state, but the hosted gate
+then exposed a pre-existing sandbox-rights defect.
 
 This is a planning/integration discrepancy, not evidence that M001-M008 should be
 reimplemented. The corrective pass therefore owns only the narrow work needed to make
@@ -55,6 +55,12 @@ C001 owns:
 
 C001 does not own new product features or a second correctness audit of already accepted
 M001-M008 code.
+
+The hosted verification gate exposed a pre-existing production sandbox defect outside C001:
+seven Python-script executor tests fail because `/dev/null` is added with directory-only
+`ReadDir` rights. C001 therefore stops without changing sandbox/runtime-safety code and
+hands the concrete defect to implementation plan
+`plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md`.
 
 ## 3. Invariants
 

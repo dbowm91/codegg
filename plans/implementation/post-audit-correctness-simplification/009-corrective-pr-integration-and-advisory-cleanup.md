@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint C001 — Corrective PR Integration and Advisory Cleanup
 
-Status: ready
+Status: blocked
 
 Source subsystem roadmap/addendum:
 

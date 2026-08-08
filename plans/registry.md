@@ -25,18 +25,18 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | closing | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C001 ready | M001-M008 implementation is complete in PR #73 but is not yet merged to `main`; final PR/CI/advisory/merge reconciliation remains. |
+| Post-audit correctness, simplification, and footprint | blocked | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C001 blocked; C002 ready | PR #73 is merged, but hosted `verify` exposes a pre-existing `/dev/null` sandbox-rights defect; C002 owns the fix. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of C001. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | C001 | ready | `plans/implementation/post-audit-correctness-simplification/009-corrective-pr-integration-and-advisory-cleanup.md` | M001-M008 implementation complete; PR #73 remains open/draft and must be reconciled/merged |
+| Post-audit correctness, simplification, and footprint | C002 | ready | `plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md` | Concrete sandbox setup defect identified by C001 hosted verification; no product predecessor required |
 
 ## Active closure work
 
-C001 is the only active post-audit corrective pass. It exists because M008 recorded strict closure before the implementation was actually merged to `main`. It must not reopen accepted M001-M008 production scope without a concrete current-head failure.
+C001 is blocked after merging PR #73 because hosted verification exposed a concrete sandbox setup defect. C002 is the narrowly scoped corrective implementation; it must not reopen accepted M001-M008 production scope.
 
 Source addendum:
 
@@ -50,7 +50,9 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 ## Blocked work
 
-No registered plan is currently blocked. If the C001 implementation agent cannot merge PR #73 due repository permissions or branch policy, C001 becomes blocked on maintainer merge and must not be marked closed.
+| Subsystem | Milestone | Blocker | Resolution owner |
+|---|---|---|---|
+| Post-audit correctness, simplification, and footprint | C001 | Hosted `verify` fails seven Python-script sandbox tests when `/dev/null` receives directory-only rights | C002 at `plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md` |
 
 ## Execution order
 
@@ -61,7 +63,7 @@ No registered plan is currently blocked. If the C001 implementation agent cannot
 5. Disposition the pre-existing transitive `lru` advisory from the actual locked dependency path. Apply only a narrow compatible fix; otherwise record reachability/risk and defer any broad Ratatui/dependency migration.
 6. Merge PR #73 to `main` when normal checks and repository state permit.
 7. Create `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` with the final head, merged SHA, hosted run, advisory disposition, and any narrowly required correction.
-8. Remove C001 from active/ready work and return the post-audit workstream to strict `closed` only after the implementation is present on `main`.
+8. Remove C001 from active/ready work and return the post-audit workstream to strict `closed` only after C002 and hosted verification are complete.
 
 The independent runtime-safety supported-Linux Landlock evidence condition may be collected at any time. It does not block C001 and must not be folded into this corrective pass.
 
@@ -86,7 +88,8 @@ Verification remains minimal: normal PR metadata checks, focused verification on
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M008 — integration, measurement, and closure | closed | `plans/closure/post-audit-correctness-simplification/008-status.md` | PR #73 production closure head; C001 owns final merge-state reconciliation |
+| Post-audit correctness, simplification, and footprint | C001 — corrective PR integration | blocked | `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` | `8a556f05`; C002 required for hosted sandbox test gate |
+| Post-audit correctness, simplification, and footprint | M008 — integration, measurement, and closure | closed | `plans/closure/post-audit-correctness-simplification/008-status.md` | PR #73 production closure head; C001 reconciled merge state |
 | Post-audit correctness, simplification, and footprint | M007 — execution-model pass-through cleanup | closed | `plans/closure/post-audit-correctness-simplification/007-status.md` | `17e1f5a` |
 | Post-audit correctness, simplification, and footprint | M006 — test stack and resource-root-cause correction | closed | `plans/closure/post-audit-correctness-simplification/006-status.md` | `a4402db` |
 | Post-audit correctness, simplification, and footprint | M005 — routine CI and static-guard simplification | closed | `plans/closure/post-audit-correctness-simplification/005-status.md` | `0993d953` |
