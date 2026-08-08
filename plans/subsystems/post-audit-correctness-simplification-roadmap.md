@@ -199,7 +199,7 @@ Fix thinking-tag offset handling, unify Unicode-aware wrapping/counting, and rem
 
 ### M004 — Dependency feature slimming and upstream maintenance review
 
-Status: active
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M003-M007
+Status: blocked on M005-M007
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 

@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 004 — Dependency Feature Slimming and Upstream Maintenance Review
 
-Status: active
+Status: implemented — see `plans/closure/post-audit-correctness-simplification/004-status.md`
 
 Source subsystem roadmap:
 
