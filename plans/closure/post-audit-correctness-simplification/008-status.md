@@ -59,7 +59,7 @@ introduced.
 ### Hosted verification
 
 - Existing workflow: [PR #73](https://github.com/dbowm91/codegg/pull/73).
-- Final-head workflow: [CI run](https://github.com/dbowm91/codegg/actions/runs/31265542833) — passed.
+- Final-head workflow for accepted head `f404249`: [CI run](https://github.com/dbowm91/codegg/actions/runs/31266056769) — passed.
 - The workflow remained the existing single `verify` job: formatting, retained
   guards, workspace Clippy, and workspace tests. No new lane or matrix was
   added.
