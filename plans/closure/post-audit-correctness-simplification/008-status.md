@@ -118,6 +118,10 @@ documents.
 - **Critical/high/medium correctness or security:** none.
 - **Low:** exact final binary-size comparison is diagnostic and not a gate;
   M004's technically comparable baseline remains the authoritative comparison.
+  GitHub Dependabot also reports the pre-existing `lru 0.12.5` advisory
+  `GHSA-rhfx-m35p-ff5j` through `ratatui` (patched upstream at `0.16.3`).
+  It is not introduced by M004, is below this closure's blocking threshold,
+  and remains follow-up dependency maintenance.
 - **External/operational:** the independent runtime-safety Landlock Linux
   fixture evidence remains conditionally closed under its own roadmap and is
   not a blocker for this workstream.
