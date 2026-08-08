@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 008 — Integration, Measurement, and Closure
 
-Status: blocked
+Status: closed — see `plans/closure/post-audit-correctness-simplification/008-status.md`
 
 Source subsystem roadmap:
 

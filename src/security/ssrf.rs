@@ -1,6 +1,26 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use std::str::FromStr;
 
+/// A URL target whose hostname has been resolved and whose complete address
+/// set has passed the SSRF policy. Callers must use [`Self::addresses`] as a
+/// reqwest DNS override for the request attempt; resolving the hostname again
+/// at send time would reopen the DNS-rebinding window this type closes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ValidatedUrlTarget {
+    host: String,
+    addresses: Vec<SocketAddr>,
+}
+
+impl ValidatedUrlTarget {
+    pub(crate) fn host(&self) -> &str {
+        &self.host
+    }
+
+    pub(crate) fn addresses(&self) -> &[SocketAddr] {
+        &self.addresses
+    }
+}
+
 #[allow(clippy::incompatible_msrv)]
 pub fn is_internal_ip(ip: &IpAddr) -> bool {
     match ip {
@@ -71,10 +91,19 @@ pub fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
         .map_err(|_| format!("cannot resolve host to address: {}", host))?
         .collect();
 
-    let validated_ips: Vec<IpAddr> = socket_addrs.iter().map(|addr| addr.ip()).collect();
+    validate_resolved_addresses(host, &socket_addrs)?;
 
-    for ip in &validated_ips {
-        if is_internal_ip(ip) {
+    Ok(socket_addrs.iter().map(|addr| addr.ip()).collect())
+}
+
+fn validate_resolved_addresses(host: &str, socket_addrs: &[SocketAddr]) -> Result<(), String> {
+    if socket_addrs.is_empty() {
+        return Err(format!("cannot resolve host to address: {}", host));
+    }
+
+    for addr in socket_addrs {
+        let ip = addr.ip();
+        if is_internal_ip(&ip) {
             return Err(format!(
                 "access to internal addresses not allowed: {}",
                 host
@@ -91,7 +120,36 @@ pub fn validate_host_ip(host: &str, port: u16) -> Result<Vec<IpAddr>, String> {
         }
     }
 
-    Ok(validated_ips)
+    Ok(())
+}
+
+/// Parse an HTTP(S) URL, resolve its host once, and validate every returned
+/// address. The returned addresses are intended to be supplied to
+/// `reqwest::ClientBuilder::resolve_to_addrs` for the actual request.
+pub(crate) fn validate_url_target(raw_url: &str) -> Result<ValidatedUrlTarget, String> {
+    let parsed = url::Url::parse(raw_url).map_err(|e| format!("invalid URL: {}", e))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(format!("unsupported URL scheme: {}", parsed.scheme()));
+        }
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL must have a host".to_string())?
+        .to_lowercase();
+    let port = parsed
+        .port()
+        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+    let addresses: Vec<SocketAddr> = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|_| format!("cannot resolve host to address: {}", host))?
+        .collect();
+    validate_resolved_addresses(&host, &addresses)?;
+
+    Ok(ValidatedUrlTarget { host, addresses })
 }
 
 pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result<(), String> {
@@ -122,27 +180,7 @@ pub fn revalidate_dns(host: &str, port: u16, validated_ips: &[IpAddr]) -> Result
 }
 
 pub fn validate_url_host(url: &str) -> Result<String, String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {}", e))?;
-
-    match parsed.scheme() {
-        "http" | "https" => {}
-        _ => {
-            return Err(format!("unsupported URL scheme: {}", parsed.scheme()));
-        }
-    }
-
-    let host = parsed
-        .host_str()
-        .ok_or_else(|| "URL must have a host".to_string())?
-        .to_string();
-
-    let port = parsed
-        .port()
-        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-
-    validate_host_ip(&host, port)?;
-
-    Ok(host.to_lowercase())
+    validate_url_target(url).map(|target| target.host)
 }
 
 #[cfg(test)]
@@ -292,5 +330,14 @@ mod tests {
         assert!(validate_url_host("https://192.168.1.1").is_err());
         assert!(validate_url_host("https://10.0.0.1").is_err());
         assert!(validate_url_host("https://172.16.0.1").is_err());
+    }
+
+    #[test]
+    fn rejects_any_forbidden_address_in_a_mixed_candidate_set() {
+        let candidates = [
+            SocketAddr::from(([8, 8, 8, 8], 443)),
+            SocketAddr::from(([127, 0, 0, 1], 443)),
+        ];
+        assert!(validate_resolved_addresses("mixed.example", &candidates).is_err());
     }
 }

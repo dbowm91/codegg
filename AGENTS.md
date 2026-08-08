@@ -105,8 +105,6 @@ python3 scripts/check_tool_broker_boundary.py       # tool broker boundary guard
 scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
 scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
 python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
-python3 scripts/check-tokio-test-flavors.py --self-test # baseline-aware regression guard self-test
-python3 scripts/check-tokio-test-flavors.py         # regression guard for bare #[tokio::test]
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
 bash scripts/check_projection_publication_seam.sh    # projection publication-seam guard
@@ -199,7 +197,7 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ## CI Pipeline
 
-CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, parser/sandbox/execution static guards, tokio test-flavor guards, the codegg-core dependency boundary, formatting, default-feature workspace compilation, Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`, `RUST_MIN_STACK=33554432`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, the codegg-core boundary, sandbox and execution-ownership invariants, formatting, default-feature workspace compilation/type checking through Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. Guard self-tests are manual maintenance commands, not routine CI steps. See `architecture/testing.md` for the full test taxonomy and local commands.
 
 ## Critical Gotchas
 

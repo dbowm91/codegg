@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::core::daemon::CoreDaemon;
 use crate::core::event_log::{event_matches_filter, EventFilter};
 use crate::error::AppError;
-use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope};
+use crate::protocol::core::{CoreEvent, CoreResponse, EventEnvelope, RequestEnvelope};
 use crate::protocol::frames::{CoreFrame, ServerCapabilities, ServerHello};
 use codegg_protocol::projection::replay::ProjectionSubscriptionId;
 
@@ -197,6 +197,18 @@ pub async fn run_core_socket(daemon: Arc<CoreDaemon>, endpoint: &str) -> Result<
     .await
 }
 
+/// Keep the daemon's large request-dispatch future off the connection task's
+/// bounded runtime stack. The dispatch function covers the complete core
+/// protocol, while the socket adapter only needs its result; boxing at this
+/// ownership boundary preserves the request authority and wire behavior.
+async fn handle_request_for_client_bounded(
+    daemon: &Arc<CoreDaemon>,
+    request: RequestEnvelope<crate::protocol::core::CoreRequest>,
+    client_id: &str,
+) -> Result<CoreResponse, AppError> {
+    Box::pin(daemon.handle_request_for_client(request, client_id)).await
+}
+
 async fn handle_client(
     daemon: Arc<CoreDaemon>,
     stream: tokio::net::UnixStream,
@@ -307,7 +319,11 @@ async fn handle_client(
                                     message: "projection artifact read limit exceeded".into(),
                                 }
                             } else {
-                                match daemon.handle_request_for_client(envelope, &client_id).await {
+                                match handle_request_for_client_bounded(
+                                    &daemon, envelope, &client_id,
+                                )
+                                .await
+                                {
                                     Ok(resp) => resp,
                                     Err(e) => crate::protocol::core::CoreResponse::Error {
                                         code: "handler_error".to_string(),
@@ -596,20 +612,20 @@ async fn handle_client(
                                 let subscription_ids =
                                     cleanup_projection_state(&projection_state).await;
                                 for subscription_id in subscription_ids {
-                                    let _ = daemon
-                                        .handle_request_for_client(
-                                            crate::core::new_request(
-                                                format!(
-                                                    "projection-downgrade-{}",
-                                                    uuid::Uuid::new_v4()
-                                                ),
-                                                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
-                                                    subscription_id,
-                                                },
+                                    let _ = handle_request_for_client_bounded(
+                                        &daemon,
+                                        crate::core::new_request(
+                                            format!(
+                                                "projection-downgrade-{}",
+                                                uuid::Uuid::new_v4()
                                             ),
-                                            &client_id,
-                                        )
-                                        .await;
+                                            crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                                                subscription_id,
+                                            },
+                                        ),
+                                        &client_id,
+                                    )
+                                    .await;
                                 }
                             }
                             tracing::info!(
@@ -703,15 +719,15 @@ async fn handle_client(
 
     let subscription_ids = cleanup_projection_state(&projection_state).await;
     for subscription_id in subscription_ids {
-        let _ = daemon
-            .handle_request_for_client(
-                crate::core::new_request(
-                    format!("projection-disconnect-{}", uuid::Uuid::new_v4()),
-                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe { subscription_id },
-                ),
-                &client_id,
-            )
-            .await;
+        let _ = handle_request_for_client_bounded(
+            &daemon,
+            crate::core::new_request(
+                format!("projection-disconnect-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::ProjectionUnsubscribe { subscription_id },
+            ),
+            &client_id,
+        )
+        .await;
     }
 
     Ok(())
@@ -731,17 +747,17 @@ async fn install_projection_receiver(
         return true;
     }
     let Some(seam) = daemon.projection_seam.as_ref() else {
-        let _ = daemon
-            .handle_request_for_client(
-                crate::core::new_request(
-                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
-                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
-                        subscription_id: subscription_id.clone(),
-                    },
-                ),
-                client_id,
-            )
-            .await;
+        let _ = handle_request_for_client_bounded(
+            daemon,
+            crate::core::new_request(
+                format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
         return false;
     };
     let Some(rx) = seam
@@ -749,17 +765,17 @@ async fn install_projection_receiver(
         .take_subscription_receiver(subscription_id)
         .await
     else {
-        let _ = daemon
-            .handle_request_for_client(
-                crate::core::new_request(
-                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
-                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
-                        subscription_id: subscription_id.clone(),
-                    },
-                ),
-                client_id,
-            )
-            .await;
+        let _ = handle_request_for_client_bounded(
+            daemon,
+            crate::core::new_request(
+                format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
         return false;
     };
     let mut projection = projection_state.lock().await;
@@ -774,17 +790,17 @@ async fn install_projection_receiver(
     let cancellation = owned.cancellation.clone();
     if projection.insert_subscription(owned).is_err() {
         drop(projection);
-        let _ = daemon
-            .handle_request_for_client(
-                crate::core::new_request(
-                    format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
-                    crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
-                        subscription_id: subscription_id.clone(),
-                    },
-                ),
-                client_id,
-            )
-            .await;
+        let _ = handle_request_for_client_bounded(
+            daemon,
+            crate::core::new_request(
+                format!("projection-unsubscribe-{}", uuid::Uuid::new_v4()),
+                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                    subscription_id: subscription_id.clone(),
+                },
+            ),
+            client_id,
+        )
+        .await;
         return false;
     }
     let sub_id = subscription_id.clone();
@@ -806,17 +822,17 @@ async fn cleanup_projection_subscription(
     client_id: &str,
 ) {
     stop_projection_subscription(projection_state, subscription_id).await;
-    let _ = daemon
-        .handle_request_for_client(
-            crate::core::new_request(
-                format!("projection-critical-delivery-{}", uuid::Uuid::new_v4()),
-                crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
-                    subscription_id: subscription_id.clone(),
-                },
-            ),
-            client_id,
-        )
-        .await;
+    let _ = handle_request_for_client_bounded(
+        daemon,
+        crate::core::new_request(
+            format!("projection-critical-delivery-{}", uuid::Uuid::new_v4()),
+            crate::protocol::core::CoreRequest::ProjectionUnsubscribe {
+                subscription_id: subscription_id.clone(),
+            },
+        ),
+        client_id,
+    )
+    .await;
 }
 
 /// Cancel and join one projection forwarder without holding the connection

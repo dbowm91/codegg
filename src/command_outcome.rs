@@ -1,60 +1,7 @@
+use codegg_core::run_store::{ActualBackend, FallbackRecord, PlannedBackend, RunOwnership};
 use std::path::PathBuf;
 
-use codegg_core::run_store::{ActualBackend, FallbackRecord, PlannedBackend, RunOwnership};
-use serde::{Deserialize, Serialize};
-
 use crate::command_intent::CommandIntentKind;
-
-/// Exact invocation details for what was actually run.
-///
-/// `RunInvocation` in `run_store` is the persistence-side mirror of this type.
-/// `ActualInvocation` exists at the routing layer so the dispatcher can record
-/// what *really* happened independent of any planning metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActualInvocation {
-    /// `sh -c <command>` — canonical raw-shell path.
-    RawShell { command: String, argv: Vec<String> },
-    /// Direct `Command::new(argv[0]).args(argv[1..])` — managed process path.
-    ManagedArgv {
-        argv: Vec<String>,
-        cwd: Option<PathBuf>,
-    },
-    /// Native tool dispatch (e.g., egggit).
-    NativeTool {
-        tool_name: String,
-        argv: Vec<String>,
-    },
-    /// Canonical TestRunner invocation — argv used to spawn the test child.
-    TestRunner {
-        argv: Vec<String>,
-        cwd: PathBuf,
-        scope_label: String,
-    },
-    /// Canonical Python subsystem invocation — script body + mode.
-    PythonScript {
-        script_hash: Option<String>,
-        mode: String,
-        argv: Vec<String>,
-    },
-    /// Unified Git invocation — typed operation + argv.
-    Git {
-        argv: Vec<String>,
-        operation_label: String,
-    },
-}
-
-impl ActualInvocation {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::RawShell { .. } => "raw_shell",
-            Self::ManagedArgv { .. } => "managed_argv",
-            Self::NativeTool { .. } => "native_tool",
-            Self::TestRunner { .. } => "test_runner",
-            Self::PythonScript { .. } => "python_script",
-            Self::Git { .. } => "git",
-        }
-    }
-}
 
 /// What was actually used to execute the command.
 ///
@@ -114,44 +61,6 @@ impl ActualExecutor {
 
     pub fn label(&self) -> &'static str {
         self.into_backend().label()
-    }
-
-    pub fn into_invocation(&self) -> ActualInvocation {
-        match self {
-            Self::RawShell { command, argv } => ActualInvocation::RawShell {
-                command: command.clone(),
-                argv: argv.clone(),
-            },
-            Self::ManagedArgv { argv, cwd } => ActualInvocation::ManagedArgv {
-                argv: argv.clone(),
-                cwd: cwd.clone(),
-            },
-            Self::NativeTool { tool_name, argv } => ActualInvocation::NativeTool {
-                tool_name: tool_name.clone(),
-                argv: argv.clone(),
-            },
-            Self::TestRunner { argv, cwd } => ActualInvocation::TestRunner {
-                argv: argv.clone(),
-                cwd: cwd.clone(),
-                scope_label: "command-intent:test".to_string(),
-            },
-            Self::PythonScript { script_hash, mode } => ActualInvocation::PythonScript {
-                script_hash: script_hash.clone(),
-                mode: mode.clone(),
-                argv: vec!["python3".to_string(), "<script>".to_string()],
-            },
-            Self::Git {
-                argv,
-                operation_label,
-            } => ActualInvocation::Git {
-                argv: argv.clone(),
-                operation_label: operation_label.clone(),
-            },
-            Self::Rejected { .. } => ActualInvocation::RawShell {
-                command: "<rejected>".to_string(),
-                argv: vec!["sh".to_string(), "-c".to_string(), "<rejected>".to_string()],
-            },
-        }
     }
 }
 

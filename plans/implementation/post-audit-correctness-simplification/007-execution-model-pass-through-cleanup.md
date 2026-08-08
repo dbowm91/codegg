@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 007 — Execution-Model Pass-Through Cleanup
 
-Status: ready
+Status: implemented — see `plans/closure/post-audit-correctness-simplification/007-status.md`
 
 Source subsystem roadmap:
 

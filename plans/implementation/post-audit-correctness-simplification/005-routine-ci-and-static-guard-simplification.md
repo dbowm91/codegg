@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 005 — Routine CI and Static-Guard Simplification
 
-Status: ready
+Status: implemented — see `plans/closure/post-audit-correctness-simplification/005-status.md`
 
 Source subsystem roadmap:
 

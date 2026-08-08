@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use crate::error::ToolError;
 use crate::search_backend;
-use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
+use crate::security::ssrf::{validate_url_target, ValidatedUrlTarget};
+use crate::security::untrusted_http::read_body_bounded;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
@@ -24,30 +25,35 @@ const IMAGE_CONTENT_TYPES: &[&str] = &[
 /// configured search backend (eggsearch by default, in-tree
 /// built-in as fallback).
 pub struct WebFetchTool {
-    client: reqwest::Client,
     timeout: Duration,
 }
 
 impl WebFetchTool {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default(),
             timeout: Duration::from_secs(30),
         }
     }
 
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self.client = reqwest::Client::builder()
-            .timeout(timeout)
+    pub fn with_timeout(self, timeout: Duration) -> Self {
+        Self { timeout }
+    }
+
+    fn client_for_target(&self, target: &ValidatedUrlTarget) -> Result<reqwest::Client, ToolError> {
+        reqwest::Client::builder()
+            .timeout(self.timeout)
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .resolve_to_addrs(target.host(), target.addresses())
             .build()
-            .unwrap_or_default();
-        self
+            .map_err(|e| ToolError::Execution(format!("failed to create HTTP client: {e}")))
+    }
+
+    fn client_for_request(
+        &self,
+        target: &ValidatedUrlTarget,
+    ) -> Result<reqwest::Client, ToolError> {
+        self.client_for_target(target)
     }
 }
 
@@ -138,25 +144,11 @@ pub async fn execute_builtin(
         .or_else(|| input.get("max_chars"))
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(10_000) as usize;
-    let effective_max = max_length.min(max_output_chars.max(max_length));
+    let effective_max = effective_output_limit(max_length, max_output_chars);
+    let target = validate_url_target(url).map_err(ToolError::Execution)?;
+    let client = tool.client_for_request(&target)?;
 
-    let host = validate_url_host(url).map_err(ToolError::Execution)?;
-
-    let parsed_url =
-        reqwest::Url::parse(url).map_err(|_| ToolError::Execution("invalid URL".to_string()))?;
-    let port = parsed_url.port().unwrap_or_else(|| {
-        if parsed_url.scheme() == "https" {
-            443
-        } else {
-            80
-        }
-    });
-    let validated_ips = validate_host_ip(&host, port).map_err(ToolError::Execution)?;
-
-    revalidate_dns(&host, port, &validated_ips).map_err(ToolError::Execution)?;
-
-    let response = tool
-        .client
+    let response = client
         .get(url)
         .header(
             reqwest::header::USER_AGENT,
@@ -175,22 +167,12 @@ pub async fn execute_builtin(
         .to_string();
 
     if status.as_u16() == 403 || status.as_u16() == 503 {
-        let retry_url = url::Url::parse(url)
-            .map_err(|e| ToolError::Execution(format!("invalid retry URL: {e}")))?;
-        let retry_host = retry_url
-            .host_str()
-            .ok_or_else(|| ToolError::Execution("retry URL must have a host".to_string()))?;
-        let retry_port = retry_url.port().unwrap_or_else(|| {
-            if retry_url.scheme() == "https" {
-                443
-            } else {
-                80
-            }
-        });
-        revalidate_dns(retry_host, retry_port, &validated_ips).map_err(ToolError::Execution)?;
+        // A retry is a new request attempt. Resolve and validate again, then
+        // pin the retry client independently of the first attempt.
+        let retry_target = validate_url_target(url).map_err(ToolError::Execution)?;
+        let retry_client = tool.client_for_request(&retry_target)?;
 
-        let retry_resp = tool
-            .client
+        let retry_resp = retry_client
             .get(url)
             .header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -227,34 +209,18 @@ impl WebFetchTool {
             .any(|ct| content_type.starts_with(ct));
 
         if is_image {
-            let bytes = response
-                .bytes()
+            let bytes = read_body_bounded(response, MAX_RESPONSE_SIZE)
                 .await
                 .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-            if bytes.len() > MAX_RESPONSE_SIZE {
-                return Err(ToolError::Execution(format!(
-                    "image response exceeds 5MB limit ({} bytes)",
-                    bytes.len()
-                )));
-            }
 
             let encoded =
                 base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             return Ok(format!("[{content_type} base64 attachment]\n{encoded}"));
         }
 
-        let bytes = response
-            .bytes()
+        let bytes = read_body_bounded(response, MAX_RESPONSE_SIZE)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        if bytes.len() > MAX_RESPONSE_SIZE {
-            return Err(ToolError::Execution(format!(
-                "response exceeds 5MB limit ({} bytes)",
-                bytes.len()
-            )));
-        }
 
         let result = if content_type.contains("html") {
             from_read(&bytes[..], 80)
@@ -270,6 +236,10 @@ impl WebFetchTool {
             Ok(result)
         }
     }
+}
+
+fn effective_output_limit(requested: usize, framework: usize) -> usize {
+    requested.min(framework)
 }
 
 #[cfg(test)]
@@ -289,5 +259,19 @@ mod tests {
         let p = t.parameters();
         let required = p.get("required").and_then(|v| v.as_array()).unwrap();
         assert!(required.iter().any(|v| v == "url"));
+    }
+
+    #[test]
+    fn framework_output_cap_is_the_outer_limit() {
+        assert_eq!(effective_output_limit(10, 100), 10);
+        assert_eq!(effective_output_limit(100, 100), 100);
+        assert_eq!(effective_output_limit(100, 10), 10);
+    }
+
+    #[test]
+    fn output_truncation_preserves_utf8_boundaries() {
+        let output = "é🙂z";
+        let safe = crate::search_backend::framing::truncate_utf8_boundary(output, 5);
+        assert_eq!(safe, "é");
     }
 }

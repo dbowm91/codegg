@@ -70,6 +70,12 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |
 
+`RoutingDecision` is intentionally retained as the dispatch boundary: it adds
+executor-facing data such as parsed test argv, scope labels, timeouts, cwd, and
+the typed Git request. It is not a second persisted invocation model. Runtime
+truth is carried by `ActualExecutor`, while persisted invocation details use
+the core `RunInvocation` record.
+
 ## Integration
 
 `resolve_routing()` is called by:

@@ -812,8 +812,8 @@ mod tests {
 
     #[test]
     fn classify_python_analyze_plans_python_backend() {
+        use crate::command_intent::plan::{plan_execution, ExecutionBackend};
         use crate::command_intent::{classify_command, CommandIntentKind};
-        use crate::command_planner::{plan_execution, ExecutionBackend};
 
         let intent = classify_command("python3 -c 'import sys; print(sys.version)'");
         assert_eq!(intent.kind, CommandIntentKind::PythonAnalyze);
@@ -843,7 +843,7 @@ mod tests {
     #[test]
     fn route_to_python_script_decision() {
         use crate::command_intent::classify_command;
-        use crate::command_planner::plan_execution;
+        use crate::command_intent::plan::plan_execution;
         use crate::command_routing::resolve_routing;
 
         let intent = classify_command("python3 -c 'print(1)'");

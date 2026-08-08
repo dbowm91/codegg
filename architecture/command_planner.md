@@ -188,6 +188,10 @@ pub use crate::command_intent::plan::{
 };
 ```
 
+This remains an internal-crate compatibility surface for existing callers. New
+production code imports the canonical planning types directly from
+`command_intent::plan`; it is not a second planner or ownership boundary.
+
 ## Tests
 
 ```bash

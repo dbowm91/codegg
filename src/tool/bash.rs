@@ -7,14 +7,11 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::command_intent::plan::{plan_execution, CommandPlan, ExecutionBackend, NativeCommand};
 use crate::command_intent::{classify_command, CommandIntentKind};
 use crate::command_outcome::{
     ownership_for_outcome, run_kind_for_outcome, ActualExecutor, ExecutionOutcome,
 };
-use crate::command_planner::plan_execution;
-use crate::command_planner::CommandPlan;
-use crate::command_planner::ExecutionBackend;
-use crate::command_planner::NativeCommand;
 use crate::command_routing::resolve_routing;
 use crate::command_routing::RoutingDecision;
 use crate::config::schema::CommandIntentConfig;
@@ -136,7 +133,7 @@ fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily>
 /// this delegates to `intent_kind_to_family()`.
 fn plan_family(plan: &CommandPlan) -> Option<CommandIntentFamily> {
     use crate::command_intent::plan::git_operation_family;
-    use crate::command_planner::ExecutionBackend;
+    use crate::command_intent::plan::ExecutionBackend;
     let kind = plan.intent.kind;
     if matches!(kind, CommandIntentKind::GitMutating) {
         if let ExecutionBackend::Git { request } = &plan.backend {
@@ -161,25 +158,6 @@ fn plan_to_planned_backend(
         Some(ExecutionBackend::ManagedArgv { .. }) => PlannedBackend::ManagedArgv,
         Some(ExecutionBackend::Git { .. }) => PlannedBackend::Git,
         Some(ExecutionBackend::Reject { .. }) => PlannedBackend::Unrouted,
-    }
-}
-
-/// Map a `RoutingDecision` to a `PlannedBackend` when the planner is not
-/// available (legacy/unrouted paths).
-#[allow(dead_code)]
-fn decision_to_planned_backend(
-    decision: Option<&RoutingDecision>,
-) -> codegg_core::run_store::PlannedBackend {
-    use codegg_core::run_store::PlannedBackend;
-    match decision {
-        None => PlannedBackend::Unrouted,
-        Some(RoutingDecision::RouteToTestRunner { .. }) => PlannedBackend::TestRunner,
-        Some(RoutingDecision::RouteToPythonScripting { .. }) => PlannedBackend::PythonScript,
-        Some(RoutingDecision::RouteToNativeTool { .. }) => PlannedBackend::NativeTool,
-        Some(RoutingDecision::RouteToManagedProcess { .. }) => PlannedBackend::ManagedArgv,
-        Some(RoutingDecision::RouteToGit { .. }) => PlannedBackend::Git,
-        Some(RoutingDecision::RouteToShell { .. }) => PlannedBackend::RawShell,
-        Some(RoutingDecision::Rejected { .. }) => PlannedBackend::Unrouted,
     }
 }
 
@@ -1428,10 +1406,10 @@ impl BashTool {
             }
             RoutingDecision::RouteToPythonScripting { script, mode, .. } => {
                 let mode_str = match mode {
-                    crate::command_planner::PythonModeGuess::Analyze => "analyze",
-                    crate::command_planner::PythonModeGuess::Transform => "transform",
-                    crate::command_planner::PythonModeGuess::Verify => "verify",
-                    crate::command_planner::PythonModeGuess::Unknown => "analyze",
+                    crate::command_intent::plan::PythonModeGuess::Analyze => "analyze",
+                    crate::command_intent::plan::PythonModeGuess::Transform => "transform",
+                    crate::command_intent::plan::PythonModeGuess::Verify => "verify",
+                    crate::command_intent::plan::PythonModeGuess::Unknown => "analyze",
                 };
                 self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
                     .await
@@ -2289,10 +2267,9 @@ mod tests {
 
     // ── Phase 04 routing metadata tests ────────────────────────────────
 
+    use crate::command_intent::plan::{plan_execution, ExecutionBackend};
     use crate::command_intent::IntentConfidence;
     use crate::command_intent::RiskLevel;
-    use crate::command_planner::plan_execution;
-    use crate::command_planner::ExecutionBackend;
     use crate::command_routing::resolve_routing;
     use crate::command_routing::RoutingDecision;
     use crate::config::schema::CommandIntentConfig;

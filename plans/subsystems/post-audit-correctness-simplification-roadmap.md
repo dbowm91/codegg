@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `0323d68e0c37c0495540d39ec0d6d9520f124125`
 
@@ -175,7 +175,7 @@ Dependency classes:
 
 ### M001 — Untrusted HTTP safety and bounded streaming
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/001-untrusted-http-safety-and-bounded-streaming.md`
 
@@ -183,7 +183,7 @@ Correct the output-cap bug, bind SSRF validation to the actual connection destin
 
 ### M002 — Daemon stop identity and CLI JSON correctness
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/002-daemon-stop-identity-and-cli-json-correctness.md`
 
@@ -191,7 +191,7 @@ Require live daemon identity before signalling and replace handwritten JSON esca
 
 ### M003 — TUI text-layout correctness and render deduplication
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/003-tui-text-layout-correctness-and-render-deduplication.md`
 
@@ -199,7 +199,7 @@ Fix thinking-tag offset handling, unify Unicode-aware wrapping/counting, and rem
 
 ### M004 — Dependency feature slimming and upstream maintenance review
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/004-dependency-feature-slimming-and-upstream-review.md`
 
@@ -207,7 +207,7 @@ Disable provably unused defaults such as qrcode image renderers, test safe Comra
 
 ### M005 — Routine CI and static-guard simplification
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/005-routine-ci-and-static-guard-simplification.md`
 
@@ -215,7 +215,7 @@ Delete the invalid Tokio-flavor baseline/scanner machinery, remove redundant hos
 
 ### M006 — Test stack and resource-root-cause correction
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/006-test-stack-and-resource-root-cause-correction.md`
 
@@ -223,7 +223,7 @@ Identify the actual stack-heavy daemon-socket path, make the smallest code/test-
 
 ### M007 — Execution-model pass-through and duplication cleanup
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/007-execution-model-pass-through-cleanup.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M001-M007
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 

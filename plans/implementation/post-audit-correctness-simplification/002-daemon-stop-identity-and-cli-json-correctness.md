@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Milestone 002 — Daemon Stop Identity and CLI JSON Correctness
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 

@@ -276,7 +276,7 @@ Parser: `rustpython-parser` 0.4.0
 |----------|-------|
 | License | MIT |
 | MSRV | 1.72.1 |
-| Features used | `default` (location + malachite-bigint) |
+| Features used | `all-nodes-with-ranges`, `malachite-bigint` (default features disabled) |
 | Parse-only | Yes — parser produces AST, does not execute |
 | Source spans | Yes — `TextRange` and `SourceRange` on all nodes |
 | Fuzz posture | Upstream fuzz corpus exists; Codegg adds adversarial corpus |
