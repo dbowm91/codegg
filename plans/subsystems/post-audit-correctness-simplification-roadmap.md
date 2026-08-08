@@ -207,7 +207,7 @@ Disable provably unused defaults such as qrcode image renderers, test safe Comra
 
 ### M005 — Routine CI and static-guard simplification
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/005-routine-ci-and-static-guard-simplification.md`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: blocked on M005-M007
+Status: blocked on M006-M007
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 
