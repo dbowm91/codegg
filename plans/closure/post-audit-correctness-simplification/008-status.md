@@ -71,12 +71,15 @@ Environment: `aarch64-apple-darwin`, Rust/Cargo `1.97.1`, `--release`,
 release profile uses symbol stripping; the final `codegg` binary was also
 copied and stripped for the recorded byte count.
 
-The pre-workstream comparable M004 measurement was 54,463,680 bytes for the
+The final fresh release build produced `54,430,592` bytes for the Cargo
+release-profile `codegg` binary; a post-build `strip` copy measured
+`54,430,656` bytes on this macOS toolchain. The pre-workstream comparable M004
+measurement was 54,463,680 bytes for the
 baseline release binary and 54,430,576 bytes for the M004 final binary, a
 33,104-byte reduction. M008 repeated the locked feature and duplicate trees
-and a fresh release build on the integrated tree. Exact final byte output is
-recorded in the companion measurement artifact from `/tmp/codegg-m008-final`;
-it is diagnostic evidence only and not a numeric closure threshold. The
+and a fresh release build on the integrated tree. The final integrated binary
+is 16 bytes larger than the M004 final measurement on this host/toolchain;
+this is diagnostic evidence only and not a numeric closure threshold. The
 multi-milestone tree changes make unsupported causal attribution inappropriate.
 
 ## 6. Invariant, failure, and recovery review
