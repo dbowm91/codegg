@@ -25,41 +25,34 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | M008 ready | M001-M007 are closed; M008 is dependency-ready. Preserve single daemon, single binary, manual release, and one-job CI posture. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the post-audit workstream. |
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Status | Implementation plan | Dependencies |
-|---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M008 | ready | `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md` | M001-M007 closed |
+No implementation plans are currently dependency-ready.
 
 ## Active closure work
 
-M007 is closed in `plans/closure/post-audit-correctness-simplification/007-status.md`. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`; M004 is closed in `plans/closure/post-audit-correctness-simplification/004-status.md`; M005 is closed in `plans/closure/post-audit-correctness-simplification/005-status.md`; M006 is closed in `plans/closure/post-audit-correctness-simplification/006-status.md`.
+M008 is closed in `plans/closure/post-audit-correctness-simplification/008-status.md`. M001 is closed in `plans/closure/post-audit-correctness-simplification/001-status.md`; M002 is closed in `plans/closure/post-audit-correctness-simplification/002-status.md`; M003 is closed in `plans/closure/post-audit-correctness-simplification/003-status.md`; M004 is closed in `plans/closure/post-audit-correctness-simplification/004-status.md`; M005 is closed in `plans/closure/post-audit-correctness-simplification/005-status.md`; M006 is closed in `plans/closure/post-audit-correctness-simplification/006-status.md`; M007 is closed in `plans/closure/post-audit-correctness-simplification/007-status.md`.
 
 Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
 ## Blocked work
 
-| Subsystem | Milestone | Status | Implementation plan | Blocker |
-|---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | M008 | ready | `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md` | all hard dependencies M001-M007 closed |
-
-No M001-M007 milestone is blocked at registration time.
+No registered work is blocked on the post-audit workstream.
 
 ## Execution order
 
 The post-audit plans are independently executable, but the preferred handoff order prioritizes security/correctness before polish:
 
-1. M001 — correct untrusted HTTP output limits, bounded streaming, and actual-address SSRF pinning.
-2. M002 — make daemon stop identity-safe and replace handwritten CLI JSON escaping.
-3. M003 — correct multiline reasoning-tag scanning, Unicode wrapping/counting, and ShareDialog render duplication.
+1. M001 — correct untrusted HTTP output limits, bounded streaming, and actual-address SSRF pinning. (closed)
+2. M002 — make daemon stop identity-safe and replace handwritten CLI JSON escaping. (closed)
+3. M003 — correct multiline reasoning-tag scanning, Unicode wrapping/counting, and ShareDialog render duplication. (closed)
 4. M004 — apply measured no-feature-loss dependency/default-feature slimming and upstream review. (closed)
 5. M005 — remove invalid/redundant routine CI and static-guard machinery while retaining high-value checks. (closed)
-6. M006 — reproduce and correct the daemon-socket stack issue, then remove the global 32 MiB stack workaround.
-7. M007 — collapse only execution-model pass-through layers that prove to own no distinct invariant.
-8. M008 — integrate, measure, obtain one final hosted verify result, reconcile docs/registry, and close the workstream.
+6. M006 — reproduce and correct the daemon-socket stack issue, then remove the global 32 MiB stack workaround. (closed)
+7. M007 — collapse only execution-model pass-through layers that prove to own no distinct invariant. (closed)
+8. M008 — integrate, measure, obtain one final hosted verify result, reconcile docs/registry, and close the workstream. (closed)
 
 M001-M007 may be implemented in parallel only when branch coordination prevents overlapping edits. M005 and M006 both touch CI/testing documentation and should be reconciled carefully if executed concurrently.
 
@@ -88,6 +81,7 @@ Verification remains minimal: focused tests for each changed boundary, `scripts/
 |---|---|---|---|---|
 | Post-audit correctness, simplification, and footprint | M006 — test stack and resource-root-cause correction | closed | `plans/closure/post-audit-correctness-simplification/006-status.md` | `a4402db` |
 | Post-audit correctness, simplification, and footprint | M007 — execution-model pass-through cleanup | closed | `plans/closure/post-audit-correctness-simplification/007-status.md` | `17e1f5a` |
+| Post-audit correctness, simplification, and footprint | M008 — integration, measurement, and closure | closed | `plans/closure/post-audit-correctness-simplification/008-status.md` | closure commit for PR #73 |
 | Post-audit correctness, simplification, and footprint | M005 — routine CI and static-guard simplification | closed | `plans/closure/post-audit-correctness-simplification/005-status.md` | `0993d953` |
 | Post-audit correctness, simplification, and footprint | M004 — dependency feature slimming and upstream maintenance review | closed | `plans/closure/post-audit-correctness-simplification/004-status.md` | `b437f8eb` |
 
@@ -97,6 +91,7 @@ These rows preserve only the latest closed control points. Detailed predecessor 
 
 | Subsystem | Status | Latest controlling document | Closure |
 |---|---|---|---|
+| Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-roadmap.md` | `plans/closure/post-audit-correctness-simplification/008-status.md` |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | `plans/closure/tool-programs/019-status.md`; corrective M020 also closed |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | `plans/closure/provider-connections/007-status.md` |

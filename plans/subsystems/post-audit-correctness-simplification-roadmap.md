@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `0323d68e0c37c0495540d39ec0d6d9520f124125`
 
@@ -231,7 +231,7 @@ Inspect command planner/routing/outcome layers and remove only representations o
 
 ### M008 — Integration, measurement, and closure
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/post-audit-correctness-simplification/008-integration-measurement-and-closure.md`
 
