@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint C002 — Sandbox Path-Kind Rights Correction and Strict Closure
 
-Status: ready for handoff
+Status: implemented
 Repository baseline: `d0b62204a0740195c53face071635d44c147f12b`
 
 Source roadmap/addendum: `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md`

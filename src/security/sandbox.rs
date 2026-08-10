@@ -366,8 +366,8 @@ pub fn probe_landlock() -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
     use landlock::{
-        Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
+        Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+        RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
     // ABI 1 is the minimum Landlock filesystem contract and is available on
@@ -386,7 +386,7 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         .create()
         .map_err(|e| format!("Landlock ruleset creation failed: {e}"))?;
 
-    let add_path = |ruleset: RulesetCreated, path: &Path, access| {
+    let add_path = |ruleset: RulesetCreated, path: &Path, access: BitFlags<AccessFs>| {
         if !path.exists() {
             return Err(format!(
                 "required sandbox path does not exist: {}",
@@ -395,11 +395,7 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         }
         let fd =
             PathFd::new(path).map_err(|e| format!("open sandbox path {}: {e}", path.display()))?;
-        let access = if path.is_file() {
-            access & AccessFs::from_file(abi)
-        } else {
-            access
-        };
+        let access = landlock_access_for_path(path, access, abi)?;
         ruleset
             .add_rule(PathBeneath::new(fd, access))
             .map_err(|e| format!("add sandbox rule {}: {e}", path.display()))
@@ -426,6 +422,21 @@ pub fn apply_landlock(spec: &SandboxLaunchSpec) -> Result<u32, String> {
         other => Err(format!(
             "Landlock became unavailable during setup: {other:?}"
         )),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn landlock_access_for_path(
+    path: &Path,
+    access: landlock::BitFlags<landlock::AccessFs>,
+    abi: landlock::ABI,
+) -> Result<landlock::BitFlags<landlock::AccessFs>, String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("classify sandbox path {}: {error}", path.display()))?;
+    if metadata.is_dir() {
+        Ok(access)
+    } else {
+        Ok(access & landlock::AccessFs::from_file(abi))
     }
 }
 
@@ -561,6 +572,63 @@ pub fn get_sensitive_paths() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_access_keeps_directory_rights_for_directories() {
+        use landlock::{Access, AccessFs, ABI};
+
+        let directory = tempfile::tempdir().expect("directory fixture");
+        let access =
+            landlock_access_for_path(directory.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+                .expect("directory classification");
+
+        assert!(access.contains(AccessFs::ReadDir));
+        assert!(access.contains(AccessFs::ReadFile));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_access_removes_directory_rights_for_regular_files() {
+        use landlock::{Access, AccessFs, ABI};
+
+        let file = tempfile::NamedTempFile::new().expect("file fixture");
+        let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
+            .expect("regular-file classification");
+
+        assert!(!access.contains(AccessFs::ReadDir));
+        assert!(access.contains(AccessFs::ReadFile));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_access_removes_directory_rights_for_special_files() {
+        use landlock::{Access, AccessFs, ABI};
+
+        let path = Path::new("/dev/null");
+        if !path.exists() {
+            return;
+        }
+        let access = landlock_access_for_path(path, AccessFs::from_all(ABI::V1), ABI::V1)
+            .expect("special-file classification");
+
+        assert!(!access.contains(AccessFs::ReadDir));
+        assert!(access.contains(AccessFs::ReadFile));
+        assert!(access.contains(AccessFs::WriteFile));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn landlock_access_fails_closed_when_path_cannot_be_classified() {
+        use landlock::{AccessFs, ABI};
+
+        let path = Path::new("/definitely/missing/codegg-sandbox-path");
+        let error = landlock_access_for_path(path, AccessFs::from_read(ABI::V1), ABI::V1)
+            .expect_err("missing path classification must fail");
+
+        assert!(error.contains("classify sandbox path"));
+        assert!(error.contains(path.to_string_lossy().as_ref()));
+    }
 
     #[test]
     fn test_sandbox_config_default() {
