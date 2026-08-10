@@ -126,8 +126,9 @@ fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
     );
     assert!(
         read.output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&read.output.stderr)
+        "stderr: {}; status: {:?}",
+        String::from_utf8_lossy(&read.output.stderr),
+        decode_sandbox_status(&read.status)
     );
     assert!(matches!(
         decode_sandbox_status(&read.status).unwrap(),
