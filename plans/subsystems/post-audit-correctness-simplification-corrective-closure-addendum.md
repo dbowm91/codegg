@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint — Corrective Closure Addendum
 
-Status: blocked on hosted verification
+Status: blocked on C002 hosted verification
 
 Source roadmap:
 
@@ -10,150 +10,144 @@ Source closure:
 
 - `plans/closure/post-audit-correctness-simplification/008-status.md`
 
+Corrective records:
+
+- C001: `plans/closure/post-audit-correctness-simplification/009-corrective-status.md`
+- C002 target: `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`
+
 Repository/PR state reviewed:
 
-- `main`: `8a556f05ab2f446ab8577f568bfb90912e49274e`
+- merged implementation: `8a556f05ab2f446ab8577f568bfb90912e49274e`
+- C002 planning baseline: `d0b62204a0740195c53face071635d44c147f12b`
 - implementation PR: #73 (`planning/post-audit-correctness-simplification` -> `main`)
 - final PR head: `4d105162ef39bbaa9a438e1f4b2d9060b10f3277`
 - PR state: merged, ready for review, merge commit `8a556f05ab2f446ab8577f568bfb90912e49274e`
+- blocking hosted run: `31266908787`
 
 ## 1. Why this addendum exists
 
-M001-M008 production work is substantially complete and individually closed. At the
-initial C001 review, the workstream was marked strictly closed before its integration
-state matched that claim: PR #73 was outside `main` and its title/body described only
-the original M003 TUI slice. C001 corrected and merged that state, but the hosted gate
-then exposed a pre-existing sandbox-rights defect.
+M001-M008 production work is substantially complete and individually closed. At the initial C001 review, the workstream was marked strictly closed before its integration state matched that claim: PR #73 was outside `main` and its title/body described only the original M003 TUI slice.
 
-This is a planning/integration discrepancy, not evidence that M001-M008 should be
-reimplemented. The corrective pass therefore owns only the narrow work needed to make
-repository state, PR state, dependency disposition, and closure records agree.
+C001 corrected the PR metadata and integration state and merged PR #73. Its required hosted gate then exposed a pre-existing sandbox-rights defect: seven Python-script executor tests fail during sandbox setup because `/dev/null` receives directory-only `ReadDir` rights. C001 therefore remains blocked rather than making a false strict-closure claim.
 
-The corrective implementation plan is:
+The remaining corrective implementation is C002:
 
-- `plans/implementation/post-audit-correctness-simplification/009-corrective-pr-integration-and-advisory-cleanup.md`
+- `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md`
 
-The target corrective closure record is:
+The earlier registration stub is superseded and retained only for history:
 
-- `plans/closure/post-audit-correctness-simplification/009-corrective-status.md`
+- `plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md`
 
-This corrective pass is designated **C001**. File number `009` preserves sequential
-planning filenames; it is not a new product milestone M009.
+C002 is not a new product milestone. It owns one concrete sandbox invariant defect and the strict closure reconciliation that becomes possible after that defect passes the repository's normal hosted verification.
 
-## 2. Scope
+## 2. Historical C001 scope and disposition
 
-C001 owns:
+C001 owned:
 
 - making PR #73 title/body accurately describe the integrated M001-M008 workstream;
 - reconciling draft/ready-for-review state with actual merge readiness;
-- confirming the latest relevant PR head has a successful existing `verify` run;
-- merging the completed work to `main` when CI and repository state permit;
+- confirming the relevant PR verification state;
+- merging the completed work to `main` when repository state permitted;
 - confirming the merge result contains the accepted M001-M008 production tree;
-- reconciling registry, roadmap/addendum, and closure records to the actual merged SHA;
-- explicitly disposing the pre-existing transitive `lru` advisory noted by M008 without
-  forcing a broad dependency migration into this workstream.
+- reconciling registry, addendum, and closure records to the actual merged SHA;
+- explicitly disposing the pre-existing transitive `lru` advisory without forcing a broad dependency migration.
 
-C001 does not own new product features or a second correctness audit of already accepted
-M001-M008 code.
+Those integration/advisory tasks are complete. The `lru` advisory was recorded as deferred upstream migration and is not C002 scope.
 
-The hosted verification gate exposed a pre-existing production sandbox defect outside C001:
-seven Python-script executor tests fail because `/dev/null` is added with directory-only
-`ReadDir` rights. C001 therefore stops without changing sandbox/runtime-safety code and
-hands the concrete defect to implementation plan
-`plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md`.
+C001 remains blocked solely because its strict exit criteria required a successful normal hosted `verify` result and run `31266908787` exposed the concrete `/dev/null` sandbox-rights defect.
 
-## 3. Invariants
+## 3. C002 scope
 
-- The accepted M001-M008 production implementation must not be rewritten merely to make
-  the final PR easier to merge.
-- Single-daemon authority, single-binary topology, scheduler ownership, protocol/storage
-  compatibility, supported features, manual release cadence, and one-job routine CI remain
-  unchanged.
-- A documentation-only finalization commit must not invalidate an already accepted
-  production-head verification claim; however, the actual PR head must still satisfy the
-  repository's normal required checks before merge.
-- No new CI lane, matrix, release workflow, dependency bot, audit gate, artifact bundle,
-  or binary-size threshold may be introduced.
-- The `lru` advisory must be classified from the actual locked dependency path before any
-  dependency change is attempted.
-- A transitive advisory may be deferred when the safe fix requires a broad upstream
-  migration disproportionate to this closure pass, but the reason and owner must be
-  recorded explicitly.
-- The workstream may return to strict `closed` only after the implementation is present on
-  `main` and the closure record names that merged revision.
+C002 owns only:
 
-## 4. Dependency and execution order
+- confirming the seven hosted failures and current source diagnosis;
+- correcting Landlock access-mask construction so directory-only rights are retained only for directories;
+- ensuring regular files and special non-directory targets such as `/dev/null` do not receive `ReadDir`;
+- adding focused regression coverage for directory, regular-file, and special-file path kinds;
+- rerunning the seven failed executor tests, existing sandbox/security guards, `scripts/verify.sh quick`, and one normal hosted `verify` run;
+- creating the C002 closure record and reconciling C001/C002/the registry to strict closure if hosted verification is green.
+
+C002 does not own dependency upgrades, broad Landlock redesign, new sandbox capabilities, CI topology changes, release automation, or a second audit of accepted M001-M008 code.
+
+The independent supported-Linux Landlock fixture evidence condition in the runtime-safety roadmap remains separate. It must not be folded into C002.
+
+## 4. Invariants
+
+- The accepted M001-M008 production implementation must not be rewritten merely to close this corrective record.
+- Sandbox authority and allowed path sets must not be broadened.
+- Directory-only Landlock rights must be decided on a directory/non-directory boundary, not by treating every non-regular-file path as a directory.
+- Read-only paths must remain read-only; no access bit may be added merely to make a rule acceptable.
+- A special-file rule must not be silently skipped as a recovery mechanism.
+- Path-kind/metadata failures must fail closed with context.
+- Existing helper protocol, subprocess restrictions, policy-root behavior, daemon authority, scheduler ownership, and protocol/storage compatibility remain unchanged.
+- Single-binary topology, manual release cadence, and one-job routine CI remain unchanged.
+- No new CI lane, matrix, release workflow, dependency bot, audit gate, artifact bundle, coverage gate, or binary-size threshold may be introduced.
+- The workstream may return to strict `closed` only after C002 passes the normal hosted `verify` job on its actual merge candidate.
+
+## 5. Dependency and execution order
 
 ```text
 M001-M008 closed implementation
         |
         v
-C001 final PR integration and advisory disposition
+C001 integration/advisory work complete, strict closure blocked
         |
         v
-strict merged closure on main
+C002 sandbox path-kind rights correction
+        |
+        v
+normal hosted verify green
+        |
+        v
+C001 + C002 reconciled; workstream strictly closed
 ```
 
-C001 has no product-code predecessor beyond the already closed M001-M008 implementation.
-Its operational dependencies are:
+Remaining execution order:
 
-1. PR #73 remains mergeable against current `main` or is reconciled without losing accepted
-   implementation;
-2. the normal existing hosted `verify` job succeeds on the merge candidate;
-3. any newly observed failure is classified before changes are made.
+1. Capture the exact seven failures from hosted run `31266908787` and confirm the current `src/security/sandbox.rs::add_landlock_path_rule` diagnosis still applies.
+2. Make the smallest directory/non-directory access-mask correction; do not special-case only `/dev/null` and do not broaden sandbox authority.
+3. Add focused directory, regular-file, and special-file regression tests and rerun all seven previously failing Python-script executor tests.
+4. Run existing sandbox/security guards and `scripts/verify.sh quick`.
+5. Run one existing hosted `verify` job on the actual merge candidate.
+6. If and only if that hosted run is green, create `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`, mark C002 closed, reconcile C001 from blocked to closed, remove active/blocked rows, and return this workstream to strict `closed` state.
 
-The independent supported-Linux Landlock evidence condition in the runtime-safety roadmap
-remains unrelated and does not block C001.
+No PR #73 metadata, draft-state, merge, or advisory-disposition work remains. Those steps are historical C001 work and must not be repeated by the C002 implementation agent.
 
-## 5. Advisory disposition rule
+## 6. Advisory disposition
 
-M008 records a pre-existing `lru` advisory reachable through the locked dependency graph.
-C001 must inspect the actual path and current advisory metadata rather than blindly changing
-versions.
+The transitive `lru 0.12.5` advisory recorded during M008/C001 has already been classified from the locked path `codegg -> ratatui 0.29.0 -> lru 0.12.5`. The compatible patched line requires a broader upstream dependency migration than this closure pass permits, so C001 recorded deferred upstream migration.
 
-Acceptable dispositions are:
+C002 must not reopen that disposition. A future dependency-maintenance plan may be registered only if independent risk or product priority warrants it.
 
-1. **narrow fix** — a compatible lockfile/manifest adjustment reaches a patched version
-   without broad Ratatui/TUI migration, MSRV increase, or feature change; land it with
-   focused TUI/build verification;
-2. **not applicable to supported use** — evidence demonstrates the vulnerable API/path is
-   not reachable in the supported CodeGG configuration; record the evidence and defer
-   upstream cleanup;
-3. **deferred upstream migration** — the patched line requires a material Ratatui or other
-   dependency migration. Record the dependency path and create no broad migration inside
-   C001. A future dependency-maintenance plan may be registered only if the risk warrants
-   active work.
+## 7. C002 exit conditions
 
-The advisory alone must not turn C001 into a general dependency-upgrade campaign.
+This addendum returns to strict closed status only when:
 
-## 6. Exit conditions
+- the `/dev/null` rule no longer carries incompatible `ReadDir` rights;
+- the fix is semantic for non-directories rather than a literal-path exception;
+- allowed paths and read/write authority remain unchanged;
+- focused directory/file/special-file regression tests pass;
+- all seven tests that failed in hosted run `31266908787` pass on the corrected merge candidate;
+- existing sandbox/security guards pass;
+- `scripts/verify.sh quick` passes;
+- the normal existing hosted `verify` job succeeds on the actual merge candidate;
+- no test, platform support, or CI gate was weakened to obtain that result;
+- the C002 closure record names the exact implementation SHA and hosted run;
+- `plans/registry.md` no longer lists C001 as blocked or C002 as ready/active;
+- M001-M008 historical closure records and C001 integration history remain intact.
 
-This addendum is closed only when:
+## 8. Stop conditions
 
-- PR #73 metadata describes the complete M001-M008 implementation;
-- PR #73 is no longer draft when it is ready to merge;
-- the latest merge candidate has a successful normal `verify` result;
-- no unresolved review thread or concrete CI failure remains;
-- the accepted implementation is merged to `main` without scope-expanding production
-  changes;
-- the resulting `main` SHA is recorded in the corrective closure record;
-- the `lru` advisory has one explicit disposition under section 5;
-- `plans/registry.md` no longer lists C001 as ready/active;
-- the post-audit workstream is again recorded as strictly `closed` against the merged SHA;
-- no additional corrective milestone is created solely for evidence or PR bookkeeping.
+Stop and report rather than broadening C002 if:
 
-## 7. Stop conditions
+- fixing the defect requires weakening or disabling Landlock enforcement;
+- the allowed path set or filesystem authority would need to expand;
+- the Landlock dependency must be upgraded or replaced as a prerequisite;
+- the sandbox helper protocol or broader runtime-safety architecture must change;
+- supported-platform policy would need to change;
+- CI tests must be skipped, ignored, or removed to pass;
+- CI topology or release policy would need to change;
+- accepted M001-M008 production behavior must be reopened;
+- the independent runtime-safety supported-Linux fixture-evidence condition is mistaken for a prerequisite of this corrective pass.
 
-Stop and report rather than broadening C001 if:
-
-- PR #73 cannot merge without resolving a substantive conflict in M001-M008 production
-  behavior;
-- hosted CI exposes a new critical/high correctness or security failure;
-- the advisory fix requires a major Ratatui/TUI migration, MSRV increase, or supported
-  feature removal;
-- `main` has independently changed a touched ownership boundary after the reviewed base;
-- completing the merge would require changing protocol, storage, daemon ownership, binary
-  topology, or release policy.
-
-A concrete production defect discovered here gets its own narrowly scoped corrective plan.
-Do not hide it inside PR-cleanup work.
+A newly discovered independent defect gets separate classification and, only if justified, a separate narrow plan. Do not turn C002 into another general correctness or verification program.
