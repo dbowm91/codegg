@@ -117,7 +117,7 @@ fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
         &base_spec(
             workspace.path(),
             &format!(
-                "test -r '{}' && ! test -r /etc/passwd",
+                "(exec 3< '{}') && !(exec 3< /etc/passwd)",
                 workspace.path().join("allowed.txt").display()
             ),
             false,
@@ -126,11 +126,8 @@ fn supported_kernel_enforces_read_only_write_and_outside_root_contract() {
     );
     assert!(
         read.output.status.success(),
-        "exit: {:?}; stdout: {}; stderr: {}; status: {:?}",
-        read.output.status,
-        String::from_utf8_lossy(&read.output.stdout),
-        String::from_utf8_lossy(&read.output.stderr),
-        decode_sandbox_status(&read.status)
+        "stderr: {}",
+        String::from_utf8_lossy(&read.output.stderr)
     );
     assert!(matches!(
         decode_sandbox_status(&read.status).unwrap(),
