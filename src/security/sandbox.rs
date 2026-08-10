@@ -576,7 +576,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_keeps_directory_rights_for_directories() {
-        use landlock::{Access, AccessFs, ABI};
+        use landlock::{AccessFs, ABI};
 
         let directory = tempfile::tempdir().expect("directory fixture");
         let access =
@@ -590,7 +590,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn landlock_access_removes_directory_rights_for_regular_files() {
-        use landlock::{Access, AccessFs, ABI};
+        use landlock::{AccessFs, ABI};
 
         let file = tempfile::NamedTempFile::new().expect("file fixture");
         let access = landlock_access_for_path(file.path(), AccessFs::from_read(ABI::V1), ABI::V1)
