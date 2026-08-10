@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint C001 — Corrective Closure Status
 
-Status: blocked
+Status: closed
 Source implementation plan: `plans/implementation/post-audit-correctness-simplification/009-corrective-pr-integration-and-advisory-cleanup.md`
 Source subsystem roadmap: `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md`
 Repository baseline reviewed: `8a556f05ab2f446ab8577f568bfb90912e49274e`
@@ -9,9 +9,10 @@ Implementation commits: PR #73 merge `8a556f05ab2f446ab8577f568bfb90912e49274e`
 ## 1. Executive finding
 
 PR #73 was corrected and merged to `main` without production changes beyond the accepted
-M001-M008 tree. C001 cannot be strictly closed because the required hosted `verify` gate
-repeatedly fails seven existing Python-script executor tests during sandbox setup. The
-failure is concrete and outside this metadata-only corrective pass.
+M001-M008 tree. C001 is now strictly closed: C002 corrected the concrete `/dev/null`
+sandbox-rights defect and the normal hosted `verify` gate passed on the corrected merge
+candidate. The C002 evidence is recorded in
+`plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -20,9 +21,9 @@ failure is concrete and outside this metadata-only corrective pass.
 | Accurate PR metadata | [PR #73](https://github.com/dbowm91/codegg/pull/73), final title/body | satisfied |
 | Ready and merged integration | PR #73 marked ready; merged as `8a556f05…` | satisfied |
 | Accepted M001-M008 tree on `main` | merge commit contains the branch head `4d105162…` | satisfied |
-| Normal hosted `verify` gate | [PR run 31266908787](https://github.com/dbowm91/codegg/actions/runs/31266908787) | blocked; seven sandbox tests fail |
+| Normal hosted `verify` gate | [C002 run 31425564638](https://github.com/dbowm91/codegg/actions/runs/31425564638) on `855de301…` | satisfied |
 | Explicit `lru` disposition | locked path `codegg → ratatui 0.29.0 → lru 0.12.5`; RustSec `RUSTSEC-2026-0002` patched at `>=0.16.3` | D2 deferred upstream migration |
-| Final strict closure | requires successful hosted verification | blocked |
+| Final strict closure | C002 closure record and reconciled registry | satisfied |
 
 ## 3. Production implementation evidence
 
@@ -40,8 +41,8 @@ single-binary, manual-release architecture is unchanged.
   access-rights: BitFlags<AccessFs>(0b1000, ReadDir)`.
 - The same seven failures are present on pre-C001 documentation heads, so this is not
   introduced by PR metadata or the merge reconciliation.
-- Post-merge `main` run: [31267837918](https://github.com/dbowm91/codegg/actions/runs/31267837918)
-  was still in progress while this record was prepared; it is not used as a pass claim.
+- C002 corrected the issue; the actual merge-candidate run [31425564638](https://github.com/dbowm91/codegg/actions/runs/31425564638)
+  passed the full workspace test suite.
 
 ## 5. Invariant review
 
@@ -50,9 +51,8 @@ release automation, dependency bot, size threshold, or coverage/benchmark gate w
 
 ## 6. Failure and recovery review
 
-The failing tests exercise Python-script sandbox enforcement and fail before their intended
-assertions. Correcting this requires a separate sandbox-rights implementation and focused
-security review, now registered as C002.
+The seven tests exercised Python-script sandbox enforcement and initially failed before
+their intended assertions. C002 corrected the path-kind mask and added focused coverage.
 
 ## 7. Migration and compatibility review
 
@@ -61,9 +61,9 @@ No migration is required.
 
 ## 8. Security review
 
-The failure concerns filesystem sandbox rights. C001 deliberately did not weaken or bypass
-the restriction. C002 must preserve the authority boundary and distinguish regular files,
-directories, and special files.
+The failure concerned filesystem sandbox rights. C001 did not weaken or bypass the
+restriction, and C002 preserved the authority boundary while distinguishing directories,
+regular files, and special files.
 
 ## 9. Documentation and operations
 
@@ -72,7 +72,7 @@ documented as deferred upstream migration; no broad Ratatui migration was attemp
 
 ## 10. Unresolved findings
 
-- **High/medium:** hosted verification is blocked by the concrete sandbox setup defect.
+- **High/medium:** none remain from C001/C002.
 - **Low:** the transitive `lru 0.12.5` advisory requires upstream Ratatui migration; current
   RustSec metadata marks the relevant soundness advisory informational and patches it at
   `lru >=0.16.3`.
@@ -81,13 +81,14 @@ documented as deferred upstream migration; no broad Ratatui migration was attemp
 
 ## 11. Roadmap disposition
 
-C001 is blocked, not strictly closed. C002 is dependency-ready for the concrete sandbox
-defect and is not a bookkeeping-only pass. No other future plan became unblocked from C001.
+C001 is strictly closed by the C002 correction and hosted verification. No other future
+plan became unblocked because no registered plan listed C001 or C002 as a remaining
+hard/interface dependency.
 
 ## 12. Registry updates
 
 - PR #73 is merged and removed from PR integration work.
-- C001 is recorded as blocked pending the C002 sandbox correction and successful hosted
+- C001 is recorded as closed after the C002 sandbox correction and successful hosted
   verification.
-- C002 is registered as ready in the same status change.
+- C002 is recorded as closed by `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`.
 - No unrelated blocked plan became dependency-ready.

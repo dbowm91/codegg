@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint — Corrective Closure Addendum
 
-Status: blocked on C002 hosted verification
+Status: closed
 
 Source roadmap:
 
@@ -28,7 +28,7 @@ Repository/PR state reviewed:
 
 M001-M008 production work is substantially complete and individually closed. At the initial C001 review, the workstream was marked strictly closed before its integration state matched that claim: PR #73 was outside `main` and its title/body described only the original M003 TUI slice.
 
-C001 corrected the PR metadata and integration state and merged PR #73. Its required hosted gate then exposed a pre-existing sandbox-rights defect: seven Python-script executor tests fail during sandbox setup because `/dev/null` receives directory-only `ReadDir` rights. C001 therefore remains blocked rather than making a false strict-closure claim.
+C001 corrected the PR metadata and integration state and merged PR #73. Its required hosted gate then exposed a pre-existing sandbox-rights defect: seven Python-script executor tests failed during sandbox setup because `/dev/null` received directory-only `ReadDir` rights. C002 corrected that defect and completed strict closure.
 
 The remaining corrective implementation is C002:
 
@@ -54,7 +54,7 @@ C001 owned:
 
 Those integration/advisory tasks are complete. The `lru` advisory was recorded as deferred upstream migration and is not C002 scope.
 
-C001 remains blocked solely because its strict exit criteria required a successful normal hosted `verify` result and run `31266908787` exposed the concrete `/dev/null` sandbox-rights defect.
+C001 was blocked solely because its strict exit criteria required a successful normal hosted `verify` result and run `31266908787` exposed the concrete `/dev/null` sandbox-rights defect. C002 corrected that defect and run `31425564638` passed on the actual merge candidate.
 
 ## 3. C002 scope
 
@@ -65,7 +65,7 @@ C002 owns only:
 - ensuring regular files and special non-directory targets such as `/dev/null` do not receive `ReadDir`;
 - adding focused regression coverage for directory, regular-file, and special-file path kinds;
 - rerunning the seven failed executor tests, existing sandbox/security guards, `scripts/verify.sh quick`, and one normal hosted `verify` run;
-- creating the C002 closure record and reconciling C001/C002/the registry to strict closure if hosted verification is green.
+- creating the C002 closure record and reconciling C001/C002/the registry to strict closure after hosted verification passed.
 
 C002 does not own dependency upgrades, broad Landlock redesign, new sandbox capabilities, CI topology changes, release automation, or a second audit of accepted M001-M008 code.
 
@@ -82,7 +82,7 @@ The independent supported-Linux Landlock fixture evidence condition in the runti
 - Existing helper protocol, subprocess restrictions, policy-root behavior, daemon authority, scheduler ownership, and protocol/storage compatibility remain unchanged.
 - Single-binary topology, manual release cadence, and one-job routine CI remain unchanged.
 - No new CI lane, matrix, release workflow, dependency bot, audit gate, artifact bundle, coverage gate, or binary-size threshold may be introduced.
-- The workstream may return to strict `closed` only after C002 passes the normal hosted `verify` job on its actual merge candidate.
+- The workstream returned to strict `closed` after C002 passed the normal hosted `verify` job on its actual merge candidate.
 
 ## 5. Dependency and execution order
 
@@ -90,7 +90,7 @@ The independent supported-Linux Landlock fixture evidence condition in the runti
 M001-M008 closed implementation
         |
         v
-C001 integration/advisory work complete, strict closure blocked
+C001 integration/advisory work complete, strict closure achieved by C002
         |
         v
 C002 sandbox path-kind rights correction
@@ -109,7 +109,7 @@ Remaining execution order:
 3. Add focused directory, regular-file, and special-file regression tests and rerun all seven previously failing Python-script executor tests.
 4. Run existing sandbox/security guards and `scripts/verify.sh quick`.
 5. Run one existing hosted `verify` job on the actual merge candidate.
-6. If and only if that hosted run is green, create `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`, mark C002 closed, reconcile C001 from blocked to closed, remove active/blocked rows, and return this workstream to strict `closed` state.
+6. Completed: created `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`, marked C002 and C001 closed, removed active/blocked rows, and returned this workstream to strict `closed` state.
 
 No PR #73 metadata, draft-state, merge, or advisory-disposition work remains. Those steps are historical C001 work and must not be repeated by the C002 implementation agent.
 

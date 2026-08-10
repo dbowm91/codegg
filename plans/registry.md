@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 active; C001 blocked | C002 is correcting the `/dev/null` Landlock path-rights defect exposed by hosted verification; strict closure awaits the normal hosted `verify` result. |
+| Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of C001. |
 
 ## Dependency-ready implementation plans
@@ -35,7 +35,7 @@ Canonical direction remains in:
 
 ## Active closure work
 
-C001 is blocked after merging PR #73 because hosted verification exposed a concrete sandbox setup defect. C002 is now active as the narrowly scoped corrective implementation and strict-closure owner; it must not reopen accepted M001-M008 production scope.
+No active closure work remains for this subsystem.
 
 Source addendum:
 
@@ -53,17 +53,14 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 ## Blocked work
 
-| Subsystem | Milestone | Blocker | Resolution owner |
-|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | C001 | Hosted `verify` fails seven Python-script sandbox tests when `/dev/null` receives directory-only rights | C002 at `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md` |
+No blocked work remains for this subsystem.
 
 ## Execution order
 
-1. Capture the exact seven Python-script executor failures from hosted run `31266908787` and confirm the current `src/security/sandbox.rs::add_landlock_path_rule` diagnosis still applies.
-2. Correct Landlock access-mask construction on the directory/non-directory boundary so special non-directory paths such as `/dev/null` do not receive `ReadDir`, without broadening sandbox authority.
-3. Add focused directory, regular-file, and special-file regression coverage, then rerun the seven previously failing executor tests and existing sandbox/security guards.
-4. Run `scripts/verify.sh quick` and one normal existing hosted `verify` job on the actual merge candidate. Do not add CI lanes, matrices, artifacts, audit/coverage/size gates, or release automation.
-5. Only after hosted `verify` is green, create the C002 closure record, reconcile C001 from blocked to closed, remove C002 from dependency-ready work, and return this post-audit workstream to strict `closed` state.
+Completed: captured the seven failures, corrected directory/non-directory Landlock masks,
+added focused regression coverage, passed `scripts/verify.sh quick`, and passed the normal
+hosted `verify` run `31425564638` on the actual merge candidate. C002 and C001 are closed;
+no unrelated registered plan became dependency-ready.
 
 Detailed handoff:
 
@@ -94,7 +91,8 @@ Verification remains minimal: focused tests for the actual sandbox correction, e
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | C001 — corrective PR integration | blocked | `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` | `8a556f05`; C002 required for hosted sandbox test gate |
+| Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md` | `855de301`; hosted run `31425564638` |
+| Post-audit correctness, simplification, and footprint | C001 — corrective PR integration | closed | `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` | `8a556f05`; reconciled by C002 |
 | Post-audit correctness, simplification, and footprint | M008 — integration, measurement, and closure | closed | `plans/closure/post-audit-correctness-simplification/008-status.md` | PR #73 production closure head; C001 reconciled merge state |
 | Post-audit correctness, simplification, and footprint | M007 — execution-model pass-through cleanup | closed | `plans/closure/post-audit-correctness-simplification/007-status.md` | `17e1f5a` |
 | Post-audit correctness, simplification, and footprint | M006 — test stack and resource-root-cause correction | closed | `plans/closure/post-audit-correctness-simplification/006-status.md` | `a4402db` |
