@@ -32,19 +32,23 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Post-audit correctness, simplification, and footprint | C002 | ready | `plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md` | Concrete sandbox setup defect identified by C001 hosted verification; no product predecessor required |
+| Post-audit correctness, simplification, and footprint | C002 | ready | `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md` | Concrete sandbox setup defect identified by C001 hosted verification; no product predecessor required |
 
 ## Active closure work
 
-C001 is blocked after merging PR #73 because hosted verification exposed a concrete sandbox setup defect. C002 is the narrowly scoped corrective implementation; it must not reopen accepted M001-M008 production scope.
+C001 is blocked after merging PR #73 because hosted verification exposed a concrete sandbox setup defect. C002 is the narrowly scoped corrective implementation and strict-closure owner; it must not reopen accepted M001-M008 production scope.
 
 Source addendum:
 
 - `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md`
 
-Target closure:
+Historical C001 blocker record:
 
 - `plans/closure/post-audit-correctness-simplification/009-corrective-status.md`
+
+Target C002 closure:
+
+- `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`
 
 Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
@@ -52,20 +56,23 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 | Subsystem | Milestone | Blocker | Resolution owner |
 |---|---|---|---|
-| Post-audit correctness, simplification, and footprint | C001 | Hosted `verify` fails seven Python-script sandbox tests when `/dev/null` receives directory-only rights | C002 at `plans/implementation/post-audit-correctness-simplification/010-sandbox-file-rights-correction.md` |
+| Post-audit correctness, simplification, and footprint | C001 | Hosted `verify` fails seven Python-script sandbox tests when `/dev/null` receives directory-only rights | C002 at `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md` |
 
 ## Execution order
 
-1. Freeze the current PR #73 merge candidate and classify changes after M008's accepted production head.
-2. Correct PR #73 title/body so they describe the complete M001-M008 workstream rather than only M003.
-3. Keep the PR draft until the merge candidate is stable; then mark it ready for review/merge.
-4. Use the existing single hosted `verify` job on the actual merge candidate; do not add a lane, matrix, dispatch workflow, artifact, audit gate, or release step.
-5. Disposition the pre-existing transitive `lru` advisory from the actual locked dependency path. Apply only a narrow compatible fix; otherwise record reachability/risk and defer any broad Ratatui/dependency migration.
-6. Merge PR #73 to `main` when normal checks and repository state permit.
-7. Create `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` with the final head, merged SHA, hosted run, advisory disposition, and any narrowly required correction.
-8. Remove C001 from active/ready work and return the post-audit workstream to strict `closed` only after C002 and hosted verification are complete.
+1. Capture the exact seven Python-script executor failures from hosted run `31266908787` and confirm the current `src/security/sandbox.rs::add_landlock_path_rule` diagnosis still applies.
+2. Correct Landlock access-mask construction on the directory/non-directory boundary so special non-directory paths such as `/dev/null` do not receive `ReadDir`, without broadening sandbox authority.
+3. Add focused directory, regular-file, and special-file regression coverage, then rerun the seven previously failing executor tests and existing sandbox/security guards.
+4. Run `scripts/verify.sh quick` and one normal existing hosted `verify` job on the actual merge candidate. Do not add CI lanes, matrices, artifacts, audit/coverage/size gates, or release automation.
+5. Only after hosted `verify` is green, create the C002 closure record, reconcile C001 from blocked to closed, remove C002 from dependency-ready work, and return this post-audit workstream to strict `closed` state.
 
-The independent runtime-safety supported-Linux Landlock evidence condition may be collected at any time. It does not block C001 and must not be folded into this corrective pass.
+Detailed handoff:
+
+- `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md`
+
+The original `010-sandbox-file-rights-correction.md` registration stub is superseded and retained only for planning history.
+
+The independent runtime-safety supported-Linux Landlock evidence condition may be collected at any time. It does not block this corrective pass and must not be folded into C002.
 
 ## Workstream closure policy
 
@@ -80,9 +87,9 @@ M001-M008 remain closed as implementation milestones with their existing histori
 - `plans/closure/post-audit-correctness-simplification/007-status.md`
 - `plans/closure/post-audit-correctness-simplification/008-status.md`
 
-C001 is a corrective integration/closure pass, not M009. File number `009` preserves sequential filenames. Its closure record must preserve the fact that M008's production evidence was accepted before the PR was merged rather than rewriting history.
+C001 is a corrective integration/closure pass, not M009. File number `009` preserves sequential filenames. Its closure record preserves the fact that M008's production evidence was accepted before the PR was merged. C002 owns only the concrete hosted sandbox-rights blocker and the resulting strict closure reconciliation.
 
-Verification remains minimal: normal PR metadata checks, focused verification only for any actual source/manifest correction, `scripts/verify.sh quick` when tracked production/manifests change, and one existing hosted `verify` run on the merge candidate. No duplicate local full-workspace run, new CI lane, matrix, artifact, benchmark/coverage/size gate, scheduled audit, automatic publication, or release cadence is required.
+Verification remains minimal: focused tests for the actual sandbox correction, existing sandbox/security guards, `scripts/verify.sh quick`, and one existing hosted `verify` run on the merge candidate. No duplicate local full-workspace run, new CI lane, matrix, artifact, benchmark/coverage/size gate, scheduled audit, automatic publication, or release cadence is required.
 
 ## Recently closed implementation plans
 
@@ -121,7 +128,7 @@ These remain outside the active corrective/simplification handoff until a concre
 - replacing RustPython with a custom Tool Program parser;
 - generalized HTTP/provider-client unification;
 - broad Comrak/MSRV migration;
-- broad Ratatui/TUI dependency migration unless C001 advisory analysis establishes a risk that warrants a separate plan;
+- broad Ratatui/TUI dependency migration unless a future dependency-maintenance priority explicitly activates it;
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
 - plugin-specific `ProjectionEvent::PluginUi` semantics;
