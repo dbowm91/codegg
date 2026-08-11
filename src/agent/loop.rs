@@ -1600,6 +1600,7 @@ impl AgentLoop {
     // daemon production construction goes through `build_agent_loop`, whose
     // typed input binds the execution context before initialization.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agents: Vec<Agent>,
         provider: Box<dyn crate::provider::Provider>,
