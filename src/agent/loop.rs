@@ -1079,8 +1079,11 @@ fn is_workspace_file_mutation(
         && is_path_within_workspace(path, workspace_root)
 }
 
-fn tool_result_is_success(output: &str) -> bool {
-    !output.starts_with("Error: ")
+fn tool_outcome_is_success(outcome: &ToolExecutionOutcome) -> bool {
+    matches!(
+        outcome.status,
+        crate::agent::progress_recovery::ToolExecutionStatus::Success
+    )
 }
 
 fn is_path_within_workspace(path: Option<&str>, workspace_root: &std::path::Path) -> bool {
@@ -3874,11 +3877,15 @@ impl AgentLoop {
             let recovery_batch = 0;
             let mut recovery_stalled = false;
             for tc in &tool_calls {
-                let output = tool_results
+                let outcome = tool_results
                     .iter()
                     .find(|(id, _)| id == tc.id.as_ref())
-                    .map(|(_, output)| output.as_str())
-                    .unwrap_or("Error: missing tool result");
+                    .map(|(_, outcome)| outcome.clone())
+                    .unwrap_or_else(|| ToolExecutionOutcome {
+                        status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                        model_text: String::new(),
+                    });
+                let output = &outcome.model_text;
                 let observation = ProgressObservation {
                     action: if tc.name.trim().is_empty() {
                         ActionClass::MalformedCall
@@ -3900,15 +3907,10 @@ impl AgentLoop {
                     error_class: crate::agent::progress_recovery::classify_error(output),
                     new_evidence: false,
                     state_changed: is_file_modifying_tool(&tc.name)
-                        && tool_result_is_success(output),
-                    child_advanced: tc.name.as_ref() == "task" && tool_result_is_success(output),
+                        && tool_outcome_is_success(&outcome),
+                    child_advanced: tc.name.as_ref() == "task" && tool_outcome_is_success(&outcome),
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
-                };
-                let outcome = if tool_result_is_success(output) {
-                    ToolExecutionOutcome::success(output)
-                } else {
-                    ToolExecutionOutcome::legacy(output)
                 };
                 match autonomy.observe_tool_result(&outcome, observation) {
                     RecoveryDecision::Progress => self.recovery_parallel_limit = None,
@@ -3991,14 +3993,14 @@ impl AgentLoop {
                 request.messages.push(msg);
             }
 
-            for (id, content) in &tool_results {
+            for (id, outcome) in &tool_results {
                 let tool_name = tool_calls
                     .iter()
                     .find(|tc| *tc.id == id.as_str())
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
-                let success = tool_result_is_success(content);
-                let redacted_output = redact_local_paths(content);
+                let success = tool_outcome_is_success(outcome);
+                let redacted_output = redact_local_paths(&outcome.model_text);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,
@@ -4008,7 +4010,8 @@ impl AgentLoop {
                 });
             }
 
-            for (id, content) in &tool_results {
+            for (id, outcome) in &tool_results {
+                let content = &outcome.model_text;
                 if let Some(change) = detect_plan_mode_change(content) {
                     match change {
                         crate::tool::plan::PlanModeChange::Enter(topic) => {
@@ -4093,7 +4096,7 @@ impl AgentLoop {
                     &tool_name_str,
                     tool_args.as_deref(),
                     &redacted_content,
-                    tool_result_is_success(content),
+                    tool_outcome_is_success(outcome),
                     effective_handle,
                     &self.projection_config,
                 );
@@ -4475,7 +4478,7 @@ impl AgentLoop {
     async fn execute_tool_calls(
         &mut self,
         tool_calls: &[ToolCall],
-    ) -> Result<Vec<(String, String)>, AppError> {
+    ) -> Result<Vec<(String, ToolExecutionOutcome)>, AppError> {
         let mut tool_results = Vec::with_capacity(16);
         let mut has_pending_question = false;
 
@@ -4484,13 +4487,28 @@ impl AgentLoop {
             match self.check_tool_permission(tc).await {
                 ToolPermissionOutcome::QuestionTool => {
                     has_pending_question = true;
-                    tool_results.push((idx, tc.id.to_string(), "__QUESTION_PENDING__".to_string()));
+                    tool_results.push((
+                        idx,
+                        tc.id.to_string(),
+                        ToolExecutionOutcome::success("__QUESTION_PENDING__"),
+                    ));
                 }
                 ToolPermissionOutcome::Allowed { tool_call, receipt } => {
                     allowed_tools.push((idx, tool_call, receipt));
                 }
                 ToolPermissionOutcome::Denied { tool_id, message } => {
-                    tool_results.push((idx, tool_id, message));
+                    let outcome = if message.starts_with("Error: invalid tool call") {
+                        ToolExecutionOutcome {
+                            status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                            model_text: message,
+                        }
+                    } else {
+                        ToolExecutionOutcome {
+                            status: crate::agent::progress_recovery::ToolExecutionStatus::Denied,
+                            model_text: message,
+                        }
+                    };
+                    tool_results.push((idx, tool_id, outcome));
                 }
             }
         }
@@ -4552,16 +4570,33 @@ impl AgentLoop {
                                     .await;
                                     match call_result {
                                         Ok(Ok(result)) => {
-                                            return (orig_idx, tc.id.to_string(), result);
+                                            return (
+                                                orig_idx,
+                                                tc.id.to_string(),
+                                                ToolExecutionOutcome::success(result),
+                                            );
                                         }
                                         Ok(Err(e)) => {
-                                            return (orig_idx, tc.id.to_string(), format!("Error: {}", e));
+                                            return (
+                                                orig_idx,
+                                                tc.id.to_string(),
+                                                ToolExecutionOutcome::from_tool_error(
+                                                    ToolError::Execution(e.to_string()),
+                                                ),
+                                            );
                                         }
                                         Err(_) => {
-                                            return (orig_idx, tc.id.to_string(), format!(
-                                                "Error: MCP tool '{}' on server '{}' timed out after {:?}",
-                                                tool, server, mcp_timeout
-                                            ));
+                                            return (
+                                                orig_idx,
+                                                tc.id.to_string(),
+                                                ToolExecutionOutcome {
+                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::Timeout,
+                                                    model_text: format!(
+                                                        "Error: MCP tool '{}' on server '{}' timed out after {:?}",
+                                                        tool, server, mcp_timeout
+                                                    ),
+                                                },
+                                            );
                                         }
                                     }
                                 }
@@ -4573,12 +4608,31 @@ impl AgentLoop {
                                 }
                             }
                         }
-                        (orig_idx, tc.id.to_string(), format!("Error: {}", last_err.unwrap_or_default()))
+                        (
+                            orig_idx,
+                            tc.id.to_string(),
+                            ToolExecutionOutcome::from_tool_error(ToolError::Execution(
+                                last_err.unwrap_or_default(),
+                            )),
+                        )
                     } else {
-                        (orig_idx, tc.id.to_string(), "Error: MCP service not available".to_string())
+                        (
+                            orig_idx,
+                            tc.id.to_string(),
+                            ToolExecutionOutcome::from_tool_error(ToolError::Execution(
+                                "MCP service not available".into(),
+                            )),
+                        )
                     }
                 } else {
-                    (orig_idx, tc.id.to_string(), format!("Error: Invalid MCP tool name '{}'", name))
+                    (
+                        orig_idx,
+                        tc.id.to_string(),
+                        ToolExecutionOutcome::from_tool_error(ToolError::Format(format!(
+                            "Invalid MCP tool name '{}'",
+                            name
+                        ))),
+                    )
                 }
             });
         }
@@ -4973,7 +5027,7 @@ impl AgentLoop {
                                     }
                                 },
                                 Err(_) => {
-                                    last_result = Err(ToolError::Execution(format!(
+                                    last_result = Err(ToolError::Timeout(format!(
                                         "Tool '{}' timed out after {:?}",
                                         tc_inner.name, timeout
                                     )));
@@ -5154,11 +5208,12 @@ impl AgentLoop {
                 p.max_tool_result_tokens * 4
             });
         for (idx, id, result) in results {
-            let output = match result {
-                Ok(output) => output,
-                Err(e) => format!("Error: {}", e),
+            let mut outcome = match result {
+                Ok(output) => ToolExecutionOutcome::success(output),
+                Err(error) => ToolExecutionOutcome::from_tool_error(error),
             };
-            let truncated = if output.len() > max_tool_result_bytes {
+            let output = &outcome.model_text;
+            if output.len() > max_tool_result_bytes {
                 let safe_end = output.floor_char_boundary(max_tool_result_bytes);
                 let mut truncated = output[..safe_end].to_string();
                 truncated.push_str(&format!(
@@ -5166,11 +5221,9 @@ impl AgentLoop {
                     output.len(),
                     max_tool_result_bytes
                 ));
-                truncated
-            } else {
-                output
-            };
-            tool_results.push((idx, id.to_string(), truncated));
+                outcome.model_text = truncated;
+            }
+            tool_results.push((idx, id.to_string(), outcome));
         }
 
         if has_file_modifying {
@@ -5185,41 +5238,42 @@ impl AgentLoop {
                         let formatted = format_question_answers(&answers);
                         tool_results = tool_results
                             .into_iter()
-                            .map(|(idx, id, output)| {
-                                if output == "__QUESTION_PENDING__" {
-                                    (idx, id, formatted.clone())
+                            .map(|(idx, id, mut outcome)| {
+                                if outcome.model_text == "__QUESTION_PENDING__" {
+                                    outcome.model_text = formatted.clone();
                                 } else {
-                                    (idx, id, output)
+                                    return (idx, id, outcome);
                                 }
+                                (idx, id, outcome)
                             })
                             .collect();
                     }
                     Ok(Err(_)) => {
                         tool_results = tool_results
                             .into_iter()
-                            .map(|(idx, id, output)| {
-                                if output == "__QUESTION_PENDING__" {
-                                    (idx, id, "[question cancelled by user]".to_string())
+                            .map(|(idx, id, mut outcome)| {
+                                if outcome.model_text == "__QUESTION_PENDING__" {
+                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Cancelled;
+                                    outcome.model_text = "[question cancelled by user]".to_string();
                                 } else {
-                                    (idx, id, output)
+                                    return (idx, id, outcome);
                                 }
+                                (idx, id, outcome)
                             })
                             .collect();
                     }
                     Err(_) => {
                         tool_results = tool_results
                             .into_iter()
-                            .map(|(idx, id, output)| {
-                                if output == "__QUESTION_PENDING__" {
-                                    (
-                                        idx,
-                                        id,
-                                        "[question timed out waiting for user response]"
-                                            .to_string(),
-                                    )
+                            .map(|(idx, id, mut outcome)| {
+                                if outcome.model_text == "__QUESTION_PENDING__" {
+                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Timeout;
+                                    outcome.model_text =
+                                        "[question timed out waiting for user response]".to_string();
                                 } else {
-                                    (idx, id, output)
+                                    return (idx, id, outcome);
                                 }
+                                (idx, id, outcome)
                             })
                             .collect();
                     }
@@ -5228,21 +5282,25 @@ impl AgentLoop {
             } else {
                 tool_results = tool_results
                     .into_iter()
-                    .map(|(idx, id, output)| {
-                        if output == "__QUESTION_PENDING__" {
-                            (idx, id, "[question not supported in exec mode]".to_string())
+                    .map(|(idx, id, mut outcome)| {
+                        if outcome.model_text == "__QUESTION_PENDING__" {
+                            outcome.status =
+                                crate::agent::progress_recovery::ToolExecutionStatus::ToolError;
+                            outcome.model_text =
+                                "[question not supported in exec mode]".to_string();
                         } else {
-                            (idx, id, output)
+                            return (idx, id, outcome);
                         }
+                        (idx, id, outcome)
                     })
                     .collect();
             }
         }
 
         tool_results.sort_by_key(|(idx, _, _)| *idx);
-        let ordered_results: Vec<(String, String)> = tool_results
+        let ordered_results: Vec<(String, ToolExecutionOutcome)> = tool_results
             .into_iter()
-            .map(|(_, id, output)| (id, output))
+            .map(|(_, id, outcome)| (id, outcome))
             .collect();
 
         Ok(ordered_results)
@@ -5421,14 +5479,14 @@ impl AgentLoop {
                     request.messages.push(msg);
                 }
 
-                for (id, content) in &tool_results {
+                for (id, outcome) in &tool_results {
                     let tool_name = tool_calls
                         .iter()
                         .find(|tc| *tc.id == id.as_str())
                         .map(|tc| tc.name.to_string())
                         .unwrap_or_default();
-                    let success = tool_result_is_success(content);
-                    let redacted_output = redact_local_paths(content);
+                    let success = tool_outcome_is_success(outcome);
+                    let redacted_output = redact_local_paths(&outcome.model_text);
                     crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                         tool_id: id.clone(),
                         tool_name,
@@ -5438,7 +5496,8 @@ impl AgentLoop {
                     });
                 }
 
-                for (id, content) in &tool_results {
+                for (id, outcome) in &tool_results {
+                    let content = &outcome.model_text;
                     if let Some(change) = detect_plan_mode_change(content) {
                         match change {
                             crate::tool::plan::PlanModeChange::Enter(topic) => {
@@ -5524,7 +5583,7 @@ impl AgentLoop {
                         &tool_name_str,
                         tool_args.as_deref(),
                         &redacted_content,
-                        tool_result_is_success(content),
+                        tool_outcome_is_success(outcome),
                         effective_handle,
                         &self.projection_config,
                     );

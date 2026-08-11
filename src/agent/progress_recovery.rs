@@ -78,21 +78,6 @@ pub enum ToolExecutionStatus {
     ProtocolError,
 }
 
-pub fn tool_execution_status(rendered: &str) -> ToolExecutionStatus {
-    let lower = rendered.to_ascii_lowercase();
-    if lower.contains("cancel") {
-        ToolExecutionStatus::Cancelled
-    } else if lower.contains("timeout") || lower.contains("timed out") {
-        ToolExecutionStatus::Timeout
-    } else if lower.contains("denied") || lower.contains("permission") {
-        ToolExecutionStatus::Denied
-    } else if rendered.starts_with("Error:") {
-        ToolExecutionStatus::ToolError
-    } else {
-        ToolExecutionStatus::Success
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolExecutionOutcome {
     pub status: ToolExecutionStatus,
@@ -107,12 +92,20 @@ impl ToolExecutionOutcome {
         }
     }
 
-    /// Compatibility boundary for legacy executors that expose only rendered text.
-    pub fn legacy(model_text: impl Into<String>) -> Self {
-        let model_text = model_text.into();
+    pub fn from_tool_error(error: crate::error::ToolError) -> Self {
+        let status = match error {
+            crate::error::ToolError::Timeout(_) => ToolExecutionStatus::Timeout,
+            crate::error::ToolError::Permission(_) => ToolExecutionStatus::Denied,
+            crate::error::ToolError::Format(_) => ToolExecutionStatus::ProtocolError,
+            crate::error::ToolError::NotFound(_)
+            | crate::error::ToolError::Execution(_)
+            | crate::error::ToolError::Disabled(_)
+            | crate::error::ToolError::Io(_)
+            | crate::error::ToolError::Network(_) => ToolExecutionStatus::ToolError,
+        };
         Self {
-            status: tool_execution_status(&model_text),
-            model_text,
+            status,
+            model_text: format!("Error: {error}"),
         }
     }
 }
@@ -639,22 +632,38 @@ mod tests {
     }
 
     #[test]
-    fn autonomy_bootstrap_is_explicitly_one_shot() {
-        let mut state = AutonomyState::default();
+    fn typed_status_is_authoritative_over_display_text() {
+        let denied = ToolExecutionOutcome::from_tool_error(crate::error::ToolError::Permission(
+            "permission denied".into(),
+        ));
+        assert_eq!(denied.status, ToolExecutionStatus::Denied);
+        let timeout = ToolExecutionOutcome::from_tool_error(crate::error::ToolError::Timeout(
+            "command timed out".into(),
+        ));
+        assert_eq!(timeout.status, ToolExecutionStatus::Timeout);
+        let misleading = ToolExecutionOutcome::success("permission denied; timeout cancelled");
+        assert_eq!(misleading.status, ToolExecutionStatus::Success);
     }
 
     #[test]
-    fn typed_status_distinguishes_denial_and_timeout() {
+    fn typed_tool_errors_map_to_non_success_recovery_statuses() {
+        use crate::error::ToolError;
+
+        for error in [
+            ToolError::NotFound("missing".into()),
+            ToolError::Execution("failed".into()),
+            ToolError::Disabled("disabled".into()),
+            ToolError::Io("io".into()),
+            ToolError::Network("network".into()),
+        ] {
+            assert_eq!(
+                ToolExecutionOutcome::from_tool_error(error).status,
+                ToolExecutionStatus::ToolError
+            );
+        }
         assert_eq!(
-            tool_execution_status("Error: permission denied"),
-            ToolExecutionStatus::Denied
+            ToolExecutionOutcome::from_tool_error(ToolError::Format("bad result".into())).status,
+            ToolExecutionStatus::ProtocolError
         );
-        assert_eq!(
-            tool_execution_status("Error: command timed out"),
-            ToolExecutionStatus::Timeout
-        );
-        assert_eq!(tool_execution_status("ok"), ToolExecutionStatus::Success);
-        let misleading = ToolExecutionOutcome::success("permission denied; timeout cancelled");
-        assert_eq!(misleading.status, ToolExecutionStatus::Success);
     }
 }
