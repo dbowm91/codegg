@@ -162,8 +162,7 @@ Main Loop:
 11. Process events (EventProcessor)
 12. Handle missing structured tool calls through the explicitly resolved
     adapter repair contract, when one is configured
-13. Bootstrap tool for repo tasks (if conditions met)
-14. Execute tool calls (permission check → parallel execution)
+13. Execute tool calls (permission check → parallel execution)
 15. Publish tool results to event bus
 16. Detect plan mode changes
 17. Post-turn hooks (AgentEnd)
@@ -1254,8 +1253,12 @@ the state reaches `Stall` and publishes a compact, actionable diagnostic.
 Recovery never expands the profile-filtered tool surface. In particular,
 permission denial is typed separately from tool failure and cannot trigger
 base-palette restoration. The generic loop does not synthesize a repository
-`list .` bootstrap call; strong models finish directly and fragile-model
-compatibility belongs behind an explicit adapter contract.
+`list .` bootstrap call or issue a second heuristic continuation after the
+bounded transition. Primary and follow-up loops share the same continuation
+budget. `ToolExecutionOutcome` carries typed status into recovery; rendered-
+text classification is limited to legacy fallback executors. Strong models
+finish directly and fragile-model compatibility belongs behind an explicit
+adapter contract.
 
 ### Auto-Accept Read-Only Tools
 

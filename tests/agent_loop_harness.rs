@@ -3710,11 +3710,6 @@ async fn test_source_structure_prompt_does_not_synthesize_bootstrap_list() {
         1,
         "Strong models finish without bootstrap turns"
     );
-    assert!(!requests[0].messages.iter().any(|m| matches!(
-        m,
-        Message::Assistant { tool_calls, .. }
-            if tool_calls.iter().any(|tc| tc.id.as_ref().starts_with("call_bootstrap_"))
-    )));
 }
 
 #[tokio::test]

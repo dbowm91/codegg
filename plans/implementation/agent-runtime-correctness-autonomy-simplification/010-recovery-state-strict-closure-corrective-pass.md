@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M010 — Recovery-State Strict Closure Corrective Pass
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
