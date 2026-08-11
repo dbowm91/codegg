@@ -22,7 +22,7 @@ Primary class: integration / closure
 
 Dependencies:
 
-- hard: M001-M006 closed;
+- hard: M001-M006 closed (M001 is now closed; M002-M006 remain outstanding);
 - operational: one ordinary existing hosted `CI / verify` run on the exact accepted final candidate;
 - no external platform evidence beyond currently supported routine verification is introduced by this milestone.
 

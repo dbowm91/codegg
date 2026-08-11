@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M001 — Legacy Background Scheduler Deletion
 
-Status: ready
+Status: implemented
 
 Source roadmap:
 

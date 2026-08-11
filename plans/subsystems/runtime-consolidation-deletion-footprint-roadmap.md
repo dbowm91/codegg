@@ -191,7 +191,7 @@ Dependency classes:
 
 ### M001 — Legacy background scheduler deletion and durable-schedule convergence
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/001-legacy-background-scheduler-deletion.md`
 
@@ -231,7 +231,7 @@ Classify static guards as permanent invariants or temporary migration ratchets, 
 
 ### M006 — Measured dependency and binary-footprint cleanup
 
-Status: blocked on M001-M005
+Status: blocked on M002-M005
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md`
 
@@ -239,7 +239,7 @@ Measure release contributors and feature graph after code deletion, narrow only 
 
 ### M007 — Integration, verification, and strict closure
 
-Status: blocked on M001-M006
+Status: blocked on M002-M006
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/007-integration-verification-closure.md`
 

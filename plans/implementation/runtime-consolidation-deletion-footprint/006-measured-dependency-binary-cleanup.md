@@ -19,7 +19,7 @@ Primary class: polish / measured optimization
 
 Dependencies:
 
-- hard: M001-M005 closed;
+- hard: M001-M005 closed (M001 is now closed; M002-M005 remain outstanding);
 - interface: supported feature set and default single-binary topology remain unchanged;
 - downstream: M007 requires M006 measurements and accepted dependency disposition.
 

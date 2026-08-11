@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M001/M002/M004/M005 ready | M003 requires M002; M006 requires M001-M005; M007 requires M001-M006. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M002/M004/M005 ready | M003 requires M002; M006 requires M002-M005; M007 requires M002-M006. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -43,7 +43,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime consolidation, deletion, and footprint | M001 — legacy background scheduler deletion | ready | `plans/implementation/runtime-consolidation-deletion-footprint/001-legacy-background-scheduler-deletion.md` | Existing durable scheduler/store interfaces are available; caller inventory is part of the milestone. |
 | Runtime consolidation, deletion, and footprint | M002 — structured outcome and recovery convergence | ready | `plans/implementation/runtime-consolidation-deletion-footprint/002-structured-outcome-recovery-convergence.md` | Preserve closed M011 typed-outcome fixes; no hard predecessor. |
 | Runtime consolidation, deletion, and footprint | M004 — prompt/provider/history legacy deletion | ready | `plans/implementation/runtime-consolidation-deletion-footprint/004-prompt-provider-history-legacy-deletion.md` | Canonical PromptCompiler/runtime-assets/model-adapter interfaces are already closed. |
 | Runtime consolidation, deletion, and footprint | M005 — verification ratchet retirement | ready | `plans/implementation/runtime-consolidation-deletion-footprint/005-verification-ratchet-retirement.md` | No hard predecessor; final guard audit should reconcile deletions from M001-M004. |
@@ -57,10 +56,10 @@ This roadmap is a new cross-cutting consolidation workstream based on current re
 
 Execution order:
 
-1. M001, M002, M004, and M005 are dependency-ready and may proceed independently with normal rebase/merge coordination.
+1. M002, M004, and M005 are dependency-ready and may proceed independently with normal rebase/merge coordination; M001 is closed.
 2. M003 starts only after M002 closes so `AgentLoop` decomposition targets the final structured outcome/recovery contract; M001/M004 should preferably land first to reduce legacy code moved during extraction.
-3. M006 starts only after M001-M005 close so dependency/binary measurements describe the consolidated implementation rather than transitional code.
-4. M007 starts only after M001-M006 close and owns the single broad integration/hosted closure pass.
+3. M006 starts only after M002-M005 close so dependency/binary measurements describe the consolidated implementation rather than transitional code.
+4. M007 starts only after M002-M006 close and owns the single broad integration/hosted closure pass.
 
 Verification remains minimal and change-specific. This roadmap explicitly forbids new CI lanes/matrices, scheduled audits, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
 
@@ -86,8 +85,8 @@ M011 was the sole controlling strict closure milestone for that workstream and i
 | Subsystem | Milestone | Blocker |
 |---|---|---|
 | Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | Hard dependency: M002 structured outcome/recovery contract must close first. |
-| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Hard dependencies: M001-M005 closed. |
-| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependencies: M001-M006 closed. |
+| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Hard dependencies: M002-M005 closed; M001 is closed. |
+| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependencies: M002-M006 closed; M001 is closed. |
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
 
 ## Agent-runtime correctness execution order
@@ -117,6 +116,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 
 | Subsystem | Milestone | Status | Closure / controlling evidence |
 |---|---|---|---|
+| Runtime consolidation, deletion, and footprint | M001 — legacy background scheduler deletion | closed | `plans/closure/runtime-consolidation-deletion-footprint/001-status.md`; implementation commits `9594429`, `fcfed87` |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
