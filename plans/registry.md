@@ -25,54 +25,58 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M001-M004, M007-M008 ready | M005 requires M001/M002/M004; M006 requires M005; M009 requires M001-M008. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
-| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of C001. |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M001 — MCP authority, provenance, and tool-surface correctness | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/001-mcp-authority-provenance-and-tool-surface-correctness.md` | hard: none |
+| Agent runtime correctness, autonomy, and simplification | M002 — textual tool-call repair safety | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/002-textual-tool-call-repair-safety.md` | hard: none |
+| Agent runtime correctness, autonomy, and simplification | M003 — workspace-bound AgentLoop construction | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/003-workspace-bound-agent-loop-construction.md` | hard: none |
+| Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/004-turn-identity-accounting-and-lifecycle-correctness.md` | hard: none |
+| Agent runtime correctness, autonomy, and simplification | M007 — measured binary footprint and upstream dependency review | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/007-measured-binary-footprint-and-upstream-dependency-review.md` | hard: none; soft: final size reconciliation after M006 |
+| Agent runtime correctness, autonomy, and simplification | M008 — routine CI and static-guard contraction | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/008-routine-ci-and-static-guard-contraction.md` | hard: none; reconcile guard ownership against M001-M006 at execution time |
 
 ## Active closure work
 
-No active closure work remains for this subsystem.
+No closure pass is active for the new agent-runtime correctness workstream. M009 is blocked until M001-M008 have accepted closure records.
 
-Source addendum:
+The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
 - `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md`
-
-Historical C001 blocker record:
-
 - `plans/closure/post-audit-correctness-simplification/009-corrective-status.md`
-
-Target C002 closure:
-
 - `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`
 
 Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence in `plans/closure/runtime-safety-resource-footprint/010-status.md`. Do not create another runtime-safety milestone for that external evidence item.
 
 ## Blocked work
 
-No blocked work remains for this subsystem.
+| Subsystem | Milestone | Status | Implementation plan | Blocker |
+|---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M005 — recovery and autonomy state machine | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/005-agent-loop-recovery-and-autonomy-state-machine.md` | hard dependencies M001, M002, and M004 must close first. |
+| Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/006-prompt-compilation-and-control-policy-consolidation.md` | hard dependency M005 must close first. |
+| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | hard dependencies M001-M008 must close first. |
 
 ## Execution order
 
-Completed: captured the seven failures, corrected directory/non-directory Landlock masks,
-added focused regression coverage, passed `scripts/verify.sh quick`, and passed the normal
-hosted `verify` run `31425564638` on the actual merge candidate. C002 and C001 are closed;
-no unrelated registered plan became dependency-ready.
+The new workstream should execute correctness before broad harness cleanup:
 
-Detailed handoff:
+1. M001, M002, M003, and M004 may proceed independently. Prefer M001/M002 early because they close execution-authority boundaries used by later recovery work.
+2. M007 and M008 are independently ready and may proceed in parallel with M001-M004 when they do not conflict with active production edits.
+3. M005 becomes ready only after M001, M002, and M004 close. M003 is a soft dependency and should preferably be complete first to reduce incidental loop state.
+4. M006 follows M005 so prompt/control consolidation targets the final recovery semantics rather than obsolete nudges.
+5. M009 is the sole integration/closure milestone and starts only after M001-M008 have accepted closure records.
 
-- `plans/implementation/post-audit-correctness-simplification/011-sandbox-rights-correction-and-strict-closure.md`
-
-The original `010-sandbox-file-rights-correction.md` registration stub is superseded and retained only for planning history.
-
-The independent runtime-safety supported-Linux Landlock evidence condition may be collected at any time. It does not block this corrective pass and must not be folded into C002.
+Verification for this line remains minimal and change-specific: focused tests for each corrected invariant, `scripts/verify.sh quick` after coherent production milestones, and one broad final integration/hosted `verify` pass in M009. M007 measurements are manual diagnostics, not gates. M008 must reduce routine verification rather than add lanes, matrices, artifacts, scheduled audits, automatic publication, or release cadence.
 
 ## Workstream closure policy
 
-M001-M008 remain closed as implementation milestones with their existing historical records:
+The active agent-runtime correctness workstream closes only through M009 and `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md`. M001-M008 require their own milestone closure records because M009 depends on accepted evidence rather than implementation claims.
+
+The earlier post-audit M001-M008 remain closed as historical implementation milestones with their existing records:
 
 - `plans/closure/post-audit-correctness-simplification/001-status.md`
 - `plans/closure/post-audit-correctness-simplification/002-status.md`
@@ -83,9 +87,7 @@ M001-M008 remain closed as implementation milestones with their existing histori
 - `plans/closure/post-audit-correctness-simplification/007-status.md`
 - `plans/closure/post-audit-correctness-simplification/008-status.md`
 
-C001 is a corrective integration/closure pass, not M009. File number `009` preserves sequential filenames. Its closure record preserves the fact that M008's production evidence was accepted before the PR was merged. C002 owns only the concrete hosted sandbox-rights blocker and the resulting strict closure reconciliation.
-
-Verification remains minimal: focused tests for the actual sandbox correction, existing sandbox/security guards, `scripts/verify.sh quick`, and one existing hosted `verify` run on the merge candidate. No duplicate local full-workspace run, new CI lane, matrix, artifact, benchmark/coverage/size gate, scheduled audit, automatic publication, or release cadence is required.
+Historical post-audit C001/C002 remain corrective closure passes, not milestones in the new workstream.
 
 ## Recently closed implementation plans
 
