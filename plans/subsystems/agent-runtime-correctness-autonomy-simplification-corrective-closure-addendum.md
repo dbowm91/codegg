@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification — Corrective Closure Addendum
 
-Status: closing
+Status: conditionally closed
 
 Source roadmap:
 
