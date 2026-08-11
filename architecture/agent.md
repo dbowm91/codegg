@@ -1227,6 +1227,17 @@ model text, so recovery never classifies ordinary results by substrings. Strong
 models finish directly and fragile-model compatibility belongs behind an
 explicit adapter contract.
 
+Recovery progress is effect-aware. Mutating progress requires an observed
+state-change fact (currently the bounded file-change event stream); a successful
+call or changing display text is not sufficient. Read-only/read-validate calls
+may count their first changed result for the same canonical tool and normalized
+arguments as bounded new evidence. Later volatile changes do not reset the
+semantic recovery budget. Child progress is recorded only from an actual child
+state transition, not from successful task-submission text. Equivalent-result
+incidents are scoped to the same action identity, and recovery status remains
+distinct for denied, timeout, cancelled, protocol-error, and tool-error
+outcomes.
+
 ### Auto-Accept Read-Only Tools
 
 Read-only tools (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `codesearch`) that target paths within the working directory are auto-accepted without user prompt.

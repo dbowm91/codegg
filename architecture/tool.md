@@ -753,6 +753,12 @@ class, idempotency, retry/cache policies, and projection policy.
 Legacy tools receive conservative defaults via
 `ToolContract::legacy()`.
 
+The agent recovery adapter consumes the contract's effect class together with
+the typed terminal outcome. It does not classify successful model-facing text
+as an error. Read-only novelty is bounded evidence; mutating progress requires
+an observed state transition, and non-idempotent mutations are never replayed
+by semantic recovery solely because output changed.
+
 See [tool_broker.md](tool_broker.md) for the full contract and
 pipeline documentation.
 

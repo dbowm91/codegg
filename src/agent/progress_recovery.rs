@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 
+use crate::tool::contract::ToolEffectClass;
+
 pub const DEFAULT_HISTORY_LIMIT: usize = 32;
 pub const DEFAULT_MAX_RECOVERIES: u8 = 4;
 const MAX_SUMMARY_BYTES: usize = 240;
@@ -37,8 +39,6 @@ pub enum ProgressSignal {
     NewEvidence,
     StateChanged,
     ChildAdvanced,
-    DifferentResult,
-    DifferentTool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,9 +50,7 @@ pub enum IncidentKind {
     ShortCycle,
     MalformedCall,
     NarrationWithoutAction,
-    UnavailableTool,
     NoProgress,
-    DelegationRejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +66,7 @@ pub enum RecoveryAction {
 /// The normalized status of a tool execution as seen by recovery policy.
 /// Rendered tool text remains the model-facing contract; this compact status
 /// prevents recovery from having to infer authority and cancellation from it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolExecutionStatus {
     Success,
     Denied,
@@ -89,6 +87,17 @@ impl ToolExecutionOutcome {
         Self {
             status: ToolExecutionStatus::Success,
             model_text: model_text.into(),
+        }
+    }
+
+    pub fn recovery_error_class(&self) -> Option<&'static str> {
+        match self.status {
+            ToolExecutionStatus::Success => None,
+            ToolExecutionStatus::Denied => Some("denied"),
+            ToolExecutionStatus::Timeout => Some("timeout"),
+            ToolExecutionStatus::Cancelled => Some("cancelled"),
+            ToolExecutionStatus::ToolError => Some("tool_error"),
+            ToolExecutionStatus::ProtocolError => Some("protocol_error"),
         }
     }
 
@@ -187,6 +196,7 @@ impl AutonomyState {
                         attempted_recoveries: self.transitions,
                         evidence: "autonomy transition bound exceeded".into(),
                         suggested_user_action: "Inspect the last observable tool result and provide a narrower next step.".into(),
+                        execution_status: None,
                     });
                 }
             }
@@ -201,9 +211,8 @@ impl AutonomyState {
         outcome: &ToolExecutionOutcome,
         mut observation: ProgressObservation,
     ) -> RecoveryDecision {
-        if matches!(outcome.status, ToolExecutionStatus::Denied) {
-            observation.error_class = Some("denied".into());
-        }
+        observation.execution_status = Some(outcome.status);
+        observation.error_class = outcome.recovery_error_class().map(str::to_owned);
         self.observe_tool(observation)
     }
 }
@@ -217,6 +226,8 @@ pub struct ProgressObservation {
     pub result_fingerprint: Option<String>,
     pub result_size: ResultSizeClass,
     pub error_class: Option<String>,
+    pub execution_status: Option<ToolExecutionStatus>,
+    pub effect_class: Option<ToolEffectClass>,
     pub new_evidence: bool,
     pub state_changed: bool,
     pub child_advanced: bool,
@@ -242,7 +253,9 @@ impl ProgressObservation {
             argument_fingerprint: Some(fingerprint(&normalize_json(arguments)).1),
             result_fingerprint: Some(fingerprint(&result).1),
             result_size: result_size_class(result),
-            error_class: classify_error(result),
+            error_class: None,
+            execution_status: None,
+            effect_class: None,
             new_evidence: false,
             state_changed: false,
             child_advanced: false,
@@ -266,6 +279,7 @@ pub struct RecoveryIncident {
     pub occurrences: u8,
     pub last_action: RecoveryAction,
     pub evidence: String,
+    pub execution_status: Option<ToolExecutionStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +289,7 @@ pub struct StalledReport {
     pub attempted_recoveries: u8,
     pub evidence: String,
     pub suggested_user_action: String,
+    pub execution_status: Option<ToolExecutionStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,22 +347,38 @@ impl RecoveryController {
     }
 
     pub fn observe(&mut self, observation: ProgressObservation) -> RecoveryDecision {
-        let progress = if observation.new_evidence
-            || observation.state_changed
-            || observation.child_advanced
-        {
+        let successful = observation
+            .execution_status
+            .map_or(true, |status| status == ToolExecutionStatus::Success);
+        let same_action_count = self
+            .history
+            .iter()
+            .filter(|o| o.action_key() == observation.action_key())
+            .count();
+        let novel_read_result = matches!(
+            observation.effect_class,
+            Some(ToolEffectClass::ReadOnly | ToolEffectClass::ReadValidate)
+        ) && successful
+            && observation.error_class.is_none()
+            // Only the first changed result for an action is evidence. This
+            // bounded rule prevents volatile output from resetting recovery
+            // forever while still recognizing a genuine read transition.
+            && same_action_count == 1
+            && self.history.iter().any(|o| {
+                o.action_key() == observation.action_key()
+                    && o.result_fingerprint != observation.result_fingerprint
+            });
+        let progress = if successful && observation.child_advanced {
+            ProgressSignal::ChildAdvanced
+        } else if successful && observation.state_changed {
             ProgressSignal::StateChanged
-        } else if observation.error_class.is_none()
-            && self.history.iter().rev().any(|o| {
-                o.result_fingerprint != observation.result_fingerprint
-                    && o.action_key() == observation.action_key()
-            })
-        {
-            ProgressSignal::DifferentResult
+        } else if successful && (observation.new_evidence || novel_read_result) {
+            ProgressSignal::NewEvidence
         } else {
             ProgressSignal::None
         };
 
+        let execution_status = observation.execution_status;
         let incident = self.detect(&observation);
         self.push(observation);
         if progress != ProgressSignal::None {
@@ -375,6 +406,7 @@ impl RecoveryController {
             occurrences,
             last_action: action,
             evidence: evidence.clone(),
+            execution_status,
         };
         self.incident = Some(current.clone());
         if action == RecoveryAction::Stall || self.recoveries >= self.max_recoveries {
@@ -385,6 +417,7 @@ impl RecoveryController {
                 evidence,
                 suggested_user_action:
                     "Inspect the last observable tool error or provide a narrower next step.".into(),
+                execution_status: current.execution_status,
             });
         }
         self.recoveries = self.recoveries.saturating_add(1);
@@ -406,12 +439,6 @@ impl RecoveryController {
         if current.action == ActionClass::NarrationOnly {
             return (same_action >= 1).then_some(IncidentKind::NarrationWithoutAction);
         }
-        if matches!(current.error_class.as_deref(), Some("unavailable_tool")) {
-            return Some(IncidentKind::UnavailableTool);
-        }
-        if matches!(current.error_class.as_deref(), Some("delegation_rejected")) {
-            return Some(IncidentKind::DelegationRejected);
-        }
         if current.error_class.is_some()
             && self.history.iter().any(|o| {
                 o.canonical_tool == current.canonical_tool && o.error_class == current.error_class
@@ -420,11 +447,10 @@ impl RecoveryController {
             return Some(IncidentKind::EquivalentError);
         }
         if same_action >= 1 {
-            if self
-                .history
-                .iter()
-                .any(|o| o.result_fingerprint == current.result_fingerprint)
-            {
+            if self.history.iter().any(|o| {
+                o.action_key() == current.action_key()
+                    && o.result_fingerprint == current.result_fingerprint
+            }) {
                 return Some(IncidentKind::EquivalentResult);
             }
             return Some(IncidentKind::ExactRepeat);
@@ -484,33 +510,6 @@ pub fn result_size_class(value: &str) -> ResultSizeClass {
         _ => ResultSizeClass::Large,
     }
 }
-pub fn classify_error(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with("Error:") {
-        return None;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower.contains("not found")
-        || lower.contains("unknown tool")
-        || lower.contains("unavailable")
-    {
-        return Some("unavailable_tool".into());
-    }
-    if lower.contains("denied") || lower.contains("permission") {
-        return Some("denied".into());
-    }
-    if lower.contains("delegation") && lower.contains("reject") {
-        return Some("delegation_rejected".into());
-    }
-    let class = trimmed
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("unknown")
-        .chars()
-        .take(48)
-        .collect();
-    Some(class)
-}
 fn bounded_evidence(kind: IncidentKind, history: &VecDeque<ProgressObservation>) -> String {
     let tool = history
         .back()
@@ -533,7 +532,9 @@ mod tests {
             argument_fingerprint: Some(args.into()),
             result_fingerprint: Some(result.into()),
             result_size: result_size_class(result),
-            error_class: classify_error(result),
+            error_class: None,
+            execution_status: None,
+            effect_class: None,
             new_evidence: false,
             state_changed: false,
             child_advanced: false,
@@ -566,17 +567,99 @@ mod tests {
     #[test]
     fn changed_result_is_progress() {
         let mut c = RecoveryController::default();
-        c.observe(obs("status", "a", "old"));
-        assert_eq!(
-            c.observe(obs("status", "a", "new")),
-            RecoveryDecision::Progress
-        );
+        let mut first = obs("status", "a", "old");
+        first.effect_class = Some(ToolEffectClass::ReadOnly);
+        c.observe(first);
+        let mut second = obs("status", "a", "new");
+        second.effect_class = Some(ToolEffectClass::ReadOnly);
+        assert_eq!(c.observe(second), RecoveryDecision::Progress);
+    }
+
+    #[test]
+    fn equivalent_result_is_scoped_to_action_identity() {
+        let mut c = RecoveryController::default();
+        c.observe(obs("read", "a", "shared"));
+        c.observe(obs("grep", "b", "shared"));
+        let decision = c.observe(obs("list", "c", "shared"));
+        assert_eq!(decision, RecoveryDecision::Continue);
+    }
+
+    #[test]
+    fn repeated_same_action_and_result_is_equivalent() {
+        let mut c = RecoveryController::default();
+        c.observe(obs("read", "a", "same"));
+        let decision = c.observe(obs("read", "a", "same"));
+        assert!(matches!(
+            decision,
+            RecoveryDecision::Recover {
+                incident: RecoveryIncident {
+                    kind: IncidentKind::EquivalentResult,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn volatile_mutating_output_does_not_reset_recovery() {
+        let mut c = RecoveryController::new(16, 2);
+        for result in ["one", "two", "three", "four"] {
+            let mut observation = obs("write", "a", result);
+            observation.effect_class = Some(ToolEffectClass::NonIdempotent);
+            let decision = c.observe(observation);
+            assert!(!matches!(decision, RecoveryDecision::Progress));
+        }
+        assert!(c.recovery_count() > 0);
+    }
+
+    #[test]
+    fn typed_status_remains_authoritative_through_recovery() {
+        for status in [
+            ToolExecutionStatus::Denied,
+            ToolExecutionStatus::Timeout,
+            ToolExecutionStatus::Cancelled,
+            ToolExecutionStatus::ProtocolError,
+            ToolExecutionStatus::ToolError,
+        ] {
+            let mut c = AutonomyState::default();
+            let mut observation = obs("tool", "a", "permission denied timeout cancelled");
+            observation.execution_status = Some(status);
+            let outcome = ToolExecutionOutcome {
+                status,
+                model_text: "permission denied timeout cancelled".into(),
+            };
+            c.observe_tool_result(&outcome, observation.clone());
+            let decision = c.observe_tool_result(&outcome, observation);
+            assert!(matches!(
+                decision,
+                RecoveryDecision::Recover {
+                    incident: RecoveryIncident {
+                        execution_status: Some(actual),
+                        ..
+                    },
+                    ..
+                } if actual == status
+            ));
+        }
+    }
+
+    #[test]
+    fn successful_failure_like_text_is_not_a_failure() {
+        let mut c = AutonomyState::default();
+        let outcome = ToolExecutionOutcome::success("permission denied; timeout cancelled");
+        let decision = c.observe_tool_result(&outcome, obs("read", "a", &outcome.model_text));
+        assert_eq!(decision, RecoveryDecision::Continue);
     }
     #[test]
     fn cosmetic_argument_error_retry_is_detected() {
         let mut c = RecoveryController::default();
-        c.observe(obs("bash", "command-a", "Error: tool failed for path a"));
-        let decision = c.observe(obs("bash", "command-b", "Error: tool failed for path b"));
+        let mut first = obs("bash", "command-a", "failed");
+        first.error_class = Some("tool_error".into());
+        c.observe(first);
+        let mut second = obs("bash", "command-b", "failed");
+        second.error_class = Some("tool_error".into());
+        let decision = c.observe(second);
         assert!(matches!(
             decision,
             RecoveryDecision::Recover {

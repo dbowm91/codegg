@@ -3861,6 +3861,10 @@ impl AgentLoop {
             self.observe_tool_palette_starvation(&tool_calls);
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
+            // The file-change bus is the observable state transition fact for
+            // mutating tools. A successful mutation with no emitted change is
+            // not progress merely because its display text changed.
+            let observed_file_change = !self.drain_file_change_events().is_empty();
 
             if !tool_calls.is_empty() {
                 self.state.tool_call_count += tool_calls.len();
@@ -3886,6 +3890,10 @@ impl AgentLoop {
                         model_text: String::new(),
                     });
                 let output = &outcome.model_text;
+                let effect_class = self
+                    .tool_registry
+                    .get(&tc.name)
+                    .map(|tool| tool.contract(&tc.name, tool.parameters()).effect_class);
                 let observation = ProgressObservation {
                     action: if tc.name.trim().is_empty() {
                         ActionClass::MalformedCall
@@ -3904,11 +3912,17 @@ impl AgentLoop {
                         crate::agent::progress_recovery::fingerprint(&output).1,
                     ),
                     result_size: crate::agent::progress_recovery::result_size_class(output),
-                    error_class: crate::agent::progress_recovery::classify_error(output),
+                    error_class: None,
+                    execution_status: Some(outcome.status),
+                    effect_class,
                     new_evidence: false,
-                    state_changed: is_file_modifying_tool(&tc.name)
+                    state_changed: observed_file_change
+                        && is_file_modifying_tool(&tc.name)
                         && tool_outcome_is_success(&outcome),
-                    child_advanced: tc.name.as_ref() == "task" && tool_outcome_is_success(&outcome),
+                    // A successful task submission is not itself a child
+                    // transition. Child progress is populated only by a
+                    // concrete child-state observation, when one is exposed.
+                    child_advanced: false,
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
                 };
