@@ -54,7 +54,7 @@ async fn spawn_server_with_seam(
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let state = ServerState {
         pool,
         mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
@@ -589,7 +589,7 @@ async fn spawn_server_with_seam_and_probe(
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let probe = Arc::new(ConnectionTaskProbe::new());
     let state = ServerState {
         pool,
@@ -633,7 +633,7 @@ async fn spawn_server_with_seam_probe_and_observer(
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let probe = Arc::new(ConnectionTaskProbe::new());
     let observer = Arc::new(TransportLifecycleObserver::new());
     let state = ServerState {
@@ -681,7 +681,7 @@ async fn spawn_server_with_probe_registry_and_observer(
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let registry = ConnectionProbeRegistry::new();
     let observer = Arc::new(TransportLifecycleObserver::new());
     let state = ServerState {
@@ -796,7 +796,7 @@ async fn spawn_server_with_transport_instrumentation_and_gate(
     std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
 
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let probe = Arc::new(ConnectionTaskProbe::new());
     let writer_gate = Arc::new(codegg::server::ws::WriterGate::new());
     let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
@@ -4469,7 +4469,7 @@ fn spawn_server_with_per_connection_probe(
     Box::pin(async move {
         std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
         let pool = common::projection_replay::test_pool().await;
-        let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+        let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
         let registry = Arc::new(codegg::server::ws::ConnectionProbeRegistry::new());
         let factory = registry.factory();
         let state = ServerState {
@@ -5142,7 +5142,7 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
         Arc::new(move |_| Arc::clone(&probe))
     };
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let state = ServerState {
         pool,
         mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),
@@ -5241,7 +5241,7 @@ async fn real_core_rollback_harness_asserts_unrelated_client_continuity() {
     let probe_registry = Arc::new(codegg::server::ws::ConnectionProbeRegistry::new());
     let factory = probe_registry.factory();
     let pool = common::projection_replay::test_pool().await;
-    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(Some(pool.clone()), None, None));
     let state = ServerState {
         pool,
         mcp_service: Arc::new(tokio::sync::RwLock::new(McpService::new())),

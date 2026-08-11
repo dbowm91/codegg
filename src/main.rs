@@ -1667,7 +1667,8 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.apply_persisted_preferences();
     }
 
-    // Build subagent pool and scheduler only for local modes.
+    // Build the subagent pool only for local modes. Scheduled work is owned
+    // by the durable scheduler attached to the core daemon.
     if !is_socket_mode {
         let mut subagent_registry = ProviderRegistry::new();
         provider::register_builtin_with_config(&mut subagent_registry, &config);
@@ -1684,14 +1685,6 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         )
         .await;
         app.subagent_pool = Some(Arc::new(subagent_pool));
-        let scheduler = Arc::new(
-            crate::agent::task::BackgroundScheduler::new()
-                .with_pool(pool.clone().expect("pool must exist in non-socket mode")),
-        );
-        if let Some(ref sub_pool) = app.subagent_pool {
-            scheduler.spawn_loop(Arc::clone(sub_pool), std::time::Duration::from_secs(10));
-        }
-        app.bg_scheduler = Some(scheduler);
     }
 
     // Create the shared LSP service early so it can be passed to both the
@@ -1768,7 +1761,6 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         Arc::new(codegg::core::InprocCoreClient::new(
             app.subagent_pool.clone(),
             memory_store.as_ref().cloned(),
-            app.bg_scheduler.clone(),
             pool.clone(),
             config.clone(),
             lsp_service.clone(),
@@ -2196,20 +2188,12 @@ async fn run_daemon(endpoint: Option<String>) {
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler =
-        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(
-        Arc::clone(&subagent_pool),
-        std::time::Duration::from_secs(10),
-    );
-
     let daemon_id = format!("codegg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
     let daemon = Arc::new(codegg::core::daemon::CoreDaemon::with_deps_and_identity(
         codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
             pool,
             Some(subagent_pool),
             Some(memory_store),
-            Some(scheduler),
         ),
         daemon_id.clone(),
         guard.generation.clone(),
@@ -2325,18 +2309,10 @@ async fn run_core_stdio() -> Result<(), AppError> {
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler =
-        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(
-        Arc::clone(&subagent_pool),
-        std::time::Duration::from_secs(10),
-    );
-
     let deps = codegg::core::runtime_deps::CoreRuntimeDeps::with_jobs(
         pool.clone(),
         Some(subagent_pool),
         Some(memory_store),
-        Some(scheduler),
     );
     let core = codegg::core::InprocCoreClient::with_deps(deps, config);
     core.initialize_recovery().await?;
@@ -2443,18 +2419,10 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
     )
     .await;
     let subagent_pool = Arc::new(subagent_pool);
-    let scheduler =
-        Arc::new(crate::agent::task::BackgroundScheduler::new().with_pool(pool.clone()));
-    scheduler.spawn_loop(
-        Arc::clone(&subagent_pool),
-        std::time::Duration::from_secs(10),
-    );
-
     let daemon = Arc::new(codegg::core::daemon::CoreDaemon::new(
         Some(pool),
         Some(subagent_pool),
         Some(memory_store),
-        Some(scheduler),
     ));
 
     daemon.start_event_bridge();

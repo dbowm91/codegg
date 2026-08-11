@@ -204,7 +204,7 @@ async fn core_daemon_workspace_binding_rejects_unbound_turn_submit() {
     // should be rejected with session_unbound.
     std::env::set_var("OPENAI_API_KEY", "test-key");
     let pool = in_memory_pool().await;
-    let deps = codegg::core::runtime_deps::CoreRuntimeDeps::new(Some(pool), None, None, None);
+    let deps = codegg::core::runtime_deps::CoreRuntimeDeps::new(Some(pool), None, None);
     let daemon = codegg::core::daemon::CoreDaemon::with_deps(deps);
     daemon.hydrate_workspace_registry().await.unwrap();
 

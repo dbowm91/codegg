@@ -74,17 +74,12 @@ impl InprocCoreClient {
     pub fn new(
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
-        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
         pool: Option<sqlx::SqlitePool>,
         config: crate::config::schema::Config,
         lsp_service: Option<Arc<crate::lsp::service::LspService>>,
     ) -> Self {
-        let mut deps = runtime_deps::CoreRuntimeDeps::new(
-            pool.clone(),
-            subagent_pool,
-            memory_store,
-            bg_scheduler,
-        );
+        let mut deps =
+            runtime_deps::CoreRuntimeDeps::new(pool.clone(), subagent_pool, memory_store);
         if let Some(svc) = lsp_service {
             deps = deps.with_lsp_service(svc);
         }
@@ -639,7 +634,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn session_create_returns_session() {
         let pool = test_pool().await;
-        let client = InprocCoreClient::new(None, None, None, Some(pool), test_config(), None);
+        let client = InprocCoreClient::new(None, None, Some(pool), test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {
@@ -660,8 +655,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn session_load_existing() {
         let pool = test_pool().await;
-        let client =
-            InprocCoreClient::new(None, None, None, Some(pool.clone()), test_config(), None);
+        let client = InprocCoreClient::new(None, None, Some(pool.clone()), test_config(), None);
 
         // Create a session first
         let create_req = new_request(
@@ -695,7 +689,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn session_load_not_found() {
         let pool = test_pool().await;
-        let client = InprocCoreClient::new(None, None, None, Some(pool), test_config(), None);
+        let client = InprocCoreClient::new(None, None, Some(pool), test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::SessionLoad {
@@ -712,8 +706,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn session_messages_load_empty() {
         let pool = test_pool().await;
-        let client =
-            InprocCoreClient::new(None, None, None, Some(pool.clone()), test_config(), None);
+        let client = InprocCoreClient::new(None, None, Some(pool.clone()), test_config(), None);
 
         // Create a session
         let create_req = new_request(
@@ -752,7 +745,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn permission_respond_no_pending() {
-        let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
+        let client = InprocCoreClient::new(None, None, None, test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::PermissionRespond {
@@ -769,7 +762,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn permission_respond_invalid_choice() {
-        let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
+        let client = InprocCoreClient::new(None, None, None, test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::PermissionRespond {
@@ -786,7 +779,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn question_respond_no_pending() {
-        let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
+        let client = InprocCoreClient::new(None, None, None, test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::QuestionRespond {
@@ -803,7 +796,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn missing_pool_returns_error() {
-        let client = InprocCoreClient::new(None, None, None, None, test_config(), None);
+        let client = InprocCoreClient::new(None, None, None, test_config(), None);
         let req = new_request(
             "req-1".into(),
             CoreRequest::SessionCreate {

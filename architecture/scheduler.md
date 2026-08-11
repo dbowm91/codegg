@@ -113,7 +113,7 @@ and JobWait rather than constructing TestRunner locally.
 | server CoreRequest::JobSubmit | typed caller kind | daemon submission facade | Scheduler submission |
 | scheduler subagent adapter | Subagent | SubAgentPool | Scheduler admission; waits for worker result |
 | src/job_dispatcher.rs | Subagent | SubAgentPool | Definition retained; no daemon production wiring |
-| legacy BackgroundScheduler | Subagent | local pool | Standalone compatibility only |
+| durable ScheduleStore | Subagent | scheduler admission | Sole production scheduling owner |
 | typed Git services / native Git read fallback | GitRead/mutation | egggit/Git service | Domain-specific compatibility path; migration remains |
 | interactive terminal/editor/formatter helpers | explicit user/local action | local process API | Not daemon heavy-job submission yet |
 

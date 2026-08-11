@@ -550,7 +550,7 @@ async fn wait_for_client_count(daemon: &CoreDaemon, expected: usize) {
 /// listener cancellation path joins its handler.
 #[tokio::test]
 async fn socket_connection_cleanup_is_idempotent_across_eof_and_shutdown() {
-    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(None, None, None));
     let (socket_path, _socket_dir, server_handle, shutdown) =
         spawn_daemon_with_shutdown(Arc::clone(&daemon)).await;
 
@@ -593,7 +593,7 @@ async fn projection_daemon() -> Arc<CoreDaemon> {
     crate::session::schema::migrate(&pool)
         .await
         .expect("projection schema");
-    Arc::new(CoreDaemon::new(Some(pool), None, None, None))
+    Arc::new(CoreDaemon::new(Some(pool), None, None))
 }
 
 async fn publish_projection_event(daemon: &CoreDaemon, project_id: &str, session_id: &str) {
@@ -1186,7 +1186,7 @@ async fn socket_staged_failure_matrix_rolls_back_every_material_class() {
 /// to `s_B`; an event published for `s_A` must reach A and not B.
 #[tokio::test]
 async fn two_socket_session_filter_isolation() {
-    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(None, None, None));
     let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
 
     // Connect client A and B.
@@ -1277,7 +1277,7 @@ async fn two_socket_session_filter_isolation() {
 /// this client.
 #[tokio::test]
 async fn global_only_subscription_does_not_receive_session_events() {
-    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(None, None, None));
     let (socket_path_str, _socket_dir, server_handle) = spawn_daemon(Arc::clone(&daemon)).await;
 
     let stream = UnixStream::connect(&socket_path_str)
@@ -1362,7 +1362,7 @@ async fn global_only_subscription_does_not_receive_session_events() {
 /// s2 event.
 #[tokio::test]
 async fn resume_replay_uses_same_filter_as_live_forwarding() {
-    let daemon = Arc::new(CoreDaemon::new(None, None, None, None));
+    let daemon = Arc::new(CoreDaemon::new(None, None, None));
 
     // Publish events before any client connects so the Subscribe
     // frame's replay returns them.

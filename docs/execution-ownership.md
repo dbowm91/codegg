@@ -44,7 +44,6 @@ file under `src/` and `crates/` for canonical spawn patterns:
 - `std::process::Command::new(...)`
 - `JobStore::create_job(...)`
 - `.spawner().send(...)` / `.spawner().send_and_wait(...)`
-- `BackgroundScheduler::...spawn_loop(...)`
 - `test_runner::runner::resolve_and_run_test`
 - `dispatch_to_test_runner`
 - `hardened_git_command`

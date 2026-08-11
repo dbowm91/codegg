@@ -297,7 +297,7 @@ pub enum MaterializerError {
 
 impl JobTemplate {
     /// Convenience: build a template for a recurring prompt-driven
-    /// subagent. Used by the legacy `BackgroundScheduler` adapter to
+    /// subagent. Used by the legacy background-task migration to
     /// migrate to the durable model without changing callers.
     pub fn for_subagent(
         kind: JobKind,

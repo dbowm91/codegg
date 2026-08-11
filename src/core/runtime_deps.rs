@@ -24,23 +24,17 @@ fn default_connection_manager(
 
 /// Transitional container for concrete agent runtime dependencies.
 ///
-/// These fields are still needed for task scheduling and subagent spawning,
-/// but will eventually be replaced by the turn runtime abstraction.
-/// Grouped here to make their legacy status explicit.
+/// Subagent spawning remains here for legacy construction paths; scheduled
+/// work is owned exclusively by the durable scheduler stores.
 #[derive(Clone, Default)]
 pub struct LegacyAgentRuntimeDeps {
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
-    /// Compatibility switch for legacy `TaskSchedule` / `TaskDelete` /
-    /// `TaskList` requests. It is enabled only by the legacy convenience
-    /// constructor; production SQLite daemons use the durable schedule API.
-    pub bg_scheduler_compat_enabled: bool,
 }
 
 /// Bundles optional runtime dependencies for [`CoreDaemon`].
 ///
 /// This localizes concrete agent/tool types so `CoreDaemon` does not
-/// need to import `SubAgentPool`, `BackgroundScheduler`, etc. directly.
+/// need to import `SubAgentPool` directly.
 pub struct CoreRuntimeDeps {
     pub pool: Option<sqlx::SqlitePool>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
@@ -119,7 +113,6 @@ impl CoreRuntimeDeps {
         pool: Option<sqlx::SqlitePool>,
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
-        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
         // Use in-memory stores for the legacy convenience constructor.
         let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
@@ -128,11 +121,7 @@ impl CoreRuntimeDeps {
         Self {
             pool,
             memory_store,
-            legacy_agent: LegacyAgentRuntimeDeps {
-                subagent_pool,
-                bg_scheduler,
-                bg_scheduler_compat_enabled: true,
-            },
+            legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -183,7 +172,6 @@ impl CoreRuntimeDeps {
         pool: sqlx::SqlitePool,
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
-        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
         let job_store: Arc<dyn JobStore> = Arc::new(SqliteJobStore::new(pool.clone()));
         let schedule_store: Arc<dyn ScheduleStore> = Arc::new(SqliteScheduleStore::new(
@@ -194,11 +182,7 @@ impl CoreRuntimeDeps {
         Self {
             pool: Some(pool),
             memory_store,
-            legacy_agent: LegacyAgentRuntimeDeps {
-                subagent_pool,
-                bg_scheduler,
-                bg_scheduler_compat_enabled: false,
-            },
+            legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,

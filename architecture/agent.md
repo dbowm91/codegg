@@ -18,7 +18,6 @@ src/agent/
 ├── teams.rs        # TeamManager, SharedTaskList, team tools (team_create, send_message, etc.)
 ├── mention.rs      # @mention parsing and agent filtering
 ├── prompt.rs       # Canonical prompt compiler and instruction loading
-├── task.rs         # BackgroundTask, BackgroundScheduler
 └── prompts/        # Provider-specific system prompts
     ├── anthropic.txt
     ├── beast.txt
@@ -1092,46 +1091,13 @@ research agent denies shell, filesystem mutation, terminal, and commit tools.
 
 ---
 
-## 10. Background Tasks (`task.rs`)
+## 10. Background scheduling
 
-### BackgroundTask
-
-```rust
-pub struct BackgroundTask {
-    pub id: String,
-    pub interval: Duration,
-    pub message: String,
-    pub last_run: Option<i64>,
-    pub created_at: i64,
-    pub session_id: String,
-    pub db_id: Option<i64>,
-}
-```
-
-- `is_expired()`: Created > 3 days ago
-- `should_fire()`: Since last_run >= interval
-
-### BackgroundScheduler
-
-Manages periodic task execution:
-
-```rust
-pub struct BackgroundScheduler {
-    tasks: Arc<RwLock<Vec<BackgroundTask>>>,
-    shutdown_tx: broadcast::Sender<()>,
-    callback: Option<TaskCallback>,
-    pool: Option<SqlitePool>,
-}
-```
-
-- `add()`: Add task (optionally persist to DB)
-- `remove()`: Remove task
-- `tick()`: Return tasks that should fire now
-- `spawn_loop()`: Start background loop using SubAgentPool
-
-### Duration Parsing
-
-Supports: `30s`, `5m`, `5min`, `1h`, `1d`
+Recurring work is represented by durable `ScheduleRecord` values and is
+claimed and admitted by the scheduler. The former in-memory
+`BackgroundScheduler` and its UUID/numeric task-id bridge are deleted. The
+legacy storage migration retains duration parsing only while importing old
+`task` rows into `ScheduleStore`.
 
 ---
 

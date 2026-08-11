@@ -116,11 +116,6 @@ owner = "definition_or_adapter"
 reason = "SubAgentJobDispatcher is legacy trait; superseded by SubagentJobExecutor"
 
 [[site]]
-path = "src/agent/task.rs"
-owner = "definition_or_adapter"
-reason = "BackgroundScheduler is legacy definition; superseded by durable schedules"
-
-[[site]]
 path = "src/background_task_migration.rs"
 owner = "definition_or_adapter"
 reason = "Migrates legacy background tasks to ScheduleStore at startup"
@@ -132,7 +127,7 @@ reason = "Migrates legacy background tasks to ScheduleStore at startup"
 [[site]]
 path = "src/main.rs"
 owner = "standalone_compat"
-reason = "SubAgentPool and BackgroundScheduler wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc"
+reason = "SubAgentPool wiring for --standalone, --stdio, daemon bootstrap, deprecated --core-transport inproc"
 
 [[site]]
 path = "src/core/daemon.rs"

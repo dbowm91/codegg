@@ -23,7 +23,6 @@ pub mod prompt;
 pub mod registry;
 pub mod router;
 pub mod specialized_runtime;
-pub mod task;
 pub mod task_tool_runtime;
 pub mod team;
 pub mod tool_program_recovery;

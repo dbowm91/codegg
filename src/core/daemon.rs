@@ -1112,14 +1112,8 @@ impl CoreDaemon {
         pool: Option<sqlx::SqlitePool>,
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
         memory_store: Option<Arc<crate::memory::MemoryStore>>,
-        bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     ) -> Self {
-        Self::with_deps(CoreRuntimeDeps::new(
-            pool,
-            subagent_pool,
-            memory_store,
-            bg_scheduler,
-        ))
+        Self::with_deps(CoreRuntimeDeps::new(pool, subagent_pool, memory_store))
     }
 
     pub fn subscribe(
@@ -3232,95 +3226,27 @@ impl CoreDaemon {
                     data: serde_json::json!({ "models": model_ids }),
                 })
             }
-            CoreRequest::TaskList => {
-                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
-                    return Ok(CoreResponse::Error {
-                        code: "legacy_task_compatibility_disabled".to_string(),
-                        message: "use durable schedule/job protocol in daemon mode".to_string(),
-                    });
-                }
-                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
-                    return Ok(CoreResponse::Error {
-                        code: "missing_scheduler".to_string(),
-                        message: "Core client missing background scheduler".to_string(),
-                    });
-                };
-                let tasks = scheduler.list().await;
-                Ok(CoreResponse::Json {
-                    data: serde_json::json!({
-                        "tasks": tasks.iter().map(|t| serde_json::json!({
-                            "id": t.id,
-                            "message": t.message,
-                            "interval_secs": t.interval.as_secs(),
-                            "session_id": t.session_id,
-                            "created_at": t.created_at,
-                            "last_run": t.last_run,
-                        })).collect::<Vec<_>>()
-                    }),
-                })
-            }
+            CoreRequest::TaskList => Ok(CoreResponse::Error {
+                code: "legacy_task_compatibility_disabled".to_string(),
+                message: "use durable ScheduleList protocol".to_string(),
+            }),
             CoreRequest::TaskDelete { id } => {
-                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
-                    return Ok(CoreResponse::Error {
-                        code: "legacy_task_compatibility_disabled".to_string(),
-                        message: "use durable schedule/job protocol in daemon mode".to_string(),
-                    });
-                }
-                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
-                    return Ok(CoreResponse::Error {
-                        code: "missing_scheduler".to_string(),
-                        message: "Core client missing background scheduler".to_string(),
-                    });
-                };
-                let removed = scheduler.remove(&id.to_string()).await;
-                if removed {
-                    Ok(CoreResponse::Ack)
-                } else {
-                    Ok(CoreResponse::Error {
-                        code: "task_not_found".to_string(),
-                        message: format!("Task not found: {}", id),
-                    })
-                }
+                let _ = id;
+                Ok(CoreResponse::Error {
+                    code: "legacy_task_compatibility_disabled".to_string(),
+                    message: "use durable ScheduleDelete protocol".to_string(),
+                })
             }
             CoreRequest::TaskSchedule {
                 session_id,
                 interval_secs,
                 message,
             } => {
-                if !self.deps.legacy_agent.bg_scheduler_compat_enabled {
-                    return Ok(CoreResponse::Error {
-                        code: "legacy_task_compatibility_disabled".to_string(),
-                        message: "use durable schedule/job protocol in daemon mode".to_string(),
-                    });
-                }
-                let Some(scheduler) = self.deps.legacy_agent.bg_scheduler.clone() else {
-                    return Ok(CoreResponse::Error {
-                        code: "missing_scheduler".to_string(),
-                        message: "Core client missing background scheduler".to_string(),
-                    });
-                };
-                let task = crate::agent::task::BackgroundTask::new(
-                    session_id.clone(),
-                    std::time::Duration::from_secs(interval_secs),
-                    message.clone(),
-                );
-                let task_id = task.id.clone();
-                match scheduler.add(task).await {
-                    Ok(_) => {
-                        // Legacy TaskSchedule is retained for standalone
-                        // compatibility. It records the task only; daemon
-                        // production work must arrive through ScheduleStore
-                        // and JobSubmissionService rather than dispatching
-                        // an immediate subagent here.
-                        Ok(CoreResponse::Json {
-                            data: serde_json::json!({ "task_id": task_id, "interval_secs": interval_secs }),
-                        })
-                    }
-                    Err(e) => Ok(CoreResponse::Error {
-                        code: "task_schedule_failed".to_string(),
-                        message: e.to_string(),
-                    }),
-                }
+                let _ = (session_id, interval_secs, message);
+                Ok(CoreResponse::Error {
+                    code: "legacy_task_compatibility_disabled".to_string(),
+                    message: "use durable ScheduleCreate protocol".to_string(),
+                })
             }
             // ── Phase 4: Durable Jobs and Schedules ──────────────────────
             CoreRequest::JobSubmit { spec } => {
@@ -6362,7 +6288,7 @@ mod tests {
 
     async fn test_daemon() -> CoreDaemon {
         let pool = in_memory_pool().await;
-        CoreDaemon::new(Some(pool), None, None, None)
+        CoreDaemon::new(Some(pool), None, None)
     }
 
     async fn seed_test_context(daemon: &CoreDaemon, root: &std::path::Path) -> (String, String) {
@@ -6554,7 +6480,7 @@ mod tests {
         // have no record of seq 1, we use a no-pool daemon (so the
         // DB layer is bypassed) and a small ring, then evict the
         // only event by overflowing the ring.
-        let daemon = CoreDaemon::new(None, None, None, None);
+        let daemon = CoreDaemon::new(None, None, None);
         // No pool is configured, so the event log is in-memory only
         // and the ring is the source of truth.
         // Publish a few events to a small ring by setting capacity
@@ -6717,7 +6643,7 @@ mod tests {
         // persisted range, so the resync path becomes unreachable
         // for ordinary replay requests. With no pool, the ring is
         // the source of truth and eviction makes old seqs unsatisfiable.
-        let daemon = CoreDaemon::new(None, None, None, None);
+        let daemon = CoreDaemon::new(None, None, None);
         // Publish enough events to overflow the default ring (4096).
         for _ in 0..5000 {
             daemon
@@ -7383,7 +7309,7 @@ mod tests {
 
         let fake = Arc::new(FakeTurnRuntime::new());
         let pool = in_memory_pool().await;
-        let deps = CoreRuntimeDeps::new(Some(pool), None, None, None)
+        let deps = CoreRuntimeDeps::new(Some(pool), None, None)
             .with_turn_runtime(Arc::clone(&fake) as Arc<dyn TurnRuntime>);
         let daemon = CoreDaemon::with_deps(deps);
         daemon.hydrate_workspace_registry().await.unwrap();

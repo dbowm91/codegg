@@ -905,7 +905,6 @@ pub struct App {
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub theme_registry: Arc<crate::theme::ThemeRegistry>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-    pub bg_scheduler: Option<Arc<crate::agent::task::BackgroundScheduler>>,
     pub undo_session_id: Option<String>,
     pub streaming_active: bool,
     pub undo_until: Option<Instant>,
@@ -1331,7 +1330,6 @@ impl App {
             theme_registry,
             preferences: None,
             subagent_pool: None,
-            bg_scheduler: None,
             undo_session_id: None,
             undo_until: None,
             notification_manager: None,
@@ -1777,7 +1775,6 @@ impl App {
             theme_registry: Arc::new(crate::theme::ThemeRegistry::load_builtins()),
             preferences: None,
             subagent_pool: None,
-            bg_scheduler: None,
             undo_session_id: None,
             undo_until: None,
             notification_manager: None,
@@ -5888,7 +5885,9 @@ impl App {
                     self.messages_state.toasts.warning(
                         "Usage: /loop <interval> \"<message>\" (e.g. /loop 5m \"check status\")",
                     );
-                } else if let Some(duration) = crate::agent::task::parse_duration(parts[0]) {
+                } else if let Some(duration) =
+                    crate::background_task_migration::parse_duration(parts[0])
+                {
                     let message = parts[1].trim_matches('"').to_string();
                     if let Some(ref tx) = self.tui_cmd_tx {
                         let _ = tx.try_send(TuiCommand::TaskSchedule {
@@ -12976,7 +12975,6 @@ mod remote_core_loader_tests {
         let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
             None,
             None,
-            None,
             Some(pool),
             crate::config::schema::Config::default(),
             None,
@@ -13015,7 +13013,6 @@ mod remote_core_loader_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn load_tasks_via_core_returns_tasks_array() {
         use sqlx::sqlite::SqlitePoolOptions;
-        use std::sync::Arc as StdArc;
         use std::time::Duration;
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -13025,11 +13022,9 @@ mod remote_core_loader_tests {
             .unwrap();
         crate::session::schema::migrate(&pool).await.unwrap();
 
-        let scheduler = StdArc::new(crate::agent::task::BackgroundScheduler::new());
         let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
             None,
             None,
-            Some(scheduler),
             Some(pool),
             crate::config::schema::Config::default(),
             None,
@@ -13087,7 +13082,6 @@ mod remote_core_loader_tests {
             .await
             .unwrap();
         Arc::new(InprocCoreClient::new(
-            None,
             None,
             None,
             Some(pool),

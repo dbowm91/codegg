@@ -1230,7 +1230,6 @@ pub struct App {
     pub notification_manager: Option<NotificationManager>,
     pub undo_session_id: Option<String>,
     pub undo_until: Option<Instant>,
-    pub bg_scheduler: Option<Arc<BackgroundScheduler>>,
     pub config_watcher: Option<ConfigWatcher>,
     pub core_client: Option<Arc<dyn CoreClient>>,
     pub active_goal: Option<GoalSnapshot>,  // Active goal for status bar

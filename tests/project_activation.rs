@@ -51,7 +51,7 @@ async fn seed(daemon: &CoreDaemon, root: &TempDir, name: &str) -> (String, Strin
 
 #[tokio::test(flavor = "current_thread")]
 async fn catalog_listing_is_probe_free_and_activation_is_lazy() {
-    let daemon = CoreDaemon::new(Some(pool().await), None, None, None);
+    let daemon = CoreDaemon::new(Some(pool().await), None, None);
     let root_a = tempfile::tempdir().unwrap();
     let root_b = tempfile::tempdir().unwrap();
     let _ = seed(&daemon, &root_a, "A").await;
@@ -68,7 +68,7 @@ async fn catalog_listing_is_probe_free_and_activation_is_lazy() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn activation_refreshes_assets_and_is_idempotent_per_owner() {
-    let daemon = CoreDaemon::new(Some(pool().await), None, None, None);
+    let daemon = CoreDaemon::new(Some(pool().await), None, None);
     let root = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed(&daemon, &root, "single").await;
 
@@ -120,7 +120,7 @@ async fn activation_refreshes_assets_and_is_idempotent_per_owner() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_same_owner_activation_coalesces_scope_and_bundle() {
-    let daemon = std::sync::Arc::new(CoreDaemon::new(Some(pool().await), None, None, None));
+    let daemon = std::sync::Arc::new(CoreDaemon::new(Some(pool().await), None, None));
     let root = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed(&daemon, &root, "contention").await;
     let mut tasks = Vec::new();
@@ -152,7 +152,7 @@ async fn concurrent_same_owner_activation_coalesces_scope_and_bundle() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn activation_rejects_refresh_without_usable_generation_and_releases_lease() {
-    let daemon = CoreDaemon::new(Some(pool().await), None, None, None);
+    let daemon = CoreDaemon::new(Some(pool().await), None, None);
     let root = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed(&daemon, &root, "invalid-refresh").await;
     let missing_root = root.path().join("missing-after-selection");
@@ -181,7 +181,7 @@ async fn activation_rejects_refresh_without_usable_generation_and_releases_lease
 
 #[tokio::test(flavor = "current_thread")]
 async fn two_project_activation_scopes_are_isolated() {
-    let daemon = CoreDaemon::new(Some(pool().await), None, None, None);
+    let daemon = CoreDaemon::new(Some(pool().await), None, None);
     let root_a = tempfile::tempdir().unwrap();
     let root_b = tempfile::tempdir().unwrap();
     let (project_a, workspace_a) = seed(&daemon, &root_a, "A").await;
@@ -222,7 +222,7 @@ async fn two_project_activation_scopes_are_isolated() {
 #[tokio::test(flavor = "current_thread")]
 async fn restart_hydrates_catalog_and_asset_metadata_without_activation() {
     let shared_pool = pool().await;
-    let daemon = CoreDaemon::new(Some(shared_pool.clone()), None, None, None);
+    let daemon = CoreDaemon::new(Some(shared_pool.clone()), None, None);
     let root = tempfile::tempdir().unwrap();
     let (project_id, workspace_id) = seed(&daemon, &root, "restart").await;
     let activation = daemon
@@ -232,7 +232,7 @@ async fn restart_hydrates_catalog_and_asset_metadata_without_activation() {
     let generation = activation.refresh.generation.unwrap();
     drop(activation);
 
-    let restarted = CoreDaemon::new(Some(shared_pool), None, None, None);
+    let restarted = CoreDaemon::new(Some(shared_pool), None, None);
     restarted.hydrate_workspace_registry().await.unwrap();
     assert_eq!(restarted.project_activation.active_count(), 0);
     assert_eq!(restarted.workspace_services.active_count(), 0);

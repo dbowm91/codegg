@@ -8,7 +8,30 @@ use codegg_core::jobs::schedule::{JobTemplate, MissedRunPolicy, OverlapPolicy, S
 use codegg_core::jobs::{JobKind, ScheduleId, ScheduleKind, ScheduleStore};
 use codegg_core::workspace::WorkspaceId;
 
-use crate::agent::task::parse_duration;
+pub fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_suffix('s') {
+        rest.parse::<u64>().ok().map(Duration::from_secs)
+    } else if let Some(rest) = s.strip_suffix("min") {
+        rest.parse::<u64>()
+            .ok()
+            .map(|n| Duration::from_secs(n * 60))
+    } else if let Some(rest) = s.strip_suffix('m') {
+        rest.parse::<u64>()
+            .ok()
+            .map(|n| Duration::from_secs(n * 60))
+    } else if let Some(rest) = s.strip_suffix('h') {
+        rest.parse::<u64>()
+            .ok()
+            .map(|n| Duration::from_secs(n * 3600))
+    } else if let Some(rest) = s.strip_suffix('d') {
+        rest.parse::<u64>()
+            .ok()
+            .map(|n| Duration::from_secs(n * 86400))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
