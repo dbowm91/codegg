@@ -281,7 +281,7 @@ Replace overlapping narration/bootstrap/continue/missing-tool repair paths with 
 
 ### M006 — Prompt compilation and control-policy consolidation
 
-Status: closing; M005 is closed and implementation is landed pending closure evidence.
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/006-prompt-compilation-and-control-policy-consolidation.md`
 

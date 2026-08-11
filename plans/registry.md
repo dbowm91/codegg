@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | closing | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M006 closure review; M007-M008 ready | M001-M005 closed; M009 requires M001-M008. |
+| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M007-M008 ready | M001-M006 closed; M009 requires M001-M008. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -38,9 +38,7 @@ Canonical direction remains in:
 
 ## Active closure work
 
-| Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closing | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | verification and evidence review |
-
-M009 is blocked until M001-M008 have accepted closure records.
+No closure pass is active for the new agent-runtime correctness workstream. M009 is blocked until M001-M008 have accepted closure records.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
@@ -89,6 +87,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | `4cd004d` |
 | Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md` | `493fd59` |
 | Agent runtime correctness, autonomy, and simplification | M005 — recovery and autonomy state machine | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md` | `ddb495a` |
 | Agent runtime correctness, autonomy, and simplification | M003 — workspace-bound AgentLoop construction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/003-status.md` | `8c2638db` |
