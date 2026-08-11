@@ -92,6 +92,7 @@ Run these after changing execution surfaces, agent definitions, or codegg-core:
 
 ```bash
 python3 scripts/check-core-boundary.sh              # codegg-core boundary enforcement
+python3 scripts/check_sandbox_contract.py           # Python sandbox contract guard
 python3 scripts/check_daemon_cwd_usage.py           # workspace-bound daemon path guard
 python3 scripts/check_project_agent_pwd_inference.py # project-agent PWD-inference guard (Runtime Assets M2)
 python3 scripts/check_discovery_invariants.py       # bounded project-discovery safety guard
@@ -308,7 +309,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **41 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **40 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops, not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
