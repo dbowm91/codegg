@@ -6326,6 +6326,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_task_requests_are_explicitly_rejected() {
+        let daemon = test_daemon().await;
+
+        for request in [
+            CoreRequest::TaskList,
+            CoreRequest::TaskDelete { id: 1 },
+            CoreRequest::TaskSchedule {
+                session_id: "session".to_string(),
+                interval_secs: 60,
+                message: "message".to_string(),
+            },
+        ] {
+            let response = daemon
+                .handle_request(crate::core::new_request("legacy-task".into(), request))
+                .await
+                .unwrap();
+            assert!(matches!(
+                response,
+                CoreResponse::Error {
+                    code,
+                    ..
+                } if code == "legacy_task_compatibility_disabled"
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
         let (project_id, workspace_id) =
