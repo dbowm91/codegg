@@ -61,9 +61,148 @@ pub enum RecoveryAction {
     Nudge,
     Correct,
     RestoreBasePalette,
-    ConstrainParallelism,
     Replan,
     Stall,
+}
+
+/// The normalized status of a tool execution as seen by recovery policy.
+/// Rendered tool text remains the model-facing contract; this compact status
+/// prevents recovery from having to infer authority and cancellation from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionStatus {
+    Success,
+    Denied,
+    Timeout,
+    Cancelled,
+    ToolError,
+    ProtocolError,
+}
+
+pub fn tool_execution_status(rendered: &str) -> ToolExecutionStatus {
+    let lower = rendered.to_ascii_lowercase();
+    if lower.contains("cancel") {
+        ToolExecutionStatus::Cancelled
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        ToolExecutionStatus::Timeout
+    } else if lower.contains("denied") || lower.contains("permission") {
+        ToolExecutionStatus::Denied
+    } else if rendered.starts_with("Error:") {
+        ToolExecutionStatus::ToolError
+    } else {
+        ToolExecutionStatus::Success
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolExecutionOutcome {
+    pub status: ToolExecutionStatus,
+    pub model_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutonomyPhase {
+    Normal,
+    AdapterRepair,
+    ContinueOrReplan,
+    Stall,
+}
+
+/// Turn-local owner of autonomous recovery transitions.  Provider transport
+/// retries intentionally remain outside this type.
+#[derive(Debug, Clone)]
+pub struct AutonomyState {
+    recovery: RecoveryController,
+    phase: AutonomyPhase,
+    transitions: u8,
+    adapter_repairs: u8,
+    post_tool_continuations: u8,
+    bootstrap_used: bool,
+}
+
+impl Default for AutonomyState {
+    fn default() -> Self {
+        Self {
+            recovery: RecoveryController::default(),
+            phase: AutonomyPhase::Normal,
+            transitions: 0,
+            adapter_repairs: 0,
+            post_tool_continuations: 0,
+            bootstrap_used: false,
+        }
+    }
+}
+
+impl AutonomyState {
+    pub const MAX_TRANSITIONS: u8 = 4;
+    pub const MAX_POST_TOOL_CONTINUATIONS: u8 = 1;
+
+    pub fn phase(&self) -> AutonomyPhase {
+        self.phase
+    }
+    pub fn bootstrap_used(&self) -> bool {
+        self.bootstrap_used
+    }
+    pub fn mark_bootstrap_used(&mut self) {
+        self.bootstrap_used = true;
+    }
+    pub fn reset_after_progress(&mut self) {
+        self.phase = AutonomyPhase::Normal;
+        self.transitions = 0;
+        self.post_tool_continuations = 0;
+    }
+    pub fn adapter_repair_allowed(&mut self) -> bool {
+        if self.adapter_repairs >= 1 {
+            return false;
+        }
+        self.adapter_repairs += 1;
+        self.phase = AutonomyPhase::AdapterRepair;
+        true
+    }
+    pub fn continuation_allowed(&mut self) -> bool {
+        if self.post_tool_continuations >= Self::MAX_POST_TOOL_CONTINUATIONS
+            || self.transitions >= Self::MAX_TRANSITIONS
+        {
+            return false;
+        }
+        self.post_tool_continuations += 1;
+        self.transitions += 1;
+        self.phase = AutonomyPhase::ContinueOrReplan;
+        true
+    }
+    pub fn observe_tool(&mut self, observation: ProgressObservation) -> RecoveryDecision {
+        let decision = self.recovery.observe(observation);
+        match decision {
+            RecoveryDecision::Progress => self.reset_after_progress(),
+            RecoveryDecision::Recover { .. } => {
+                self.transitions = self.transitions.saturating_add(1);
+                self.phase = AutonomyPhase::ContinueOrReplan;
+                if self.transitions > Self::MAX_TRANSITIONS {
+                    self.phase = AutonomyPhase::Stall;
+                    return RecoveryDecision::Stalled(StalledReport {
+                        last_progress: ProgressSignal::None,
+                        incident: IncidentKind::NoProgress,
+                        attempted_recoveries: self.transitions,
+                        evidence: "autonomy transition bound exceeded".into(),
+                        suggested_user_action: "Inspect the last observable tool result and provide a narrower next step.".into(),
+                    });
+                }
+            }
+            RecoveryDecision::Stalled(_) => self.phase = AutonomyPhase::Stall,
+            RecoveryDecision::Continue => {}
+        }
+        decision
+    }
+
+    pub fn observe_tool_result(
+        &mut self,
+        status: ToolExecutionStatus,
+        mut observation: ProgressObservation,
+    ) -> RecoveryDecision {
+        if matches!(status, ToolExecutionStatus::Denied) {
+            observation.error_class = Some("denied".into());
+        }
+        self.observe_tool(observation)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +493,9 @@ pub fn classify_error(value: &str) -> Option<String> {
     {
         return Some("unavailable_tool".into());
     }
+    if lower.contains("denied") || lower.contains("permission") {
+        return Some("denied".into());
+    }
     if lower.contains("delegation") && lower.contains("reject") {
         return Some("delegation_rejected".into());
     }
@@ -477,5 +619,33 @@ mod tests {
             c.observe(obs("read", &n.to_string(), "x"));
         }
         assert_eq!(c.history_len(), 2);
+    }
+
+    #[test]
+    fn autonomy_allows_one_post_tool_continuation() {
+        let mut state = AutonomyState::default();
+        assert!(state.continuation_allowed());
+        assert!(!state.continuation_allowed());
+    }
+
+    #[test]
+    fn autonomy_bootstrap_is_explicitly_one_shot() {
+        let mut state = AutonomyState::default();
+        assert!(!state.bootstrap_used());
+        state.mark_bootstrap_used();
+        assert!(state.bootstrap_used());
+    }
+
+    #[test]
+    fn typed_status_distinguishes_denial_and_timeout() {
+        assert_eq!(
+            tool_execution_status("Error: permission denied"),
+            ToolExecutionStatus::Denied
+        );
+        assert_eq!(
+            tool_execution_status("Error: command timed out"),
+            ToolExecutionStatus::Timeout
+        );
+        assert_eq!(tool_execution_status("ok"), ToolExecutionStatus::Success);
     }
 }

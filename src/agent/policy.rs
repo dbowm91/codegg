@@ -19,8 +19,6 @@ pub struct ExecutionPolicy {
     pub max_parallel_tools: usize,
     pub expose_tool_search: bool,
     pub initial_tool_mode: ToolExposureMode,
-    pub allow_bootstrap_tool: bool,
-    pub allow_post_tool_continue_nudge: bool,
     pub prefer_user_control_messages: bool,
     pub supports_late_system_messages: bool,
     pub disabled_tools: Option<Vec<String>>,
@@ -58,10 +56,6 @@ impl ExecutionPolicy {
         let max_tool_result_tokens = default_max_tool_result_tokens(profile);
 
         let initial_tool_mode = default_tool_exposure(profile);
-        let allow_bootstrap_tool =
-            matches!(initial_tool_mode, ToolExposureMode::MinimalWithDiscovery)
-                || profile.requires_explicit_tool_contract;
-        let allow_post_tool_continue_nudge = profile.requires_post_tool_continue_nudge;
 
         ExecutionPolicy {
             model: profile.model.clone(),
@@ -73,8 +67,6 @@ impl ExecutionPolicy {
             max_parallel_tools,
             expose_tool_search: true,
             initial_tool_mode,
-            allow_bootstrap_tool,
-            allow_post_tool_continue_nudge,
             prefer_user_control_messages: profile.prefers_user_control_messages,
             supports_late_system_messages: profile.supports_late_system_messages,
             disabled_tools: profile.disabled_tools.clone(),
@@ -189,8 +181,6 @@ mod tests {
         assert_eq!(policy.max_tool_result_tokens, 8_000);
         assert_eq!(policy.max_parallel_tools, 10);
         assert_eq!(policy.initial_tool_mode, ToolExposureMode::Curated);
-        assert!(!policy.allow_bootstrap_tool);
-        assert!(!policy.allow_post_tool_continue_nudge);
         assert!(policy.supports_late_system_messages);
     }
 
@@ -209,8 +199,6 @@ mod tests {
             policy.initial_tool_mode,
             ToolExposureMode::MinimalWithDiscovery
         );
-        assert!(policy.allow_bootstrap_tool);
-        assert!(policy.allow_post_tool_continue_nudge);
         assert!(!policy.supports_late_system_messages);
     }
 

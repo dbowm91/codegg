@@ -20,7 +20,8 @@ use crate::agent::compaction::{
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::{
-    ActionClass, ProgressObservation, RecoveryAction, RecoveryController, RecoveryDecision,
+    tool_execution_status, ActionClass, AutonomyState, ProgressObservation, RecoveryAction,
+    RecoveryController, RecoveryDecision,
 };
 use crate::agent::router::ModelRouter;
 use crate::agent::Agent;
@@ -3406,12 +3407,8 @@ impl AgentLoop {
 
         let mut all_events = Vec::with_capacity(128);
         let mut processor = EventProcessor::new();
-        let mut missing_structured_tool_call_retries: u8 = 0;
-        let mut post_tool_continuation_retry_budget: u8 = 0;
+        let mut autonomy = AutonomyState::default();
         let mut just_executed_tools = false;
-        let mut did_bootstrap_tool = false;
-        let mut bootstrap_repeat_budget: u8 = 0;
-        let mut narration_retry_budget: u8 = 0;
         let current_turn_prompt = Self::latest_user_prompt(&request);
 
         if self.original_user_prompt.is_none() {
@@ -3811,32 +3808,36 @@ impl AgentLoop {
                 let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
                     .resolve_adapter(None, &request.model);
                 if let Some(profile) = adapter.text_tool_repair.as_deref() {
-                    match repair_text_as_tool_calls(
-                        profile,
-                        processor.text(),
-                        processor.stop_reason(),
-                        request.tools.as_deref().unwrap_or(&[]),
-                    ) {
-                        Ok(Some(parsed_calls)) => {
-                            for tc in &parsed_calls {
-                                crate::bus::global::GlobalEventBus::publish(
-                                    AppEvent::ToolCallStarted {
-                                        session_id: self.session_id.clone(),
-                                        tool_name: tc.name.to_string(),
-                                        tool_id: tc.id.to_string(),
-                                        arguments: tc.arguments.to_string(),
-                                    },
-                                );
-                            }
-                            tool_calls = parsed_calls;
-                        }
-                        Ok(None) => {}
-                        Err(error) => tracing::warn!(
-                            adapter = %adapter.adapter_id,
+                    if !autonomy.adapter_repair_allowed() {
+                        // M002 permits one bounded textual adapter repair.
+                    } else {
+                        match repair_text_as_tool_calls(
                             profile,
-                            ?error,
-                            "textual tool-call repair rejected provider response"
-                        ),
+                            processor.text(),
+                            processor.stop_reason(),
+                            request.tools.as_deref().unwrap_or(&[]),
+                        ) {
+                            Ok(Some(parsed_calls)) => {
+                                for tc in &parsed_calls {
+                                    crate::bus::global::GlobalEventBus::publish(
+                                        AppEvent::ToolCallStarted {
+                                            session_id: self.session_id.clone(),
+                                            tool_name: tc.name.to_string(),
+                                            tool_id: tc.id.to_string(),
+                                            arguments: tc.arguments.to_string(),
+                                        },
+                                    );
+                                }
+                                tool_calls = parsed_calls;
+                            }
+                            Ok(None) => {}
+                            Err(error) => tracing::warn!(
+                                adapter = %adapter.adapter_id,
+                                profile,
+                                ?error,
+                                "textual tool-call repair rejected provider response"
+                            ),
+                        }
                     }
                 }
             }
@@ -3857,19 +3858,15 @@ impl AgentLoop {
                         state_changed: false,
                         child_advanced: false,
                         selected_surface_fingerprint: None,
-                        batch_id: self.progress_recovery.next_batch(),
+                        batch_id: 0,
                     };
-                    match self.progress_recovery.observe(narration) {
+                    match autonomy.observe_tool(narration) {
                         RecoveryDecision::Recover { action, incident } => {
                             let instruction = match action {
                                 RecoveryAction::Nudge | RecoveryAction::Correct => "Recovery nudge: narration described intended work without a structured action. Emit exactly one valid structured tool call, or state the concrete blocker.",
                                 RecoveryAction::RestoreBasePalette => {
                                     request.tools = Some(self.base_request_tools.clone());
                                     "Recovery correction: the authorized base tool surface is restored. Emit one structured tool call."
-                                }
-                                RecoveryAction::ConstrainParallelism => {
-                                    self.recovery_parallel_limit = Some(1);
-                                    "Recovery correction: emit one structured tool call now."
                                 }
                                 RecoveryAction::Replan => "Recovery replan: state a short observable plan and then emit the next structured tool call.",
                                 RecoveryAction::Stall => unreachable!(),
@@ -3895,17 +3892,14 @@ impl AgentLoop {
                         RecoveryDecision::Progress | RecoveryDecision::Continue => {}
                     }
                 }
-                let bootstrap_allowed = self
-                    .execution_policy
-                    .as_ref()
-                    .map_or(true, |p| p.allow_bootstrap_tool);
+                // Strong and structured-call profiles never receive a
+                // synthetic repository probe. Recovery only acts on explicit
+                // model calls and typed execution evidence.
+                let bootstrap_allowed = false;
                 let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
                     || matches!(processor.stop_reason(), Some("tool_calls"));
-                let model_stuck_narrating =
-                    indicates_more_work(processor.text()) && processor.text().trim().len() >= 10;
                 if bootstrap_allowed
-                    && (!did_bootstrap_tool
-                        || (model_stuck_narrating && bootstrap_repeat_budget < 2))
+                    && !autonomy.bootstrap_used()
                     && self.state.turn_count <= 6
                     && stop_is_soft_or_confused
                     && is_repo_task_prompt(&current_turn_prompt)
@@ -4015,18 +4009,12 @@ impl AgentLoop {
                         self.context_tracker.add_message(&msg);
                         request.messages.push(msg);
                     }
-                    did_bootstrap_tool = true;
-                    bootstrap_repeat_budget += 1;
+                    autonomy.mark_bootstrap_used();
                     processor.reset();
                     continue;
                 }
-                let nudge_allowed = self
-                    .execution_policy
-                    .as_ref()
-                    .map_or(true, |p| p.allow_post_tool_continue_nudge);
-                if nudge_allowed
-                    && just_executed_tools
-                    && post_tool_continuation_retry_budget < 2
+                if just_executed_tools
+                    && autonomy.continuation_allowed()
                     && is_soft_stop_reason(processor.stop_reason())
                     && (processor.text().trim().len() < 220
                         || indicates_more_work(processor.text()))
@@ -4035,7 +4023,6 @@ impl AgentLoop {
                         self.context_tracker.add_message(&msg);
                         request.messages.push(msg);
                     }
-                    post_tool_continuation_retry_budget += 1;
                     just_executed_tools = false;
                     processor.reset();
                     continue;
@@ -4055,10 +4042,7 @@ impl AgentLoop {
                 }
                 let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
                     || matches!(processor.stop_reason(), Some("tool_calls"));
-                if stop_is_soft_or_confused
-                    && indicates_more_work(processor.text())
-                    && narration_retry_budget < 2
-                {
+                if false && stop_is_soft_or_confused && indicates_more_work(processor.text()) {
                     if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
                         tracing::info!(
                             "narration-retry: stop_reason={:?}, text_preview={:?}",
@@ -4075,19 +4059,15 @@ impl AgentLoop {
                         &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
-                    narration_retry_budget += 1;
                     processor.reset();
                     continue;
                 }
-                if matches!(processor.stop_reason(), Some("tool_calls"))
-                    && missing_structured_tool_call_retries < 2
-                {
+                if false && matches!(processor.stop_reason(), Some("tool_calls")) {
                     push_control_instruction(
                         &mut request.messages,
                         &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
-                    missing_structured_tool_call_retries += 1;
                     processor.reset();
                     continue;
                 }
@@ -4117,9 +4097,6 @@ impl AgentLoop {
                 break;
             }
             self.observe_tool_palette_starvation(&tool_calls);
-            missing_structured_tool_call_retries = 0;
-            post_tool_continuation_retry_budget = 0;
-            narration_retry_budget = 0;
             let tool_results = self.execute_tool_calls(&tool_calls).await?;
             just_executed_tools = !tool_results.is_empty();
 
@@ -4135,7 +4112,7 @@ impl AgentLoop {
             // receives only bounded fingerprints and classifications; raw
             // arguments/results remain in the normal model context and are
             // never copied into recovery diagnostics.
-            let recovery_batch = self.progress_recovery.next_batch();
+            let recovery_batch = 0;
             let mut recovery_stalled = false;
             for tc in &tool_calls {
                 let output = tool_results
@@ -4169,7 +4146,7 @@ impl AgentLoop {
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
                 };
-                match self.progress_recovery.observe(observation) {
+                match autonomy.observe_tool_result(tool_execution_status(output), observation) {
                     RecoveryDecision::Progress => self.recovery_parallel_limit = None,
                     RecoveryDecision::Recover { action, incident } => {
                         let instruction = match action {
@@ -4179,12 +4156,12 @@ impl AgentLoop {
                             ),
                             RecoveryAction::Correct => "Recovery correction: use the canonical tool name and valid schema from the currently available tool surface; do not retry the same failing call.".to_string(),
                             RecoveryAction::RestoreBasePalette => {
-                                request.tools = Some(self.base_request_tools.clone());
+                                if tool_execution_status(output)
+                                    != crate::agent::progress_recovery::ToolExecutionStatus::Denied
+                                {
+                                    request.tools = Some(self.base_request_tools.clone());
+                                }
                                 "Recovery correction: the available palette was restored to the authorized base surface. Choose one available structured tool and continue.".to_string()
-                            }
-                            RecoveryAction::ConstrainParallelism => {
-                                self.recovery_parallel_limit = Some(1);
-                                "Recovery correction: issue one structured tool call at a time until observable progress resumes.".to_string()
                             }
                             RecoveryAction::Replan => "Recovery replan: provide a short plan grounded only in the latest tool result, then execute the next concrete structured action.".to_string(),
                             RecoveryAction::Stall => unreachable!(),
@@ -5542,10 +5519,8 @@ impl AgentLoop {
             });
 
             // Continue processing until done (handles tool calls and follow-up responses)
-            let mut missing_structured_tool_call_retries: u8 = 0;
-            let mut post_tool_continuation_retry_budget: u8 = 0;
+            let mut autonomy = AutonomyState::default();
             let mut just_executed_tools = false;
-            let mut narration_retry_budget: u8 = 0;
             loop {
                 self.compact_if_needed(&mut request.messages, &model_profile)
                     .await;
@@ -5591,39 +5566,43 @@ impl AgentLoop {
                     let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
                         .resolve_adapter(None, &request.model);
                     if let Some(profile) = adapter.text_tool_repair.as_deref() {
-                        match repair_text_as_tool_calls(
-                            profile,
-                            processor.text(),
-                            processor.stop_reason(),
-                            request.tools.as_deref().unwrap_or(&[]),
-                        ) {
-                            Ok(Some(parsed_calls)) => {
-                                for tc in &parsed_calls {
-                                    crate::bus::global::GlobalEventBus::publish(
-                                        AppEvent::ToolCallStarted {
-                                            session_id: self.session_id.clone(),
-                                            tool_name: tc.name.to_string(),
-                                            tool_id: tc.id.to_string(),
-                                            arguments: tc.arguments.to_string(),
-                                        },
-                                    );
-                                }
-                                tool_calls = parsed_calls;
-                            }
-                            Ok(None) => {}
-                            Err(error) => tracing::warn!(
-                                adapter = %adapter.adapter_id,
+                        if !autonomy.adapter_repair_allowed() {
+                            // M002 permits one bounded textual adapter repair.
+                        } else {
+                            match repair_text_as_tool_calls(
                                 profile,
-                                ?error,
-                                "textual tool-call repair rejected provider response"
-                            ),
+                                processor.text(),
+                                processor.stop_reason(),
+                                request.tools.as_deref().unwrap_or(&[]),
+                            ) {
+                                Ok(Some(parsed_calls)) => {
+                                    for tc in &parsed_calls {
+                                        crate::bus::global::GlobalEventBus::publish(
+                                            AppEvent::ToolCallStarted {
+                                                session_id: self.session_id.clone(),
+                                                tool_name: tc.name.to_string(),
+                                                tool_id: tc.id.to_string(),
+                                                arguments: tc.arguments.to_string(),
+                                            },
+                                        );
+                                    }
+                                    tool_calls = parsed_calls;
+                                }
+                                Ok(None) => {}
+                                Err(error) => tracing::warn!(
+                                    adapter = %adapter.adapter_id,
+                                    profile,
+                                    ?error,
+                                    "textual tool-call repair rejected provider response"
+                                ),
+                            }
                         }
                     }
                 }
 
                 if tool_calls.is_empty() {
                     if just_executed_tools
-                        && post_tool_continuation_retry_budget < 2
+                        && autonomy.continuation_allowed()
                         && is_soft_stop_reason(processor.stop_reason())
                         && (processor.text().trim().len() < 220
                             || indicates_more_work(processor.text()))
@@ -5631,12 +5610,14 @@ impl AgentLoop {
                         if let Some(msg) = processor.to_assistant_message() {
                             request.messages.push(msg);
                         }
-                        post_tool_continuation_retry_budget += 1;
                         just_executed_tools = false;
                         processor.reset();
                         continue;
                     }
-                    if just_executed_tools && is_soft_stop_reason(processor.stop_reason()) {
+                    if just_executed_tools
+                        && autonomy.continuation_allowed()
+                        && is_soft_stop_reason(processor.stop_reason())
+                    {
                         push_control_instruction(
                         &mut request.messages,
                         &model_profile,
@@ -5648,9 +5629,7 @@ impl AgentLoop {
                     }
                     let stop_is_soft_or_confused_fu = is_soft_stop_reason(processor.stop_reason())
                         || matches!(processor.stop_reason(), Some("tool_calls"));
-                    if stop_is_soft_or_confused_fu
-                        && indicates_more_work(processor.text())
-                        && narration_retry_budget < 2
+                    if stop_is_soft_or_confused_fu && indicates_more_work(processor.text()) && false
                     {
                         if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
                             tracing::info!(
@@ -5667,19 +5646,15 @@ impl AgentLoop {
                             &model_profile,
                             "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                         );
-                        narration_retry_budget += 1;
                         processor.reset();
                         continue;
                     }
-                    if matches!(processor.stop_reason(), Some("tool_calls"))
-                        && missing_structured_tool_call_retries < 2
-                    {
+                    if matches!(processor.stop_reason(), Some("tool_calls")) && false {
                         push_control_instruction(
                         &mut request.messages,
                         &model_profile,
                         "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
                     );
-                        missing_structured_tool_call_retries += 1;
                         processor.reset();
                         continue;
                     }
@@ -5710,8 +5685,6 @@ impl AgentLoop {
                     break;
                 }
                 self.observe_tool_palette_starvation(&tool_calls);
-                missing_structured_tool_call_retries = 0;
-                post_tool_continuation_retry_budget = 0;
                 let tool_results = match self.execute_tool_calls(&tool_calls).await {
                     Ok(results) => results,
                     Err(e) => {

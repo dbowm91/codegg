@@ -1232,6 +1232,22 @@ Counts identical tool calls. If threshold exceeded (default 20, configurable):
 - Tool is denied even if permission would allow it
 - Message indicates potential doom loop
 
+### Bounded autonomy recovery
+
+The generic agent loop uses one turn-local `AutonomyState` for recovery
+transitions. Provider/network retries remain in `stream_with_retry` and are
+not charged against model recovery. The state machine admits at most one
+adapter repair and one post-tool continuation, while `RecoveryController`
+tracks bounded fingerprints for repeated calls, equivalent results, denied
+tools, and short cycles. Observable progress resets the incident; otherwise
+the state reaches `Stall` and publishes a compact, actionable diagnostic.
+
+Recovery never expands the profile-filtered tool surface. In particular,
+permission denial is typed separately from tool failure and cannot trigger
+base-palette restoration. The generic loop does not synthesize a repository
+`list .` bootstrap call; strong models finish directly and fragile-model
+compatibility belongs behind an explicit adapter contract.
+
 ### Auto-Accept Read-Only Tools
 
 Read-only tools (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `codesearch`) that target paths within the working directory are auto-accepted without user prompt.
@@ -1299,8 +1315,6 @@ pub struct ExecutionPolicy {
     pub max_parallel_tools: usize,              // Max concurrent tool executions (default 10)
     pub expose_tool_search: bool,               // Always true
     pub initial_tool_mode: ToolExposureMode,    // Tool exposure filter mode
-    pub allow_bootstrap_tool: bool,             // Whether bootstrap tool is enabled
-    pub allow_post_tool_continue_nudge: bool,   // Whether post-tool nudge is enabled
     pub prefer_user_control_messages: bool,     // Use user-role for control messages
     pub supports_late_system_messages: bool,    // Provider supports late system messages
     pub disabled_tools: Option<Vec<String>>,    // Tools to remove from exposure
@@ -1356,7 +1370,8 @@ Applied in `AgentLoop::apply_tool_exposure_filter()` during `build_tool_definiti
 2. Then apply `policy.disabled_tools` → remove any additional tools the profile disables
 3. Returns filtered definitions before MCP tools are appended
 
-The `allow_bootstrap_tool` flag is `true` for `MinimalWithDiscovery` or when `profile.requires_explicit_tool_contract` is set.
+Recovery behavior is owned by the turn-local autonomy state machine; tool
+exposure mode only controls the authorized profile-filtered surface.
 
 ---
 
