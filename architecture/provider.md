@@ -669,7 +669,14 @@ The parser preserves state across chunks via special markers in the buffer:
 
 ## Text Tool Parser (`crates/codegg-providers/src/text_tool_parser.rs`)
 
-Parses plain text responses as potential tool calls via regex patterns.
+Textual tool-call repair is not a generic provider fallback. Structured
+provider tool calls are canonical. A resolved model adapter may explicitly set
+`[tools].text_tool_repair` to `hermes_xml`, `invoke_json`, or
+`raw_json_envelope` for a model with documented compatibility needs. The
+bounded repair adapter then parses only that grammar, checks the current
+model-facing tool surface and required argument shape, and returns calls to the
+normal permission/broker path. Unconfigured adapters never scan assistant
+prose, fenced examples, or embedded JSON.
 
 ```rust
 pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>>
@@ -829,6 +836,6 @@ that behavior.
 | `crates/codegg-providers/crates/codegg-providers/src/discovery.rs` | Model discovery service with DB cache |
 | `crates/codegg-providers/crates/codegg-providers/src/models.rs` | Embedded model definitions |
 | `crates/codegg-providers/crates/codegg-providers/src/sse_parser.rs` | SSE parsing for streaming responses |
-| `crates/codegg-providers/crates/codegg-providers/src/text_tool_parser.rs` | Text-based tool call parsing |
+| `crates/codegg-providers/src/text_tool_parser.rs` | Explicit, bounded textual tool-call repair |
 | `crates/codegg-providers/crates/codegg-providers/src/cache.rs` | Provider response cache |
 | `crates/codegg-providers/src/circuit.rs` | Circuit breaker implementation |

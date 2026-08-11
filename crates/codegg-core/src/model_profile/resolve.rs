@@ -33,6 +33,9 @@ impl<'a> ModelProfileResolver<'a> {
         let mut adapter = super::adapter::resolve_adapter(provider, model);
         if let Some(cfg) = self.find_config_override(model) {
             adapter.profile = apply_config_override(adapter.profile, cfg);
+            if cfg.text_tool_repair.is_some() {
+                adapter.text_tool_repair = cfg.text_tool_repair.clone();
+            }
         }
         adapter
     }

@@ -31,7 +31,7 @@ use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::model_profile::policy::push_control_instruction;
 use crate::permission::{PermissionChecker, PermissionDecisionReceipt, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
-use crate::provider::text_tool_parser::parse_text_as_tool_calls;
+use crate::provider::text_tool_parser::repair_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
 
 /// Bounded public output collected from one ordinary agent-loop execution.
@@ -3765,16 +3765,36 @@ impl AgentLoop {
                         preview
                     );
                 }
-                if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
-                    for tc in &parsed_calls {
-                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
-                            session_id: self.session_id.clone(),
-                            tool_name: tc.name.to_string(),
-                            tool_id: tc.id.to_string(),
-                            arguments: tc.arguments.to_string(),
-                        });
+                let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
+                    .resolve_adapter(None, &request.model);
+                if let Some(profile) = adapter.text_tool_repair.as_deref() {
+                    match repair_text_as_tool_calls(
+                        profile,
+                        processor.text(),
+                        processor.stop_reason(),
+                        request.tools.as_deref().unwrap_or(&[]),
+                    ) {
+                        Ok(Some(parsed_calls)) => {
+                            for tc in &parsed_calls {
+                                crate::bus::global::GlobalEventBus::publish(
+                                    AppEvent::ToolCallStarted {
+                                        session_id: self.session_id.clone(),
+                                        tool_name: tc.name.to_string(),
+                                        tool_id: tc.id.to_string(),
+                                        arguments: tc.arguments.to_string(),
+                                    },
+                                );
+                            }
+                            tool_calls = parsed_calls;
+                        }
+                        Ok(None) => {}
+                        Err(error) => tracing::warn!(
+                            adapter = %adapter.adapter_id,
+                            profile,
+                            ?error,
+                            "textual tool-call repair rejected provider response"
+                        ),
                     }
-                    tool_calls = parsed_calls;
                 }
             }
 
@@ -5526,18 +5546,36 @@ impl AgentLoop {
                             preview
                         );
                     }
-                    if let Some(parsed_calls) = parse_text_as_tool_calls(processor.text()) {
-                        for tc in &parsed_calls {
-                            crate::bus::global::GlobalEventBus::publish(
-                                AppEvent::ToolCallStarted {
-                                    session_id: self.session_id.clone(),
-                                    tool_name: tc.name.to_string(),
-                                    tool_id: tc.id.to_string(),
-                                    arguments: tc.arguments.to_string(),
-                                },
-                            );
+                    let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
+                        .resolve_adapter(None, &request.model);
+                    if let Some(profile) = adapter.text_tool_repair.as_deref() {
+                        match repair_text_as_tool_calls(
+                            profile,
+                            processor.text(),
+                            processor.stop_reason(),
+                            request.tools.as_deref().unwrap_or(&[]),
+                        ) {
+                            Ok(Some(parsed_calls)) => {
+                                for tc in &parsed_calls {
+                                    crate::bus::global::GlobalEventBus::publish(
+                                        AppEvent::ToolCallStarted {
+                                            session_id: self.session_id.clone(),
+                                            tool_name: tc.name.to_string(),
+                                            tool_id: tc.id.to_string(),
+                                            arguments: tc.arguments.to_string(),
+                                        },
+                                    );
+                                }
+                                tool_calls = parsed_calls;
+                            }
+                            Ok(None) => {}
+                            Err(error) => tracing::warn!(
+                                adapter = %adapter.adapter_id,
+                                profile,
+                                ?error,
+                                "textual tool-call repair rejected provider response"
+                            ),
                         }
-                        tool_calls = parsed_calls;
                     }
                 }
 

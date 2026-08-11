@@ -1,173 +1,215 @@
-use crate::ToolCall;
-use regex::Regex;
-use std::sync::LazyLock;
+//! Bounded textual tool-call repair for explicitly classified model adapters.
+//!
+//! Structured provider calls remain canonical. This module deliberately does
+//! not search arbitrary prose for JSON: callers must provide an adapter grammar
+//! and the current model-facing tool surface.
 
-static INVOKE_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"invoke\s*\(\s*"([A-Za-z0-9_:\-]+)"\s*,\s*"#).unwrap());
+use crate::{ToolCall, ToolDefinition};
+use serde_json::{Map, Value};
+use std::collections::HashSet;
 
-static CODE_BLOCK_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?s)```\s*(\w+)\s*(\{.*?\})\s*```"#).unwrap());
+pub const MAX_REPAIR_INPUT_BYTES: usize = 64 * 1024;
+pub const MAX_REPAIRED_CALLS: usize = 8;
 
-static XML_TOOL_CALL_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>"#).unwrap());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextRepairProfile {
+    HermesXml,
+    InvokeJson,
+    RawJsonEnvelope,
+}
 
-static XML_TOOL_CALL_NAME_ATTR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?s)<tool_call\s+name="([A-Za-z0-9_:\-]+)"\s*>(.*?)</tool_call>"#).unwrap()
-});
-
-static RAW_JSON_TOOL_CALL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?s)\{\s*"name"\s*:\s*"([A-Za-z0-9_:\-]+)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*\}"#,
-    )
-    .unwrap()
-});
-
-pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
-    let mut tool_calls = Vec::new();
-    let text = text.trim();
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    let mut push = |tc: ToolCall, tool_calls: &mut Vec<ToolCall>| {
-        let key = format!("{}|{}", tc.name.as_ref(), tc.arguments);
-        if seen_ids.insert(key) {
-            tool_calls.push(tc);
+impl TextRepairProfile {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "hermes_xml" => Some(Self::HermesXml),
+            "invoke_json" => Some(Self::InvokeJson),
+            "raw_json_envelope" => Some(Self::RawJsonEnvelope),
+            _ => None,
         }
-    };
-
-    for cap in INVOKE_PATTERN.captures_iter(text) {
-        let Some(m) = cap.get(0) else { continue };
-        let Some(name_m) = cap.get(1) else { continue };
-        let name = name_m.as_str().to_string();
-        let tail = &text[m.end()..];
-        let Some((args_str, _consumed)) = extract_first_json_object(tail) else {
-            continue;
-        };
-        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&args_str) {
-            let id = uuid::Uuid::new_v4().to_string();
-            push(
-                ToolCall {
-                    id: id.into(),
-                    name: name.into(),
-                    arguments: args,
-                },
-                &mut tool_calls,
-            );
-        }
-    }
-
-    for cap in CODE_BLOCK_PATTERN.captures_iter(text) {
-        let name = cap.get(1)?.as_str().to_string();
-        let args_str = cap.get(2)?.as_str();
-        if let Ok(args) = serde_json::from_str(args_str) {
-            let id = uuid::Uuid::new_v4().to_string();
-            push(
-                ToolCall {
-                    id: id.into(),
-                    name: name.into(),
-                    arguments: args,
-                },
-                &mut tool_calls,
-            );
-        }
-    }
-
-    for cap in XML_TOOL_CALL_PATTERN.captures_iter(text) {
-        let body = cap.get(1)?.as_str();
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-            let name = value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let arguments = value
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-            if let Some(name) = name {
-                let id = uuid::Uuid::new_v4().to_string();
-                push(
-                    ToolCall {
-                        id: id.into(),
-                        name: name.into(),
-                        arguments,
-                    },
-                    &mut tool_calls,
-                );
-            }
-        }
-    }
-
-    for cap in XML_TOOL_CALL_NAME_ATTR.captures_iter(text) {
-        let name = cap.get(1)?.as_str().to_string();
-        let inner = cap.get(2)?.as_str().trim();
-        let arguments = if let Some((json_str, _)) = extract_first_json_object(inner) {
-            serde_json::from_str(&json_str).unwrap_or_else(|_| {
-                if inner.is_empty() {
-                    serde_json::Value::Object(serde_json::Map::new())
-                } else {
-                    serde_json::Value::String(inner.to_string())
-                }
-            })
-        } else if inner.is_empty() {
-            serde_json::Value::Object(serde_json::Map::new())
-        } else {
-            serde_json::Value::String(inner.to_string())
-        };
-        let id = uuid::Uuid::new_v4().to_string();
-        push(
-            ToolCall {
-                id: id.into(),
-                name: name.into(),
-                arguments,
-            },
-            &mut tool_calls,
-        );
-    }
-
-    for cap in RAW_JSON_TOOL_CALL.captures_iter(text) {
-        let name = cap.get(1)?.as_str().to_string();
-        let args_str = cap.get(2)?.as_str();
-        if let Ok(args) = serde_json::from_str::<serde_json::Value>(args_str) {
-            let id = uuid::Uuid::new_v4().to_string();
-            push(
-                ToolCall {
-                    id: id.into(),
-                    name: name.into(),
-                    arguments: args,
-                },
-                &mut tool_calls,
-            );
-        }
-    }
-
-    if tool_calls.is_empty() {
-        None
-    } else {
-        Some(tool_calls)
     }
 }
 
-fn extract_first_json_object(input: &str) -> Option<(String, usize)> {
-    let bytes = input.as_bytes();
-    let start = bytes.iter().position(|b| *b == b'{')?;
-    let mut depth = 0usize;
-    let mut in_str = false;
-    let mut escaped = false;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextRepairError {
+    UnknownProfile(String),
+    InputTooLarge,
+    MalformedEnvelope,
+    UnknownTool(String),
+    ArgumentsMustBeObject(String),
+    SchemaViolation(String),
+    CallLimitExceeded,
+}
 
-    for (i, b) in bytes.iter().enumerate().skip(start) {
+/// Repair one provider response. The response must be explicitly enabled by
+/// the resolved adapter; this function is not a generic text-to-action parser.
+pub fn repair_text_as_tool_calls(
+    profile_name: &str,
+    text: &str,
+    stop_reason: Option<&str>,
+    tools: &[ToolDefinition],
+) -> Result<Option<Vec<ToolCall>>, TextRepairError> {
+    let profile = TextRepairProfile::parse(profile_name)
+        .ok_or_else(|| TextRepairError::UnknownProfile(profile_name.to_string()))?;
+    if text.len() > MAX_REPAIR_INPUT_BYTES {
+        return Err(TextRepairError::InputTooLarge);
+    }
+    // An enabled adapter may explicitly support normal `stop`; all other
+    // profiles still require a provider indication of malformed tool output.
+    if !matches!(
+        stop_reason,
+        Some("stop" | "tool_calls" | "length" | "max_tokens")
+    ) {
+        return Ok(None);
+    }
+
+    let candidates = match profile {
+        TextRepairProfile::HermesXml => parse_hermes_xml(text)?,
+        TextRepairProfile::InvokeJson => parse_invoke_response(text)?,
+        TextRepairProfile::RawJsonEnvelope => parse_raw_json_envelope(text)?,
+    };
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    if candidates.len() > MAX_REPAIRED_CALLS {
+        return Err(TextRepairError::CallLimitExceeded);
+    }
+
+    let surface: std::collections::HashMap<&str, &ToolDefinition> = tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut repaired = Vec::with_capacity(candidates.len());
+    for (name, arguments) in candidates {
+        let Some(definition) = surface.get(name.as_str()) else {
+            return Err(TextRepairError::UnknownTool(name));
+        };
+        if !arguments.is_object() {
+            return Err(TextRepairError::ArgumentsMustBeObject(name));
+        }
+        validate_object_schema(&name, &arguments, &definition.parameters)?;
+        let key = format!("{name}|{arguments}");
+        if seen.insert(key) {
+            repaired.push(ToolCall {
+                id: format!("text-repair-{}", repaired.len()).into(),
+                name: name.into(),
+                arguments,
+            });
+        }
+    }
+    Ok(Some(repaired))
+}
+
+fn parse_hermes_xml(text: &str) -> Result<Vec<(String, Value)>, TextRepairError> {
+    let mut remaining = text.trim();
+    let mut out = Vec::new();
+    while let Some(start) = remaining.find("<tool_call>") {
+        if !remaining[..start].trim().is_empty() {
+            // Hermes permits a short lead-in, but executable syntax must still
+            // be an actual tag rather than a fenced/documentation example.
+        }
+        let body_start = start + "<tool_call>".len();
+        let Some(end_rel) = remaining[body_start..].find("</tool_call>") else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        let body = remaining[body_start..body_start + end_rel].trim();
+        let value: Value =
+            serde_json::from_str(body).map_err(|_| TextRepairError::MalformedEnvelope)?;
+        let object = value
+            .as_object()
+            .ok_or(TextRepairError::MalformedEnvelope)?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or(TextRepairError::MalformedEnvelope)?;
+        let args = object
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(empty_object);
+        out.push((name.to_string(), args));
+        remaining = &remaining[body_start + end_rel + "</tool_call>".len()..];
+    }
+    if !remaining.trim().is_empty() && out.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !remaining.trim().is_empty() && !remaining.trim().is_empty() {
+        // Trailing prose is allowed by the explicit Hermes compatibility
+        // profile; it is never independently parsed.
+    }
+    Ok(out)
+}
+
+fn parse_invoke_response(text: &str) -> Result<Vec<(String, Value)>, TextRepairError> {
+    let mut input = text.trim();
+    let mut out = Vec::new();
+    while !input.is_empty() {
+        let Some(rest) = input.strip_prefix("invoke(") else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        let rest = rest.trim_start();
+        let Some(rest) = rest.strip_prefix('"') else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        let Some(name_end) = rest.find('"') else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        let name = &rest[..name_end];
+        let rest = rest[name_end + 1..].trim_start();
+        let Some(rest) = rest.strip_prefix(',') else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        let (args, consumed) = extract_first_json_object(rest.trim_start())
+            .ok_or(TextRepairError::MalformedEnvelope)?;
+        let tail = rest.trim_start()[consumed..].trim_start();
+        let Some(tail) = tail.strip_prefix(')') else {
+            return Err(TextRepairError::MalformedEnvelope);
+        };
+        out.push((name.to_string(), args));
+        input = tail.trim_start();
+    }
+    Ok(out)
+}
+
+fn parse_raw_json_envelope(text: &str) -> Result<Vec<(String, Value)>, TextRepairError> {
+    let value: Value =
+        serde_json::from_str(text.trim()).map_err(|_| TextRepairError::MalformedEnvelope)?;
+    let object = value
+        .as_object()
+        .ok_or(TextRepairError::MalformedEnvelope)?;
+    if object.keys().any(|key| key != "name" && key != "arguments") {
+        return Err(TextRepairError::MalformedEnvelope);
+    }
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or(TextRepairError::MalformedEnvelope)?;
+    let args = object
+        .get("arguments")
+        .cloned()
+        .ok_or(TextRepairError::MalformedEnvelope)?;
+    Ok(vec![(name.to_string(), args)])
+}
+
+fn extract_first_json_object(input: &str) -> Option<(Value, usize)> {
+    let start = input.find('{')?;
+    let bytes = input.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().enumerate().skip(start) {
         if escaped {
             escaped = false;
             continue;
         }
-        match *b {
-            b'\\' if in_str => escaped = true,
-            b'"' => in_str = !in_str,
-            b'{' if !in_str => depth += 1,
-            b'}' if !in_str => {
+        match byte {
+            b'\\' if in_string => escaped = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
-                    let end = i + 1;
-                    let json = input[start..end].to_string();
-                    return Some((json, end));
+                    let end = index + 1;
+                    return Some((serde_json::from_str(&input[start..end]).ok()?, end));
                 }
             }
             _ => {}
@@ -176,133 +218,89 @@ fn extract_first_json_object(input: &str) -> Option<(String, usize)> {
     None
 }
 
+fn empty_object() -> Value {
+    Value::Object(Map::new())
+}
+
+fn validate_object_schema(
+    name: &str,
+    arguments: &Value,
+    schema: &Value,
+) -> Result<(), TextRepairError> {
+    let object = arguments.as_object().expect("checked above");
+    if schema.get("type").and_then(Value::as_str) == Some("object") {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(key) {
+                    return Err(TextRepairError::SchemaViolation(format!(
+                        "{name}: missing required argument {key}"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    #[test]
-    fn test_parse_invoke_pattern() {
-        let text = r#"invoke("bash", {"command": "ls"})"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "bash");
+    fn tools() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "bash".into(),
+            description: "".into(),
+            parameters: json!({"type":"object", "required":["command"]}),
+            defer_loading: None,
+        }]
     }
 
     #[test]
-    fn test_parse_code_block_pattern() {
-        let text = r#"```bash
-{"command": "ls"}
-```"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "bash");
+    fn structured_only_has_no_repair_entry_point() {
+        assert!(TextRepairProfile::parse("structured_only").is_none());
     }
 
     #[test]
-    fn test_no_tool_calls() {
-        let text = "Hello, this is just text.";
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_none());
+    fn hermes_repairs_and_validates_surface() {
+        let result = repair_text_as_tool_calls("hermes_xml", "explain\n<tool_call>{\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}</tool_call>", Some("stop"), &tools()).unwrap();
+        assert_eq!(result.unwrap()[0].name.as_ref(), "bash");
     }
 
     #[test]
-    fn test_parse_invoke_pattern_mcp_tool_name() {
-        let text = r#"invoke("mcp__github__list_issues", {"repo": "openai/codegg"})"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "mcp__github__list_issues");
-        assert_eq!(calls[0].arguments["repo"], "openai/codegg");
+    fn prose_json_and_fences_are_not_raw_repairs() {
+        assert!(repair_text_as_tool_calls(
+            "raw_json_envelope",
+            "Here: {\"name\":\"bash\",\"arguments\":{\"command\":\"ls\"}}",
+            Some("stop"),
+            &tools()
+        )
+        .is_err());
+        assert!(repair_text_as_tool_calls(
+            "hermes_xml",
+            "```bash\n{\"command\":\"ls\"}\n```",
+            Some("stop"),
+            &tools()
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]
-    fn test_parse_invoke_pattern_nested_json() {
-        let text = r#"invoke("bash", {"command":"rg -n test src","options":{"timeout":60,"env":{"A":"B"}}})"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "bash");
-        assert_eq!(calls[0].arguments["options"]["timeout"], 60);
-        assert_eq!(calls[0].arguments["options"]["env"]["A"], "B");
-    }
-
-    #[test]
-    fn test_parse_hermes_xml_tool_call() {
-        let text = r#"I'll read the file.
-<tool_call>
-{"name": "read", "arguments": {"filePath": "README.md"}}
-</tool_call>"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some(), "should parse Hermes-style tool call");
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "read");
-        assert_eq!(calls[0].arguments["filePath"], "README.md");
-    }
-
-    #[test]
-    fn test_parse_xml_tool_call_with_name_attr() {
-        let text = r#"<tool_call name="bash">{"command": "ls -la"}</tool_call>"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some(), "should parse name-attr tool call");
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "bash");
-        assert_eq!(calls[0].arguments["command"], "ls -la");
-    }
-
-    #[test]
-    fn test_parse_xml_tool_call_name_attr_no_args() {
-        let text = r#"<tool_call name="todowrite">
-</tool_call>"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "todowrite");
-    }
-
-    #[test]
-    fn test_parse_raw_json_tool_call() {
-        let text = r#"Here is the call: {"name": "bash", "arguments": {"command": "pwd"}} end."#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some(), "should parse raw JSON tool call");
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name.as_ref(), "bash");
-        assert_eq!(calls[0].arguments["command"], "pwd");
-    }
-
-    #[test]
-    fn test_parse_multiple_hermes_tool_calls() {
-        let text = r#"
-<tool_call>
-{"name": "read", "arguments": {"filePath": "a.rs"}}
-</tool_call>
-<tool_call>
-{"name": "read", "arguments": {"filePath": "b.rs"}}
-</tool_call>
-"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].arguments["filePath"], "a.rs");
-        assert_eq!(calls[1].arguments["filePath"], "b.rs");
-    }
-
-    #[test]
-    fn test_deduplicates_identical_calls() {
-        let text = r#"invoke("bash", {"command": "ls"})invoke("bash", {"command": "ls"})"#;
-        let result = parse_text_as_tool_calls(text);
-        assert!(result.is_some());
-        let calls = result.unwrap();
-        assert_eq!(calls.len(), 1, "duplicate calls should be collapsed");
+    fn unknown_tool_and_missing_required_argument_are_rejected() {
+        let unknown = repair_text_as_tool_calls(
+            "raw_json_envelope",
+            r#"{"name":"write","arguments":{}}"#,
+            Some("stop"),
+            &tools(),
+        );
+        assert!(matches!(unknown, Err(TextRepairError::UnknownTool(_))));
+        let missing = repair_text_as_tool_calls(
+            "raw_json_envelope",
+            r#"{"name":"bash","arguments":{}}"#,
+            Some("stop"),
+            &tools(),
+        );
+        assert!(matches!(missing, Err(TextRepairError::SchemaViolation(_))));
     }
 }

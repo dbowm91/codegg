@@ -114,6 +114,11 @@ pub struct ModelProfileConfig {
     pub requires_explicit_tool_contract: Option<bool>,
     pub requires_post_tool_continue_nudge: Option<bool>,
 
+    /// Explicit textual tool-call repair grammar, if this exact model needs
+    /// compatibility with a provider/model adapter that emits tool syntax in
+    /// text. `None` is structured-tool-only.
+    pub text_tool_repair: Option<String>,
+
     pub default_reasoning_effort: Option<String>,
     pub default_thinking_budget: Option<usize>,
 

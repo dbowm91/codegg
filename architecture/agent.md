@@ -152,13 +152,20 @@ Main Loop:
 9. Harden history (fix orphan tool messages)
 10. Stream with retry (provider communication)
 11. Process events (EventProcessor)
-12. Handle missing structured tool calls (fallback to text parsing)
+12. Handle missing structured tool calls through the explicitly resolved
+    adapter repair contract, when one is configured
 13. Bootstrap tool for repo tasks (if conditions met)
 14. Execute tool calls (permission check → parallel execution)
 15. Publish tool results to event bus
 16. Detect plan mode changes
 17. Post-turn hooks (AgentEnd)
 18. Repeat until no tool calls
+
+Structured provider tool calls remain the canonical execution signal. The
+generic loop does not interpret arbitrary assistant prose, fenced JSON, or
+embedded JSON as executable. Any textual compatibility grammar is selected by
+the resolved model adapter and is bounded and tool-surface validated before it
+enters the ordinary permission and broker path.
 
 Post-loop:
 19. Drain follow-up prompts

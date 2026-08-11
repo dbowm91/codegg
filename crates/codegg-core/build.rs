@@ -69,6 +69,7 @@ struct Tools {
     tool_choice: Option<String>,
     max_parallel: Option<usize>,
     require_structured_calls: Option<bool>,
+    text_tool_repair: Option<String>,
     #[serde(default)]
     rename: std::collections::BTreeMap<String, String>,
     #[serde(default)]

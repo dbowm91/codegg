@@ -73,6 +73,9 @@ pub struct AdapterTools {
     pub tool_choice: Option<String>,
     pub max_parallel: Option<usize>,
     pub require_structured_calls: Option<bool>,
+    /// Explicit compatibility grammar. This is deliberately separate from
+    /// `require_structured_calls`: repair is an opt-in execution adaptation.
+    pub text_tool_repair: Option<String>,
     #[serde(default)]
     pub rename: BTreeMap<String, String>,
     #[serde(default)]
@@ -188,6 +191,7 @@ pub struct ResolvedModelAdapter {
     pub tool_choice: Option<String>,
     pub max_parallel_tools: Option<usize>,
     pub require_structured_calls: bool,
+    pub text_tool_repair: Option<String>,
     pub tool_aliases: BTreeMap<String, String>,
     pub argument_aliases: BTreeMap<String, BTreeMap<String, String>>,
     pub prompt_fragments: Vec<String>,
@@ -396,6 +400,9 @@ fn merge_adapter(base: &AdapterDefinition, overlay: &AdapterDefinition) -> Adapt
     if merged.tools.require_structured_calls.is_none() {
         merged.tools.require_structured_calls = base.tools.require_structured_calls;
     }
+    if merged.tools.text_tool_repair.is_none() {
+        merged.tools.text_tool_repair = base.tools.text_tool_repair.clone();
+    }
     for (k, v) in &base.tools.rename {
         merged
             .tools
@@ -503,6 +510,7 @@ pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdap
         tool_choice: a.tools.tool_choice.clone(),
         max_parallel_tools: a.tools.max_parallel.or(a.profile.max_parallel_tools),
         require_structured_calls: a.tools.require_structured_calls.unwrap_or(false),
+        text_tool_repair: a.tools.text_tool_repair.clone(),
         tool_aliases: a.tools.rename.clone(),
         argument_aliases: a.tools.arguments.clone(),
         prompt_fragments: a.prompt.fragments.clone(),
@@ -540,6 +548,22 @@ mod tests {
         assert_eq!(a.adapter_id, "generic");
         assert_eq!(a, resolve_adapter(None, "unknown/thing"));
         assert!(!a.fingerprint.is_empty());
+        assert!(a.text_tool_repair.is_none());
+    }
+
+    #[test]
+    fn textual_repair_requires_explicit_model_profile_override() {
+        let mut config = codegg_config::schema::Config::default();
+        config.model_profile = Some(std::collections::HashMap::from([(
+            "fixture/hermes".to_string(),
+            codegg_config::schema::ModelProfileConfig {
+                text_tool_repair: Some("hermes_xml".to_string()),
+                ..Default::default()
+            },
+        )]));
+        let adapter = crate::model_profile::ModelProfileResolver::new(&config)
+            .resolve_adapter(None, "fixture/hermes");
+        assert_eq!(adapter.text_tool_repair.as_deref(), Some("hermes_xml"));
     }
     #[test]
     fn explicit_provider_controls_match() {
