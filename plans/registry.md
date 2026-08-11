@@ -32,7 +32,7 @@ Canonical direction remains in:
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 ready | M010 structural correction retained; hosted run `31521674076` failed on stale bootstrap test and ordinary tool failures still lose typed status before recovery. |
+| Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -42,7 +42,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/011-typed-tool-outcome-and-hosted-closure-corrective-pass.md` | M001-M010 production corrections retained; no external blocker; exact final hosted `CI / verify` success required for strict closure |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Active closure work
@@ -54,7 +53,7 @@ M010 remains historical conditional evidence in `plans/closure/agent-runtime-cor
 - hosted `CI / verify` run `31521674076`, job `93879950640`, failed at Workspace Clippy on the obsolete empty `autonomy_bootstrap_is_explicitly_one_shot` test;
 - ordinary native tool execution still has `Result<String, ToolError>` available but renders failures to strings before recovery, so known `Permission`/`Timeout` status is not yet preserved through the authoritative path.
 
-M011 is the sole controlling strict closure milestone for this workstream. It must delete the stale test, preserve typed execution status through recovery, retain all M010 structural corrections, pass focused/local verification, and obtain one green existing hosted `CI / verify` run on the exact final candidate.
+M011 was the sole controlling strict closure milestone for this workstream and is now strictly closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Its exact candidate `e3b671ad` passed hosted run `31525206176` / job `93891703941` through Workspace tests.
 
 ### Other active closure dependencies
 
@@ -70,15 +69,15 @@ M011 is the sole controlling strict closure milestone for this workstream. It mu
 |---|---|---|
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
 
-No registered implementation plan is blocked by agent-runtime correctness M011; M011 is ready now.
+No registered implementation plan was blocked by agent-runtime correctness M011, so no future plan required promotion to `ready` in this closure.
 
 ## Agent-runtime correctness execution order
 
 1. M001-M009 remain historical predecessor work and are not reopened.
 2. M010 remains conditionally closed historical corrective evidence; its bootstrap/dead-branch/continuation cleanup must not regress.
-3. M011 is ready and owns the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence.
-4. Create `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md` only after the focused recovery/loop/harness checks, canonical workspace Clippy, `scripts/verify.sh quick`, and `git diff --check` pass.
-5. Obtain one normal existing hosted `CI / verify` run on the exact final M011 candidate. Only then may the corrective addendum and workstream move to `closed`.
+3. M011 owned the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence; it is closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
+4. The exact final candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
+5. No downstream registered plan was blocked by this workstream, so no unblock promotion was required.
 
 Verification remains minimal and change-specific. Do not add a CI lane, matrix, workflow-dispatch mechanism, dead-code source guard, scheduled audit, artifact workflow, coverage/benchmark/size gate, automatic publication, or release cadence for M011.
 
@@ -95,13 +94,14 @@ Historical control points remain:
 
 M010 must not be rewritten to conceal that its exact hosted evidence was unavailable at authorship and later became a failed hosted run. M011 must cite the failed predecessor run and the final accepted green run.
 
-Strict closure requires all M011 acceptance criteria, no critical/high/medium unresolved finding in scope, and a green hosted `CI / verify` result on the exact accepted candidate.
+Strict closure was accepted because all M011 acceptance criteria were met, no critical/high/medium unresolved finding remains in scope, and hosted `CI / verify` run `31525206176` / job `93891703941` was green on the exact accepted candidate.
 
 ## Recently closed or conditionally closed control points
 
 | Subsystem | Milestone | Status | Closure / controlling evidence |
 |---|---|---|---|
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
+| Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runtime, model adaptation, and ACP | M017 — corrective integration evidence and closure | closed | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |

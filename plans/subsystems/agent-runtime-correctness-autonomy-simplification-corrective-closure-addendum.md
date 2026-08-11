@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification — Corrective Closure Addendum
 
-Status: active
+Status: closed
 
 Source roadmap:
 
@@ -25,6 +25,8 @@ Current repository evidence:
 - M010 constructor/Clippy follow-up: `cbdc01508391e0cd71f74edb8f0c05634d309716`
 - M010 historical closure record: `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`
 - current hosted `CI / verify` run `31521674076`, job `93879950640`: failed at Workspace Clippy on the stale empty bootstrap unit test
+- final M011 candidate `e3b671adb9298e738b38f6196de79f164293b670`
+- final hosted `CI / verify` run `31525206176`, job `93891703941`: passed through Workspace tests
 
 ## 1. Purpose
 
@@ -36,7 +38,7 @@ M010 materially succeeded at its main structural objective: the synthetic reposi
 
 M010 is not strict final closure authority. Its conditional closure record was authored when exact hosted evidence was unavailable. A later hosted run on current `main` now exists and failed at Workspace Clippy because an obsolete empty bootstrap test remained. Independent source review also confirmed that the ordinary tool executor still erases known `ToolError` status into rendered strings before recovery consumes it.
 
-M011 is therefore the final narrow corrective closure milestone. It owns only the stale verification artifact, preservation of typed tool-execution status through the recovery boundary, and final exact hosted evidence.
+M011 was the final narrow corrective closure milestone. It owned only the stale verification artifact, preservation of typed tool-execution status through the recovery boundary, and final exact hosted evidence; its accepted closure is recorded in `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
 
 ## 2. Remaining corrective findings owned by M011
 
@@ -64,7 +66,7 @@ M011 records and fixes those facts without reopening unrelated M010 scope.
 
 ## 4. Dependency and execution order
 
-M011 is dependency-ready now.
+M011 was dependency-ready when execution began and is now closed.
 
 Dependencies:
 
@@ -117,7 +119,7 @@ The separate all-features findings recorded by the Agent Runtime / Model Adaptat
 
 ## 6. Closure rule
 
-The workstream remains `active` until `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md` exists and is accepted.
+The workstream is `closed` because `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md` exists and records accepted strict evidence.
 
 Strict closure requires all of the following:
 
@@ -135,7 +137,7 @@ Strict closure requires all of the following:
 - `011-status.md` records failed predecessor run `31521674076` as well as the final green run;
 - no critical, high, or medium finding remains in M011 scope.
 
-Only after those conditions are satisfied may this addendum and the registry move to `closed`.
+All conditions are satisfied. This addendum and the registry move to `closed`.
 
 If the final hosted run fails solely on a newly demonstrated unrelated subsystem defect, M011 must record the exact failure and ownership rather than broadening this pass or representing the run as green. Strict workstream closure remains conditional/blocked until the governing acceptance criteria can be met truthfully.
 

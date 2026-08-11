@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M011 — Typed Tool Outcome and Hosted Closure Corrective Pass
 
-Status: ready
+Status: implemented
 
 Source subsystem documents:
 
