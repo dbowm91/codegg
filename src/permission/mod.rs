@@ -137,6 +137,32 @@ pub enum PermissionResult {
     Ask(PermissionRequest),
 }
 
+/// The ephemeral receipt produced when the permission boundary accepts a call.
+///
+/// This deliberately contains only evaluated state.  In particular, callers
+/// must not manufacture policy or workspace revisions from unrelated session
+/// identifiers after permission evaluation has completed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionDecisionReceipt {
+    pub decision_id: String,
+    pub outcome: PermissionLevel,
+    pub source: String,
+    pub issued_at: i64,
+    pub policy_revision: Option<String>,
+}
+
+impl PermissionDecisionReceipt {
+    pub fn allowed(source: impl Into<String>, policy_revision: Option<String>) -> Self {
+        Self {
+            decision_id: format!("permission-{}", uuid::Uuid::new_v4()),
+            outcome: PermissionLevel::Allow,
+            source: source.into(),
+            issued_at: chrono::Utc::now().timestamp_millis(),
+            policy_revision,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionRequest {
     pub tool: String,

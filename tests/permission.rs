@@ -86,6 +86,33 @@ async fn test_permission_checker_default() {
 }
 
 #[tokio::test]
+async fn unknown_mcp_tools_remain_ask_without_local_path() {
+    let checker = PermissionChecker::new(None, None);
+    let result = checker.check("mcp__mail__send", None, None).await;
+    assert!(matches!(result, PermissionResult::Ask(_)));
+}
+
+#[tokio::test]
+async fn explicit_mcp_allow_and_deny_override_default_ask() {
+    let checker = PermissionChecker::new(None, None);
+    checker
+        .always_allow("mcp__db__update", Some("record/1"), None)
+        .await;
+    assert!(matches!(
+        checker
+            .check("mcp__db__update", Some("record/1"), None)
+            .await,
+        PermissionResult::Allow
+    ));
+
+    checker.always_deny("mcp__mail__send", None, None).await;
+    assert!(matches!(
+        checker.check("mcp__mail__send", None, None).await,
+        PermissionResult::Deny
+    ));
+}
+
+#[tokio::test]
 async fn test_permission_checker_with_config_allow() {
     let config = Config {
         permission: Some(PermissionConfig {

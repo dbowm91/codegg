@@ -406,9 +406,9 @@ identical to the legacy `execute()` path. MCP tools
 `execute_capture`.
 
 The `ToolExecutionContext` passed to `execute_capture` is built by the
-small helper `AgentLoop::build_tool_execution_context(tc, timeout_ms)`
+small helper `AgentLoop::build_tool_execution_context(tc, timeout_ms, receipt)`
 (`src/agent/loop.rs`). It fills in `session_id`, `cwd`, `timeout_ms`,
-and the resolved `ToolBackendKind`. Backend resolution is delegated
+the resolved `ToolBackendKind`, and the accepted permission receipt. Backend resolution is delegated
 to `AgentLoop::resolve_native_backend(name)`: most tools resolve to
 `Native`, while `websearch` / `webfetch` resolve to `Mcp` when
 `[search].backend = eggsearch` and to `BuiltinLegacy` for the
@@ -416,6 +416,11 @@ to `AgentLoop::resolve_native_backend(name)`: most tools resolve to
 dispatcher emits a `tracing::debug!` line summarising the
 `ToolProvenance` (backend, implementation, elapsed_ms, trust) so the
 structured metadata stays internal and never reaches the model.
+
+Raw MCP tool definitions are cached using a SHA-256 digest over sorted,
+provider-visible names, descriptions, parameter schemas, and defer-loading
+metadata. Equal-count identity or schema replacements therefore invalidate
+the cache without reading credentials or blocking on a long MCP write.
 
 Regression coverage:
 

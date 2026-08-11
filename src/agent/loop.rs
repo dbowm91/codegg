@@ -29,7 +29,7 @@ use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
 use crate::config::schema::Config;
 use crate::error::{AgentError, AppError, ProviderError, ToolError};
 use crate::model_profile::policy::push_control_instruction;
-use crate::permission::{PermissionChecker, PermissionResult};
+use crate::permission::{PermissionChecker, PermissionDecisionReceipt, PermissionResult};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::parse_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
@@ -77,7 +77,7 @@ type ToolDefCache = (
     Option<String>,
     bool,
     bool,
-    usize,
+    String,
     u64,
     bool,
     Vec<crate::provider::ToolDefinition>,
@@ -936,24 +936,10 @@ impl AgentLoop {
         &self,
         tc: &ToolCall,
         timeout_ms: Option<u64>,
+        receipt: &PermissionDecisionReceipt,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
-        let now = chrono::Utc::now().timestamp_millis();
         let agent_id = self.state.current_agent.clone();
-        let workspace_id = self
-            .workspace_root
-            .as_ref()
-            .map(|root| {
-                use sha2::Digest;
-                format!(
-                    "ws:{:x}",
-                    sha2::Sha256::digest(root.to_string_lossy().as_bytes())
-                )
-            })
-            .unwrap_or_else(|| "ws:session-scoped".into());
-        let decision_id = format!("decision:{}:{}:{}", self.session_id, tc.id, now);
-        let principal_identity = format!("agent:{}", agent_id);
-        let workspace_path_policy_id = format!("workspace:{}", workspace_id);
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -978,15 +964,15 @@ impl AgentLoop {
             // M014-A2: Populate the real accepted decision fields.
             // These are the actual permission/path-policy decision
             // values, not synthesized from identity strings.
-            decision_id: Some(decision_id),
-            decision_outcome: Some("allowed".into()),
-            workspace_path_policy_id: Some(workspace_path_policy_id.clone()),
-            workspace_path_policy_revision: Some(format!("policy-revision:{}", workspace_id)),
-            permission_policy_revision: Some(format!("permission-revision:{}", workspace_id)),
-            principal_identity: Some(principal_identity),
+            decision_id: Some(receipt.decision_id.clone()),
+            decision_outcome: Some(receipt.outcome.as_str().into()),
+            workspace_path_policy_id: None,
+            workspace_path_policy_revision: None,
+            permission_policy_revision: receipt.policy_revision.clone(),
+            principal_identity: Some(agent_id),
             caller_class: Some("agent".into()),
             max_effect_class: Some("non_idempotent".into()),
-            decision_issued_at: Some(now),
+            decision_issued_at: Some(receipt.issued_at),
             decision_expires_at: None,
             decision_revoked_at: None,
             program_contract_snapshot: if tc.name.as_str() == "tool_program" {
@@ -1104,8 +1090,12 @@ fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn is_mcp_tool(tool_name: &str) -> bool {
-    tool_name.starts_with("mcp__")
+fn mcp_tool_surface_revision(tools: &[crate::provider::ToolDefinition]) -> String {
+    let mut surface = tools.to_vec();
+    surface.sort_by(|a, b| a.name.cmp(&b.name));
+    use sha2::Digest;
+    let encoded = serde_json::to_vec(&surface).unwrap_or_default();
+    format!("sha256:{:x}", sha2::Sha256::digest(encoded))
 }
 
 fn is_workspace_file_mutation(tool_name: &str, path: Option<&str>) -> bool {
@@ -1154,11 +1144,27 @@ fn is_path_within_working_directory(path: Option<&str>) -> bool {
 
 enum ToolPermissionOutcome {
     QuestionTool,
-    Allowed(ToolCall),
-    Denied { tool_id: String, message: String },
+    Allowed {
+        tool_call: ToolCall,
+        receipt: PermissionDecisionReceipt,
+    },
+    Denied {
+        tool_id: String,
+        message: String,
+    },
 }
 
 impl AgentLoop {
+    fn accepted_permission_receipt(&self, source: &str) -> PermissionDecisionReceipt {
+        // This is a content fingerprint of the configured permission policy,
+        // not a fabricated workspace/session revision. Session decisions are
+        // represented by the receipt source and decision id.
+        PermissionDecisionReceipt::allowed(
+            source,
+            Some(format!("config:{:016x}", self.permission_version())),
+        )
+    }
+
     async fn check_tool_permission(&mut self, tc: &ToolCall) -> ToolPermissionOutcome {
         if tc.name.trim().is_empty() {
             return ToolPermissionOutcome::Denied {
@@ -1275,7 +1281,10 @@ impl AgentLoop {
                     };
                     PermissionRegistry::unregister(&perm_id);
                     if choice.allowed() {
-                        ToolPermissionOutcome::Allowed(tc.clone())
+                        ToolPermissionOutcome::Allowed {
+                            tool_call: tc.clone(),
+                            receipt: self.accepted_permission_receipt("user_choice"),
+                        }
                     } else {
                         ToolPermissionOutcome::Denied {
                             tool_id: tc.id.to_string(),
@@ -1331,7 +1340,10 @@ impl AgentLoop {
                     };
                     PermissionRegistry::unregister(&perm_id);
                     if choice.allowed() {
-                        ToolPermissionOutcome::Allowed(tc.clone())
+                        ToolPermissionOutcome::Allowed {
+                            tool_call: tc.clone(),
+                            receipt: self.accepted_permission_receipt("user_choice"),
+                        }
                     } else {
                         ToolPermissionOutcome::Denied {
                             tool_id: tc.id.to_string(),
@@ -1342,7 +1354,10 @@ impl AgentLoop {
                         }
                     }
                 } else {
-                    ToolPermissionOutcome::Allowed(tc.clone())
+                    ToolPermissionOutcome::Allowed {
+                        tool_call: tc.clone(),
+                        receipt: self.accepted_permission_receipt("permission_evaluation"),
+                    }
                 }
             }
             PermissionResult::Deny => ToolPermissionOutcome::Denied {
@@ -1350,16 +1365,16 @@ impl AgentLoop {
                 message: format!("Tool '{}' denied by permissions", tc.name),
             },
             PermissionResult::Ask(req) => {
-                // Auto-accept MCP tools (mcp__*) and local file mutations
-                // when the target is within the working directory and not
-                // sensitive. Read-only and safe-mutating tools are handled by
-                // `PermissionChecker::check()` short-circuiting to Allow.
-                if (is_mcp_tool(tc.name.as_str())
-                    || is_workspace_file_mutation(tc.name.as_str(), req.path.as_deref()))
+                // Preserve the narrow local-file UX exception. External MCP
+                // origin is never evidence that an unknown tool is safe.
+                if is_workspace_file_mutation(tc.name.as_str(), req.path.as_deref())
                     && is_path_within_working_directory(req.path.as_deref())
                     && sensitive_match.is_none()
                 {
-                    return ToolPermissionOutcome::Allowed(tc.clone());
+                    return ToolPermissionOutcome::Allowed {
+                        tool_call: tc.clone(),
+                        receipt: self.accepted_permission_receipt("workspace_file_mutation"),
+                    };
                 }
 
                 let perm_id = format!("{}-{}", tc.id, tc.name);
@@ -1396,7 +1411,10 @@ impl AgentLoop {
                     }
                 }
                 if allowed {
-                    ToolPermissionOutcome::Allowed(tc.clone())
+                    ToolPermissionOutcome::Allowed {
+                        tool_call: tc.clone(),
+                        receipt: self.accepted_permission_receipt("user_choice"),
+                    }
                 } else {
                     ToolPermissionOutcome::Denied {
                         tool_id: tc.id.to_string(),
@@ -2711,8 +2729,6 @@ impl AgentLoop {
         } else {
             Vec::new()
         };
-        let mcp_tool_count = mcp_tools.len();
-
         // Set defer_loading on MCP tools based on the catalog
         let catalog = self.tool_registry.catalog();
         let mcp_tools: Vec<_> = mcp_tools
@@ -2725,19 +2741,19 @@ impl AgentLoop {
             })
             .collect();
 
-        let permission_version = self.permission_version();
+        // Cache identity is based on the complete provider-visible MCP
+        // surface, not its cardinality. Sorting makes this stable across the
+        // HashMap-backed service and the digest contains no credentials or
+        // transport configuration.
+        let mcp_tool_revision = mcp_tool_surface_revision(&mcp_tools);
 
-        // Note: The tool definition cache uses mcp_tool_count as a proxy for MCP tool changes.
-        // If MCP tool identities change without count changing (e.g., same number but different
-        // tools), the cache may be stale. This is a known limitation - the MCP service would
-        // need to expose a version/hash for more precise invalidation. Current behavior with
-        // try_read() is intentional to avoid blocking the agent loop during MCP writes.
+        let permission_version = self.permission_version();
 
         if let Some((
             ref cache_model,
             cache_plan,
             cache_lsp,
-            cache_mcp_count,
+            ref cache_mcp_count,
             cache_perm_ver,
             cache_expose_raw,
             ref cached_defs,
@@ -2747,7 +2763,7 @@ impl AgentLoop {
             if cache_model.as_ref().map(|s| s.as_str()) == model.map(|s| s.as_str())
                 && cache_plan == self.state.plan_mode
                 && cache_lsp == lsp_enabled
-                && cache_mcp_count == mcp_tool_count
+                && cache_mcp_count == &mcp_tool_revision
                 && cache_perm_ver == permission_version
                 && cache_expose_raw == expose_raw_search
             {
@@ -2941,7 +2957,7 @@ impl AgentLoop {
             model.map(|s| s.to_string()),
             self.state.plan_mode,
             lsp_enabled,
-            mcp_tool_count,
+            mcp_tool_revision,
             permission_version,
             expose_raw_search,
             definitions.clone(),
@@ -4663,8 +4679,8 @@ impl AgentLoop {
                     has_pending_question = true;
                     tool_results.push((idx, tc.id.to_string(), "__QUESTION_PENDING__".to_string()));
                 }
-                ToolPermissionOutcome::Allowed(tc) => {
-                    allowed_tools.push((idx, tc));
+                ToolPermissionOutcome::Allowed { tool_call, receipt } => {
+                    allowed_tools.push((idx, tool_call, receipt));
                 }
                 ToolPermissionOutcome::Denied { tool_id, message } => {
                     tool_results.push((idx, tool_id, message));
@@ -4675,7 +4691,7 @@ impl AgentLoop {
         // Capture snapshot before executing file-modifying tools
         let has_file_modifying = allowed_tools
             .iter()
-            .any(|(_, tc)| is_file_modifying_tool(&tc.name));
+            .any(|(_, tc, _)| is_file_modifying_tool(&tc.name));
         if has_file_modifying {
             // Clear stale file-change events so we only checkpoint this batch.
             let _ = self.drain_file_change_events();
@@ -4696,7 +4712,7 @@ impl AgentLoop {
         let mut mcp_tool_calls = Vec::with_capacity(4);
         let regular_tools: Vec<_> = allowed_tools
             .into_iter()
-            .filter(|(idx, tc)| {
+            .filter(|(idx, tc, _)| {
                 if tc.name.starts_with("mcp__") {
                     mcp_tool_calls.push((*idx, tc.clone()));
                     false
@@ -4791,14 +4807,15 @@ impl AgentLoop {
             })
             .unwrap_or_else(|| "ws:session-scoped".into());
         let agent_id = self.state.current_agent.clone();
-        for (orig_idx, tc) in regular_tools {
+        for (orig_idx, tc, receipt) in regular_tools {
             // Build the structured-execution context here (before
             // `tc` is moved into an Arc) so the helper, which takes
             // `&self`, can read live state without forcing the
             // `async move` closure to capture `self` by move.
             let tool_name_for_ctx = tc.name.clone();
             let timeout = self.get_tool_timeout(&tool_name_for_ctx);
-            let exec_ctx = self.build_tool_execution_context(&tc, Some(timeout.as_millis() as u64));
+            let exec_ctx =
+                self.build_tool_execution_context(&tc, Some(timeout.as_millis() as u64), &receipt);
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
             let id = tc_arc.id.clone();
@@ -6770,5 +6787,31 @@ Current session context: [old frame here that would have been clobbered]";
         assert!((analysis.cache_hit_rate - 0.6).abs() < 1e-9);
         assert_eq!(analysis.input_tokens, 10000);
         assert_eq!(analysis.cached_input_tokens, 6000);
+    }
+
+    #[test]
+    fn mcp_surface_revision_detects_equal_count_schema_changes() {
+        let first = vec![crate::provider::ToolDefinition {
+            name: "mcp__db__update".into(),
+            description: "update one record".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"id":{"type":"string"}}}),
+            defer_loading: Some(false),
+        }];
+        let unchanged = first.clone();
+        let replaced = vec![crate::provider::ToolDefinition {
+            name: "mcp__db__update".into(),
+            description: "update many records".into(),
+            parameters: serde_json::json!({"type":"object","properties":{"ids":{"type":"array"}}}),
+            defer_loading: Some(false),
+        }];
+
+        assert_eq!(
+            mcp_tool_surface_revision(&first),
+            mcp_tool_surface_revision(&unchanged)
+        );
+        assert_ne!(
+            mcp_tool_surface_revision(&first),
+            mcp_tool_surface_revision(&replaced)
+        );
     }
 }

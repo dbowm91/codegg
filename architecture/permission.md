@@ -132,6 +132,13 @@ impl PermissionChecker {
 2. If `Ask`, registering with `PermissionRegistry` and publishing `PermissionPending`
 3. Waiting for user response
 
+The agent loop does not treat external origin as an approval. Unknown raw
+MCP tools, including calls without a local path, follow the normal mutating
+default and remain `Ask` until an explicit policy or user decision allows
+them. Accepted calls carry an ephemeral `PermissionDecisionReceipt` into
+execution; unavailable policy or workspace revisions remain absent rather
+than being reconstructed from session or workspace identifiers.
+
 ### PermissionStore
 
 HMAC-signed persistent decision cache:
