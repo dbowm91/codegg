@@ -249,7 +249,7 @@ Remove blanket MCP `Ask` auto-approval, preserve explicit trusted/read-only clas
 
 ### M002 — Textual tool-call repair safety
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/002-textual-tool-call-repair-safety.md`
 
@@ -273,7 +273,7 @@ Use current-turn input for routing/research/recovery heuristics, separate cumula
 
 ### M005 — Agent-loop recovery and autonomous-execution state-machine simplification
 
-Status: blocked on M001, M002, and M004
+Status: blocked on M004 (M001 and M002 closed)
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/005-agent-loop-recovery-and-autonomy-state-machine.md`
 

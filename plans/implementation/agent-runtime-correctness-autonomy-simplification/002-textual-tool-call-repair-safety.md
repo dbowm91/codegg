@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M002 — Textual Tool-Call Repair Safety
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
