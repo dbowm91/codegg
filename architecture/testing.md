@@ -225,7 +225,7 @@ Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` th
 
 The job runs these steps in order:
 
-1. Generated-agent schema/source checks (`generate_builtin_agents.py --check`, `check_builtin_agents.py`)
+1. Generated-agent schema/source synchronization (`generate_builtin_agents.py --check`)
 2. `codegg-core` boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
@@ -233,7 +233,7 @@ The job runs these steps in order:
 6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
 7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-The local quick script additionally runs the generated-agent checks, core
+The local quick script additionally runs the generated-agent synchronization check, core
 boundary, sandbox contract, and execution-ownership guard before the workspace
 check. CI runs the same cheap boundary guards in its single job, then uses
 Clippy as the default-feature workspace compile/type-check gate before the

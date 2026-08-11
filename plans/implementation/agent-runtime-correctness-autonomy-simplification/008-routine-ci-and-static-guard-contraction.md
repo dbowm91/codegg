@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M008 — Routine CI and Static-Guard Contraction
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 

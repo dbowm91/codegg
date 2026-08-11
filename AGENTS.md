@@ -105,7 +105,6 @@ python3 scripts/check_tui_project_authority.py      # multi-project TUI authorit
 python3 scripts/check_tool_broker_boundary.py       # tool broker boundary guard
 scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
 scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
-python3 scripts/check_builtin_agents.py             # verify TOML matches generated.rs
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
 bash scripts/check_projection_publication_seam.sh    # projection publication-seam guard
@@ -175,7 +174,6 @@ Built-in agent definitions live in `assets/agents/*.toml` with prompt text in `a
 ```bash
 python3 scripts/generate_builtin_agents.py              # regenerate src/agent/builtins/generated.rs
 python3 scripts/generate_builtin_agents.py --check      # staleness + schema validation (CI mode)
-python3 scripts/check_builtin_agents.py                 # verify TOML matches generated.rs
 ```
 
 Generated Rust is checked in at `src/agent/builtins/`. **Do not edit generated files directly.**

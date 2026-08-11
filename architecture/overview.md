@@ -459,7 +459,6 @@ python3 scripts/check_daemon_cwd_usage.py        # workspace-bound daemon path g
 python3 scripts/check_scheduler_bypass.py        # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py     # process-spawn site ownership manifest
 python3 scripts/check_git_forbidden_patterns.py  # git secret boundary + policy drift
-python3 scripts/check_builtin_agents.py          # verify TOML matches generated.rs
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 python3 scripts/check_projection_transport_isolation.py # projection raw-broadcast/identity guard
 ```

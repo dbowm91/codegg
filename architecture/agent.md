@@ -346,8 +346,9 @@ pub enum AgentMode {
 Built-in agent definitions are maintained as TOML files in `assets/agents/` with
 companion prompt markdown in `assets/prompts/agents/`. A Python generator
 (`scripts/generate_builtin_agents.py`) compiles these into
-`src/agent/builtins/generated.rs`. Run `scripts/check_builtin_agents.py` to
-verify the TOML sources match the generated Rust output.
+`src/agent/builtins/generated.rs`. Run
+`scripts/generate_builtin_agents.py --check` to validate the schema and verify
+the TOML sources match the generated Rust output.
 
 The generator supports `--check` mode for CI: validates schema (valid mode,
 required name/description, permission actions, prompt file existence, no unknown
