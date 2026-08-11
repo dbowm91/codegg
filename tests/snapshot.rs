@@ -65,11 +65,12 @@ async fn test_snapshot_capture_stays_bound_to_explicit_workspace_root() {
     let workspace_b = tempfile::tempdir().unwrap();
     fs::write(workspace_a.path().join("a.txt"), "workspace-a").unwrap();
     fs::write(workspace_b.path().join("b.txt"), "workspace-b").unwrap();
+    insert_test_project_and_session(&pool).await;
 
     // Simulate process CWD pointing at another workspace: the manager's
     // explicit root remains the only capture authority.
-    let manager = SnapshotManager::new(pool, workspace_b.path().to_path_buf());
-    let snapshot = manager.capture("workspace-b-session", None).await.unwrap();
+    let mut manager = SnapshotManager::new(pool, workspace_b.path().to_path_buf());
+    let snapshot = manager.capture("test-session", None).await.unwrap();
 
     assert!(snapshot.files.keys().any(|path| path.ends_with("b.txt")));
     assert!(!snapshot.files.keys().any(|path| path.ends_with("a.txt")));
