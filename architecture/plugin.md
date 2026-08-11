@@ -18,6 +18,11 @@ The `plugin` module provides a WASM-based plugin system for extending agent capa
 ## Technology
 
 Uses **Wasmtime** runtime for WASM execution (feature-gated with `plugins` flag).
+The dependency disables Wasmtime's defaults and retains only `runtime`,
+`cranelift`, and `std`, which are the features used by CodeGG's module/linker,
+fuel, and value-based ABI. This keeps component-model, async, cache, WAT,
+profiling, GC, and other unused runtime extensions out of plugin builds while
+preserving the existing sandbox and resource limits.
 
 ## Project Structure
 
@@ -838,7 +843,7 @@ Requires `plugins` feature in `Cargo.toml`:
 
 ```toml
 [features]
-plugins = ["dep:wasmtime", "dep:wasmtime-wasi"]
+plugins = ["wasmtime"]
 ```
 
 When the `plugins` feature is disabled, `WasmRuntime::invoke` returns `RuntimeError::Unsupported`. The legacy `execute_wasm_hook` is a no-op stub that returns `HookResult::ok(ctx.input)`.
