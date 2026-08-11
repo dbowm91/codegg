@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M007 — Measured Binary Footprint and Upstream Dependency Review
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 

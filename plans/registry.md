@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M007-M008 ready | M001-M006 closed; M009 requires M001-M008. |
+| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M008 ready | M001-M007 closed; M009 requires M001-M008. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -33,7 +33,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M007 — measured binary footprint and upstream dependency review | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/007-measured-binary-footprint-and-upstream-dependency-review.md` | hard: none; soft: final size reconciliation after M006 |
 | Agent runtime correctness, autonomy, and simplification | M008 — routine CI and static-guard contraction | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/008-routine-ci-and-static-guard-contraction.md` | hard: none; reconcile guard ownership against M001-M006 at execution time |
 
 ## Active closure work
@@ -52,14 +51,14 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | M007 and M008 remain open; M001-M006 closure records are required. |
+| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | M008 remains open; M001-M007 closure records are required. |
 
 ## Execution order
 
 The new workstream should execute correctness before broad harness cleanup:
 
 1. M001, M002, M003, and M004 may proceed independently. Prefer M001/M002 early because they close execution-authority boundaries used by later recovery work.
-2. M007 and M008 are independently ready and may proceed in parallel with M001-M004 when they do not conflict with active production edits.
+2. M007 is closed; M008 remains independently ready and may proceed in parallel with M001-M004 when it does not conflict with active production edits.
 3. M005 becomes ready only after M001, M002, and M004 close. M003 is a soft dependency and should preferably be complete first to reduce incidental loop state.
 4. M006 follows M005 so prompt/control consolidation targets the final recovery semantics rather than obsolete nudges.
 5. M009 is the sole integration/closure milestone and starts only after M001-M008 have accepted closure records.
@@ -87,6 +86,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M007 — measured binary footprint and upstream dependency review | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/007-status.md` | `deb07a2` |
 | Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | `4cd004d` |
 | Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md` | `493fd59` |
 | Agent runtime correctness, autonomy, and simplification | M005 — recovery and autonomy state machine | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md` | `ddb495a` |
