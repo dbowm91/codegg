@@ -4580,9 +4580,10 @@ impl AgentLoop {
                                             return (
                                                 orig_idx,
                                                 tc.id.to_string(),
-                                                ToolExecutionOutcome::from_tool_error(
-                                                    ToolError::Execution(e.to_string()),
-                                                ),
+                                                ToolExecutionOutcome {
+                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                                                    model_text: format!("Error: {}", e),
+                                                },
                                             );
                                         }
                                         Err(_) => {
@@ -4611,27 +4612,29 @@ impl AgentLoop {
                         (
                             orig_idx,
                             tc.id.to_string(),
-                            ToolExecutionOutcome::from_tool_error(ToolError::Execution(
-                                last_err.unwrap_or_default(),
-                            )),
+                            ToolExecutionOutcome {
+                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                                model_text: format!("Error: {}", last_err.unwrap_or_default()),
+                            },
                         )
                     } else {
                         (
                             orig_idx,
                             tc.id.to_string(),
-                            ToolExecutionOutcome::from_tool_error(ToolError::Execution(
-                                "MCP service not available".into(),
-                            )),
+                            ToolExecutionOutcome {
+                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
+                                model_text: "Error: MCP service not available".into(),
+                            },
                         )
                     }
                 } else {
                     (
                         orig_idx,
                         tc.id.to_string(),
-                        ToolExecutionOutcome::from_tool_error(ToolError::Format(format!(
-                            "Invalid MCP tool name '{}'",
-                            name
-                        ))),
+                        ToolExecutionOutcome {
+                            status: crate::agent::progress_recovery::ToolExecutionStatus::ProtocolError,
+                            model_text: format!("Error: Invalid MCP tool name '{}'", name),
+                        },
                     )
                 }
             });

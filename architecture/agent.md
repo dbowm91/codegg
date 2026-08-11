@@ -1255,10 +1255,11 @@ permission denial is typed separately from tool failure and cannot trigger
 base-palette restoration. The generic loop does not synthesize a repository
 `list .` bootstrap call or issue a second heuristic continuation after the
 bounded transition. Primary and follow-up loops share the same continuation
-budget. `ToolExecutionOutcome` carries typed status into recovery; rendered-
-text classification is limited to legacy fallback executors. Strong models
-finish directly and fragile-model compatibility belongs behind an explicit
-adapter contract.
+budget. `ToolExecutionOutcome` carries typed status into recovery; native,
+MCP, and question execution branches preserve known status before rendering
+model text, so recovery never classifies ordinary results by substrings. Strong
+models finish directly and fragile-model compatibility belongs behind an
+explicit adapter contract.
 
 ### Auto-Accept Read-Only Tools
 
