@@ -25,19 +25,21 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M009 ready | M001-M008 closed; M009 is the integration/closure milestone. |
+| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M010 ready | M001-M008 remain closed. M009/PR #74 is predecessor integration evidence; M010 is required before strict workstream closure. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
-| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
+| Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the agent-runtime corrective closure pass. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | hard: M001-M008 closure records |
+| Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/010-recovery-state-strict-closure-corrective-pass.md` | hard: M001-M008 closed; retain/rebase valid M009/PR #74 integration changes; no external blocker |
 
 ## Active closure work
 
-M009 is the dependency-ready integration and closure pass for the new agent-runtime correctness workstream.
+M010 is the dependency-ready corrective closure pass for the agent-runtime correctness workstream. It exists because post-M009 review found that M005's closure evidence overstated recovery simplification: dead bootstrap/retry branches remain and a repository-specific continuation can still create an autonomous provider turn outside the claimed single `AutonomyState` budget.
+
+PR #74 / M009 remains useful predecessor integration evidence, including the broker-principal correction, explicit workspace fixture reconciliation, documentation updates, and green predecessor hosted run `31515706555`. Its `closed` claim must not be treated as the final workstream closure authority until M010 is implemented and `010-status.md` is accepted.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
@@ -49,23 +51,30 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 ## Blocked work
 
-No registered implementation plans are currently blocked by this workstream.
+No registered implementation plans are currently blocked by the agent-runtime corrective closure pass.
 
 ## Execution order
 
-The new workstream should execute correctness before broad harness cleanup:
+The controlling sequence for this workstream is now:
 
-1. M001, M002, M003, and M004 may proceed independently. Prefer M001/M002 early because they close execution-authority boundaries used by later recovery work.
-2. M007 and M008 are closed; M009 is now ready and owns the final integration and closure evidence.
-3. M005 becomes ready only after M001, M002, and M004 close. M003 is a soft dependency and should preferably be complete first to reduce incidental loop state.
-4. M006 follows M005 so prompt/control consolidation targets the final recovery semantics rather than obsolete nudges.
-5. M009 is the sole integration/closure milestone and is ready now that M001-M008 have accepted closure records.
+1. M001-M008 remain closed and are not reopened except for focused regression verification at their integration boundaries.
+2. M009 / PR #74 is predecessor integration work. Retain or rebase its valid broker-principal, workspace-fixture, project-catalog-guard, and documentation corrections.
+3. M010 is ready now and must delete unreachable recovery code, remove the unbudgeted repository continuation path, unify primary/follow-up continuation authority, and consume typed execution status where it already exists.
+4. Create `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md` only after focused tests and `scripts/verify.sh quick` pass.
+5. Run one existing hosted `CI / verify` job on the exact final corrective candidate. Only then may the workstream and corrective addendum move to `closed`.
 
-Verification for this line remains minimal and change-specific: focused tests for each corrected invariant, `scripts/verify.sh quick` after coherent production milestones, and one broad final integration/hosted `verify` pass in M009. M007 measurements are manual diagnostics, not gates. M008 must reduce routine verification rather than add lanes, matrices, artifacts, scheduled audits, automatic publication, or release cadence.
+Verification remains minimal and change-specific: focused recovery/loop/harness tests, `scripts/verify.sh quick`, and one ordinary hosted `verify` run on the final corrective candidate. Do not add a new CI lane, matrix, dead-code guard, scheduled audit, artifact workflow, coverage/benchmark/size gate, automatic publication, or release cadence.
 
 ## Workstream closure policy
 
-The active agent-runtime correctness workstream closes only through M009 and `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md`. M001-M008 require their own milestone closure records because M009 depends on accepted evidence rather than implementation claims.
+The active agent-runtime correctness workstream now closes only through M010 and `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`.
+
+M009 remains historical integration/closure-attempt evidence. Its PR and green candidate are not discarded, but its final closure recommendation is superseded by the corrective requirement recorded in:
+
+- `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md`;
+- `plans/implementation/agent-runtime-correctness-autonomy-simplification/010-recovery-state-strict-closure-corrective-pass.md`.
+
+M001-M008 retain their existing closure records. M010 must not rewrite those records to conceal the discrepancy; it must add corrective traceability and demonstrate that the remaining recovery-state acceptance criteria are actually true on the final tree.
 
 The earlier post-audit M001-M008 remain closed as historical implementation milestones with their existing records:
 
@@ -88,7 +97,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 | Agent runtime correctness, autonomy, and simplification | M008 — routine CI and static-guard contraction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/008-status.md` | `66326ad` |
 | Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | `4cd004d` |
 | Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md` | `493fd59` |
-| Agent runtime correctness, autonomy, and simplification | M005 — recovery and autonomy state machine | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md` | `ddb495a` |
+| Agent runtime correctness, autonomy, and simplification | M005 — recovery and autonomy state machine | closed with corrective follow-up required | `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md`; reconciled by M010 | `ddb495a` |
 | Agent runtime correctness, autonomy, and simplification | M003 — workspace-bound AgentLoop construction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/003-status.md` | `8c2638db` |
 | Agent runtime correctness, autonomy, and simplification | M002 — textual tool-call repair safety | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/002-status.md` | `86f8f43` |
 | Agent runtime correctness, autonomy, and simplification | M001 — MCP authority, provenance, and tool-surface correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/001-status.md` | `fb972426` |
