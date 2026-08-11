@@ -1,13 +1,13 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M003 — Workspace-Bound AgentLoop Construction
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
 - `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md`
 - Milestone M003
 
-Repository baseline reviewed: `e88d6f4f67ff729c894b228ddb8b5324582f3fbc`
+Repository baseline reviewed: `e88d6f4f67ff729c894b228ddb8b5324582f3fbc`; implemented at `8c2638db`
 
 Primary class: correctness/ownership invariant
 

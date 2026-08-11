@@ -257,11 +257,11 @@ Move textual-tool compatibility behind explicit model/provider adapter capabilit
 
 ### M003 — Workspace-bound AgentLoop construction and snapshot ownership
 
-Status: ready
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/003-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/003-workspace-bound-agent-loop-construction.md`
 
-Require explicit execution/workspace identity during production loop construction, build snapshots from that identity, make mutation/path helpers workspace-relative, and collapse the transitional factory/setter chain where it creates invalid intermediate state.
+Require explicit execution/workspace identity during production loop construction, build snapshots from that identity, make mutation/path helpers workspace-relative, and collapse the transitional factory/setter chain where it creates invalid intermediate state. Closed at `8c2638db`.
 
 ### M004 — Current-turn identity, goal accounting, and terminal lifecycle correctness
 
