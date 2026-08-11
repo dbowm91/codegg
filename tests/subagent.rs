@@ -232,7 +232,7 @@ mod tests {
             depth: 0,
             max_tool_calls: None,
             parent_model: None,
-            workspace_root: None,
+            workspace_root: Some(std::env::current_dir().expect("test workspace root")),
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -351,7 +351,7 @@ mod tests {
             depth: 0,
             max_tool_calls: None,
             parent_model: None,
-            workspace_root: None,
+            workspace_root: Some(std::env::current_dir().expect("test workspace root")),
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -417,7 +417,7 @@ mod tests {
             depth: 0,
             max_tool_calls: None,
             parent_model: None,
-            workspace_root: None,
+            workspace_root: Some(std::env::current_dir().expect("test workspace root")),
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -688,7 +688,7 @@ mod tests {
             depth: 0,
             max_tool_calls: None,
             parent_model: None,
-            workspace_root: None,
+            workspace_root: Some(std::env::current_dir().expect("test workspace root")),
         };
 
         let created_id = create_task_and_send(&task_store, &spawner, request.clone()).await;
@@ -891,7 +891,7 @@ mod tests {
                 depth: 0,
                 max_tool_calls: None,
                 parent_model: None,
-                workspace_root: None,
+                workspace_root: Some(std::env::current_dir().expect("test workspace root")),
             };
             let result = spawner.send_async(request).await;
             assert!(result.is_ok(), "send_async should succeed for task {}", i);
