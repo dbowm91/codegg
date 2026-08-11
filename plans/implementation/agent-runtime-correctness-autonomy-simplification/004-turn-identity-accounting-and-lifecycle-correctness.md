@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M004 — Turn Identity, Accounting, and Lifecycle Correctness
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 

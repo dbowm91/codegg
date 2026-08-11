@@ -124,14 +124,15 @@ pub goal_wall_clock: Mutex<GoalWallClock>,
    - `BudgetLimited` → queue `build_budget_wrap_up_prompt()`, drain once, stop.
    - Terminal / no goal → exit.
 
-### Per-Turn Token Tracking
+### Per-Turn Accounting Deltas
 
-```rust
-pub last_turn_input_tokens: i64,   // from ChatEvent::Finish
-pub last_turn_output_tokens: i64,
-```
-
-Written on each `ChatEvent::Finish` inside `stream_once(&mut self, ...)`. Reset to 0 before each continuation turn so deltas are per-turn, not cumulative.
+The loop keeps cumulative hard-limit counters separate from the deltas awaiting
+goal persistence. Each provider response contributes its input/output usage to
+`unaccounted_input_tokens` and `unaccounted_output_tokens`; tool calls likewise
+contribute to `unaccounted_tool_calls` while `tool_call_count` remains
+cumulative. A successful `account_for_turn()` clears these deltas. Storage
+failure retains them for retry rather than silently losing or double-counting
+work.
 
 ## GoalStore (`store.rs`)
 

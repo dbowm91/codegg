@@ -125,9 +125,10 @@ pub struct AgentLoopState {
     pub start_time: Instant,      // Session start time
     pub plan_mode: bool,          // Plan mode flag
     pub plan_topic: Option<String>, // Plan mode topic
-    pub tool_call_count: usize,   // Tool calls this session
-    pub last_turn_input_tokens: i64,  // Per-turn tokens for goal accounting
-    pub last_turn_output_tokens: i64,
+    pub tool_call_count: usize,   // Cumulative hard-limit counter
+    pub unaccounted_tool_calls: usize, // Since the last successful goal update
+    pub unaccounted_input_tokens: i64, // Provider-response deltas awaiting accounting
+    pub unaccounted_output_tokens: i64,
 }
 ```
 
@@ -969,9 +970,20 @@ Turn ends
       Terminal/NoGoal → exit
 ```
 
-### Per-Turn Token Tracking
+### Accounting and turn identity
 
-`AgentLoopState` tracks `last_turn_input_tokens` and `last_turn_output_tokens`, written on each `ChatEvent::Finish` inside `stream_once(&mut self, ...)`. These are reset to 0 before each continuation turn so deltas are per-turn, not cumulative.
+Session-origin context (`original_user_prompt`) is retained for long-lived goal
+and security-review context. Turn-local routing, research triggering, and
+repository-task recovery use the latest user message in the submitted request.
+
+`tool_call_count` remains cumulative for hard limits. Goal accounting consumes
+separate `unaccounted_*` deltas and clears them only after a successful storage
+update, so continuations cannot charge earlier work again. Provider usage is
+accumulated from each response in the logical turn.
+
+`AgentLoop` is the sole publisher of `AgentFinished`, including failure and
+interruption summaries. `TurnRuntime` separately publishes exactly one daemon
+`TurnCompleted` or `TurnFailed` event.
 
 ### Continuation Loop Safety
 

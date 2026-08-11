@@ -1451,12 +1451,10 @@ pub struct AgentLoopState {
     pub plan_mode: bool,
     pub plan_topic: Option<String>,
     pub tool_call_count: usize,
-    /// Last turn's input tokens (cumulative per-call reported by the
-    /// provider). Used to compute per-turn deltas for goal accounting.
-    pub last_turn_input_tokens: i64,
-    /// Last turn's output tokens (cumulative per-call reported by the
-    /// provider).
-    pub last_turn_output_tokens: i64,
+    /// Work accumulated since the last successful goal-accounting update.
+    pub unaccounted_tool_calls: usize,
+    pub unaccounted_input_tokens: i64,
+    pub unaccounted_output_tokens: i64,
 }
 
 pub struct ExecutionLimits {
@@ -1734,8 +1732,9 @@ impl AgentLoop {
                 plan_mode: false,
                 plan_topic: None,
                 tool_call_count: 0,
-                last_turn_input_tokens: 0,
-                last_turn_output_tokens: 0,
+                unaccounted_tool_calls: 0,
+                unaccounted_input_tokens: 0,
+                unaccounted_output_tokens: 0,
             },
             limits: ExecutionLimits::default(),
             provider,
@@ -2325,11 +2324,17 @@ impl AgentLoop {
                                     }
                                 });
                             }
-                            // Record per-turn token usage on the loop
-                            // state so `account_goal_for_turn` can pass
-                            // it to the active goal's budget.
-                            self.state.last_turn_input_tokens = usage.input_tokens as i64;
-                            self.state.last_turn_output_tokens = usage.output_tokens as i64;
+                            // Provider usage is a response delta. Accumulate
+                            // it for goal accounting while keeping the hard
+                            // limits' counters cumulative independently.
+                            self.state.unaccounted_input_tokens = self
+                                .state
+                                .unaccounted_input_tokens
+                                .saturating_add(usage.input_tokens as i64);
+                            self.state.unaccounted_output_tokens = self
+                                .state
+                                .unaccounted_output_tokens
+                                .saturating_add(usage.output_tokens as i64);
                             // Context cache stats are now recorded once per
                             // provider response via the main loop's call to
                             // record_context_cache_stats_from_processor().
@@ -2367,6 +2372,10 @@ impl AgentLoop {
                         None
                     },
                 )
+            } else if self.steering.load(Ordering::SeqCst)
+                || self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow())
+            {
+                ("interrupted".to_string(), None, None, None, None)
             } else {
                 ("completed".to_string(), None, None, None, None)
             };
@@ -2402,10 +2411,28 @@ impl AgentLoop {
         }
     }
 
+    fn publish_agent_finished_error(&self, error: &AppError) {
+        crate::bus::global::GlobalEventBus::publish(AppEvent::AgentFinished {
+            session_id: self.session_id.clone(),
+            stop_reason: if self.steering.load(Ordering::SeqCst) {
+                "interrupted".to_string()
+            } else {
+                "error".to_string()
+            },
+            input_tokens: (self.state.unaccounted_input_tokens > 0)
+                .then_some(self.state.unaccounted_input_tokens as usize),
+            output_tokens: (self.state.unaccounted_output_tokens > 0)
+                .then_some(self.state.unaccounted_output_tokens as usize),
+            cached_tokens: None,
+            reasoning_tokens: None,
+        });
+        tracing::error!(session_id = %self.session_id, error = %error, "agent loop failed");
+    }
+
     /// Account a finished turn against the active goal. Called from
     /// `run()` after the loop body so the budget is updated even on
     /// the user's last turn.
-    async fn account_goal_for_turn(&self) {
+    async fn account_goal_for_turn(&mut self) {
         let Some(goal_store) = self.goal_store.clone() else {
             return;
         };
@@ -2424,10 +2451,10 @@ impl AgentLoop {
             wc.last_accounted_at = Some(std::time::Instant::now());
             delta
         };
-        let tool_calls = self.state.tool_call_count as i64;
-        let input_tokens = self.state.last_turn_input_tokens;
-        let output_tokens = self.state.last_turn_output_tokens;
-        let _ = crate::goal::runtime::account_for_turn(
+        let tool_calls = self.state.unaccounted_tool_calls as i64;
+        let input_tokens = self.state.unaccounted_input_tokens;
+        let output_tokens = self.state.unaccounted_output_tokens;
+        let result = crate::goal::runtime::account_for_turn(
             &goal_store,
             &self.session_id,
             input_tokens,
@@ -2437,6 +2464,13 @@ impl AgentLoop {
             wallclock_delta,
         )
         .await;
+        if result.is_ok() {
+            self.state.unaccounted_tool_calls = 0;
+            self.state.unaccounted_input_tokens = 0;
+            self.state.unaccounted_output_tokens = 0;
+        } else {
+            tracing::warn!(session_id = %self.session_id, "goal accounting failed; retaining unaccounted deltas");
+        }
     }
 
     /// Decide whether to autonomously continue the active goal.
@@ -2498,8 +2532,6 @@ impl AgentLoop {
             // Reset per-turn token/tool counters so the next
             // accounting tick measures the *continuation* turn, not
             // a stale carry-over from the user's turn.
-            self.state.last_turn_input_tokens = 0;
-            self.state.last_turn_output_tokens = 0;
             let _ = self.follow_up_tx.send(prompt);
             self.drain_follow_up(request, all_events, processor).await;
             // After the continuation turn finishes, account for it
@@ -2585,7 +2617,7 @@ impl AgentLoop {
             return;
         }
 
-        let (prompt, tool_name) = self.extract_first_prompt_and_tool(request);
+        let (prompt, tool_name) = self.extract_current_prompt_and_tool(request);
         if prompt.is_empty() {
             return;
         }
@@ -2643,19 +2675,32 @@ impl AgentLoop {
         "read"
     }
 
-    fn extract_first_prompt_and_tool(&self, request: &ChatRequest) -> (String, &'static str) {
-        for msg in &request.messages {
-            if let Message::User { content } = msg {
-                for part in content {
-                    if let crate::provider::ContentPart::Text { text } = part {
-                        let prompt = text.to_string();
-                        let tool = Self::infer_tool_from_prompt(&prompt);
-                        return (prompt, tool);
-                    }
+    fn latest_user_prompt(request: &ChatRequest) -> String {
+        request
+            .messages
+            .iter()
+            .rev()
+            .find_map(|msg| match msg {
+                Message::User { content } => {
+                    let prompt = content
+                        .iter()
+                        .filter_map(|part| match part {
+                            ContentPart::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    (!prompt.trim().is_empty()).then_some(prompt)
                 }
-            }
-        }
-        (String::new(), "read")
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    fn extract_current_prompt_and_tool(&self, request: &ChatRequest) -> (String, &'static str) {
+        let prompt = Self::latest_user_prompt(request);
+        let tool = Self::infer_tool_from_prompt(&prompt);
+        (prompt, tool)
     }
 
     async fn build_tool_definitions(&mut self) -> Vec<crate::provider::ToolDefinition> {
@@ -3242,7 +3287,17 @@ impl AgentLoop {
     }
 
     #[instrument(skip(self, request), fields(session_id = %self.session_id, turn_count = self.state.turn_count))]
-    pub async fn run(&mut self, mut request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+    pub async fn run(&mut self, request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+        match self.run_inner(request).await {
+            Ok(events) => Ok(events),
+            Err(error) => {
+                self.publish_agent_finished_error(&error);
+                Err(error)
+            }
+        }
+    }
+
+    async fn run_inner(&mut self, mut request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
         let session_start_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionStart,
             session_id: Some(self.session_id.clone()),
@@ -3357,37 +3412,22 @@ impl AgentLoop {
         let mut did_bootstrap_tool = false;
         let mut bootstrap_repeat_budget: u8 = 0;
         let mut narration_retry_budget: u8 = 0;
-        let original_prompt = request
-            .messages
-            .iter()
-            .find_map(|m| {
-                if let Message::User { content } = m {
-                    content.iter().find_map(|p| {
-                        if let ContentPart::Text { text } = p {
-                            Some(text.to_string())
-                        } else {
-                            None
-                        }
-                    })
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default();
+        let current_turn_prompt = Self::latest_user_prompt(&request);
 
         if self.original_user_prompt.is_none() {
-            self.original_user_prompt = Some(original_prompt.clone());
+            self.original_user_prompt = Some(current_turn_prompt.clone());
         }
 
         // Phase 3: research trigger hint. If the user's prompt looks
         // like a research task (comparison, library eval, API, security,
-        // architecture), prepend a hint to the first user message so
+        // architecture), prepend a hint to the current user message so
         // the model is steered toward spawning a `research` subagent.
-        if !original_prompt.is_empty() {
-            if let Some(hint) = self.maybe_inject_research_hint(&original_prompt) {
+        if !current_turn_prompt.is_empty() {
+            if let Some(hint) = self.maybe_inject_research_hint(&current_turn_prompt) {
                 if let Some(Message::User { content }) = request
                     .messages
                     .iter_mut()
+                    .rev()
                     .find(|m| matches!(m, Message::User { .. }))
                 {
                     // Prepend a text part to the existing user content.
@@ -3868,7 +3908,7 @@ impl AgentLoop {
                         || (model_stuck_narrating && bootstrap_repeat_budget < 2))
                     && self.state.turn_count <= 6
                     && stop_is_soft_or_confused
-                    && is_repo_task_prompt(&original_prompt)
+                    && is_repo_task_prompt(&current_turn_prompt)
                 {
                     let synthetic = ToolCall {
                         id: format!("call_bootstrap_{}", uuid::Uuid::new_v4()).into(),
@@ -4001,7 +4041,7 @@ impl AgentLoop {
                     continue;
                 }
                 if just_executed_tools
-                    && is_repo_task_prompt(&original_prompt)
+                    && is_repo_task_prompt(&current_turn_prompt)
                     && is_soft_stop_reason(processor.stop_reason())
                 {
                     push_control_instruction(
@@ -4085,6 +4125,10 @@ impl AgentLoop {
 
             if !tool_calls.is_empty() {
                 self.state.tool_call_count += tool_calls.len();
+                self.state.unaccounted_tool_calls = self
+                    .state
+                    .unaccounted_tool_calls
+                    .saturating_add(tool_calls.len());
             }
 
             // Recovery observes one provider batch as one logical action. It
@@ -5985,6 +6029,65 @@ mod tests {
             .unwrap_or_default();
         assert!(!resolved.enabled);
         assert!((resolved.min_confidence - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn current_turn_prompt_uses_latest_user_message() {
+        let request = ChatRequest {
+            messages: vec![
+                Message::User {
+                    content: vec![ContentPart::Text {
+                        text: "Compare the old libraries".to_string().into(),
+                    }],
+                },
+                Message::Assistant {
+                    content: vec![ContentPart::Text {
+                        text: "Historical answer".to_string().into(),
+                    }],
+                    tool_calls: Vec::new(),
+                },
+                Message::User {
+                    content: vec![ContentPart::Text {
+                        text: "Read src/main.rs".to_string().into(),
+                    }],
+                },
+            ],
+            model: "test/model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+        };
+
+        assert_eq!(AgentLoop::latest_user_prompt(&request), "Read src/main.rs");
+    }
+
+    #[test]
+    fn accounting_deltas_are_distinct_from_cumulative_limits() {
+        let mut state = AgentLoopState {
+            current_agent: "standard".to_string(),
+            turn_count: 3,
+            total_tokens: 100,
+            start_time: Instant::now(),
+            plan_mode: false,
+            plan_topic: None,
+            tool_call_count: 5,
+            unaccounted_tool_calls: 2,
+            unaccounted_input_tokens: 11,
+            unaccounted_output_tokens: 7,
+        };
+
+        // A successful accounting tick consumes only the delta; the hard
+        // limit counter remains cumulative for subsequent checks.
+        state.unaccounted_tool_calls = 0;
+        state.unaccounted_input_tokens = 0;
+        state.unaccounted_output_tokens = 0;
+        assert_eq!(state.tool_call_count, 5);
+        assert_eq!(state.unaccounted_tool_calls, 0);
     }
 
     #[test]

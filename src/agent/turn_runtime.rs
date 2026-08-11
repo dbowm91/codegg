@@ -610,16 +610,6 @@ impl TurnRuntime for DefaultTurnRuntime {
                 crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::Error {
                     message: format!("Agent error: {}", e),
                 });
-                crate::bus::global::GlobalEventBus::publish(
-                    crate::bus::events::AppEvent::AgentFinished {
-                        session_id: session_id_for_spawn,
-                        stop_reason: "error".to_string(),
-                        input_tokens: None,
-                        output_tokens: None,
-                        cached_tokens: None,
-                        reasoning_tokens: None,
-                    },
-                );
             } else {
                 event_log_for_spawn
                     .publish(
@@ -632,16 +622,6 @@ impl TurnRuntime for DefaultTurnRuntime {
                         },
                     )
                     .await;
-                crate::bus::global::GlobalEventBus::publish(
-                    crate::bus::events::AppEvent::AgentFinished {
-                        session_id: session_id_for_spawn,
-                        stop_reason: "completed".to_string(),
-                        input_tokens: None,
-                        output_tokens: None,
-                        cached_tokens: None,
-                        reasoning_tokens: None,
-                    },
-                );
             }
         });
 

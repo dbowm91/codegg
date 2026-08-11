@@ -265,7 +265,7 @@ Require explicit execution/workspace identity during production loop constructio
 
 ### M004 — Current-turn identity, goal accounting, and terminal lifecycle correctness
 
-Status: ready
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/004-turn-identity-accounting-and-lifecycle-correctness.md`
 
@@ -273,7 +273,7 @@ Use current-turn input for routing/research/recovery heuristics, separate cumula
 
 ### M005 — Agent-loop recovery and autonomous-execution state-machine simplification
 
-Status: blocked on M004 (M001 and M002 closed)
+Status: ready; M001, M002, and M004 are closed (M003 remains a soft dependency).
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/005-agent-loop-recovery-and-autonomy-state-machine.md`
 
