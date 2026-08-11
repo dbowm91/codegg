@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M001-M004, M007-M008 ready | M005 requires M001/M002/M004; M006 requires M005; M009 requires M001-M008. |
+| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M002-M004, M007-M008 ready | M001 closed; M005 requires M002/M004; M006 requires M005; M009 requires M001-M008. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -33,7 +33,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M001 — MCP authority, provenance, and tool-surface correctness | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/001-mcp-authority-provenance-and-tool-surface-correctness.md` | hard: none |
 | Agent runtime correctness, autonomy, and simplification | M002 — textual tool-call repair safety | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/002-textual-tool-call-repair-safety.md` | hard: none |
 | Agent runtime correctness, autonomy, and simplification | M003 — workspace-bound AgentLoop construction | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/003-workspace-bound-agent-loop-construction.md` | hard: none |
 | Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/004-turn-identity-accounting-and-lifecycle-correctness.md` | hard: none |
@@ -93,6 +92,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M001 — MCP authority, provenance, and tool-surface correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/001-status.md` | `fb972426` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md` | `855de301`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C001 — corrective PR integration | closed | `plans/closure/post-audit-correctness-simplification/009-corrective-status.md` | `8a556f05`; reconciled by C002 |
 | Post-audit correctness, simplification, and footprint | M008 — integration, measurement, and closure | closed | `plans/closure/post-audit-correctness-simplification/008-status.md` | PR #73 production closure head; C001 reconciled merge state |

@@ -241,7 +241,7 @@ Dependency classes:
 
 ### M001 — MCP authority, provenance, and tool-surface cache correctness
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/001-mcp-authority-provenance-and-tool-surface-correctness.md`
 

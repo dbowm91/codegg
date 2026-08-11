@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M001 — MCP Authority, Provenance, and Tool-Surface Correctness
 
-Status: ready
+Status: implemented
 
 Source subsystem roadmap:
 
