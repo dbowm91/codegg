@@ -61,6 +61,13 @@ resolve them before they become effective instructions.
 
 `AgentLoop` is the main orchestration struct that manages the conversation cycle between the LLM and tools. It handles message streaming, tool execution, permission checks, context tracking, and hook dispatching.
 
+Each production loop is constructed with its session identifier and explicit
+workspace root before workspace-sensitive state is initialized. Snapshot
+capture and native `ToolExecutionContext::cwd` both derive from that immutable
+root; process-global CWD is not an authority for an active turn. The internal
+`AgentLoopFactory` accepts the daemon-resolved `ExecutionContext` as part of
+its typed build input and is not a second runtime construction layer.
+
 ### Key Fields
 
 ```rust

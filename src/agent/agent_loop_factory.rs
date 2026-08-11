@@ -4,6 +4,7 @@ use crate::config::schema::Config;
 use crate::context::ContextArtifactStore;
 use crate::model_profile::types::TaskStatePolicy;
 use crate::tool::ToolRegistry;
+use codegg_core::workspace::ExecutionContext;
 
 /// Input for building an agent loop. Localizes all the concrete types
 /// needed to construct an `AgentLoop` so callers don't need to know them.
@@ -21,39 +22,36 @@ pub struct AgentLoopBuildInput {
     /// stores tool output artifacts here and `context_read` expands them.
     pub artifact_store: Arc<dyn ContextArtifactStore>,
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
-    pub workspace_root: std::path::PathBuf,
+    pub execution: Arc<ExecutionContext>,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
-/// Transitional build-only factory used internally by `DefaultTurnRuntime`.
-///
-/// Do not inject this into `CoreDaemon`; use [`crate::agent::turn_runtime::TurnRuntime`]
-/// instead. This trait exists only so `DefaultTurnRuntime` can delegate agent loop
-/// construction to the existing `runtime_factory::build_agent_loop` function.
-pub trait AgentLoopFactory: Send + Sync {
-    fn build_agent_loop(&self, input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop;
-}
-
-/// Default implementation that delegates to the existing factory function.
-pub struct DefaultAgentLoopFactory;
-
-impl AgentLoopFactory for DefaultAgentLoopFactory {
-    fn build_agent_loop(&self, input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop {
-        crate::agent::runtime_factory::build_agent_loop(
-            input.agents,
-            input.provider,
-            input.config,
-            input.tool_registry,
-            input.pool,
-            &input.session_id,
-            input.subagent_pool.as_ref(),
-            input.task_state_policy,
-            input.mcp_service,
-            input.artifact_store,
-            input.submission,
-            input.workspace_root,
-            input.notification_service,
-        )
+/// Build a fully initialized loop from the daemon-resolved turn identity.
+pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::AgentLoop {
+    let permission_checker = crate::permission::PermissionChecker::new(Some(&input.config), None)
+        .with_active_mode(&input.config);
+    let mut agent_loop = crate::agent::r#loop::AgentLoop::new(
+        input.agents,
+        input.provider,
+        permission_checker,
+        input.tool_registry,
+        input.config,
+        input.mcp_service,
+        input.pool,
+        input.artifact_store,
+        input.execution.workspace_root.clone(),
+        input.session_id,
+    );
+    if let Some(spool) = input.subagent_pool {
+        agent_loop.set_subagent_pool(spool);
     }
+    if let Some(submission) = input.submission {
+        agent_loop.set_submission(submission);
+    }
+    agent_loop.set_task_state_policy(input.task_state_policy);
+    if let Some(svc) = input.notification_service {
+        agent_loop.set_notification_service(svc);
+    }
+    agent_loop
 }

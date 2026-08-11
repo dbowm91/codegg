@@ -58,6 +58,23 @@ async fn create_test_manager_with_pool() -> (SnapshotManager, SqlitePool) {
     )
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn test_snapshot_capture_stays_bound_to_explicit_workspace_root() {
+    let pool = create_test_pool().await;
+    let workspace_a = tempfile::tempdir().unwrap();
+    let workspace_b = tempfile::tempdir().unwrap();
+    fs::write(workspace_a.path().join("a.txt"), "workspace-a").unwrap();
+    fs::write(workspace_b.path().join("b.txt"), "workspace-b").unwrap();
+
+    // Simulate process CWD pointing at another workspace: the manager's
+    // explicit root remains the only capture authority.
+    let manager = SnapshotManager::new(pool, workspace_b.path().to_path_buf());
+    let snapshot = manager.capture("workspace-b-session", None).await.unwrap();
+
+    assert!(snapshot.files.keys().any(|path| path.ends_with("b.txt")));
+    assert!(!snapshot.files.keys().any(|path| path.ends_with("a.txt")));
+}
+
 async fn insert_test_project_and_session(pool: &SqlitePool) {
     sqlx::query("INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, ?, ?, ?)")
         .bind("test-project")

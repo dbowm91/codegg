@@ -147,7 +147,7 @@ The `core` module is the request/response facade that separates TUI transport fr
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
 | `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles optional runtime dependencies (pool, memory_store, legacy_agent, turn_runtime) so `CoreDaemon` doesn't import concrete agent/tool types directly. Always has a default TurnRuntime; override via `with_turn_runtime()`. `LegacyAgentRuntimeDeps` is a transitional container grouping `subagent_pool` and `bg_scheduler` — these will eventually be absorbed into the turn runtime abstraction. Construct via `from_parts()` (preferred) or legacy `new()`. |
-| `agent::agent_loop_factory` | `AgentLoopFactory` (transitional), `AgentLoopBuildInput`, `DefaultAgentLoopFactory` | Build-only factory trait used internally by `DefaultTurnRuntime`. Not for daemon injection; use TurnRuntime instead. |
+| `agent::agent_loop_factory` | `AgentLoopBuildInput`, `build_agent_loop` | Internal construction function; its typed input carries the daemon-resolved `ExecutionContext` before loop initialization. Not for daemon injection; use TurnRuntime instead. |
 | `agent::turn_runtime` | `TurnRuntime`, `TurnRunInput`, `TurnRunOutput`, `DefaultTurnRuntime` | Execution-oriented trait that owns tool registry, permission checker, agent loop construction, system prompt assembly, and turn execution. Daemon delegates to this instead of building tools/permissions inline |
 | `agent::task_tool_runtime` | `TaskToolRuntime` | Narrow DTO extracting task/subagent tool construction from `SubAgentPool` |
 
@@ -311,7 +311,7 @@ compatibility boundary.
 - The in-process client subscribes to the GlobalEventBus and forwards events to the channel receiver. Actual event publishing happens inside `tokio::spawn` within turn execution handlers.
 - `CoreDaemon` uses `CoreRuntimeDeps` to bundle runtime dependencies. The legacy `new(pool, subagent_pool, memory_store, bg_scheduler)` constructor is retained for backward compatibility. Prefer `from_parts(pool, memory_store, legacy_agent, turn_runtime)` for new code, or `with_turn_runtime()` to override the default turn runtime.
 - Turn execution goes through the injected `TurnRuntime` trait (`agent::turn_runtime`). `CoreRuntimeDeps` always holds an `Arc<dyn TurnRuntime>` (defaults to `DefaultTurnRuntime`); the daemon calls `deps.turn_runtime.run_turn(input)` instead of constructing a runtime directly. The runtime owns tool registry construction, permission checker construction, agent loop construction, system prompt assembly, and background spawning.
-- `AgentLoopFactory` (build-only trait, formerly `AgentRuntimeProvider`) is transitional and used only internally by `DefaultTurnRuntime`. New code should prefer `TurnRuntime`.
+- `build_agent_loop` is used only internally by `DefaultTurnRuntime`; its complete typed input prevents workspace identity from being patched into a partially initialized loop. New code should prefer `TurnRuntime`.
 - `src/core/daemon.rs` has zero direct references to `AgentLoop`, `ToolRegistry`, `PermissionChecker`, `TaskToolRuntime`, or `build_session_tool_registry`.
 - Daemon provider validation is intentionally duplicated (daemon validates provider existence before delegating to turn runtime) to preserve backward-compatible provider_not_found response shape.
 - Daemon still owns: request validation, session_id/turn_id management, active-turn bookkeeping, TurnStarted event publishing, and CoreResponse return.

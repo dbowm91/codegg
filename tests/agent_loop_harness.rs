@@ -568,6 +568,8 @@ fn build_test_agent_loop(provider: Box<dyn Provider>, tool_registry: ToolRegistr
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session".to_string(),
     )
 }
 
@@ -608,6 +610,8 @@ fn build_test_agent_loop_with_permissions(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session".to_string(),
     )
 }
 
@@ -648,6 +652,8 @@ fn build_test_agent_loop_with_config(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session".to_string(),
     )
 }
 
@@ -2086,6 +2092,8 @@ fn build_agent_loop_with_error_config(
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session".to_string(),
     )
 }
 
@@ -3260,9 +3268,9 @@ async fn test_task_tool_integration_with_subagent() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session-123".to_string(),
     );
-
-    agent_loop.set_session_id("test-session-123");
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn a subagent to do work");
@@ -3465,8 +3473,9 @@ async fn test_task_tool_denied_tools_passthrough() {
         None,
         None,
         Arc::new(InMemoryArtifactStore::new()),
+        std::env::current_dir().expect("test workspace root"),
+        "test-session-denied".to_string(),
     );
-    agent_loop.set_session_id("test-session-denied");
 
     // Run the AgentLoop
     let request = make_chat_request("Spawn subagent with denied tools");

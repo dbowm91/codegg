@@ -943,13 +943,9 @@ impl AgentLoop {
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
-            // Production loops are constructed with an explicit workspace root.
-            // The non-authoritative fallback keeps isolated legacy unit fixtures
-            // usable without consulting process-global cwd.
-            cwd: self
-                .workspace_root
-                .clone()
-                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+            // The workspace root is captured during construction and is the
+            // sole cwd authority for this loop's tool execution context.
+            cwd: self.workspace_root.clone(),
             permission_mode: None,
             timeout_ms,
             invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
@@ -1098,22 +1094,27 @@ fn mcp_tool_surface_revision(tools: &[crate::provider::ToolDefinition]) -> Strin
     format!("sha256:{:x}", sha2::Sha256::digest(encoded))
 }
 
-fn is_workspace_file_mutation(tool_name: &str, path: Option<&str>) -> bool {
-    path.is_some() && is_file_modifying_tool(tool_name) && is_path_within_working_directory(path)
+fn is_workspace_file_mutation(
+    tool_name: &str,
+    path: Option<&str>,
+    workspace_root: &std::path::Path,
+) -> bool {
+    path.is_some()
+        && is_file_modifying_tool(tool_name)
+        && is_path_within_workspace(path, workspace_root)
 }
 
 fn tool_result_is_success(output: &str) -> bool {
     !output.starts_with("Error: ")
 }
 
-fn is_path_within_working_directory(path: Option<&str>) -> bool {
-    let cwd = match std::env::current_dir().and_then(|p| p.canonicalize()) {
+fn is_path_within_workspace(path: Option<&str>, workspace_root: &std::path::Path) -> bool {
+    let root = match workspace_root.canonicalize() {
         Ok(p) => p,
         Err(_) => return false,
     };
-
     let Some(raw_path) = path else {
-        // For tools like glob, missing path means "use cwd".
+        // For tools like glob, missing path means "use the owning workspace".
         return true;
     };
 
@@ -1122,7 +1123,7 @@ fn is_path_within_working_directory(path: Option<&str>) -> bool {
         if p.is_absolute() {
             p
         } else {
-            cwd.join(p)
+            root.join(p)
         }
     };
 
@@ -1139,7 +1140,7 @@ fn is_path_within_working_directory(path: Option<&str>) -> bool {
         }
     };
 
-    canonical.starts_with(&cwd)
+    canonical.starts_with(&root)
 }
 
 enum ToolPermissionOutcome {
@@ -1367,8 +1368,11 @@ impl AgentLoop {
             PermissionResult::Ask(req) => {
                 // Preserve the narrow local-file UX exception. External MCP
                 // origin is never evidence that an unknown tool is safe.
-                if is_workspace_file_mutation(tc.name.as_str(), req.path.as_deref())
-                    && is_path_within_working_directory(req.path.as_deref())
+                if is_workspace_file_mutation(
+                    tc.name.as_str(),
+                    req.path.as_deref(),
+                    &self.workspace_root,
+                ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
                     && sensitive_match.is_none()
                 {
                     return ToolPermissionOutcome::Allowed {
@@ -1511,7 +1515,8 @@ pub struct AgentLoop {
     original_user_prompt: Option<String>,
     subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
-    workspace_root: Option<std::path::PathBuf>,
+    /// Immutable workspace authority captured during construction.
+    workspace_root: std::path::PathBuf,
     max_tool_calls: Option<usize>,
     goal_store: Option<Arc<crate::goal::GoalStore>>,
     goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
@@ -1627,6 +1632,8 @@ impl AgentLoop {
         mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
         pool: Option<sqlx::SqlitePool>,
         artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
+        workspace_root: std::path::PathBuf,
+        session_id: String,
     ) -> Self {
         let mut map = HashMap::new();
         let mut default_name = "build".to_string();
@@ -1659,8 +1666,6 @@ impl AgentLoop {
 
         let snapshot_manager = if config.snapshot.unwrap_or(false) {
             if let Some(pool) = pool.clone() {
-                let project_root =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let options = config
                     .snapshot_config
                     .as_ref()
@@ -1672,7 +1677,7 @@ impl AgentLoop {
                     .unwrap_or_default();
                 Some(crate::snapshot::SnapshotManager::new_with_options(
                     pool,
-                    project_root,
+                    workspace_root.clone(),
                     options,
                 ))
             } else {
@@ -1747,7 +1752,7 @@ impl AgentLoop {
             question_tx: None,
             question_rx: None,
             plugin_service: None,
-            session_id: String::new(),
+            session_id,
             mcp_service,
             tool_def_cache: None,
             deferred_tool_definitions: Vec::new(),
@@ -1771,7 +1776,7 @@ impl AgentLoop {
             original_user_prompt: None,
             subagent_pool: None,
             submission: None,
-            workspace_root: None,
+            workspace_root,
             max_tool_calls: None,
             goal_store: pool
                 .as_ref()
@@ -2020,6 +2025,12 @@ impl AgentLoop {
         self.question_tx.as_ref()
     }
 
+    /// Override the session label for isolated harnesses and compatibility
+    /// callers. Workspace authority is immutable and is never changed here.
+    pub fn set_session_id(&mut self, id: &str) {
+        self.session_id = id.to_string();
+    }
+
     pub fn context_tracker(&mut self) -> &mut ContextTracker {
         &mut self.context_tracker
     }
@@ -2028,20 +2039,12 @@ impl AgentLoop {
         self.plugin_service = Some(service);
     }
 
-    pub fn set_session_id(&mut self, id: &str) {
-        self.session_id = id.to_string();
-    }
-
     pub fn set_subagent_pool(&mut self, pool: Arc<crate::agent::worker::SubAgentPool>) {
         self.subagent_pool = Some(pool);
     }
 
     pub fn set_submission(&mut self, submission: Arc<crate::scheduler::JobSubmissionService>) {
         self.submission = Some(submission);
-    }
-
-    pub fn set_workspace_root(&mut self, root: std::path::PathBuf) {
-        self.workspace_root = Some(root);
     }
 
     pub fn session_id(&self) -> &str {
@@ -4556,9 +4559,8 @@ impl AgentLoop {
             .agents
             .get(&self.state.current_agent)
             .and_then(|a| a.model.clone());
-        if let (Some(submission), Some(workspace_root)) =
-            (self.submission.clone(), self.workspace_root.clone())
-        {
+        if let Some(submission) = self.submission.clone() {
+            let workspace_root = self.workspace_root.clone();
             // scheduler-owned: daemon-mode security-review path
             // dispatches through JobSubmissionService.
             tokio::spawn(async move {
@@ -4624,7 +4626,7 @@ impl AgentLoop {
             depth: 1,
             max_tool_calls: None,
             parent_model,
-            workspace_root: self.workspace_root.clone(),
+            workspace_root: Some(self.workspace_root.clone()),
         };
         tokio::spawn(async move {
             if let Err(e) = pool.spawner().send(request).await {
@@ -4815,17 +4817,13 @@ impl AgentLoop {
             format!("agent:{}", agent_id)
         };
         // M012-F01: Derive workspace identity from the workspace root path.
-        let agent_workspace_id = self
-            .workspace_root
-            .as_ref()
-            .map(|root| {
-                use sha2::Digest;
-                format!(
-                    "ws:{:x}",
-                    sha2::Sha256::digest(root.to_string_lossy().as_bytes())
-                )
-            })
-            .unwrap_or_else(|| "ws:session-scoped".into());
+        let agent_workspace_id = {
+            use sha2::Digest;
+            format!(
+                "ws:{:x}",
+                sha2::Sha256::digest(self.workspace_root.to_string_lossy().as_bytes())
+            )
+        };
         let agent_id = self.state.current_agent.clone();
         for (orig_idx, tc, receipt) in regular_tools {
             // Build the structured-execution context here (before
@@ -6210,10 +6208,31 @@ mod tests {
     }
 
     #[test]
-    fn workspace_file_mutation_allows_new_file_under_cwd() {
+    fn workspace_file_mutation_allows_new_file_under_explicit_root() {
+        let workspace = tempfile::tempdir().unwrap();
         assert!(is_workspace_file_mutation(
             "write",
-            Some("definitely_missing_file_for_permission_test.md")
+            Some("definitely_missing_file_for_permission_test.md"),
+            workspace.path()
+        ));
+    }
+
+    #[test]
+    fn workspace_file_mutation_ignores_process_cwd() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "outside").unwrap();
+
+        assert!(is_workspace_file_mutation(
+            "write",
+            Some("new.txt"),
+            workspace.path()
+        ));
+        assert!(!is_workspace_file_mutation(
+            "write",
+            Some(outside_file.to_str().unwrap()),
+            workspace.path()
         ));
     }
 

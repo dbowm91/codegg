@@ -22,7 +22,6 @@ pub mod progress_recovery;
 pub mod prompt;
 pub mod registry;
 pub mod router;
-pub mod runtime_factory;
 pub mod specialized_runtime;
 pub mod task;
 pub mod task_tool_runtime;

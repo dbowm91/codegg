@@ -170,7 +170,7 @@ pub struct DefaultTurnRuntime;
 #[async_trait::async_trait]
 impl TurnRuntime for DefaultTurnRuntime {
     async fn run_turn(&self, input: TurnRunInput) -> Result<TurnRunOutput, AppError> {
-        use crate::agent::agent_loop_factory::{AgentLoopBuildInput, AgentLoopFactory};
+        use crate::agent::agent_loop_factory::AgentLoopBuildInput;
 
         let TurnRunInput {
             session_id,
@@ -533,11 +533,10 @@ impl TurnRuntime for DefaultTurnRuntime {
             mcp_service,
             artifact_store,
             submission,
-            workspace_root: execution.workspace_root.clone(),
+            execution,
             notification_service: Some(notification_service),
         };
-        let runtime_provider = crate::agent::agent_loop_factory::DefaultAgentLoopFactory;
-        let mut agent_loop = runtime_provider.build_agent_loop(agent_loop_input);
+        let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);
         agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
         agent_loop.set_runtime_asset_pin(asset_pin);
         agent_loop.load_persisted_todos().await;

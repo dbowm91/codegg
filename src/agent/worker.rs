@@ -1063,6 +1063,15 @@ async fn execute_agent_task(
     let (mcp_service, _report) =
         crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
 
+    let subagent_session_id = request
+        .parent_id
+        .as_ref()
+        .map(|parent_id| format!("{}-sub-{}", parent_id, request.task_id))
+        .unwrap_or_else(|| format!("subagent-{}", request.task_id));
+    let workspace_root = request
+        .workspace_root
+        .clone()
+        .ok_or_else(|| "subagent execution requires an explicit workspace root".to_string())?;
     let mut agent_loop = AgentLoop::new(
         agents.iter().cloned().collect(),
         provider,
@@ -1072,16 +1081,9 @@ async fn execute_agent_task(
         mcp_service,
         pool,
         std::sync::Arc::new(crate::context::InMemoryArtifactStore::new()),
+        workspace_root,
+        subagent_session_id,
     );
-
-    if let Some(root) = request.workspace_root.clone() {
-        agent_loop.set_workspace_root(root);
-    }
-
-    if let Some(parent_id) = &request.parent_id {
-        let subagent_session_id = format!("{}-sub-{}", parent_id, request.task_id);
-        agent_loop.set_session_id(&subagent_session_id);
-    }
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
 
     if agent_name == "plan" {
