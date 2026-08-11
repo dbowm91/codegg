@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M009 — Closure Status
 
-Status: closing
+Status: closed
 
 Source implementation plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md`
 
@@ -10,8 +10,8 @@ Repository baseline: `5449aa2f` (M008 closure)
 
 ## 1. Outcome
 
-M009 integration work is complete locally and is awaiting the hosted `CI /
-verify` result on the final pushed candidate. The final pass reconciled active
+M009 integration work is complete and formally closed. Hosted `CI / verify`
+run `31515706555` passed on final candidate `c5154701`. The final pass reconciled active
 documentation, corrected the stale project-catalog guard, repaired the broker
 principal binding exposed by the integration harness, and updated stale
 harness expectations to the bounded M005 recovery contract. No new product
@@ -31,9 +31,10 @@ introduced.
 | M007 | `deb07a2a`, `007-status.md` | closed |
 | M008 | `66326ad8`, `008-status.md` | closed |
 
-The M009 implementation/closure commit is the commit containing this record
-and its registry/roadmap updates. The hosted run ID will be added here after
-the final candidate is pushed.
+The M009 implementation/closure commits are `7d57a34b` (integration,
+documentation, and initial closure record) and `c5154701` (explicit workspace
+roots in the remaining subagent integration fixtures). Hosted evidence is
+`31515706555` / job `93860194586`.
 
 ## 3. Requirement-to-evidence matrix
 
@@ -55,7 +56,7 @@ the final candidate is pushed.
 | Wasmtime security disposition current for supported line | M007 lock at `36.0.13`, fixed for RUSTSEC-2026-0222; latest major deferred for MSRV compatibility | pass |
 | Routine CI remains one bounded job | `.github/workflows/ci.yml`, `scripts/verify.sh`, M008 guard disposition | pass |
 | Active docs match final behavior | M009 documentation reconciliation below | pass |
-| Quick and broad verification pass | quick, Clippy, focused harness, and final hosted CI evidence | pending hosted result |
+| Quick and broad verification pass | quick, Clippy, focused harness, `cargo test --test subagent` (22 passed), and hosted `31515706555` | pass |
 
 ## 4. Cross-milestone integration evidence
 
@@ -87,8 +88,9 @@ The quick tier passed formatting, generated-agent validation, core boundary,
 sandbox contract, execution ownership, and locked workspace all-target
 checking. The full workspace test run before the final harness correction
 reported 4,173 unit tests passing and 10 stale harness failures; the corrected
-harness passed all 40 tests. The required broad final-tree hosted run is the
-authoritative remaining broad evidence and is recorded below.
+harness passed all 40 tests. Hosted run `31515706555` passed the existing
+`.github/workflows/ci.yml` `verify` job, including the locked full workspace
+test command.
 
 ## 6. Static-guard sweep
 
@@ -141,16 +143,12 @@ normal permission/broker checks remain mandatory.
 
 ## 10. Recommendation
 
-Close strictly after the hosted `CI / verify` workflow passes on the final
-candidate. If that run is green, no corrective plan is required and the
-workstream is complete. A hosted failure caused by a repository defect must
-keep this record in `closing` and be repaired before closure; an external CI
-outage may be recorded as conditional evidence under the repository planning
-policy.
+Closed strictly after the hosted `CI / verify` workflow passed on the final
+candidate. No corrective plan is required; the workstream is complete.
 
 ## 11. Registry and roadmap updates
 
-On final hosted success, the same closure update will:
+The final closure update:
 
 - mark M001-M009 `closed` in the subsystem roadmap;
 - mark the subsystem `closed` in `plans/registry.md`;
@@ -161,4 +159,5 @@ On final hosted success, the same closure update will:
 
 No future registered plan currently lists M009 as a dependency. The blocked
 work audit found no corrective pass or dependency-ready downstream plan to
-register.
+unblock or register; all other blocked/conditional work remains independently
+scoped.

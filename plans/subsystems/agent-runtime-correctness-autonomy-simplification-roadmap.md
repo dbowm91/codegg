@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification Roadmap
 
-Status: closing
+Status: closed
 
 Repository baseline reviewed: `e88d6f4f67ff729c894b228ddb8b5324582f3fbc`
 
@@ -305,7 +305,7 @@ Remove duplicate builtin-agent verification, classify remaining custom guards by
 
 ### M009 — Integration, documentation, and closure
 
-Status: closing; see `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md`.
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md`
 

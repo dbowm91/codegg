@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | closing | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M009 closure review | Local integration and verification pass complete; awaiting hosted `CI / verify` on final candidate. |
+| Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M009 closed | Hosted `verify` run `31515706555` passed on final candidate `c5154701`. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -33,11 +33,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | closing | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | closure evidence in `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md` |
 
 ## Active closure work
 
-M009 is the active integration and closure pass for the new agent-runtime correctness workstream.
+No active closure work remains for the agent-runtime correctness workstream; M009
+is closed with the closure record below.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
@@ -84,6 +84,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md` | `c5154701`; hosted run `31515706555` |
 | Agent runtime correctness, autonomy, and simplification | M007 — measured binary footprint and upstream dependency review | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/007-status.md` | `deb07a2` |
 | Agent runtime correctness, autonomy, and simplification | M008 — routine CI and static-guard contraction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/008-status.md` | `66326ad` |
 | Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | `4cd004d` |
