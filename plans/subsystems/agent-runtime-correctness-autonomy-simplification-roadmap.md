@@ -230,7 +230,7 @@ M001 + M002 + M004 + M005 ----------------------------+
 
 Dependency classes:
 
-- M001, M002, M003, M004, and M008 have no hard dependency on one another and are dependency-ready against the reviewed baseline, subject to rebasing on current `main` before implementation. M007 is closed.
+- M001, M002, M003, M004, and M008 had no hard dependency on one another and were dependency-ready against the reviewed baseline. M007 and M008 are now closed.
 - M005 has hard dependencies on M001, M002, and M004 because the recovery state machine must be built on correct authority, tool-call normalization, and turn/lifecycle semantics. M003 is a soft dependency because construction cleanup reduces incidental state but does not define recovery semantics.
 - M006 has a hard dependency on M005 because recovery/control instructions must be stabilized before startup prompt contracts are consolidated.
 - M007's soft final-measurement dependency on M006 is satisfied by the accepted M006 closure; its measurement and upstream review are closed.
@@ -297,7 +297,7 @@ Capture a fresh current release baseline, measure dominant contributors, verify 
 
 ### M008 — Routine CI and static-guard contraction
 
-Status: ready
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/008-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/008-routine-ci-and-static-guard-contraction.md`
 
@@ -305,7 +305,7 @@ Remove duplicate builtin-agent verification, classify remaining custom guards by
 
 ### M009 — Integration, documentation, and closure
 
-Status: blocked on M008
+Status: ready
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md`
 
