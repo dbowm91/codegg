@@ -199,7 +199,7 @@ Remove the independent legacy timer/persistence/dispatch implementation or reduc
 
 ### M002 — Structured execution outcome and recovery convergence
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/002-structured-outcome-recovery-convergence.md`
 
@@ -207,7 +207,7 @@ Fix result-equivalence scoping, make known typed statuses authoritative, define 
 
 ### M003 — AgentLoop ownership decomposition
 
-Status: blocked on M002
+Status: ready
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/003-agent-loop-ownership-decomposition.md`
 

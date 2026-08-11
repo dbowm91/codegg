@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M002 — Structured Outcome and Recovery Convergence
 
-Status: ready
+Status: implemented
 
 Source roadmap:
 
