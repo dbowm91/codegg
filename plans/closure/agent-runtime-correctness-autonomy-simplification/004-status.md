@@ -4,7 +4,7 @@ Status: closed
 Source implementation plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/004-turn-identity-accounting-and-lifecycle-correctness.md`
 Source subsystem roadmap: `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md#7-ordered-milestones`
 Repository baseline reviewed: `e88d6f4f67ff729c894b228ddb8b5324582f3fbc`
-Implementation commit: recorded in the registry and Git history for this closure.
+Implementation commit: `493fd59` — fix agent turn identity accounting lifecycle.
 
 ## 1. Executive finding
 

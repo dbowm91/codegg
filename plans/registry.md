@@ -89,7 +89,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md` | pending implementation commit |
+| Agent runtime correctness, autonomy, and simplification | M004 — turn identity, accounting, and lifecycle correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/004-status.md` | `493fd59` |
 | Agent runtime correctness, autonomy, and simplification | M003 — workspace-bound AgentLoop construction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/003-status.md` | `8c2638db` |
 | Agent runtime correctness, autonomy, and simplification | M002 — textual tool-call repair safety | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/002-status.md` | `86f8f43` |
 | Agent runtime correctness, autonomy, and simplification | M001 — MCP authority, provenance, and tool-surface correctness | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/001-status.md` | `fb972426` |
