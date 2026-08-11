@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M009 ready | M001-M008 closed; M009 is the integration/closure milestone. |
+| Agent runtime correctness, autonomy, and simplification | closing | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M009 closure review | Local integration and verification pass complete; awaiting hosted `CI / verify` on final candidate. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -33,11 +33,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | hard: M001-M008 closure records |
+| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | closing | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | closure evidence in `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md` |
 
 ## Active closure work
 
-M009 is the dependency-ready integration and closure pass for the new agent-runtime correctness workstream.
+M009 is the active integration and closure pass for the new agent-runtime correctness workstream.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 

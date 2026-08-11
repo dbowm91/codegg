@@ -1217,11 +1217,13 @@ pub struct MentionContext {
 
 `ToolDefCache` tuple:
 ```rust
-(Option<String>, bool, bool, usize, u64, Vec<ToolDefinition>)
-// model, plan_mode, lsp_enabled, mcp_count, perm_ver, definitions
+(Option<String>, bool, bool, u64, u64, Vec<ToolDefinition>)
+// model, plan_mode, lsp_enabled, mcp_surface_digest, perm_ver, definitions
 ```
 
-Invalidated when any component changes. MCP tool count used as proxy for changes (limitation noted in code).
+Invalidated when any component changes. The MCP component is a digest of the
+provider-visible identity, schema, description, and deferred-loading metadata,
+so replacing a tool or schema at the same count also invalidates the cache.
 
 ### File-Modifying Tool Detection
 

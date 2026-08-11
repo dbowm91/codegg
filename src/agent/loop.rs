@@ -1622,6 +1622,10 @@ impl AgentLoop {
         filtered
     }
 
+    // Keep this compatibility constructor available to embedded/test callers;
+    // daemon production construction goes through `build_agent_loop`, whose
+    // typed input binds the execution context before initialization.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agents: Vec<Agent>,
         provider: Box<dyn crate::provider::Provider>,
@@ -5121,7 +5125,10 @@ impl AgentLoop {
                                     ),
                                     cancellation: exec_ctx.cancellation.clone(),
                                     deadline: exec_ctx.deadline,
-                                    principal_ref: Some(authority_ref.clone()),
+                                    // Bind the broker context to the same
+                                    // principal used to issue the grant. The
+                                    // decision identity is not a principal.
+                                    principal_ref: Some(principal_ref.clone()),
                                     workspace_path_policy_id: Some(format!(
                                         "workspace:{}",
                                         ws_id_for_ctx

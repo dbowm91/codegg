@@ -182,15 +182,15 @@ def check_catalog_migration_columns() -> bool:
 
 
 def check_storage_layout_version() -> bool:
-    """Verify STORAGE_LAYOUT_VERSION matches the current v33 catalog."""
+    """Verify STORAGE_LAYOUT_VERSION matches the current v35 catalog."""
     source = _read(STORAGE_MODULE)
     match = re.search(r"STORAGE_LAYOUT_VERSION\s*:\s*u32\s*=\s*(\d+)", source)
     if not match:
         print("  FAIL: STORAGE_LAYOUT_VERSION not found")
         return False
     version = int(match.group(1))
-    if version != 33:
-        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 33")
+    if version != 35:
+        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 35")
         return False
     return True
 
@@ -215,7 +215,7 @@ def main() -> int:
         ("No unwrap_or_default PathBuf anti-pattern", check_no_unwrap_or_default_pathbuf),
         ("catalog/discovery migrations create tables", check_catalog_migration_tables),
         ("v28 migration adds 5 columns to logical_project", check_catalog_migration_columns),
-        ("STORAGE_LAYOUT_VERSION is 33", check_storage_layout_version),
+        ("STORAGE_LAYOUT_VERSION is 35", check_storage_layout_version),
         ("lib.rs re-exports project_catalog", check_lib_reexport),
     ]
 

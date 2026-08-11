@@ -3419,7 +3419,8 @@ async fn test_task_tool_denied_tools_passthrough() {
         Some(spawner),
         Some("test-session-denied".to_string()),
         denied_tools.clone(),
-    );
+    )
+    .with_workspace_root(Some(std::env::current_dir().expect("test workspace root")));
 
     // Create main provider that emits a task tool call with denied_tools
     let main_provider = Box::new(ScriptedProvider::new(vec![
@@ -3682,17 +3683,12 @@ async fn test_registry_recovery_after_missed_event() {
 }
 
 #[tokio::test]
-async fn test_source_structure_prompt_triggers_bootstrap_list() {
+async fn test_source_structure_prompt_does_not_synthesize_bootstrap_list() {
     let response1 = vec![ChatEvent::Finish {
         stop_reason: "stop".to_string().into(),
         usage: TokenUsage::default(),
     }];
-    let response2 = vec![ChatEvent::Finish {
-        stop_reason: "stop".to_string().into(),
-        usage: TokenUsage::default(),
-    }];
-
-    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2]));
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
     agent_loop.set_session_id("test-source-structure-bootstrap");
@@ -3709,38 +3705,16 @@ async fn test_source_structure_prompt_triggers_bootstrap_list() {
     assert!(result.is_ok(), "run should succeed: {:?}", result.err());
 
     let requests = scripted_provider.get_requests().await;
-    assert!(
-        requests.len() >= 2,
-        "Expected at least 2 provider calls after bootstrap, got {}",
-        requests.len()
+    assert_eq!(
+        requests.len(),
+        1,
+        "Strong models finish without bootstrap turns"
     );
-
-    let second_request = &requests[1];
-    let bootstrap_call_id = second_request.messages.iter().find_map(|m| {
-        if let Message::Assistant { tool_calls, .. } = m {
-            tool_calls
-                .iter()
-                .find(|tc| {
-                    tc.name.as_ref() == "list" && tc.id.as_ref().starts_with("call_bootstrap_")
-                })
-                .map(|tc| tc.id.as_ref().to_string())
-        } else {
-            None
-        }
-    });
-    assert!(
-        bootstrap_call_id.is_some(),
-        "Expected synthetic bootstrap list tool call in second request"
-    );
-
-    let bootstrap_call_id = bootstrap_call_id.unwrap();
-    assert!(
-        second_request.messages.iter().any(|m| matches!(
-            m,
-            Message::Tool { tool_call_id, .. } if tool_call_id.as_ref() == bootstrap_call_id.as_str()
-        )),
-        "Expected synthetic bootstrap list tool result in second request"
-    );
+    assert!(!requests[0].messages.iter().any(|m| matches!(
+        m,
+        Message::Assistant { tool_calls, .. }
+            if tool_calls.iter().any(|tc| tc.id.as_ref().starts_with("call_bootstrap_"))
+    )));
 }
 
 #[tokio::test]
@@ -3749,16 +3723,7 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
         stop_reason: "tool_calls".to_string().into(),
         usage: TokenUsage::default(),
     }];
-    let response2 = vec![ChatEvent::Finish {
-        stop_reason: "tool_calls".to_string().into(),
-        usage: TokenUsage::default(),
-    }];
-    let response3 = vec![ChatEvent::Finish {
-        stop_reason: "tool_calls".to_string().into(),
-        usage: TokenUsage::default(),
-    }];
-
-    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1, response2, response3]));
+    let scripted_provider = Box::new(ScriptedProvider::new(vec![response1]));
     let registry = ToolRegistry::with_defaults();
     let mut agent_loop = build_test_agent_loop(scripted_provider.clone(), registry);
     agent_loop.set_session_id("test-structured-tool-calls-diagnostic");
@@ -3772,8 +3737,8 @@ async fn test_missing_structured_tool_calls_emits_diagnostic_error_event() {
     let requests = scripted_provider.get_requests().await;
     assert_eq!(
         requests.len(),
-        3,
-        "Expected 3 provider calls (initial + 2 retries) before stopping"
+        1,
+        "Malformed structured-tool output has one bounded recovery decision"
     );
 
     let mut saw_diagnostic = false;

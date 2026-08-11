@@ -553,14 +553,16 @@ mod tests {
 
     #[test]
     fn textual_repair_requires_explicit_model_profile_override() {
-        let mut config = codegg_config::schema::Config::default();
-        config.model_profile = Some(std::collections::HashMap::from([(
-            "fixture/hermes".to_string(),
-            codegg_config::schema::ModelProfileConfig {
-                text_tool_repair: Some("hermes_xml".to_string()),
-                ..Default::default()
-            },
-        )]));
+        let config = codegg_config::schema::Config {
+            model_profile: Some(std::collections::HashMap::from([(
+                "fixture/hermes".to_string(),
+                codegg_config::schema::ModelProfileConfig {
+                    text_tool_repair: Some("hermes_xml".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
         let adapter = crate::model_profile::ModelProfileResolver::new(&config)
             .resolve_adapter(None, "fixture/hermes");
         assert_eq!(adapter.text_tool_repair.as_deref(), Some("hermes_xml"));
