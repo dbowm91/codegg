@@ -99,6 +99,24 @@ pub struct ToolExecutionOutcome {
     pub model_text: String,
 }
 
+impl ToolExecutionOutcome {
+    pub fn success(model_text: impl Into<String>) -> Self {
+        Self {
+            status: ToolExecutionStatus::Success,
+            model_text: model_text.into(),
+        }
+    }
+
+    /// Compatibility boundary for legacy executors that expose only rendered text.
+    pub fn legacy(model_text: impl Into<String>) -> Self {
+        let model_text = model_text.into();
+        Self {
+            status: tool_execution_status(&model_text),
+            model_text,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutonomyPhase {
     Normal,
@@ -116,7 +134,6 @@ pub struct AutonomyState {
     transitions: u8,
     adapter_repairs: u8,
     post_tool_continuations: u8,
-    bootstrap_used: bool,
 }
 
 impl Default for AutonomyState {
@@ -127,7 +144,6 @@ impl Default for AutonomyState {
             transitions: 0,
             adapter_repairs: 0,
             post_tool_continuations: 0,
-            bootstrap_used: false,
         }
     }
 }
@@ -138,12 +154,6 @@ impl AutonomyState {
 
     pub fn phase(&self) -> AutonomyPhase {
         self.phase
-    }
-    pub fn bootstrap_used(&self) -> bool {
-        self.bootstrap_used
-    }
-    pub fn mark_bootstrap_used(&mut self) {
-        self.bootstrap_used = true;
     }
     pub fn reset_after_progress(&mut self) {
         self.phase = AutonomyPhase::Normal;
@@ -195,10 +205,10 @@ impl AutonomyState {
 
     pub fn observe_tool_result(
         &mut self,
-        status: ToolExecutionStatus,
+        outcome: &ToolExecutionOutcome,
         mut observation: ProgressObservation,
     ) -> RecoveryDecision {
-        if matches!(status, ToolExecutionStatus::Denied) {
+        if matches!(outcome.status, ToolExecutionStatus::Denied) {
             observation.error_class = Some("denied".into());
         }
         self.observe_tool(observation)
@@ -631,9 +641,6 @@ mod tests {
     #[test]
     fn autonomy_bootstrap_is_explicitly_one_shot() {
         let mut state = AutonomyState::default();
-        assert!(!state.bootstrap_used());
-        state.mark_bootstrap_used();
-        assert!(state.bootstrap_used());
     }
 
     #[test]
@@ -647,5 +654,7 @@ mod tests {
             ToolExecutionStatus::Timeout
         );
         assert_eq!(tool_execution_status("ok"), ToolExecutionStatus::Success);
+        let misleading = ToolExecutionOutcome::success("permission denied; timeout cancelled");
+        assert_eq!(misleading.status, ToolExecutionStatus::Success);
     }
 }

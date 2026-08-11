@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification — Corrective Closure Addendum
 
-Status: active
+Status: conditionally closed
 
 Source roadmap:
 
@@ -47,7 +47,7 @@ No broader agent-loop refactor is authorized by this addendum.
 
 ## 3. Dependency and status correction
 
-M010 is dependency-ready now.
+M010 was dependency-ready and is now implemented.
 
 Dependencies:
 
@@ -86,7 +86,10 @@ Do not add a new CI lane, matrix, static dead-code guard, scheduled audit, size 
 
 ## 5. Closure rule
 
-The workstream must remain active until `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md` exists and demonstrates every acceptance criterion in M010.
+The workstream is conditionally closed by
+`plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`.
+It may move to strict `closed` when the exact final candidate receives the
+existing hosted `CI / verify` result.
 
 Strict closure requires:
 

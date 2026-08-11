@@ -689,13 +689,24 @@ model-facing tool surface and required argument shape, and returns calls to the
 normal permission/broker path. Unconfigured adapters never scan assistant
 prose, fenced examples, or embedded JSON.
 
+The provider adapter exposes the bounded repair entry point rather than a
+generic prose parser:
+
 ```rust
-pub fn parse_text_as_tool_calls(text: &str) -> Option<Vec<ToolCall>>
+pub fn repair_text_as_tool_calls(
+    profile: &str,
+    text: &str,
+    finish_reason: Option<&str>,
+    tools: &[ToolDefinition],
+) -> Result<Option<Vec<ToolCall>>, TextRepairError>
 ```
 
-**Patterns:**
-1. `invoke("tool_name", {...})` - Direct invocation format
-2. ` ```tool_name\n{...}\n``` ` - Code block format
+Supported profiles are `hermes_xml`, `invoke_json`, and
+`raw_json_envelope`. Each profile accepts only its exact envelope, validates
+the resolved tool surface and argument schema, and then routes through the
+normal permission/broker path. There is no generic `invoke(...)`, fenced-code,
+or embedded-JSON fallback, and unconfigured adapters do not call this entry
+point.
 
 ## Request/Response Flow
 

@@ -20,8 +20,8 @@ use crate::agent::compaction::{
 };
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::{
-    tool_execution_status, ActionClass, AutonomyState, ProgressObservation, RecoveryAction,
-    RecoveryController, RecoveryDecision,
+    ActionClass, AutonomyState, ProgressObservation, RecoveryAction, RecoveryController,
+    RecoveryDecision, ToolExecutionOutcome,
 };
 use crate::agent::router::ModelRouter;
 use crate::agent::Agent;
@@ -782,34 +782,8 @@ fn harden_history(messages: &mut Vec<Message>) {
     *messages = hardened;
 }
 
-fn indicates_more_work(text: &str) -> bool {
-    let t = text.to_lowercase();
-    t.contains("let me")
-        || t.contains("i'll")
-        || t.contains("i will")
-        || t.contains("next,")
-        || t.contains("next step")
-        || t.contains("now i")
-}
-
 fn is_soft_stop_reason(stop_reason: Option<&str>) -> bool {
     matches!(stop_reason, Some("stop" | "end_turn"))
-}
-
-fn is_repo_task_prompt(prompt: &str) -> bool {
-    let p = prompt.to_lowercase();
-    p.contains("review")
-        || p.contains("docs")
-        || p.contains("read")
-        || p.contains("file")
-        || p.contains("project")
-        || p.contains("repository")
-        || p.contains("codebase")
-        || p.contains("source")
-        || p.contains("structure")
-        || p.contains("symbols")
-        || p.contains("architecture")
-        || p.contains("outline")
 }
 
 #[derive(Copy, Clone)]
@@ -1622,6 +1596,11 @@ impl AgentLoop {
         filtered
     }
 
+    // Keep this compatibility constructor available to embedded/test callers;
+    // daemon production construction goes through `build_agent_loop`, whose
+    // typed input binds the execution context before initialization.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agents: Vec<Agent>,
         provider: Box<dyn crate::provider::Provider>,
@@ -3839,231 +3818,15 @@ impl AgentLoop {
             }
 
             if tool_calls.is_empty() {
-                if indicates_more_work(processor.text()) && processor.text().trim().len() >= 10 {
-                    let narration = ProgressObservation {
-                        action: ActionClass::NarrationOnly,
-                        canonical_tool: None,
-                        wire_tool: None,
-                        argument_fingerprint: Some(
-                            crate::agent::progress_recovery::fingerprint(&processor.text()).1,
-                        ),
-                        result_fingerprint: None,
-                        result_size: crate::agent::progress_recovery::ResultSizeClass::Empty,
-                        error_class: None,
-                        new_evidence: false,
-                        state_changed: false,
-                        child_advanced: false,
-                        selected_surface_fingerprint: None,
-                        batch_id: 0,
-                    };
-                    match autonomy.observe_tool(narration) {
-                        RecoveryDecision::Recover { action, incident } => {
-                            let instruction = match action {
-                                RecoveryAction::Nudge | RecoveryAction::Correct => "Recovery nudge: narration described intended work without a structured action. Emit exactly one valid structured tool call, or state the concrete blocker.",
-                                RecoveryAction::RestoreBasePalette => {
-                                    request.tools = Some(self.base_request_tools.clone());
-                                    "Recovery correction: the authorized base tool surface is restored. Emit one structured tool call."
-                                }
-                                RecoveryAction::Replan => "Recovery replan: state a short observable plan and then emit the next structured tool call.",
-                                RecoveryAction::Stall => unreachable!(),
-                            };
-                            push_control_instruction(
-                                &mut request.messages,
-                                &model_profile,
-                                instruction,
-                            );
-                            tracing::info!(incident = ?incident.kind, action = ?action, "narration recovery action");
-                            processor.reset();
-                            continue;
-                        }
-                        RecoveryDecision::Stalled(report) => {
-                            crate::bus::global::GlobalEventBus::publish(AppEvent::Error {
-                                message: format!(
-                                    "Agent stalled: {}. {}",
-                                    report.evidence, report.suggested_user_action
-                                ),
-                            });
-                            break;
-                        }
-                        RecoveryDecision::Progress | RecoveryDecision::Continue => {}
-                    }
-                }
-                // Strong and structured-call profiles never receive a
-                // synthetic repository probe. Recovery only acts on explicit
-                // model calls and typed execution evidence.
-                let bootstrap_allowed = false;
-                let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
-                    || matches!(processor.stop_reason(), Some("tool_calls"));
-                if bootstrap_allowed
-                    && !autonomy.bootstrap_used()
-                    && self.state.turn_count <= 6
-                    && stop_is_soft_or_confused
-                    && is_repo_task_prompt(&current_turn_prompt)
-                {
-                    let synthetic = ToolCall {
-                        id: format!("call_bootstrap_{}", uuid::Uuid::new_v4()).into(),
-                        name: "list".to_string().into(),
-                        arguments: serde_json::json!({"path":"."}),
-                    };
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::ToolCallStarted {
-                        session_id: self.session_id.clone(),
-                        tool_name: synthetic.name.to_string(),
-                        tool_id: synthetic.id.to_string(),
-                        arguments: synthetic.arguments.to_string(),
-                    });
-                    let tool_results = self
-                        .execute_tool_calls(std::slice::from_ref(&synthetic))
-                        .await?;
-                    let assistant = Message::Assistant {
-                        content: vec![],
-                        tool_calls: vec![synthetic],
-                    };
-                    self.context_tracker.add_message(&assistant);
-                    request.messages.push(assistant);
-                    for (id, content) in &tool_results {
-                        crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
-                            tool_id: id.clone(),
-                            tool_name: "list".to_string(),
-                            session_id: self.session_id.clone(),
-                            output: content.clone(),
-                            success: tool_result_is_success(content),
-                        });
-                        let redacted_content = redact_local_paths(content);
-                        let tool_name_str = "list";
-
-                        let turn = self.state.turn_count;
-                        let handle_result =
-                            crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
-                        let effective_handle = if self.projection_config.artifact_store_enabled {
-                            match handle_result {
-                                Ok(ref handle) => {
-                                    let store_result = self
-                                        .artifact_store
-                                        .put(crate::context::ContextArtifact {
-                                            handle: handle.clone(),
-                                            session_id: self.session_id.clone(),
-                                            turn_index: turn,
-                                            tool_call_id: Some(id.clone()),
-                                            tool_name: Some(tool_name_str.to_string()),
-                                            kind: crate::context::ArtifactKind::ToolResult,
-                                            created_at_ms: chrono::Utc::now().timestamp_millis(),
-                                            content_hash: crate::context::compute_content_hash(
-                                                &redacted_content,
-                                            ),
-                                            redacted_content: redacted_content.clone(),
-                                            raw_bytes_len: redacted_content.len(),
-                                            estimated_tokens: crate::context::estimate_tokens(
-                                                &redacted_content,
-                                            ),
-                                        })
-                                        .await;
-                                    match store_result {
-                                        Ok(()) => handle.as_str(),
-                                        Err(err) => {
-                                            tracing::warn!(
-                                                tool_call_id = %id,
-                                                tool_name = %tool_name_str,
-                                                session_id = %self.session_id,
-                                                error = %err,
-                                                "failed to store context artifact; omitting recovery handle"
-                                            );
-                                            ""
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::warn!(
-                                        tool_call_id = %id,
-                                        tool_name = %tool_name_str,
-                                        session_id = %self.session_id,
-                                        error = %err,
-                                        "failed to build context handle; omitting recovery handle"
-                                    );
-                                    ""
-                                }
-                            }
-                        } else {
-                            ""
-                        };
-
-                        let proj = crate::context::project_tool_output(
-                            tool_name_str,
-                            None,
-                            &redacted_content,
-                            tool_result_is_success(content),
-                            effective_handle,
-                            &self.projection_config,
-                        );
-
-                        self.context_ledger
-                            .record_projection(&proj, effective_handle);
-
-                        let msg = Message::Tool {
-                            tool_call_id: id.clone().into(),
-                            content: proj.model_text.into(),
-                        };
-                        self.context_tracker.add_message(&msg);
-                        request.messages.push(msg);
-                    }
-                    autonomy.mark_bootstrap_used();
-                    processor.reset();
-                    continue;
-                }
                 if just_executed_tools
+                    && is_soft_stop_reason(processor.stop_reason())
                     && autonomy.continuation_allowed()
-                    && is_soft_stop_reason(processor.stop_reason())
-                    && (processor.text().trim().len() < 220
-                        || indicates_more_work(processor.text()))
                 {
                     if let Some(msg) = processor.to_assistant_message() {
                         self.context_tracker.add_message(&msg);
                         request.messages.push(msg);
                     }
                     just_executed_tools = false;
-                    processor.reset();
-                    continue;
-                }
-                if just_executed_tools
-                    && is_repo_task_prompt(&current_turn_prompt)
-                    && is_soft_stop_reason(processor.stop_reason())
-                {
-                    push_control_instruction(
-                        &mut request.messages,
-                        &model_profile,
-                        "Continue working and use additional structured tool calls as needed to complete repository analysis before finalizing.",
-                    );
-                    just_executed_tools = false;
-                    processor.reset();
-                    continue;
-                }
-                let stop_is_soft_or_confused = is_soft_stop_reason(processor.stop_reason())
-                    || matches!(processor.stop_reason(), Some("tool_calls"));
-                if false && stop_is_soft_or_confused && indicates_more_work(processor.text()) {
-                    if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
-                        tracing::info!(
-                            "narration-retry: stop_reason={:?}, text_preview={:?}",
-                            processor.stop_reason(),
-                            processor.text().chars().take(200).collect::<String>()
-                        );
-                    }
-                    if let Some(msg) = processor.to_assistant_message() {
-                        self.context_tracker.add_message(&msg);
-                        request.messages.push(msg);
-                    }
-                    push_control_instruction(
-                        &mut request.messages,
-                        &model_profile,
-                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
-                    );
-                    processor.reset();
-                    continue;
-                }
-                if false && matches!(processor.stop_reason(), Some("tool_calls")) {
-                    push_control_instruction(
-                        &mut request.messages,
-                        &model_profile,
-                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
-                    );
                     processor.reset();
                     continue;
                 }
@@ -4142,7 +3905,12 @@ impl AgentLoop {
                     selected_surface_fingerprint: None,
                     batch_id: recovery_batch,
                 };
-                match autonomy.observe_tool_result(tool_execution_status(output), observation) {
+                let outcome = if tool_result_is_success(output) {
+                    ToolExecutionOutcome::success(output)
+                } else {
+                    ToolExecutionOutcome::legacy(output)
+                };
+                match autonomy.observe_tool_result(&outcome, observation) {
                     RecoveryDecision::Progress => self.recovery_parallel_limit = None,
                     RecoveryDecision::Recover { action, incident } => {
                         let instruction = match action {
@@ -4152,7 +3920,7 @@ impl AgentLoop {
                             ),
                             RecoveryAction::Correct => "Recovery correction: use the canonical tool name and valid schema from the currently available tool surface; do not retry the same failing call.".to_string(),
                             RecoveryAction::RestoreBasePalette => {
-                                if tool_execution_status(output)
+                                if outcome.status
                                     != crate::agent::progress_recovery::ToolExecutionStatus::Denied
                                 {
                                     request.tools = Some(self.base_request_tools.clone());
@@ -5121,7 +4889,10 @@ impl AgentLoop {
                                     ),
                                     cancellation: exec_ctx.cancellation.clone(),
                                     deadline: exec_ctx.deadline,
-                                    principal_ref: Some(authority_ref.clone()),
+                                    // Bind the broker context to the same
+                                    // principal used to issue the grant. The
+                                    // decision identity is not a principal.
+                                    principal_ref: Some(principal_ref.clone()),
                                     workspace_path_policy_id: Some(format!(
                                         "workspace:{}",
                                         ws_id_for_ctx
@@ -5598,59 +5369,13 @@ impl AgentLoop {
 
                 if tool_calls.is_empty() {
                     if just_executed_tools
-                        && autonomy.continuation_allowed()
                         && is_soft_stop_reason(processor.stop_reason())
-                        && (processor.text().trim().len() < 220
-                            || indicates_more_work(processor.text()))
+                        && autonomy.continuation_allowed()
                     {
                         if let Some(msg) = processor.to_assistant_message() {
                             request.messages.push(msg);
                         }
                         just_executed_tools = false;
-                        processor.reset();
-                        continue;
-                    }
-                    if just_executed_tools
-                        && autonomy.continuation_allowed()
-                        && is_soft_stop_reason(processor.stop_reason())
-                    {
-                        push_control_instruction(
-                        &mut request.messages,
-                        &model_profile,
-                        "Continue the task and emit structured tool calls as needed before finalizing.",
-                    );
-                        just_executed_tools = false;
-                        processor.reset();
-                        continue;
-                    }
-                    let stop_is_soft_or_confused_fu = is_soft_stop_reason(processor.stop_reason())
-                        || matches!(processor.stop_reason(), Some("tool_calls"));
-                    if stop_is_soft_or_confused_fu && indicates_more_work(processor.text()) && false
-                    {
-                        if std::env::var_os("CODEGG_DIAG_TOOL_PARSE").is_some() {
-                            tracing::info!(
-                                "narration-retry(followup): stop_reason={:?}, text_preview={:?}",
-                                processor.stop_reason(),
-                                processor.text().chars().take(200).collect::<String>()
-                            );
-                        }
-                        if let Some(msg) = processor.to_assistant_message() {
-                            request.messages.push(msg);
-                        }
-                        push_control_instruction(
-                            &mut request.messages,
-                            &model_profile,
-                            "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
-                        );
-                        processor.reset();
-                        continue;
-                    }
-                    if matches!(processor.stop_reason(), Some("tool_calls")) && false {
-                        push_control_instruction(
-                        &mut request.messages,
-                        &model_profile,
-                        "You must emit structured tool calls in this turn. Do not describe tool usage in plain text. Return tool calls only.",
-                    );
                         processor.reset();
                         continue;
                     }
@@ -6065,27 +5790,6 @@ mod tests {
         assert!(is_test_command("cargo test --release"));
         assert!(is_test_command("cargo test -- --test-threads=1"));
         assert!(is_test_command("cargo nextest run"));
-    }
-
-    #[test]
-    fn test_narration_retry_triggers_on_soft_stop_with_intent() {
-        assert!(is_soft_stop_reason(Some("stop")));
-        assert!(is_soft_stop_reason(Some("end_turn")));
-        assert!(!is_soft_stop_reason(Some("tool_calls")));
-        assert!(!is_soft_stop_reason(None));
-
-        assert!(indicates_more_work(
-            "I'll review the module. Let me start by exploring the structure and key files."
-        ));
-        assert!(indicates_more_work("Let me read the README first."));
-        assert!(indicates_more_work("I will now check the tests."));
-        assert!(indicates_more_work("Next, I need to verify the API."));
-        assert!(indicates_more_work("Now I will inspect the cache."));
-
-        assert!(!indicates_more_work(
-            "This is a complete answer with no follow-up intent."
-        ));
-        assert!(!indicates_more_work("The function returns 42."));
     }
 
     #[test]

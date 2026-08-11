@@ -171,7 +171,7 @@ pub trait CoreClient: Send + Sync {
 
 | Type | Purpose |
 |------|---------|
-| `InprocCoreClient` | Runs the core in the current process. Constructed via `with_deps(CoreRuntimeDeps)` (preferred) or legacy `new(pool, subagent_pool, memory_store, bg_scheduler)`. Contains a `deps: CoreRuntimeDeps` field bundling `pool`, `memory_store`, `legacy_agent: LegacyAgentRuntimeDeps` (which holds `subagent_pool` and `bg_scheduler`), and `turn_runtime` (always present, defaults to `DefaultTurnRuntime`). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes `AgentFinished`/`Error` events to the bus. |
+| `InprocCoreClient` | Runs the core in the current process. Constructed via `with_deps(CoreRuntimeDeps)` (preferred) or legacy `new(pool, subagent_pool, memory_store, bg_scheduler)`. Contains a `deps: CoreRuntimeDeps` field bundling `pool`, `memory_store`, `legacy_agent: LegacyAgentRuntimeDeps` (which holds `subagent_pool` and `bg_scheduler`), and `turn_runtime` (always present, defaults to `DefaultTurnRuntime`). `subscribe()` reads from GlobalEventBus and forwards events to the channel. Turn execution (spawned async) publishes the loop-owned `AgentFinished` and daemon-owned completion/error events to the bus. |
 | `StdioCoreClient` | Spawns `codegg core-stdio` and exchanges JSONL requests/responses over stdin/stdout |
 | `SocketCoreClient` | Connects to a Unix socket endpoint and exchanges JSONL requests/responses |
 

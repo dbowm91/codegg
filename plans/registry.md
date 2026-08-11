@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M010 ready | M001-M008 remain closed. M009/PR #74 is predecessor integration evidence; M010 is required before strict workstream closure. |
+| Agent runtime correctness, autonomy, and simplification | conditionally closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M010 conditionally closed | Production correction is pushed at `cbdc0150`; exact hosted `verify` evidence remains unavailable because PR #74 reports no checks for the branch. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the agent-runtime corrective closure pass. |
 
@@ -33,13 +33,9 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/010-recovery-state-strict-closure-corrective-pass.md` | hard: M001-M008 closed; retain/rebase valid M009/PR #74 integration changes; no external blocker |
+M010 is conditionally closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`. The production correction is complete; only the exact hosted `CI / verify` result remains to be attached if GitHub exposes a normal PR check for the pushed candidate.
 
-## Active closure work
-
-M010 is the dependency-ready corrective closure pass for the agent-runtime correctness workstream. It exists because post-M009 review found that M005's closure evidence overstated recovery simplification: dead bootstrap/retry branches remain and a repository-specific continuation can still create an autonomous provider turn outside the claimed single `AutonomyState` budget.
-
-PR #74 / M009 remains useful predecessor integration evidence, including the broker-principal correction, explicit workspace fixture reconciliation, documentation updates, and green predecessor hosted run `31515706555`. Its `closed` claim must not be treated as the final workstream closure authority until M010 is implemented and `010-status.md` is accepted.
+PR #74 / M009 remains useful predecessor integration evidence, including the broker-principal correction, explicit workspace fixture reconciliation, documentation updates, and green predecessor hosted run `31515706555`. Its historical `closed` claim is reconciled by M010's corrective record.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
@@ -59,9 +55,8 @@ The controlling sequence for this workstream is now:
 
 1. M001-M008 remain closed and are not reopened except for focused regression verification at their integration boundaries.
 2. M009 / PR #74 is predecessor integration work. Retain or rebase its valid broker-principal, workspace-fixture, project-catalog-guard, and documentation corrections.
-3. M010 is ready now and must delete unreachable recovery code, remove the unbudgeted repository continuation path, unify primary/follow-up continuation authority, and consume typed execution status where it already exists.
-4. Create `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md` only after focused tests and `scripts/verify.sh quick` pass.
-5. Run one existing hosted `CI / verify` job on the exact final corrective candidate. Only then may the workstream and corrective addendum move to `closed`.
+3. M010 is conditionally closed: it deleted unreachable recovery code, removed the unbudgeted repository continuation path, unified primary/follow-up continuation authority, and added the typed recovery boundary.
+4. The exact hosted `CI / verify` result remains the named operational condition for strict closure.
 
 Verification remains minimal and change-specific: focused recovery/loop/harness tests, `scripts/verify.sh quick`, and one ordinary hosted `verify` run on the final corrective candidate. Do not add a new CI lane, matrix, dead-code guard, scheduled audit, artifact workflow, coverage/benchmark/size gate, automatic publication, or release cadence.
 
@@ -93,6 +88,7 @@ Historical post-audit C001/C002 remain corrective closure passes, not milestones
 
 | Subsystem | Milestone | Status | Closure | Implementation commit |
 |---|---|---|---|---|
+| Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md` | `cbdc0150`; hosted final run unavailable |
 | Agent runtime correctness, autonomy, and simplification | M007 — measured binary footprint and upstream dependency review | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/007-status.md` | `deb07a2` |
 | Agent runtime correctness, autonomy, and simplification | M008 — routine CI and static-guard contraction | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/008-status.md` | `66326ad` |
 | Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | `4cd004d` |
