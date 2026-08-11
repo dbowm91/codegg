@@ -98,6 +98,12 @@ Constructs `ContextBlock` instances from runtime state. The builder takes a `ses
 
 The `build_all` convenience method constructs all blocks from a single call, skipping `None` optionals.
 
+Startup model-profile policy is part of the compiler-owned stable prefix. Its
+tool-use, patch-discipline, and capability-gated todo blocks contribute their
+content hashes to the prompt fingerprint. Dynamic controls remain
+`ControlInstruction`/volatile blocks and are inserted after compilation, so
+recovery or steering changes do not change the stable startup identity.
+
 ### Tool Definitions Hash and Summary Text
 
 `tool_definitions_hash()` in `tool_hash.rs` computes a deterministic hash of the tool palette using `stable_hash_hex` (full SHA-256, 64 lowercase hex chars; order-insensitive for the set of definitions). No `DefaultHasher` is used in context modules.

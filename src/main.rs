@@ -1407,8 +1407,14 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let (mcp_service, _report) =
         codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
     let tool_registry = codegg::tool::ToolRegistry::with_config(&config);
+    let mut available_tools: Vec<String> = tool_registry
+        .list()
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    available_tools.sort();
     let mut agent_loop = codegg::agent::r#loop::AgentLoop::new(
-        agents,
+        agents.clone(),
         provider,
         permission_checker,
         tool_registry,
@@ -1421,6 +1427,42 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     );
     agent_loop.set_agent(&safe_agent.name)?;
 
+    let resolved_profile =
+        codegg::model_profile::ModelProfileResolver::new(&config).resolve(&model_name);
+    let adapter = codegg::model_profile::resolve_adapter(None, &model_name);
+    let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
+        .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
+        .with_workspace_root(std::path::Path::new(&project_dir))
+        .build()
+        .expect("project_dir is a valid workspace root");
+    let mut runtime_blocks = Vec::new();
+    let instruction_resolution =
+        codegg::agent::instructions::ProjectInstructionResolver::with_defaults().resolve(&ctx);
+    if !instruction_resolution.merged.is_empty() {
+        runtime_blocks.push(codegg::agent::prompt::PromptBlock::optional(
+            codegg::agent::prompt::PromptBlockKind::ProjectInstructions,
+            "assets:instructions",
+            &instruction_resolution.merged,
+        ));
+    }
+    let compiled_prompt = codegg::agent::prompt::PromptCompiler::compile(
+        codegg::agent::prompt::PromptCompilerInput {
+            agent: &safe_agent,
+            model_profile: &resolved_profile,
+            config: &config,
+            tools: &available_tools,
+            skills: &[],
+            agents: &agents,
+            is_plan_mode: false,
+            snapshot: None,
+            pin: None,
+            execution: None,
+            adapter_fingerprint: Some(&adapter.fingerprint),
+            runtime_blocks: &runtime_blocks,
+        },
+    );
+    agent_loop.set_prompt_compiler_fingerprint(compiled_prompt.fingerprint.clone());
+
     let request = provider::ChatRequest {
         messages: vec![provider::Message::User {
             content: vec![provider::ContentPart::Text {
@@ -1429,19 +1471,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         }],
         model: model_name.to_string(),
         tools: None,
-        system: Some({
-            let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
-                .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
-                .with_workspace_root(std::path::Path::new(&project_dir))
-                .build()
-                .expect("project_dir is a valid workspace root");
-            codegg::agent::prompt::load_agent_prompt_with_context(
-                &safe_agent,
-                &config,
-                &model_name,
-                &ctx,
-            )
-        }),
+        system: Some(compiled_prompt.text),
         temperature: safe_agent.temperature,
         top_p: safe_agent.top_p,
         max_tokens: None,

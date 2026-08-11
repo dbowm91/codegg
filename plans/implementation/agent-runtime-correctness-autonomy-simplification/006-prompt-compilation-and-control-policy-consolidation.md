@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M006 — Prompt Compilation and Control-Policy Consolidation
 
-Status: blocked
+Status: implemented
 
 Source subsystem roadmap:
 

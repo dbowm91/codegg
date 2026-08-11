@@ -661,6 +661,17 @@ the permission/execution identity; aliases are applied only at the provider
 wire boundary and reversed on inbound tool calls.
 - Handles both `delta` and `message` tool call formats
 
+### Startup prompt and dynamic controls
+
+`PromptCompiler` owns startup behavior contracts before a provider request is
+created. It consumes the resolved model profile and resolved capability
+surface, including profile-specific structured-call and patch guidance, and
+records the result in the prompt fingerprint. Provider tool schemas are the
+authority for the actual available tools; startup prose does not reproduce a
+second tool inventory. Runtime steering, recovery, permission, notification,
+compaction, and todo-reminder controls remain late messages and use the
+provider's supported system/user placement rules.
+
 ### State Preservation
 
 The parser preserves state across chunks via special markers in the buffer:

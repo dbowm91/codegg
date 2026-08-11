@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | active | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M006, M007-M008 ready | M001-M005 closed; M009 requires M001-M008. |
+| Agent runtime correctness, autonomy, and simplification | closing | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-roadmap.md` | M006 closure review; M007-M008 ready | M001-M005 closed; M009 requires M001-M008. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | C002 corrected the `/dev/null` Landlock path-rights defect; hosted `verify` run `31425564638` passed on the actual merge candidate. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Production implementation is merged. Only the previously named supported-Linux Landlock fixture evidence remains; it is independent of the new agent-runtime workstream. |
 
@@ -38,7 +38,9 @@ Canonical direction remains in:
 
 ## Active closure work
 
-No closure pass is active for the new agent-runtime correctness workstream. M009 is blocked until M001-M008 have accepted closure records.
+| Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | closing | `plans/closure/agent-runtime-correctness-autonomy-simplification/006-status.md` | verification and evidence review |
+
+M009 is blocked until M001-M008 have accepted closure records.
 
 The previously completed post-audit corrective line remains closed. Historical control points are retained in:
 
@@ -52,8 +54,7 @@ Runtime-safety C002 remains conditionally closed only on its previously recorded
 
 | Subsystem | Milestone | Status | Implementation plan | Blocker |
 |---|---|---|---|---|
-| Agent runtime correctness, autonomy, and simplification | M006 — prompt compilation and control-policy consolidation | ready | `plans/implementation/agent-runtime-correctness-autonomy-simplification/006-prompt-compilation-and-control-policy-consolidation.md` | M005 closed. |
-| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | hard dependencies M001-M008 must close first. |
+| Agent runtime correctness, autonomy, and simplification | M009 — integration, documentation, and closure | blocked | `plans/implementation/agent-runtime-correctness-autonomy-simplification/009-integration-documentation-and-closure.md` | M007 and M008 remain open; M001-M006 closure records are required. |
 
 ## Execution order
 

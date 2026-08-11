@@ -3390,10 +3390,6 @@ impl AgentLoop {
         // Reductions now derive from the captured base_request_tools (full profile-filtered palette)
         // so they are stateless per call and non-cumulative.
         self.apply_tool_palette_policy_if_active(&mut request, "InitialRequest");
-        crate::model_profile::policy::apply_startup_profile_policy(
-            &mut request.messages,
-            &model_profile,
-        );
         self.apply_context_plan(&mut request)?;
         self.context_tracker.add_messages(&request.messages);
 

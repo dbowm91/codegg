@@ -544,8 +544,10 @@ registry call.
   `resolve_agents_with_context`.
 - `load_agent_prompt` / `load_agent_prompt_async` /
   `find_instructions_file` / `find_all_instruction_files` —
-  **deprecated**. They read process-global cwd and should be replaced
-  by `load_agent_prompt_with_context` (or
+  **deprecated**. They retain only a compatibility boundary for legacy
+  callers: instruction discovery occurs there, then the resulting content is
+  delegated to `PromptCompiler`. They must not grow independent prompt
+  assembly logic. New callers use `load_agent_prompt_with_context` (or
   `ProjectInstructionResolver::resolve`).
 
 ### Static guard
@@ -1020,14 +1022,18 @@ pub fn select_provider_prompt(model_id: &str) -> &'static str {
 
 ### System Prompt Assembly
 
-`assemble_system_prompt()` builds system prompt from:
-1. Agent's custom system prompt (if any)
-2. Agent name and description
-3. Available tools list
-4. Available skills list
-5. Model name (if set)
-6. Config instructions
-7. Custom instructions (passed at runtime)
+`PromptCompiler` builds startup behavior contracts from the resolved agent,
+model profile, capability surface, skills, and immutable project/runtime
+assets. Provider tool schemas remain authoritative for actual tools; startup
+text does not duplicate a textual tool inventory or model-name label. Plan
+mode describes only the capabilities present in the resolved surface, and
+goal/todo/research guidance is omitted when its required capability is not
+available. Profile-specific tool-call, patch, and todo discipline is emitted
+as stable compiler blocks, so it is included in the prompt fingerprint.
+
+`push_control_instruction()` remains reserved for genuinely dynamic controls
+such as steering, recovery, notifications, permissions, compaction frames,
+and todo reminders. Its provider-specific placement rules are unchanged.
 
 ### Instruction File Loading
 
