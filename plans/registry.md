@@ -33,6 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M001/M002/M004/M005 ready | M003 requires M002; M006 requires M001-M005; M007 requires M001-M006. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -42,18 +43,35 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
+| Runtime consolidation, deletion, and footprint | M001 — legacy background scheduler deletion | ready | `plans/implementation/runtime-consolidation-deletion-footprint/001-legacy-background-scheduler-deletion.md` | Existing durable scheduler/store interfaces are available; caller inventory is part of the milestone. |
+| Runtime consolidation, deletion, and footprint | M002 — structured outcome and recovery convergence | ready | `plans/implementation/runtime-consolidation-deletion-footprint/002-structured-outcome-recovery-convergence.md` | Preserve closed M011 typed-outcome fixes; no hard predecessor. |
+| Runtime consolidation, deletion, and footprint | M004 — prompt/provider/history legacy deletion | ready | `plans/implementation/runtime-consolidation-deletion-footprint/004-prompt-provider-history-legacy-deletion.md` | Canonical PromptCompiler/runtime-assets/model-adapter interfaces are already closed. |
+| Runtime consolidation, deletion, and footprint | M005 — verification ratchet retirement | ready | `plans/implementation/runtime-consolidation-deletion-footprint/005-verification-ratchet-retirement.md` | No hard predecessor; final guard audit should reconcile deletions from M001-M004. |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Active closure work
+
+### Runtime consolidation, deletion, and footprint
+
+This roadmap is a new cross-cutting consolidation workstream based on current repository evidence at baseline `bd9b3b61`; it does not reopen the closed Agent Runtime M011 or Agent Runtime/Model Adaptation/ACP M017 scopes. It consumes their canonical boundaries and removes migration residue around them.
+
+Execution order:
+
+1. M001, M002, M004, and M005 are dependency-ready and may proceed independently with normal rebase/merge coordination.
+2. M003 starts only after M002 closes so `AgentLoop` decomposition targets the final structured outcome/recovery contract; M001/M004 should preferably land first to reduce legacy code moved during extraction.
+3. M006 starts only after M001-M005 close so dependency/binary measurements describe the consolidated implementation rather than transitional code.
+4. M007 starts only after M001-M006 close and owns the single broad integration/hosted closure pass.
+
+Verification remains minimal and change-specific. This roadmap explicitly forbids new CI lanes/matrices, scheduled audits, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
 
 ### Agent runtime correctness, autonomy, and simplification
 
 M010 remains historical conditional evidence in `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`. Its structural recovery corrections remain accepted, but its strict disposition is superseded by M011 because later evidence changed the repository state:
 
 - hosted `CI / verify` run `31521674076`, job `93879950640`, failed at Workspace Clippy on the obsolete empty `autonomy_bootstrap_is_explicitly_one_shot` test;
-- ordinary native tool execution still has `Result<String, ToolError>` available but renders failures to strings before recovery, so known `Permission`/`Timeout` status is not yet preserved through the authoritative path.
+- ordinary native tool execution still had `Result<String, ToolError>` available but rendered failures to strings before recovery, so known `Permission`/`Timeout` status was not yet preserved through the authoritative path.
 
-M011 was the sole controlling strict closure milestone for this workstream and is now strictly closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Its exact candidate `e3b671ad` passed hosted run `31525206176` / job `93891703941` through Workspace tests.
+M011 was the sole controlling strict closure milestone for that workstream and is strictly closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Its exact candidate `e3b671ad` passed hosted run `31525206176` / job `93891703941` through Workspace tests.
 
 ### Other active closure dependencies
 
@@ -67,9 +85,10 @@ M011 was the sole controlling strict closure milestone for this workstream and i
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
+| Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | Hard dependency: M002 structured outcome/recovery contract must close first. |
+| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Hard dependencies: M001-M005 closed. |
+| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependencies: M001-M006 closed. |
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
-
-No registered implementation plan was blocked by agent-runtime correctness M011, so no future plan required promotion to `ready` in this closure.
 
 ## Agent-runtime correctness execution order
 
@@ -77,13 +96,11 @@ No registered implementation plan was blocked by agent-runtime correctness M011,
 2. M010 remains conditionally closed historical corrective evidence; its bootstrap/dead-branch/continuation cleanup must not regress.
 3. M011 owned the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence; it is closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
 4. The exact final candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
-5. No downstream registered plan was blocked by this workstream, so no unblock promotion was required.
-
-Verification remains minimal and change-specific. Do not add a CI lane, matrix, workflow-dispatch mechanism, dead-code source guard, scheduled audit, artifact workflow, coverage/benchmark/size gate, automatic publication, or release cadence for M011.
+5. The runtime-consolidation roadmap may simplify code around this closed boundary but must not rewrite M011 history or weaken its accepted invariants.
 
 ## Agent-runtime correctness closure policy
 
-The agent-runtime correctness/autonomy/simplification workstream now closes only through M011 and `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
+The agent-runtime correctness/autonomy/simplification workstream remains closed through M011 and `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
 
 Historical control points remain:
 
@@ -92,9 +109,9 @@ Historical control points remain:
 - M010: `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`
 - corrective addendum: `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md`
 
-M010 must not be rewritten to conceal that its exact hosted evidence was unavailable at authorship and later became a failed hosted run. M011 must cite the failed predecessor run and the final accepted green run.
+M010 must not be rewritten to conceal that its exact hosted evidence was unavailable at authorship and later became a failed hosted run. M011 must continue to cite the failed predecessor run and the final accepted green run.
 
-Strict closure was accepted because all M011 acceptance criteria were met, no critical/high/medium unresolved finding remains in scope, and hosted `CI / verify` run `31525206176` / job `93891703941` was green on the exact accepted candidate.
+Strict closure was accepted because all M011 acceptance criteria were met, no critical/high/medium unresolved finding remained in its scope, and hosted `CI / verify` run `31525206176` / job `93891703941` was green on the exact accepted candidate.
 
 ## Recently closed or conditionally closed control points
 
@@ -120,7 +137,7 @@ These remain outside active corrective handoff unless a concrete product priorit
 - replacing RustPython with a custom Tool Program parser;
 - generalized HTTP/provider-client unification;
 - broad Comrak/MSRV migration;
-- broad Ratatui/TUI dependency migration unless a future dependency-maintenance priority explicitly activates it;
+- broad Ratatui/TUI dependency migration beyond the bounded M006 maintenance evaluation unless a future dependency-maintenance priority explicitly activates it;
 - cross-tab artifact hand-off UX;
 - numeric acknowledgement/resync hot-key UX;
 - plugin-specific `ProjectionEvent::PluginUi` semantics;
