@@ -273,7 +273,7 @@ Use current-turn input for routing/research/recovery heuristics, separate cumula
 
 ### M005 — Agent-loop recovery and autonomous-execution state-machine simplification
 
-Status: ready; M001, M002, and M004 are closed (M003 remains a soft dependency).
+Status: closed; see `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md`.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/005-agent-loop-recovery-and-autonomy-state-machine.md`
 
@@ -281,7 +281,7 @@ Replace overlapping narration/bootstrap/continue/missing-tool repair paths with 
 
 ### M006 — Prompt compilation and control-policy consolidation
 
-Status: blocked on M005
+Status: ready; M005 is closed.
 
 Plan: `plans/implementation/agent-runtime-correctness-autonomy-simplification/006-prompt-compilation-and-control-policy-consolidation.md`
 

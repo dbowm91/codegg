@@ -1,6 +1,6 @@
 # Agent Runtime Correctness, Autonomy, and Simplification M005 — Agent-Loop Recovery and Autonomy State Machine
 
-Status: blocked
+Status: implemented
 
 Source subsystem roadmap:
 
