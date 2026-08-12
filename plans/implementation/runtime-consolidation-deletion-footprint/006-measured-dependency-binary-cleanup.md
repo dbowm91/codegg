@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M006 — Measured Dependency and Binary-Footprint Cleanup
 
-Status: blocked
+Status: blocked — measurement audit complete; M003 corrective extraction remains outstanding
 
 Source roadmap:
 
@@ -13,7 +13,7 @@ Relevant references:
 - `Cargo.toml`
 - previous post-audit dependency/footprint closure records
 
-Repository baseline reviewed: `bd9b3b610af0fa72ce3fe5a8b8f59222659f006d`
+Repository baseline reviewed: `a32f720d` (post-M005 tree; M003 corrective extraction remains incomplete)
 
 Primary class: polish / measured optimization
 
@@ -217,3 +217,15 @@ M006 is complete only when:
 ## 9. Stop conditions
 
 Stop optimization when the next meaningful reduction would require feature loss, a major dependency rewrite, an MSRV change, a binary topology split, or significant runtime-performance regression. The roadmap explicitly prefers a slightly larger maintainable binary over churn.
+
+## 10. Execution disposition
+
+The M006 measurement audit was performed against the post-M005 branch state, but
+strict M006 closure is blocked by the hard M003 dependency. The remaining
+`AgentLoop` physical extraction is tracked by
+`plans/implementation/runtime-consolidation-deletion-footprint/008-m003-corrective-physical-extraction.md`.
+
+The audit found no safe dependency declaration, feature, duplicate-version,
+upstream-maintenance, or release-profile change to land in M006. The measured
+result and dispositions are recorded in
+`plans/closure/runtime-consolidation-deletion-footprint/006-status.md`.

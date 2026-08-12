@@ -184,7 +184,7 @@ Dependency classes:
 - M001, M002, M004, and M005 are independently executable against the reviewed baseline after rebasing on current `main`.
 - M003 has a hard dependency on M002 because loop extraction must target the final structured execution/recovery boundary rather than freeze the transitional one. Its initial pass established seams but requires the corrective physical-extraction plan before M006 can proceed.
 - M003 has soft dependencies on M001 and M004 because deleted compatibility code reduces the amount of loop/prompt state that must be moved; it may begin once M002 closes if merge ordering is managed explicitly.
-- M006 has hard dependencies on M001-M005. Measurements before deletion are baseline evidence only; accepted dependency/feature changes must be based on the consolidated tree.
+- M006 has hard dependencies on M001-M005. Its audit is recorded against the post-M005 tree, but strict closure remains blocked until M003 corrective physical extraction completes; final accepted dependency/feature changes must be based on the consolidated tree.
 - M007 has hard dependencies on M001-M006 and is the only milestone that may close this roadmap.
 
 ## 7. Ordered milestones
@@ -233,7 +233,7 @@ Classify static guards as permanent invariants or temporary migration ratchets, 
 
 ### M006 — Measured dependency and binary-footprint cleanup
 
-Status: blocked on M003 corrective physical extraction
+Status: audit complete; blocked on M003 corrective physical extraction
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md`
 

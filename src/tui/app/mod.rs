@@ -11274,36 +11274,6 @@ impl App {
         }
     }
 
-    pub async fn load_tasks_via_core(&mut self) -> Result<Vec<serde_json::Value>, AppError> {
-        let core_client = self
-            .core_client
-            .clone()
-            .ok_or_else(|| AppError::Tui("core client unavailable for task list".to_string()))?;
-        let request =
-            crate::core::new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::TaskList);
-        match core_client.request(request).await {
-            Ok(crate::protocol::core::CoreResponse::Json { data }) => {
-                let tasks = data
-                    .get("tasks")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                Ok(tasks)
-            }
-            Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
-                format!("core task list failed ({}): {}", code, message),
-            )),
-            Ok(other) => Err(AppError::Tui(format!(
-                "unexpected core response for task list: {:?}",
-                other
-            ))),
-            Err(e) => Err(AppError::Tui(format!(
-                "core task list request failed: {}",
-                e
-            ))),
-        }
-    }
-
     /// Drive the TUI's initial session load through the attached
     /// `CoreClient`. In socket/RemoteCore mode there is no local
     /// `SessionStore`, so this is the only way to open / continue /
@@ -13008,34 +12978,6 @@ mod remote_core_loader_tests {
         } else {
             panic!("expected ModelsSnapshot");
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn load_tasks_via_core_returns_tasks_array() {
-        use sqlx::sqlite::SqlitePoolOptions;
-        use std::time::Duration;
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .acquire_timeout(Duration::from_secs(5))
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        crate::session::schema::migrate(&pool).await.unwrap();
-
-        let client: Arc<dyn CoreClient> = Arc::new(InprocCoreClient::new(
-            None,
-            None,
-            Some(pool),
-            crate::config::schema::Config::default(),
-            None,
-        ));
-
-        let mut app = App::new_for_testing("/tmp".to_string());
-        app.set_core_client(client);
-
-        let tasks = app.load_tasks_via_core().await.unwrap();
-
-        assert!(tasks.is_empty(), "fresh daemon should have no tasks");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

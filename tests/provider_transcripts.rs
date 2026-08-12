@@ -171,7 +171,9 @@ mod tests {
         let body = provider.build_body(&request);
         let msgs = body.get("messages").unwrap().as_array().unwrap();
 
-        assert_eq!(msgs.len(), 2);
+        // Unpaired assistant tool calls receive a provider-only placeholder
+        // result during history projection.
+        assert_eq!(msgs.len(), 3);
 
         let assistant_msg = &msgs[1];
         assert_eq!(
@@ -212,7 +214,9 @@ mod tests {
         let body = provider.build_body(&request);
         let msgs = body.get("messages").unwrap().as_array().unwrap();
 
-        assert_eq!(msgs.len(), 2);
+        // The projected history includes a placeholder result for the
+        // unpaired assistant tool call.
+        assert_eq!(msgs.len(), 3);
 
         let assistant_msg = &msgs[1];
         assert_eq!(
@@ -521,7 +525,7 @@ mod tests {
         let body = provider.build_body(&request);
         let msgs = body.get("messages").unwrap().as_array().unwrap();
 
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         let assistant_msg = &msgs[0];
         assert_eq!(
             assistant_msg.get("role").unwrap().as_str().unwrap(),
@@ -575,7 +579,7 @@ mod tests {
         let body = provider.build_body(&request);
         let msgs = body.get("messages").unwrap().as_array().unwrap();
 
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         let assistant_msg = &msgs[0];
         assert_eq!(
             assistant_msg.get("role").unwrap().as_str().unwrap(),
@@ -704,7 +708,7 @@ mod tests {
         let body = provider.build_body(&request);
         let msgs = body.get("messages").unwrap().as_array().unwrap();
 
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
         let assistant_msg = &msgs[0];
         assert_eq!(
             assistant_msg.get("role").unwrap().as_str().unwrap(),

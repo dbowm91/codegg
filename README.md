@@ -289,6 +289,16 @@ scripts/verify.sh full     # broad verification (adds clippy, tests, feature che
 cargo fmt                  # format
 ```
 
+For release-footprint investigations, use isolated targets and record the
+compiler, target, features, and resulting byte counts:
+
+```bash
+CARGO_TARGET_DIR=/tmp/codegg-release-default cargo build --release --locked --bin codegg
+CARGO_TARGET_DIR=/tmp/codegg-release-production cargo build --release --locked --bin codegg --features server,plugins,lsp-test-support
+```
+
+These are diagnostic measurements, not a CI size gate.
+
 For focused crate tests:
 
 ```bash

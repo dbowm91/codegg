@@ -80,6 +80,17 @@ The canonical local entry points are `scripts/verify.sh quick` and `scripts/veri
 CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
 ```
 
+Release-footprint measurements are diagnostic and should use isolated target
+directories so incremental artifacts do not affect comparisons:
+
+```bash
+CARGO_TARGET_DIR=/tmp/codegg-release-default cargo build --release --locked --bin codegg
+CARGO_TARGET_DIR=/tmp/codegg-release-production cargo build --release --locked --bin codegg --features server,plugins,lsp-test-support
+```
+
+Do not add binary-size gates, release matrices, or dependency churn solely to
+improve these measurements.
+
 `--test-threads=14` limits concurrent test execution per binary. `CARGO_BUILD_JOBS=1` prevents the compile/link fan-out that drives the RAM and iowait spikes.
 
 Run `--all-features` and `lsp-test-support` paths as separate capped invocations when possible; those are the heaviest test paths in this repo.

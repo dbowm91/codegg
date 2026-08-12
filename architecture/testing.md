@@ -246,6 +246,22 @@ heavier than default-feature compilation.
 
 Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally via the change-specific matrix documented in `scripts/verify.sh` and this file.
 
+### Release-footprint measurements
+
+When investigating dependency or binary footprint, build the default and
+maintainer production feature combinations in isolated targets:
+
+```bash
+CARGO_TARGET_DIR=/tmp/codegg-release-default cargo build --release --locked --bin codegg
+CARGO_TARGET_DIR=/tmp/codegg-release-production cargo build --release --locked --bin codegg --features server,plugins,lsp-test-support
+```
+
+Record the host, compiler, feature set, and byte counts in the relevant closure
+record. `cargo bloat --release --bin codegg --crates` is optional diagnostic
+tooling. Binary size is evidence, not a continuous CI gate; do not change
+supported features, MSRV, or panic semantics without separate compatibility
+evidence.
+
 ### Real LSP tests
 
 Real-server compatibility tests are run locally as opt-in commands, not part of routine CI. There is no automated workflow for real-server testing. Tests verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.

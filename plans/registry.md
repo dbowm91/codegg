@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M003 corrective pass / M005 closed | M006 remains blocked on the M003 corrective physical extraction; M007 requires M002-M006. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M003 corrective pass / M005 closed / M006 audit blocked | M006 measurement audit is recorded in `plans/closure/runtime-consolidation-deletion-footprint/006-status.md`; strict closure remains blocked on M003 corrective physical extraction. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -56,7 +56,7 @@ Execution order:
 
 1. M002, M004, and M005 are closed; M003 corrective physical extraction remains outstanding; M001 is closed.
 2. M003 corrective physical extraction remains outstanding. M005's verification audit confirms that M006 must measure the post-extraction tree, not the current transitional tree.
-3. M006 starts only after M002-M005 close so dependency/binary measurements describe the consolidated implementation rather than transitional code.
+3. M006's audit was run against the post-M005 tree, but strict closure remains blocked until the M003 corrective physical extraction closes; the recorded measurements are diagnostic and must be repeated on the consolidated tree.
 4. M007 starts only after M002-M006 close and owns the single broad integration/hosted closure pass.
 
 Verification remains minimal and change-specific. This roadmap explicitly forbids new CI lanes/matrices, scheduled audits, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
@@ -82,7 +82,7 @@ M011 was the sole controlling strict closure milestone for that workstream and i
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Hard dependency: M003 corrective physical extraction remains incomplete. |
+| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Audit complete but strict closure blocked: M003 corrective physical extraction remains incomplete; see `plans/closure/runtime-consolidation-deletion-footprint/006-status.md`. |
 | Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependencies: M002-M006 closed; M001 is closed. |
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
 
