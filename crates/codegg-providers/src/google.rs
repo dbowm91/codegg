@@ -1,7 +1,7 @@
 use crate::error::ProviderError;
 use crate::{
-    create_http_client, ChatEvent, ChatRequest, ContentPart, EventStream, Message, ModelInfo,
-    Provider, TokenUsage, ToolCall, MAX_BUFFER_SIZE,
+    create_http_client, project_tool_call_history, ChatEvent, ChatRequest, ContentPart,
+    EventStream, Message, ModelInfo, Provider, TokenUsage, ToolCall, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures_util::stream::unfold;
@@ -25,7 +25,7 @@ impl GoogleProvider {
     fn build_body(&self, req: &ChatRequest) -> serde_json::Value {
         let mut contents: Vec<serde_json::Value> = Vec::new();
 
-        for msg in &req.messages {
+        for msg in project_tool_call_history(&req.messages).iter() {
             match msg {
                 Message::System { content } => {
                     if contents.is_empty() {

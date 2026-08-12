@@ -6,9 +6,8 @@
 //! single source of truth for what instruction fragments are loaded for
 //! a given explicit project/workspace context.
 //!
-//! Runtime Assets Milestone 2 replaces the legacy
-//! `find_all_instruction_files()` (which walked from process-global `cwd`
-//! upward) with this resolver. The resolver:
+//! Runtime Assets Milestone 2 established this resolver as the only
+//! instruction-discovery path for production prompt construction. The resolver:
 //!
 //! - accepts an explicit [`AssetContext`];
 //! - reads only the workspace root and its `.git` ancestor;

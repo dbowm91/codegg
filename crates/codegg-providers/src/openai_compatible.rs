@@ -2,8 +2,9 @@ use crate::auth_types::Credential;
 use crate::error::ProviderError;
 use crate::sse_parser::parse_openai_buffer;
 use crate::{
-    assistant_text_content_value, create_http_client, openai_tool_arguments_value, ChatRequest,
-    ContentPart, EventStream, Message, ModelInfo, Provider, ReasoningVisibility, MAX_BUFFER_SIZE,
+    assistant_text_content_value, create_http_client, openai_tool_arguments_value,
+    project_tool_call_history, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
+    ReasoningVisibility, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures_util::stream::unfold;
@@ -121,7 +122,7 @@ impl OpenAiCompatibleProvider {
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
         let adapter = request_policy(&self.id, &request.model);
         let mut messages: Vec<serde_json::Value> = Vec::new();
-        for msg in &request.messages {
+        for msg in project_tool_call_history(&request.messages).iter() {
             match msg {
                 Message::System { content } => {
                     messages.push(json!({"role": "system", "content": content}));

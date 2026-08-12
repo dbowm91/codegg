@@ -49,7 +49,6 @@ use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::question::{format_question_answers, parse_question_questions};
 use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use crate::tool::ToolRegistry;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -702,85 +701,6 @@ impl AgentLoop {
 
         Some(usage)
     }
-}
-
-fn harden_history(messages: &mut Vec<Message>) {
-    let mut hardened: Vec<Message> = Vec::with_capacity(messages.len() + 8);
-    let mut pending_tool_calls: BTreeMap<String, String> = BTreeMap::new();
-
-    let flush_pending = |target: &mut Vec<Message>, pending: &mut BTreeMap<String, String>| {
-        if pending.is_empty() {
-            return;
-        }
-        for tool_call_id in pending.keys() {
-            target.push(Message::Tool {
-                tool_call_id: tool_call_id.clone().into(),
-                content: "[tool result missing due to history repair]"
-                    .to_string()
-                    .into(),
-            });
-        }
-        pending.clear();
-    };
-
-    for msg in messages.drain(..) {
-        match msg {
-            Message::Assistant {
-                content,
-                tool_calls,
-            } => {
-                flush_pending(&mut hardened, &mut pending_tool_calls);
-                for tc in &tool_calls {
-                    pending_tool_calls.insert(tc.id.to_string(), tc.name.to_string());
-                }
-                hardened.push(Message::Assistant {
-                    content,
-                    tool_calls,
-                });
-            }
-            Message::Tool {
-                tool_call_id,
-                content,
-            } => {
-                if pending_tool_calls.remove(tool_call_id.as_ref()).is_some() {
-                    hardened.push(Message::Tool {
-                        tool_call_id,
-                        content,
-                    });
-                } else {
-                    tracing::warn!(
-                        tool_call_id = %tool_call_id,
-                        "Orphan tool message during history hardening - preserving to avoid breaking message contract"
-                    );
-                    hardened.push(Message::Tool {
-                        tool_call_id,
-                        content,
-                    });
-                }
-            }
-            Message::User { content } => {
-                flush_pending(&mut hardened, &mut pending_tool_calls);
-                hardened.push(Message::User { content });
-            }
-            Message::System { content } => {
-                flush_pending(&mut hardened, &mut pending_tool_calls);
-                hardened.push(Message::System { content });
-            }
-        }
-    }
-
-    if !pending_tool_calls.is_empty() {
-        for tool_call_id in pending_tool_calls.keys() {
-            hardened.push(Message::Tool {
-                tool_call_id: tool_call_id.clone().into(),
-                content: "[tool result missing due to history repair]"
-                    .to_string()
-                    .into(),
-            });
-        }
-    }
-
-    *messages = hardened;
 }
 
 fn is_soft_stop_reason(stop_reason: Option<&str>) -> bool {
@@ -3623,8 +3543,6 @@ impl AgentLoop {
                 }
             }
 
-            harden_history(&mut request.messages);
-
             // Dispatch chat params/headers hooks before provider call.
             if let Some(ref ps) = self.plugin_service {
                 use crate::plugin::lifecycle::{
@@ -5372,8 +5290,6 @@ impl AgentLoop {
                     &model_profile,
                     ContextPackObservationPhase::BeforeProviderCall,
                 );
-                harden_history(&mut request.messages);
-
                 let events =
                     match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, request)
                         .await

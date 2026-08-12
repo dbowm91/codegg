@@ -202,6 +202,52 @@ pub enum Message {
     },
 }
 
+/// Project canonical history into the provider wire grammar without mutating
+/// the messages retained by the agent/session. Some providers require every
+/// assistant tool call to have a following result; an interrupted turn does
+/// not make that result a durable fact, so the placeholder exists only in the
+/// serialized request.
+pub fn project_tool_call_history(messages: &[Message]) -> Vec<Message> {
+    use std::collections::BTreeMap;
+
+    let mut projected = Vec::with_capacity(messages.len() + 8);
+    let mut pending = BTreeMap::<String, ()>::new();
+
+    let flush = |projected: &mut Vec<Message>, pending: &mut BTreeMap<String, ()>| {
+        for id in pending.keys() {
+            projected.push(Message::Tool {
+                tool_call_id: id.clone().into(),
+                content: "[tool result missing due to interrupted history]"
+                    .to_string()
+                    .into(),
+            });
+        }
+        pending.clear();
+    };
+
+    for message in messages {
+        match message {
+            Message::Assistant { tool_calls, .. } => {
+                flush(&mut projected, &mut pending);
+                for call in tool_calls {
+                    pending.insert(call.id.to_string(), ());
+                }
+                projected.push(message.clone());
+            }
+            Message::Tool { tool_call_id, .. } => {
+                pending.remove(tool_call_id.as_ref());
+                projected.push(message.clone());
+            }
+            Message::User { .. } | Message::System { .. } => {
+                flush(&mut projected, &mut pending);
+                projected.push(message.clone());
+            }
+        }
+    }
+    flush(&mut projected, &mut pending);
+    projected
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ContentPart {
@@ -1021,6 +1067,26 @@ mod tests {
             content: "result".to_string().into(),
         };
         assert!(matches!(msg, Message::Tool { .. }));
+    }
+
+    #[test]
+    fn tool_history_projection_repairs_wire_only() {
+        let messages = vec![Message::Assistant {
+            content: vec![],
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_string().into(),
+                name: "read".to_string().into(),
+                arguments: "{}".to_string().into(),
+            }],
+        }];
+
+        let projected = project_tool_call_history(&messages);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(projected.len(), 2);
+        assert!(matches!(projected[1], Message::Tool { .. }));
+        if let Message::Tool { content, .. } = &projected[1] {
+            assert!(content.contains("interrupted history"));
+        }
     }
 
     #[test]

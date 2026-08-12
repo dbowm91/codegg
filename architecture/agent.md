@@ -542,9 +542,9 @@ registry call.
 - `resolve_agents_with_context(&Config, Option<&Path>)` — surface
   parity with legacy `resolve_agents(&Config)` but takes the project
   root explicitly.
-- `load_agent_prompt_with_context(&Agent, &Config, &model_id,
-  &AssetContext)` — context-aware system-prompt assembly that
-  delegates to `ProjectInstructionResolver`.
+- `PromptCompiler::compile(PromptCompilerInput)` — the sole production
+  system-prompt assembly path. It consumes the resolved model adapter/profile,
+  explicit execution context, and an immutable asset snapshot.
 - `AssetRegistry::build(&AssetDiscoveryConfig, &workspace_root,
   &global_roots)` — context-aware skill discovery used by the
   snapshot builder.
@@ -557,13 +557,11 @@ registry call.
 - `resolve_agents(&Config)` — kept for backward compatibility. Reads
   cwd exactly once at the boundary and forwards to
   `resolve_agents_with_context`.
-- `load_agent_prompt` / `load_agent_prompt_async` /
-  `find_instructions_file` / `find_all_instruction_files` —
-  **deprecated**. They retain only a compatibility boundary for legacy
-  callers: instruction discovery occurs there, then the resulting content is
-  delegated to `PromptCompiler`. They must not grow independent prompt
-  assembly logic. New callers use `load_agent_prompt_with_context` (or
-  `ProjectInstructionResolver::resolve`).
+- The former process-CWD prompt loaders and provider-template selector were
+  removed in M004 after the caller audit found no supported Rust callers.
+  Production callers use `PromptCompiler` and `ProjectAssetSnapshot`; there
+  is no compatibility path that can make process-global CWD or network I/O
+  authoritative for a turn prompt.
 
 ### Static guard
 
@@ -1018,22 +1016,11 @@ See [goal.md](goal.md) for full architecture.
 
 ## 10. Prompt Assembly (`prompt.rs`)
 
-### Provider Prompt Selection
+### Provider prompt specialization
 
-Selects model-specific system prompt:
-
-```rust
-pub fn select_provider_prompt(model_id: &str) -> &'static str {
-    // GPT-4, O1, O3, O4 → beast.txt
-    // Codex → codex.txt
-    // GPT → gpt.txt
-    // Gemini → gemini.txt
-    // Claude, Sonnet, Opus, Haiku → anthropic.txt
-    // Trinity → trinity.txt
-    // Kimi → kimi.txt
-    // Default → default.txt
-}
-```
+Provider/model specialization is owned by the resolved model adapter/profile
+and emitted as typed compiler blocks. Generic prompt assembly does not select
+provider-name templates or inspect model-name prefixes.
 
 ### System Prompt Assembly
 
@@ -1052,19 +1039,11 @@ and todo reminders. Its provider-specific placement rules are unchanged.
 
 ### Instruction File Loading
 
-Primary instruction files (via `INSTRUCTION_FILES` constant):
-1. `AGENTS.md`
-2. `CLAUDE.md`
-3. `CONTEXT.md`
-
-Secondary/fallback paths (via `find_instructions_file()`):
-1. `.codegg/instructions.md` (project)
-2. `INSTRUCTIONS.md` (project root)
-3. `~/.config/codegg/instructions.md` (global)
-
-Searches from CWD to git root, plus config dir.
-
-Remote URLs in config instructions are fetched asynchronously.
+`ProjectInstructionResolver` resolves bounded instruction fragments from an
+explicit `AssetContext`. `ProjectAssetSnapshotBuilder` runs that resolver;
+refresh publishes the immutable snapshot before turn compilation. Prompt
+compilation itself performs no filesystem lookup and no network fetch. URL
+entries in configuration are not treated as prompt bodies by the compiler.
 
 ### Subagent Output Contracts
 
@@ -1084,7 +1063,7 @@ pub fn subagent_output_contract(role: &str) -> &'static str {
 }
 ```
 
-The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and `base_prompt_parts()` (used in `load_agent_prompt()` for production paths). It is appended after the role contract, giving subagents explicit guidance on response format.
+The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and the corresponding typed compiler blocks used by production prompt construction. It is appended after the role contract, giving subagents explicit guidance on response format.
 
 ### Specialized research runtime
 

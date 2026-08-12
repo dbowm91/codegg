@@ -52,10 +52,10 @@ pub use eggpool::{
 pub use error::{ProviderError, StorageError};
 pub use provider_core::{
     assistant_text_content_value, create_http_client, openai_tool_arguments_value,
-    register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
-    EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
-    ProviderRegistry, ReasoningVisibility, ResponseFormat, TokenUsage, ToolCall, ToolDefinition,
-    MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
+    project_tool_call_history, register_builtin, register_builtin_with_config, ChatEvent,
+    ChatRequest, ContentPart, EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider,
+    ProviderCapabilities, ProviderRegistry, ReasoningVisibility, ResponseFormat, TokenUsage,
+    ToolCall, ToolDefinition, MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
 };
 pub use responses_api::{
     filter_artifacts_for_provider, validate_arguments, validate_call_count, validate_result_size,

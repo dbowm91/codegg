@@ -1,8 +1,8 @@
 use crate::error::ProviderError;
 use crate::sse_parser::parse_anthropic_buffer_with_state;
 use crate::{
-    create_http_client, ChatRequest, ContentPart, EventStream, Message, ModelInfo, Provider,
-    MAX_BUFFER_SIZE,
+    create_http_client, project_tool_call_history, ChatRequest, ContentPart, EventStream, Message,
+    ModelInfo, Provider, MAX_BUFFER_SIZE,
 };
 use async_trait::async_trait;
 use futures_util::stream::unfold;
@@ -54,7 +54,7 @@ impl AnthropicProvider {
     pub fn build_body(&self, req: &ChatRequest) -> serde_json::Value {
         let mut messages: Vec<serde_json::Value> = Vec::new();
 
-        for msg in &req.messages {
+        for msg in project_tool_call_history(&req.messages).iter() {
             match msg {
                 Message::System { content: _ } => {}
                 Message::User { content } => {
