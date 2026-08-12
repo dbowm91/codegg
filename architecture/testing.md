@@ -31,7 +31,8 @@ This document defines the test taxonomy, resource model, and guidance for adding
 
 The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning tests. Key amplification factors:
 
-- **LSP tests** spawn fake language-server subprocesses per test, create temp Rust workspaces, write scenario files, and exercise async shutdown/restart. A single test binary (`tests/lsp.rs`) has 84 tests that each spawn a subprocess.
+- **LSP tests** spawn fake language-server subprocesses, create temp Rust
+  workspaces, write scenario files, and exercise async shutdown/restart.
 - **Plugin tests** may instantiate Wasmtime runtime state.
 - **Tokio default flavor** is single-threaded/current-thread. Bare `#[tokio::test]` already has the lightweight default runtime; `audit_tokio_tests.py` remains available to identify tests that need explicit concurrency review. Use an explicit multi-threaded flavor only when a test genuinely requires worker-thread concurrency.
 - **SQLite migration churn** — `isolated_pool()` runs full migrations on every call. Some test files add redundant `migrate()` calls on top.

@@ -190,24 +190,24 @@ comprehensive runtime test suite:
 ### Runtime proof
 
 - **Resource admission**: permits are conserved across admit/drop
-  (`tests/scheduler_permit_lifecycle.rs`, 18 tests)
+  (`tests/scheduler_permit_lifecycle.rs`)
 - **Submission atomicity + idempotency**: one submission key produces
-  one job; duplicate keys coalesce (`tests/scheduler_submission_idempotency.rs`, 11 tests)
+  one job; duplicate keys coalesce (`tests/scheduler_submission_idempotency.rs`)
 - **Authority matrix**: one job produces one attempt and one executor
-  entry (`tests/scheduler_authority_matrix.rs`, 13 tests)
+  entry (`tests/scheduler_authority_matrix.rs`)
 - **Cancellation chain**: cancel signals propagate through process
-  trees, terminal states are never overwritten (`tests/scheduler_cancellation.rs`, 10 tests)
+  trees, terminal states are never overwritten (`tests/scheduler_cancellation.rs`)
 - **Restart recovery**: fault injection at each durability boundary,
   stale attempts are interrupted, eligible jobs are requeued
-  (`tests/scheduler_restart_recovery.rs`, 15 tests)
+  (`tests/scheduler_restart_recovery.rs`)
 - **Multi-workspace contention**: fairness, exclusivity keys,
-  starvation prevention (`tests/scheduler_contention.rs`, 14 tests)
+  starvation prevention (`tests/scheduler_contention.rs`)
 - **Process-tree isolation**: SIGTERM → SIGKILL escalation,
-  descendant cleanup (`tests/managed_process_descendants.rs`, 5 tests)
+  descendant cleanup (`tests/managed_process_descendants.rs`)
 - **Resource profiles**: budget audit for all job kinds
-  (`tests/scheduler_resource_profiles.rs`, 8 tests)
+  (`tests/scheduler_resource_profiles.rs`)
 - **Protocol consistency**: snapshot, JobWait, JobList, error taxonomy
-  (`tests/scheduler_protocol_consistency.rs`, 13 tests)
+  (`tests/scheduler_protocol_consistency.rs`)
 - **Existing coverage**: unit behaviour, two-workspace fairness,
   disabled-scheduler behaviour, managed-process timeout, bounded output,
   durable recovery (`tests/scheduler_phase5.rs`, `tests/durable_jobs_phase4.rs`)

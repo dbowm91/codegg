@@ -84,49 +84,12 @@ own context identity, packing and compaction; and
 The field list below is intentionally illustrative rather than an ownership
 inventory; source types and Rustdoc are authoritative.
 
-### Legacy field compatibility note
+### Implementation inventory boundary
 
-```rust
-pub struct AgentLoop {
-    agents: HashMap<String, Agent>,                    // Available agents
-    state: AgentLoopState,                             // Turn count, tokens, plan mode
-    limits: ExecutionLimits,                           // Max turns, tokens, timeout
-    provider: Box<dyn Provider>,                       // LLM provider
-    permission_checker: PermissionChecker,             // Permission enforcement
-    tool_registry: ToolRegistry,                       // Tool execution
-    hook_registry: Option<Arc<HookRegistry>>,          // Hook system
-    context_tracker: ContextTracker,                   // Token usage monitoring
-    steering: AtomicBool,                              // User interruption signal
-    follow_up_tx: mpsc::UnboundedSender<String>,       // Follow-up prompt sender
-    follow_up_rx: mpsc::UnboundedReceiver<String>,     // Follow-up prompt receiver
-    config: Config,                                    // App configuration
-    question_tx: Option<oneshot::Sender<String>>,      // Question response sender
-    question_rx: Option<oneshot::Receiver<String>>,    // Question response receiver
-    plugin_service: Option<Arc<PluginService>>,        // WASM plugin hooks
-    session_id: String,                                // Current session ID
-    mcp_service: Option<Arc<RwLock<McpService>>>,     // MCP client service
-    tool_def_cache: Option<ToolDefCache>,              // Cached tool definitions
-    deferred_tool_definitions: Vec<ToolDefinition>,    // Deferred tool definitions
-    model_router: ModelRouter,                         // Auto-routing
-    snapshot_manager: Option<SnapshotManager>,         // File state snapshots
-    file_change_rx: broadcast::Receiver<AppEvent>,     // File change events
-    usage_store: Option<Arc<UsageStore>>,              // Token usage tracking
-    pricing_service: PricingService,                   // Cost calculation
-    security_service: SecurityService,                 // Security service
-    recent_findings: Vec<SecurityFinding>,             // Recent security findings
-    todo_state: Arc<Mutex<TodoState>>,                 // Todo state
-    task_state_policy: TaskStatePolicy,                // Task state policy
-    todo_pool: Option<SqlitePool>,                     // Todo database pool
-    event_store: Option<Arc<EventStore>>,              // Event store for replay
-    active_tool_timings: HashMap<String, Instant>,     // Tool execution timings
-    execution_policy: Option<ExecutionPolicy>,         // Execution policy
-    original_user_prompt: Option<String>,              // Original user prompt
-    subagent_pool: Option<Arc<SubAgentPool>>,          // Subagent pool
-    max_tool_calls: Option<usize>,                     // Max tool calls limit
-    goal_store: Option<Arc<GoalStore>>,                // Goal store
-    goal_wall_clock: Mutex<GoalWallClock>,             // Goal wall clock
-}
-```
+The concrete field set is intentionally not reproduced here. It changes as
+ownership moves into the domain modules above; source types and Rustdoc are
+authoritative. This document records stable boundaries and turn flow rather
+than maintaining a second implementation inventory.
 
 ### AgentLoopState
 

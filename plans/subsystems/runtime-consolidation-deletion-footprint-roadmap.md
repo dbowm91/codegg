@@ -223,15 +223,17 @@ Audit callers and remove superseded process-CWD prompt loaders, old provider pro
 
 ### M005 — Static verification ratchet retirement and documentation contraction
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/005-verification-ratchet-retirement.md`
+
+Closure: `plans/closure/runtime-consolidation-deletion-footprint/005-status.md`
 
 Classify static guards as permanent invariants or temporary migration ratchets, delete ratchets whose underlying boundary is now structural/tested, and contract architecture docs that duplicate source internals. Keep routine CI as one job.
 
 ### M006 — Measured dependency and binary-footprint cleanup
 
-Status: blocked on M002-M005
+Status: blocked on M003 corrective physical extraction
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md`
 

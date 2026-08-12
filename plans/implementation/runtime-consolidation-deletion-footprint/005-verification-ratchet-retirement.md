@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M005 — Static Verification Ratchet Retirement and Documentation Contraction
 
-Status: ready
+Status: implemented
 
 Source roadmap:
 
