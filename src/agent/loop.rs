@@ -18,6 +18,7 @@ use crate::agent::compaction::{
     prune_tool_outputs, CompactionInput, CompactionStrategy, ContextTracker,
     ResolvedCompactionConfig,
 };
+use crate::agent::context_runtime::ContextPolicyRuntimeState;
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::{
     ActionClass, AutonomyState, ProgressObservation, RecoveryAction, RecoveryController,
@@ -1408,19 +1409,6 @@ impl AgentLoop {
     }
 }
 
-/// Minimal in-memory runtime state for the gated context policy backoff/starvation handling.
-/// Resets per AgentLoop (i.e. per run/session in this context); not persisted.
-#[derive(Debug, Clone, Default)]
-struct ContextPolicyRuntimeState {
-    /// If Some(turn), reduction is disabled for calls where state.turn_count <= this value.
-    reduction_disabled_until_turn: Option<usize>,
-    consecutive_reductions: usize,
-    last_selected_tool_count: usize,
-    last_omitted_tools: Vec<String>,
-    last_reason: Option<String>,
-    last_selected_tools: Vec<String>,
-}
-
 pub struct AgentLoopState {
     pub current_agent: String,
     pub turn_count: usize,
@@ -2183,7 +2171,7 @@ impl AgentLoop {
         }
     }
 
-    async fn stream_with_retry(
+    pub(super) async fn stream_with_retry_impl(
         &mut self,
         request: &ChatRequest,
     ) -> Result<Vec<ChatEvent>, AppError> {
@@ -3752,13 +3740,16 @@ impl AgentLoop {
             // compound cache identity for the usage event below.
             self.apply_context_plan(&mut request)?;
 
-            let events = match self.stream_with_retry(&request).await {
-                Ok(events) => events,
-                Err(e) => {
-                    tracing::error!("Stream error: {}", e);
-                    return Err(e);
-                }
-            };
+            let events =
+                match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, &request)
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(e) => {
+                        tracing::error!("Stream error: {}", e);
+                        return Err(e);
+                    }
+                };
 
             for event in &events {
                 processor.process(event.clone());
@@ -3859,7 +3850,9 @@ impl AgentLoop {
                 break;
             }
             self.observe_tool_palette_starvation(&tool_calls);
-            let tool_results = self.execute_tool_calls(&tool_calls).await?;
+            let tool_results = crate::agent::tool_batch::ToolBatchExecutor::new(self)
+                .execute(&tool_calls)
+                .await?;
             just_executed_tools = !tool_results.is_empty();
             // The file-change bus is the observable state transition fact for
             // mutating tools. A successful mutation with no emitted change is
@@ -4489,7 +4482,7 @@ impl AgentLoop {
 
     #[allow(clippy::incompatible_msrv)]
     #[instrument(skip(self, tool_calls), fields(tool_count = tool_calls.len()))]
-    async fn execute_tool_calls(
+    pub(super) async fn execute_tool_calls_impl(
         &mut self,
         tool_calls: &[ToolCall],
     ) -> Result<Vec<(String, ToolExecutionOutcome)>, AppError> {
@@ -5381,13 +5374,16 @@ impl AgentLoop {
                 );
                 harden_history(&mut request.messages);
 
-                let events = match self.stream_with_retry(request).await {
-                    Ok(events) => events,
-                    Err(e) => {
-                        tracing::error!("Follow-up stream error: {}", e);
-                        return;
-                    }
-                };
+                let events =
+                    match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, request)
+                        .await
+                    {
+                        Ok(events) => events,
+                        Err(e) => {
+                            tracing::error!("Follow-up stream error: {}", e);
+                            return;
+                        }
+                    };
 
                 for event in &events {
                     processor.process(event.clone());
@@ -5481,7 +5477,10 @@ impl AgentLoop {
                     break;
                 }
                 self.observe_tool_palette_starvation(&tool_calls);
-                let tool_results = match self.execute_tool_calls(&tool_calls).await {
+                let tool_results = match crate::agent::tool_batch::ToolBatchExecutor::new(self)
+                    .execute(&tool_calls)
+                    .await
+                {
                     Ok(results) => results,
                     Err(e) => {
                         tracing::error!("Tool execution error: {}", e);

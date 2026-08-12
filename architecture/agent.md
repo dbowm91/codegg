@@ -10,6 +10,9 @@ The `agent` module (`src/agent/`) is the core orchestration engine for Codegg. I
 src/agent/
 ├── mod.rs          # Agent struct, AgentMode enum, builtin_agents, agent resolution
 ├── loop.rs         # AgentLoop - main execution cycle
+├── tool_batch.rs   # Typed permission/dispatch/result boundary for tool batches
+├── context_runtime.rs # Ephemeral context-policy backoff state
+├── provider_turn.rs # Provider retry/stream normalization boundary
 ├── processor.rs    # EventProcessor - processes ChatEvents from provider
 ├── compaction.rs  # ContextTracker, compaction strategies
 ├── worker.rs       # SubAgentPool, SubAgentSpawner - background task execution
@@ -67,7 +70,21 @@ root; process-global CWD is not an authority for an active turn. The internal
 `AgentLoopFactory` accepts the daemon-resolved `ExecutionContext` as part of
 its typed build input and is not a second runtime construction layer.
 
-### Key Fields
+### Durable ownership boundaries
+
+`AgentLoop` retains turn identity, mutable turn limits, provider-facing
+messages, steering/follow-up state, and sequencing decisions. Concrete
+runtime owners keep domain policy out of the turn driver: `ToolBatchExecutor`
+owns the typed permission/MCP/native/broker batch boundary and ordered
+`ToolExecutionOutcome` values; `ProviderTurnAdapter` owns provider retry and
+stream normalization; `PromptCompiler`/`ContextPlan` plus `ContextTracker`
+own context identity, packing and compaction; and
+`AutonomyState`/`RecoveryController` own bounded structured recovery.
+
+The field list below is intentionally illustrative rather than an ownership
+inventory; source types and Rustdoc are authoritative.
+
+### Legacy field compatibility note
 
 ```rust
 pub struct AgentLoop {
@@ -79,7 +96,6 @@ pub struct AgentLoop {
     tool_registry: ToolRegistry,                       // Tool execution
     hook_registry: Option<Arc<HookRegistry>>,          // Hook system
     context_tracker: ContextTracker,                   // Token usage monitoring
-    doom_detector: DoomLoopDetector,                   // Repetitive tool call detection
     steering: AtomicBool,                              // User interruption signal
     follow_up_tx: mpsc::UnboundedSender<String>,       // Follow-up prompt sender
     follow_up_rx: mpsc::UnboundedReceiver<String>,     // Follow-up prompt receiver
@@ -178,13 +194,11 @@ Post-loop:
 20. SessionEnd hooks
 ```
 
-### Tool Execution Flow (`execute_tool_calls()`)
+### Tool Execution Flow (`ToolBatchExecutor`)
 
 1. **Permission Check** (`check_tool_permission`):
    - Empty tool name → deny
    - `question` tool → register with QuestionRegistry, publish QuestionPending event
-   - Record tool call in DoomLoopDetector
-   - Check doom loop (repeated identical calls)
    - Route to appropriate permission checker (bash/git/general)
    - Auto-accept read-only tools within working directory
    - For `Ask` permissions: register with PermissionRegistry, publish PermissionPending
@@ -202,7 +216,9 @@ Post-loop:
    - Semaphore-controlled concurrency (default max 100)
    - Per-tool timeout via `get_tool_timeout()`
    - Hook dispatch: plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter
-   - Native tools execute through `ToolRegistry::execute_capture(name, input, ctx)` (which calls `Tool::execute_structured` internally). The `ToolExecutionContext` is built by `AgentLoop::build_tool_execution_context(tc, timeout_ms)`; the `ToolBackendKind` is resolved by `AgentLoop::resolve_native_backend(name)` (most tools → `Native`, `websearch`/`webfetch` → `Mcp` when `[search].backend = eggsearch`, otherwise `BuiltinLegacy`). After the call returns, a `tracing::debug!` line summarises the `ToolProvenance` (backend, implementation, elapsed_ms, trust). MCP tools (`mcp__server__tool`) are dispatched separately through `McpService::call_tool` and never go through `execute_capture`.
+   - Native tools execute through the Tool Broker with the permission receipt and
+     execution context. MCP tools are dispatched separately. Both paths return
+     typed outcomes and preserve the original provider-call ordering.
 
 5. **Question Handling**:
    - Wait for question_rx (300s timeout)
