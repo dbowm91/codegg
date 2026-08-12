@@ -207,7 +207,7 @@ Fix result-equivalence scoping, make known typed statuses authoritative, define 
 
 ### M003 — AgentLoop ownership decomposition
 
-Status: ready
+Status: corrective pass required
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/003-agent-loop-ownership-decomposition.md`
 
@@ -215,7 +215,7 @@ Reduce `AgentLoop` to a turn driver by extracting existing concrete ownership do
 
 ### M004 — Prompt, provider-compatibility, and history legacy deletion
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/004-prompt-provider-history-legacy-deletion.md`
 

@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M004 — Prompt, Provider-Compatibility, and History Legacy Deletion
 
-Status: ready
+Status: implemented
 
 Source roadmap:
 

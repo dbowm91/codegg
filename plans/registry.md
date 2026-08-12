@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M003/M004/M005 ready | M006 requires M002-M005; M007 requires M002-M006. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M003 corrective pass / M005 ready | M006 requires M002-M005; M007 requires M002-M006. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -44,7 +44,6 @@ Canonical direction remains in:
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | corrective pass required | `plans/closure/runtime-consolidation-deletion-footprint/003-status.md`; corrective plan `plans/implementation/runtime-consolidation-deletion-footprint/008-m003-corrective-physical-extraction.md` | Physical extraction remains incomplete; M004/M005 ready, M006 blocked. |
-| Runtime consolidation, deletion, and footprint | M004 — prompt/provider/history legacy deletion | ready | `plans/implementation/runtime-consolidation-deletion-footprint/004-prompt-provider-history-legacy-deletion.md` | Canonical PromptCompiler/runtime-assets/model-adapter interfaces are already closed. |
 | Runtime consolidation, deletion, and footprint | M005 — verification ratchet retirement | ready | `plans/implementation/runtime-consolidation-deletion-footprint/005-verification-ratchet-retirement.md` | No hard predecessor; final guard audit should reconcile deletions from M001-M004. |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
@@ -57,7 +56,7 @@ This roadmap is a new cross-cutting consolidation workstream based on current re
 Execution order:
 
 1. M002 is closed; M004 and M005 remain dependency-ready and M003 is now dependency-ready with normal rebase/merge coordination; M001 is closed.
-2. M003 may start now that M002 is closed so `AgentLoop` decomposition targets the final structured outcome/recovery contract; M004 should preferably land first to reduce legacy code moved during extraction.
+2. M003 corrective physical extraction remains outstanding. M004 is now closed and M005 remains ready; M004's deletion work reduces the legacy code surface available to the corrective extraction.
 3. M006 starts only after M002-M005 close so dependency/binary measurements describe the consolidated implementation rather than transitional code.
 4. M007 starts only after M002-M006 close and owns the single broad integration/hosted closure pass.
 
@@ -118,6 +117,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Runtime consolidation, deletion, and footprint | M001 — legacy background scheduler deletion | closed | `plans/closure/runtime-consolidation-deletion-footprint/001-status.md`; implementation commits `9594429`, `fcfed87` |
 | Runtime consolidation, deletion, and footprint | M002 — structured outcome and recovery convergence | closed | `plans/closure/runtime-consolidation-deletion-footprint/002-status.md` |
 | Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | corrective pass required | `plans/closure/runtime-consolidation-deletion-footprint/003-status.md`; physical extraction remains outstanding |
+| Runtime consolidation, deletion, and footprint | M004 — prompt/provider/history legacy deletion | closed | `plans/closure/runtime-consolidation-deletion-footprint/004-status.md`; implementation commit `0363d8f` |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
