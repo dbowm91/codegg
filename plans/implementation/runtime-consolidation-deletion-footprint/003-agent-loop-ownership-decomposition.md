@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M003 — AgentLoop Ownership Decomposition
 
-Status: corrective pass required
+Status: closed — corrective physical extraction completed by M009
 
 Source roadmap:
 

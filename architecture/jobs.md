@@ -313,6 +313,13 @@ projection on `SnapshotDaemon`, and `submission_key` on `JobSubmitDto`.
 
 ### Scheduler submission and execution
 
+The active TUI task schedule/list/delete commands use the durable
+`ScheduleCreate`, `ScheduleList`, and `ScheduleDelete` requests. They carry
+the daemon-resolved workspace and session authority and use opaque durable
+schedule IDs. The retained legacy `Task*` requests are an explicit rejection
+boundary for old external clients; they do not start or reach an independent
+background scheduler.
+
 `JobSubmissionService` validates payload size and kind, resolves the canonical
 workspace, applies the central resource profile and exclusivity rules, then
 creates and enqueues the durable job as one logical operation. A repeated

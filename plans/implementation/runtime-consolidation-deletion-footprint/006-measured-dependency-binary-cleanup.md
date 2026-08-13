@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M006 — Measured Dependency and Binary-Footprint Cleanup
 
-Status: blocked — measurement audit complete; M003 corrective extraction remains outstanding
+Status: closed — final-tree measurements accepted by M009
 
 Source roadmap:
 

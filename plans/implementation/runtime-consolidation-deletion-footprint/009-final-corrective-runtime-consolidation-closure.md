@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M009 — Final Corrective Compatibility, Ownership, Measurement, and Closure Pass
 
-Status: ready for handoff
+Status: closed — see `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`
 
 Source roadmap:
 
@@ -462,4 +462,5 @@ If a stop condition occurs, leave the roadmap active and identify the exact bloc
 - unresolved findings classified critical/high/medium/low/deferred;
 - final recommendation: closed, conditionally closed, corrective pass required, or blocked.
 
-Strict roadmap closure remains owned by M007 after M009's corrections and M006's final-tree evidence are accepted.
+Strict roadmap closure is accepted by M009 after M006's final-tree evidence and
+M007's exact-candidate hosted verification are complete.
