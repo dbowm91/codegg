@@ -207,7 +207,7 @@ Fix result-equivalence scoping, make known typed statuses authoritative, define 
 
 ### M003 — AgentLoop ownership decomposition
 
-Status: corrective pass required
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/003-agent-loop-ownership-decomposition.md`
 
@@ -233,7 +233,7 @@ Classify static guards as permanent invariants or temporary migration ratchets, 
 
 ### M006 — Measured dependency and binary-footprint cleanup
 
-Status: audit complete; blocked on M003 corrective physical extraction
+Status: ready
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md`
 
@@ -241,7 +241,7 @@ Measure release contributors and feature graph after code deletion, narrow only 
 
 ### M007 — Integration, verification, and strict closure
 
-Status: blocked on M002-M006
+Status: blocked on M006
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/007-integration-verification-closure.md`
 

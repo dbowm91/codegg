@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M003 — Closure Status
 
-Status: corrective pass required
+Status: closed
 
 Source implementation plan:
 
@@ -14,28 +14,25 @@ Repository baseline reviewed: `bd9b3b610af0fa72ce3fe5a8b8f59222659f006d`
 
 Implementation commits or pull requests:
 
-- Pending commit for this evidence-backed partial pass.
+- Pending commit — corrective physical extraction of context policy and tool-batch ownership.
 
 ## 1. Executive finding
 
-M003 established concrete internal boundaries for tool batches, provider turns,
-and ephemeral context-policy state, and all exercised paths compile and pass
-focused tests. It does not satisfy strict M003 closure because the existing
-permission/dispatch implementation and the large context-policy implementation
-remain physically in `src/agent/loop.rs`; the new owners currently delegate to
-that implementation. The plan's central deletion/ownership-footprint outcome
-therefore requires a corrective pass.
+M003 is strictly closed. The corrective pass physically moved context packing
+and policy methods into `context_runtime.rs` and permission, execution-context,
+and batch execution methods into `tool_batch.rs`. `AgentLoop` remains the
+orchestration owner, while concrete subsystem modules now own their bodies.
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result | Notes |
 |---|---|---|---|
-| Typed tool-batch boundary | `src/agent/tool_batch.rs`; primary and follow-up call sites | partial | Boundary is typed, implementation body remains in loop |
+| Typed tool-batch boundary | `src/agent/tool_batch.rs`; primary and follow-up call sites | pass | Batch execution body is physically owned by the module |
 | Provider adapter boundary | `src/agent/provider_turn.rs`; both stream call sites | pass | Canonical event stream preserved |
-| Context policy owner | `src/agent/context_runtime.rs` | partial | Ephemeral state moved; policy methods remain in loop |
+| Context policy owner | `src/agent/context_runtime.rs` | pass | Context packing, observation, reduction, starvation, and cache-stat methods are physically owned by the module |
 | Recovery owner remains structured | Existing `progress_recovery` tests | pass | No second recovery state machine added |
 | Behavior preservation | Focused loop/recovery tests | pass | See verification below |
-| Material loop footprint reduction | `git diff --stat`; loop remains approximately same size | fail | Corrective extraction required |
+| Material loop footprint reduction | `src/agent/loop.rs` 6,641 → 4,845 LOC; extracted owners total 1,809 LOC | pass | Large multi-domain bodies are no longer in the turn driver |
 | Architecture documentation | `architecture/agent.md` | pass | Ownership description updated; field list remains marked illustrative |
 
 ## 3. Production implementation evidence
@@ -91,17 +88,16 @@ provider/tool/context module seams.
 
 | Severity | Finding | Impact | Required action |
 |---|---|---|---|
-| medium | Large tool permission/dispatch body and context policy still live in `loop.rs` behind delegating seams | Strict M003 footprint and ownership acceptance criteria are not met | Complete physical extraction in corrective M003 pass before M006 can start |
+No critical, high, medium, or low finding remains in M003 scope.
 
 ## 11. Roadmap disposition
 
-Corrective implementation pass required. M004 and M005 remain independently
-ready. M006 remains blocked because M003 is not strictly closed; no future
-registered plan became unblocked from this partial pass.
+M003 is closed. M006 is now dependency-ready because M001–M005 are closed;
+M007 remains blocked until the post-extraction M006 measurement and disposition
+are accepted.
 
 ## 12. Registry updates
 
-- M003 is removed from dependency-ready work and recorded as corrective-pass
-  required.
-- M004 and M005 remain ready.
-- M006 and M007 remain blocked on their existing predecessor sets.
+- M003 is marked closed after the corrective physical extraction.
+- M006 is promoted to ready for its required post-extraction measurement pass.
+- M007 remains blocked on M006.

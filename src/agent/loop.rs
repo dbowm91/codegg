@@ -27,11 +27,10 @@ use crate::agent::progress_recovery::{
 use crate::agent::router::ModelRouter;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
-use crate::bus::{PermissionDecision, PermissionRegistry, QuestionRegistry};
 use crate::config::schema::Config;
-use crate::error::{AgentError, AppError, ProviderError, ToolError};
+use crate::error::{AgentError, AppError, ProviderError};
 use crate::model_profile::policy::push_control_instruction;
-use crate::permission::{PermissionChecker, PermissionDecisionReceipt, PermissionResult};
+use crate::permission::{PermissionChecker, PermissionDecisionReceipt};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::repair_text_as_tool_calls;
 use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
@@ -46,8 +45,6 @@ pub struct AgentLoopTerminalOutput {
     pub tool_event_count: usize,
 }
 use crate::tool::plan::detect_plan_mode_change;
-use crate::tool::question::{format_question_answers, parse_question_questions};
-use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use crate::tool::ToolRegistry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -109,7 +106,7 @@ fn redact_local_paths(input: &str) -> String {
 
 /// Observation phase for cache-aware context packer diagnostics (Phase 5).
 #[derive(Debug, Clone, Copy)]
-enum ContextPackObservationPhase {
+pub(super) enum ContextPackObservationPhase {
     InitialRequest,
     BeforeProviderCall,
     AfterToolResults,
@@ -145,561 +142,6 @@ impl AgentLoop {
             usage,
             tool_event_count,
         }
-    }
-
-    /// Build the exact candidate set used by the context packer observation path.
-    /// Mirrors the pre-Phase5 inline builder at the InitialRequest site (system extract,
-    /// synthetic profile text, ledger frame + control, build_all with Nones for goal/memory/todo/artifacts).
-    fn build_packer_candidates(&self, request: &ChatRequest) -> Vec<crate::context::ContextBlock> {
-        let adapter = crate::model_profile::resolve_adapter(None, &request.model);
-        let compiler = self.prompt_compiler_fingerprint.clone().unwrap_or_else(|| {
-            request
-                .messages
-                .iter()
-                .find_map(|message| match message {
-                    Message::System { content } => {
-                        Some(crate::context::stable_hash_hex(content.as_bytes()))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| crate::context::stable_hash_hex(""))
-        });
-        crate::context::ContextPlan::from_request(
-            request,
-            self.provider.name(),
-            &adapter.fingerprint,
-            &compiler,
-            crate::context::ContextPlanMode::Observation,
-        )
-        .map(|plan| plan.packing_blocks())
-        .unwrap_or_default()
-    }
-
-    /// Pure computation of the pack result for the current request (no mutation).
-    /// Returns None if packer disabled. Used by observe and by tests.
-    fn compute_context_pack_result(
-        &self,
-        request: &ChatRequest,
-    ) -> Option<crate::context::ContextPackResult> {
-        if !self.context_packer_config.enabled.unwrap_or(false) {
-            return None;
-        }
-        let candidates = self.build_packer_candidates(request);
-        let budget = crate::context::ContextPackBudget {
-            max_tokens: self
-                .context_packer_config
-                .max_stable_prefix_tokens
-                .unwrap_or(32000)
-                + self
-                    .context_packer_config
-                    .max_volatile_tokens
-                    .unwrap_or(24000),
-            reserved_output_tokens: 10000,
-            emergency_margin_tokens: 4000,
-        };
-        Some(crate::context::packer::pack(candidates, &budget))
-    }
-
-    /// Observation-only helper (Phase 5). Never mutates request or any state.
-    /// Builds candidates via the shared helper, packs, and (if log_diagnostics)
-    /// emits enriched info! (with phase/model/candidate/packed/stable/slow/volatile/omitted/top-omitted/tool_hash/cache_hit_rate)
-    /// plus per-omitted debug lines. Called from multiple phases in run().
-    fn observe_context_pack(
-        &self,
-        request: &ChatRequest,
-        _model_profile: &crate::model_profile::types::ResolvedModelProfile,
-        phase: ContextPackObservationPhase,
-    ) {
-        if !self.context_packer_config.enabled.unwrap_or(false) {
-            return;
-        }
-        // Emit the active-mode request warning (from Phase 1) at observation time so it is visible
-        // for any phase where diagnostics run. (Forced observe-only behavior is unchanged.)
-        if !self.context_packer_config.observe_only.unwrap_or(true) {
-            tracing::warn!(
-                "context-packer active mode is not yet safe; running in observe-only mode"
-            );
-        }
-
-        let Some(result) = self.compute_context_pack_result(request) else {
-            return;
-        };
-
-        if self.context_packer_config.log_diagnostics.unwrap_or(true) {
-            let model = &request.model;
-            let total_candidate_est = result.estimated_tokens
-                + result
-                    .omitted_blocks
-                    .iter()
-                    .map(|o| o.estimated_tokens)
-                    .sum::<usize>();
-            let slow_tokens: usize = result
-                .blocks
-                .iter()
-                .filter(|b| b.kind.tier() == crate::context::CacheClass::SlowChanging)
-                .map(|b| b.estimated_tokens)
-                .sum();
-            let tool_definitions_hash =
-                crate::context::tool_definitions_hash(request.tools.as_deref().unwrap_or(&[]));
-            let hit_rate = self.context_cache_stats.cache_hit_rate(model);
-            let omitted_count = result.omitted_blocks.len();
-            let top_omitted: Vec<String> = result
-                .omitted_blocks
-                .iter()
-                .take(5)
-                .map(|o| format!("{:?}({}t:{:?})", o.kind, o.estimated_tokens, o.reason))
-                .collect();
-
-            tracing::info!(
-                "context-packer[{phase:?}]: model={}, candidates={}, packed={}, stable_prefix_tokens={}, slow_changing_tokens={}, volatile_tokens={}, omitted={}, tool_definitions_hash={}, cache_hit_rate={:.4}",
-                model,
-                total_candidate_est,
-                result.estimated_tokens,
-                result.stable_prefix_tokens,
-                slow_tokens,
-                result.volatile_tokens,
-                omitted_count,
-                tool_definitions_hash,
-                hit_rate,
-            );
-            // Compute effective-cost analysis (observation-only, no mutation)
-            let analysis = crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
-                model,
-                result.stable_prefix_tokens,
-                slow_tokens,
-                result.volatile_tokens,
-            );
-            tracing::info!(
-                "context-packer[{phase:?}]: recommended_action={}, uncached_input_tokens={}, effective_cache_hit_rate={:.4}, effective_reason={}",
-                analysis.recommended_action,
-                analysis.uncached_input_tokens,
-                analysis.cache_hit_rate,
-                analysis.reason,
-            );
-            if let Some(e) = self.context_cache_stats.get(model) {
-                tracing::debug!(
-                    "context-packer[{phase:?}]: cache_stats model={} last_in={} last_cached={} total_in={} total_cached={} calls={} rate={:.4}",
-                    model, e.last_input_tokens, e.last_cached_tokens, e.total_input_tokens, e.total_cached_tokens, e.call_count, hit_rate
-                );
-            }
-            if !top_omitted.is_empty() {
-                tracing::debug!("context-packer[{phase:?}]: top_omitted={:?}", top_omitted);
-            }
-            for omitted in &result.omitted_blocks {
-                tracing::debug!(
-                    "context-packer[{phase:?}]: omitted block {:?} ({} tokens, reason: {:?})",
-                    omitted.id,
-                    omitted.estimated_tokens,
-                    omitted.reason,
-                );
-            }
-        }
-    }
-
-    /// Apply gated context policy tool-palette reduction to the *per-request* `request.tools`
-    /// payload. Reductions always derive from the UNREDUCED `self.base_request_tools` (full
-    /// profile-filtered palette captured at run start). Recomputed from base on every call site
-    /// (non-cumulative). If request.tools is None (e.g. max-steps), leaves it None. For noop/warn/no-reduction
-    /// sets to Some(base) unless legitimately None. Implements backoff (reduction_disabled_until_turn)
-    /// and empty-selection fallback to full base + backoff. Updates context_policy_runtime stats on decisions.
-    /// Backoff check, starvation (from tool_calls sites), and base-driven semantics per policy hardening.
-    fn apply_tool_palette_policy_if_active(&mut self, request: &mut ChatRequest, phase: &str) {
-        if !self.context_policy_config.enabled() {
-            return;
-        }
-        let mode = self.context_policy_config.mode();
-        if mode == crate::config::schema::ContextPolicyMode::Observe {
-            return;
-        }
-        if self.base_request_tools.is_empty() {
-            return;
-        }
-        if request.tools.is_none() {
-            return;
-        }
-        if let Some(until) = self.context_policy_runtime.reduction_disabled_until_turn {
-            if self.state.turn_count <= until {
-                tracing::info!(
-                    policy = "context_tool_palette",
-                    action = "backoff",
-                    reduction_disabled_until_turn = ?until,
-                    turn_count = self.state.turn_count,
-                    "context policy backoff active"
-                );
-                request.tools = Some(self.base_request_tools.clone());
-                self.context_policy_runtime.last_reason =
-                    Some("backoff active; using full base palette".to_string());
-                return;
-            }
-        }
-        let current_count_for_decision = self.base_request_tools.len();
-        let pack_res = self.compute_context_pack_result(request);
-        let analysis = if let Some(res) = pack_res {
-            let slow_tokens: usize = res
-                .blocks
-                .iter()
-                .filter(|b| b.kind.tier() == crate::context::CacheClass::SlowChanging)
-                .map(|b| b.estimated_tokens)
-                .sum();
-            crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
-                &request.model,
-                res.stable_prefix_tokens,
-                slow_tokens,
-                res.volatile_tokens,
-            )
-        } else {
-            return;
-        };
-        let observed_count = self
-            .context_cache_stats
-            .get(&request.model)
-            .map(|e| e.call_count)
-            .unwrap_or(0);
-        let decision = crate::context::decide_policy(
-            &analysis,
-            current_count_for_decision,
-            &self.context_policy_config,
-            Some(phase),
-            observed_count,
-            Some(&self.base_request_tools),
-        );
-        match decision.kind {
-            crate::context::ContextPolicyDecisionKind::ReduceToolPalette => {
-                let mut red = crate::context::reduce_tool_palette(
-                    &self.base_request_tools,
-                    &self.context_policy_config,
-                    None,
-                );
-                let cap_exceeded_by_required = red.cap_exceeded_by_required;
-                if red.selected.is_empty() && !self.base_request_tools.is_empty() {
-                    red = crate::context::ToolPaletteReduction {
-                        selected: self.base_request_tools.clone(),
-                        omitted: vec![],
-                        reason:
-                            "fallback to full base palette to avoid empty selection after reduction"
-                                .to_string(),
-                        cap_exceeded_by_required,
-                    };
-                    self.context_policy_runtime.reduction_disabled_until_turn =
-                        Some(self.state.turn_count + 1);
-                }
-                let selected = red.selected.clone();
-                let omitted = red.omitted.clone();
-                let reason = red.reason.clone();
-                if let Some(ref mut tlist) = request.tools {
-                    *tlist = selected.clone();
-                }
-                self.context_policy_runtime.last_selected_tool_count = selected.len();
-                self.context_policy_runtime.last_omitted_tools = omitted.clone();
-                self.context_policy_runtime.last_reason = Some(reason.clone());
-                self.context_policy_runtime.last_selected_tools =
-                    selected.iter().map(|t| t.name.clone()).collect();
-                self.context_policy_runtime.consecutive_reductions += 1;
-                if self.context_policy_config.log_policy_decisions() {
-                    let reduction_disabled_until_turn =
-                        self.context_policy_runtime.reduction_disabled_until_turn;
-                    let policy_backoff_active =
-                        reduction_disabled_until_turn.is_some_and(|u| self.state.turn_count <= u);
-                    tracing::info!(
-                        policy = "context_tool_palette",
-                        mode = ?mode,
-                        action = "ReduceToolPalette",
-                        recommended_action = ?decision.recommended_action,
-                        base_tool_count = self.base_request_tools.len(),
-                        selected_tool_count = selected.len(),
-                        omitted_tool_count = omitted.len(),
-                        reason = %reason,
-                        policy_backoff_active = policy_backoff_active,
-                        reduction_disabled_until_turn = ?reduction_disabled_until_turn,
-                        cap_exceeded_by_required = cap_exceeded_by_required,
-                        "context policy decision"
-                    );
-                    tracing::debug!(
-                        selected = ?selected.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
-                        omitted = ?omitted,
-                        "context policy tool selection"
-                    );
-                    if cap_exceeded_by_required {
-                        tracing::debug!(
-                            cap_exceeded_by_required = true,
-                            "context policy: required tools forced cap overflow"
-                        );
-                    }
-                }
-            }
-            crate::context::ContextPolicyDecisionKind::WarnOnly
-                if self.context_policy_config.log_policy_decisions() =>
-            {
-                if request.tools.is_some() {
-                    request.tools = Some(self.base_request_tools.clone());
-                }
-                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
-                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
-                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
-                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
-                let would_s = decision
-                    .would_selected_tool_count
-                    .unwrap_or(decision.selected_tool_count);
-                let would_o = decision.would_omitted_tool_count.unwrap_or(0);
-                tracing::warn!(
-                    "context policy would reduce tool palette: {} -> {} ({}) would_select={} would_omit={}",
-                    decision.original_tool_count,
-                    decision.selected_tool_count,
-                    decision.reason,
-                    would_s,
-                    would_o
-                );
-            }
-            _ => {
-                if request.tools.is_some() {
-                    request.tools = Some(self.base_request_tools.clone());
-                }
-                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
-                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
-                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
-                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
-            }
-        }
-    }
-
-    /// Apply or observe volatile-tail compaction policy.
-    ///
-    /// Called after existing tool-output projection and after existing
-    /// `compact_if_needed(...)`, but before the next provider call.
-    ///
-    /// In Observe mode: no logs unless diagnostics enabled.
-    /// In Warn mode: logs candidate count, tokens, and planned compaction.
-    /// In Compact mode: mutates selected `Message::Tool` contents with tombstones.
-    fn observe_or_apply_volatile_tail_policy(&mut self, request: &mut ChatRequest, phase: &str) {
-        if !self.context_policy_config.volatile_tail_compaction() {
-            return;
-        }
-
-        let mode = self.context_policy_config.volatile_tail_mode();
-
-        // Build a minimal effective-cost analysis for the decision gate.
-        // Reuse the pack result if available, otherwise build from message estimates.
-        let pack_res = self.compute_context_pack_result(request);
-        let model_name = &request.model;
-        let analysis = if let Some(res) = pack_res {
-            let slow_tokens: usize = res
-                .blocks
-                .iter()
-                .filter(|b| b.kind.tier() == crate::context::CacheClass::SlowChanging)
-                .map(|b| b.estimated_tokens)
-                .sum();
-            crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
-                model_name,
-                res.stable_prefix_tokens,
-                slow_tokens,
-                res.volatile_tokens,
-            )
-        } else {
-            // Without packer data, build a conservative analysis from message estimates
-            let total_tokens: usize = request
-                .messages
-                .iter()
-                .map(crate::context::volatile_tail::estimate_message_tokens)
-                .sum();
-            crate::context::EffectiveCostAnalysis {
-                input_tokens: total_tokens,
-                cached_input_tokens: 0,
-                uncached_input_tokens: total_tokens,
-                cache_hit_rate: 0.0,
-                stable_prefix_tokens: 0,
-                slow_changing_tokens: 0,
-                volatile_tokens: total_tokens,
-                recommended_action: if total_tokens > 12000 {
-                    crate::context::EffectiveCostAction::CompactVolatileTailFirst
-                } else {
-                    crate::context::EffectiveCostAction::NoAction
-                },
-                reason: "no packer data; conservative estimate".into(),
-            }
-        };
-
-        let plan = crate::context::volatile_tail::plan_volatile_tail_compaction(
-            &request.messages,
-            &analysis,
-            &self.context_policy_config,
-        );
-
-        let decision = crate::context::volatile_tail::decide_volatile_tail(
-            &analysis,
-            &self.context_policy_config,
-            &plan,
-        );
-
-        match decision.kind {
-            crate::context::volatile_tail::VolatileTailDecisionKind::Compact => {
-                let applied = crate::context::volatile_tail::apply_volatile_tail_compaction(
-                    &mut request.messages,
-                    &plan,
-                );
-                if self.context_policy_config.log_policy_decisions() {
-                    tracing::info!(
-                        policy = "volatile_tail_compaction",
-                        mode = ?mode,
-                        action = "Compact",
-                        recommended_action = ?analysis.recommended_action,
-                        candidate_count = plan.candidates.len(),
-                        safe_candidate_count = plan.safe_candidates.len(),
-                        planned_compaction_tokens = plan.planned_tokens,
-                        applied_compactions = applied,
-                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
-                        phase = %phase,
-                        "volatile tail policy decision"
-                    );
-                    if tracing::enabled!(tracing::Level::DEBUG) {
-                        for c in &plan.safe_candidates {
-                            tracing::debug!(
-                                message_index = c.message_index,
-                                kind = ?c.kind,
-                                estimated_tokens = c.estimated_tokens,
-                                has_recovery_handle = c.has_recovery_handle,
-                                "volatile tail compaction candidate selected"
-                            );
-                        }
-                    }
-                }
-            }
-            crate::context::volatile_tail::VolatileTailDecisionKind::WarnOnly => {
-                if self.context_policy_config.log_policy_decisions() {
-                    tracing::warn!(
-                        policy = "volatile_tail_compaction",
-                        mode = ?mode,
-                        action = "WarnOnly",
-                        recommended_action = ?analysis.recommended_action,
-                        candidate_count = plan.candidates.len(),
-                        safe_candidate_count = plan.safe_candidates.len(),
-                        planned_compaction_tokens = plan.planned_tokens,
-                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
-                        reason = %decision.reason,
-                        phase = %phase,
-                        "volatile tail would compact but only warning"
-                    );
-                }
-            }
-            crate::context::volatile_tail::VolatileTailDecisionKind::Noop => {
-                if self.context_policy_config.log_policy_decisions()
-                    && tracing::enabled!(tracing::Level::DEBUG)
-                {
-                    tracing::debug!(
-                        policy = "volatile_tail_compaction",
-                        mode = ?mode,
-                        action = "Noop",
-                        reason = %decision.reason,
-                        candidate_count = plan.candidates.len(),
-                        phase = %phase,
-                        "volatile tail policy noop"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Detect tool-palette starvation from parsed tool calls and set backoff.
-    ///
-    /// When the model attempts a tool present in the unreduced base palette but
-    /// omitted from the reduced selected palette, reduction is disabled for at
-    /// least the next provider call. Unknown tools are never blamed on policy.
-    ///
-    /// Returns `true` if starvation was detected.
-    fn observe_tool_palette_starvation(&mut self, tool_calls: &[ToolCall]) -> bool {
-        if self.base_request_tools.is_empty() {
-            return false;
-        }
-        if self.context_policy_runtime.last_selected_tools.is_empty() {
-            return false;
-        }
-        if self.context_policy_runtime.last_omitted_tools.is_empty() {
-            return false;
-        }
-
-        let base_names: Vec<String> = self
-            .base_request_tools
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        let called_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.to_string()).collect();
-        let starved = crate::context::detect_palette_starvation(
-            &base_names,
-            &self.context_policy_runtime.last_selected_tools,
-            &called_names,
-        );
-
-        if !starved.is_empty() {
-            for name in &starved {
-                tracing::warn!(
-                    policy = "context_tool_palette",
-                    tool = %name,
-                    base_tool_count = self.base_request_tools.len(),
-                    last_selected_tool_count = self.context_policy_runtime.last_selected_tool_count,
-                    last_omitted_tool_count = self.context_policy_runtime.last_omitted_tools.len(),
-                    turn_count = self.state.turn_count,
-                    reduction_disabled_until_turn = %(self.state.turn_count + 1),
-                    "context policy starvation detected: model attempted omitted base-palette tool"
-                );
-            }
-            self.context_policy_runtime.reduction_disabled_until_turn =
-                Some(self.state.turn_count + 1);
-            self.context_policy_runtime.last_reason =
-                Some("starvation: model attempted omitted base-palette tool".to_string());
-        }
-
-        !starved.is_empty()
-    }
-
-    /// Record finish-event usage from the `EventProcessor` into `ContextCacheStats`.
-    ///
-    /// Uses `normalize_from_finish` to clamp cached tokens before recording.
-    /// Returns `None` when the processor is incomplete or usage is absent,
-    /// avoiding synthetic zero-call stats.
-    fn record_context_cache_stats_from_processor(
-        &mut self,
-        model: &str,
-        processor: &EventProcessor,
-    ) -> Option<crate::context::NormalizedProviderUsage> {
-        if !processor.is_complete() {
-            return None;
-        }
-
-        let input_tokens = processor.input_tokens();
-        let output_tokens = processor.output_tokens();
-
-        // Do not record a fake provider call if usage is completely absent.
-        if input_tokens == 0 && output_tokens == 0 && processor.cached_tokens().is_none() {
-            return None;
-        }
-
-        let usage = crate::context::normalize_from_finish(
-            input_tokens,
-            output_tokens,
-            processor.cached_tokens(),
-        );
-
-        let cache_key = self.context_plan_cache_key.as_deref().unwrap_or(model);
-        self.context_cache_stats.record_usage(
-            cache_key,
-            usage.input_tokens,
-            usage.cached_input_tokens,
-            usage.output_tokens,
-        );
-
-        tracing::debug!(
-            model = %model,
-            cache_key = %cache_key,
-            input_tokens = usage.input_tokens,
-            cached_input_tokens = ?usage.cached_input_tokens,
-            output_tokens = usage.output_tokens,
-            cache_hit_rate = self.context_cache_stats.cache_hit_rate(cache_key),
-            "updated context cache stats"
-        );
-
-        Some(usage)
     }
 }
 
@@ -773,149 +215,16 @@ impl Default for ToolTimeoutConfig {
 }
 
 /// Check if a tool modifies files (requires snapshot before execution)
-fn is_file_modifying_tool(name: &str) -> bool {
+pub(super) fn is_file_modifying_tool(name: &str) -> bool {
     matches!(
         name,
         "write" | "edit" | "replace" | "multiedit" | "apply_patch"
     )
 }
 
-impl AgentLoop {
-    fn get_tool_timeout(&self, tool_name: &str) -> Duration {
-        let cfg = ToolTimeoutConfig::default();
-        match tool_name {
-            "bash" => self.timeout_for_tool(tool_name, cfg.bash),
-            "read" => self.timeout_for_tool(tool_name, cfg.read),
-            "write" => self.timeout_for_tool(tool_name, cfg.write),
-            "edit" => self.timeout_for_tool(tool_name, cfg.edit),
-            "glob" => self.timeout_for_tool(tool_name, cfg.glob),
-            "grep" => self.timeout_for_tool(tool_name, cfg.grep),
-            "list" => self.timeout_for_tool(tool_name, cfg.list),
-            "task" => self.timeout_for_tool(tool_name, cfg.task),
-            "webfetch" => self.timeout_for_tool(tool_name, cfg.webfetch),
-            "websearch" => self.timeout_for_tool(tool_name, cfg.websearch),
-            "codesearch" => self.timeout_for_tool(tool_name, cfg.codesearch),
-            "diff" => self.timeout_for_tool(tool_name, cfg.diff),
-            "replace" => self.timeout_for_tool(tool_name, cfg.replace),
-            "multiedit" => self.timeout_for_tool(tool_name, cfg.multiedit),
-            "apply_patch" => self.timeout_for_tool(tool_name, cfg.apply_patch),
-            "terminal" => self.timeout_for_tool(tool_name, cfg.terminal),
-            "batch" => self.timeout_for_tool(tool_name, cfg.batch),
-            "lsp" => self.timeout_for_tool(tool_name, cfg.lsp),
-            "skill" => self.timeout_for_tool(tool_name, cfg.skill),
-            "git" => self.timeout_for_tool(tool_name, cfg.git),
-            "todo" => self.timeout_for_tool(tool_name, cfg.todo),
-            "question" => self.timeout_for_tool(tool_name, cfg.question),
-            _ => self.timeout_for_tool(tool_name, cfg.default_timeout),
-        }
-    }
+impl AgentLoop {}
 
-    fn timeout_for_tool(&self, _tool_name: &str, default: Duration) -> Duration {
-        self.config
-            .server
-            .as_ref()
-            .and_then(|s| s.tool_timeout_seconds)
-            .map(Duration::from_secs)
-            .unwrap_or(default)
-    }
-
-    /// Build the `ToolExecutionContext` passed alongside every
-    /// native tool call dispatched via
-    /// `ToolRegistry::execute_capture()`.
-    ///
-    /// Centralising this helper keeps the structured-execution
-    /// envelope consistent across all native dispatch sites and
-    /// makes it trivial to enrich the context (e.g. resolve the
-    /// real `backend` for `websearch`/`webfetch`) in a single
-    /// place.
-    fn build_tool_execution_context(
-        &self,
-        tc: &ToolCall,
-        timeout_ms: Option<u64>,
-        receipt: &PermissionDecisionReceipt,
-    ) -> crate::tool::backend::ToolExecutionContext {
-        let backend = self.resolve_native_backend(&tc.name);
-        let agent_id = self.state.current_agent.clone();
-        crate::tool::backend::ToolExecutionContext {
-            backend,
-            session_id: Some(self.session_id.clone()),
-            // The workspace root is captured during construction and is the
-            // sole cwd authority for this loop's tool execution context.
-            cwd: self.workspace_root.clone(),
-            permission_mode: None,
-            timeout_ms,
-            invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
-            turn_id: None,
-            agent_id: Some(agent_id.clone()),
-            parent_job_id: None,
-            parent_attempt_id: None,
-            provider_name: Some(self.provider.name().to_string()),
-            backend_policy: Some("native_only".into()),
-            cancellation: None,
-            deadline: None,
-            // M014-A2: Populate the real accepted decision fields.
-            // These are the actual permission/path-policy decision
-            // values, not synthesized from identity strings.
-            decision_id: Some(receipt.decision_id.clone()),
-            decision_outcome: Some(receipt.outcome.as_str().into()),
-            workspace_path_policy_id: None,
-            workspace_path_policy_revision: None,
-            permission_policy_revision: receipt.policy_revision.clone(),
-            principal_identity: Some(agent_id),
-            caller_class: Some("agent".into()),
-            max_effect_class: Some("non_idempotent".into()),
-            decision_issued_at: Some(receipt.issued_at),
-            decision_expires_at: None,
-            decision_revoked_at: None,
-            program_contract_snapshot: if tc.name.as_str() == "tool_program" {
-                tc.arguments
-                    .get("tools")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|tools| {
-                        tools
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_string)
-                            .collect::<Vec<_>>()
-                    })
-                    .and_then(|tools| {
-                        crate::tool::tool_program_context::resolve_contract_snapshot(
-                            &self.tool_broker,
-                            &tools,
-                        )
-                        .ok()
-                    })
-            } else {
-                None
-            },
-        }
-    }
-
-    /// Resolve the `ToolBackendKind` for a native tool name.
-    ///
-    /// The vast majority of codegg tools are in-process `Native`
-    /// wrappers; the live exception is `websearch`/`webfetch` which
-    /// may be backed by the external `eggsearch` MCP server. For
-    /// those, we read the resolved `SearchConfig` so the
-    /// `ToolExecutionContext::backend` field reflects the real
-    /// backend the wrapper will eventually delegate to.
-    fn resolve_native_backend(&self, tool_name: &str) -> crate::tool::backend::ToolBackendKind {
-        use crate::config::schema::SearchBackendConfig;
-        use crate::tool::backend::ToolBackendKind;
-        if matches!(tool_name, "websearch" | "webfetch") {
-            match crate::search_backend::state::search_config().backend() {
-                SearchBackendConfig::Eggsearch => ToolBackendKind::Mcp,
-                SearchBackendConfig::Builtin | SearchBackendConfig::Disabled => {
-                    ToolBackendKind::BuiltinLegacy
-                }
-            }
-        } else {
-            ToolBackendKind::Native
-        }
-    }
-}
-
-fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
+pub(super) fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
     let args = &tc.arguments;
     match tc.name.as_str() {
         "read" | "write" | "edit" | "glob" | "grep" | "list" => {
@@ -926,14 +235,14 @@ fn extract_path_from_tool_call(tc: &ToolCall) -> Option<String> {
     }
 }
 
-fn extract_bash_command(tc: &ToolCall) -> Option<String> {
+pub(super) fn extract_bash_command(tc: &ToolCall) -> Option<String> {
     if &*tc.name != "bash" {
         return None;
     }
     tc.arguments.get("command")?.as_str().map(String::from)
 }
 
-fn is_test_command(command: &str) -> bool {
+pub(super) fn is_test_command(command: &str) -> bool {
     // Reuse the strict argv-token-prefix allowlist from the supervised
     // test runner so this detector cannot be tricked by `pytestevil`,
     // `cargo testify`, `make testcase`, etc. The supervised validator
@@ -949,7 +258,7 @@ fn is_test_command(command: &str) -> bool {
 /// character; output from test runners can include non-ASCII bytes that
 /// trigger that panic. Walking back to the previous char boundary keeps
 /// the helper allocation-free for the common case.
-fn truncate_test_event_preview(output: &str, max_bytes: usize) -> String {
+pub(super) fn truncate_test_event_preview(output: &str, max_bytes: usize) -> String {
     if output.len() <= max_bytes {
         return output.to_string();
     }
@@ -963,14 +272,14 @@ fn truncate_test_event_preview(output: &str, max_bytes: usize) -> String {
     out
 }
 
-fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
+pub(super) fn extract_git_subcommand(tc: &ToolCall) -> Option<String> {
     if &*tc.name != "git" {
         return None;
     }
     tc.arguments.get("subcommand")?.as_str().map(String::from)
 }
 
-fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
+pub(super) fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
     let delimiter_pos = rest.rfind("__")?;
     let server = &rest[..delimiter_pos];
@@ -990,7 +299,7 @@ fn mcp_tool_surface_revision(tools: &[crate::provider::ToolDefinition]) -> Strin
     format!("sha256:{:x}", sha2::Sha256::digest(encoded))
 }
 
-fn is_workspace_file_mutation(
+pub(super) fn is_workspace_file_mutation(
     tool_name: &str,
     path: Option<&str>,
     workspace_root: &std::path::Path,
@@ -1007,7 +316,10 @@ fn tool_outcome_is_success(outcome: &ToolExecutionOutcome) -> bool {
     )
 }
 
-fn is_path_within_workspace(path: Option<&str>, workspace_root: &std::path::Path) -> bool {
+pub(super) fn is_path_within_workspace(
+    path: Option<&str>,
+    workspace_root: &std::path::Path,
+) -> bool {
     let root = match workspace_root.canonicalize() {
         Ok(p) => p,
         Err(_) => return false,
@@ -1042,7 +354,7 @@ fn is_path_within_workspace(path: Option<&str>, workspace_root: &std::path::Path
     canonical.starts_with(&root)
 }
 
-enum ToolPermissionOutcome {
+pub(super) enum ToolPermissionOutcome {
     QuestionTool,
     Allowed {
         tool_call: ToolCall,
@@ -1054,280 +366,7 @@ enum ToolPermissionOutcome {
     },
 }
 
-impl AgentLoop {
-    fn accepted_permission_receipt(&self, source: &str) -> PermissionDecisionReceipt {
-        // This is a content fingerprint of the configured permission policy,
-        // not a fabricated workspace/session revision. Session decisions are
-        // represented by the receipt source and decision id.
-        PermissionDecisionReceipt::allowed(
-            source,
-            Some(format!("config:{:016x}", self.permission_version())),
-        )
-    }
-
-    async fn check_tool_permission(&mut self, tc: &ToolCall) -> ToolPermissionOutcome {
-        if tc.name.trim().is_empty() {
-            return ToolPermissionOutcome::Denied {
-                tool_id: tc.id.to_string(),
-                message: "Error: invalid tool call with empty tool name".to_string(),
-            };
-        }
-
-        if &*tc.name == "question" {
-            if let Ok(questions) = parse_question_questions(tc.arguments.clone()) {
-                let questions_json = serde_json::to_string(&questions).unwrap_or_default();
-                let question_id = format!("q-{}", uuid::Uuid::new_v4());
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                QuestionRegistry::register_with_session(
-                    self.session_id.clone(),
-                    None,
-                    question_id.clone(),
-                    tx,
-                );
-                crate::bus::global::GlobalEventBus::publish(AppEvent::QuestionPending {
-                    session_id: self.session_id.clone(),
-                    question_id,
-                    turn_id: None,
-                    questions: questions_json,
-                });
-                self.question_rx = Some(rx);
-                return ToolPermissionOutcome::QuestionTool;
-            }
-        }
-
-        let path = extract_path_from_tool_call(tc);
-        let bash_command = extract_bash_command(tc);
-        let git_subcommand = extract_git_subcommand(tc);
-
-        let perm_result = if bash_command.is_some() {
-            self.permission_checker
-                .check_bash(
-                    path.as_deref(),
-                    bash_command.as_deref(),
-                    Some(&self.session_id),
-                )
-                .await
-        } else if git_subcommand.is_some() {
-            self.permission_checker
-                .check_git(
-                    path.as_deref(),
-                    git_subcommand.as_deref(),
-                    Some(&self.session_id),
-                )
-                .await
-        } else {
-            self.permission_checker
-                .check(&tc.name, path.as_deref(), Some(&self.session_id))
-                .await
-        };
-        let security_hint = if !self.security_service.enabled() {
-            crate::security::policy::SecurityDecisionHint {
-                action: crate::security::policy::SecurityAction::Observe,
-                reason: String::new(),
-                finding: None,
-            }
-        } else if let Some(ref cmd) = bash_command {
-            self.security_service.classify_bash(cmd)
-        } else if let Some(ref subcommand) = git_subcommand {
-            self.security_service.classify_git(subcommand)
-        } else {
-            self.security_service
-                .classify_tool_call(&tc.name, &tc.arguments)
-        };
-        if let Some(ref finding) = security_hint.finding {
-            self.recent_findings.push(finding.clone());
-        }
-        // Check if the path targets a sensitive file, regardless of permission level
-        let sensitive_match = self.config.security.as_ref().and_then(|sec| {
-            crate::security::matches_sensitive_path(path.as_deref(), &sec.sensitive_paths)
-        });
-
-        match perm_result {
-            PermissionResult::Allow => {
-                if let Some(sensitive) = sensitive_match {
-                    // Escalate: sensitive paths always require user confirmation
-                    let reason = sensitive
-                        .reason
-                        .clone()
-                        .unwrap_or_else(|| "sensitive path".to_string());
-                    let perm_id = format!("{}-{}", tc.id, tc.name);
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register_with_session(
-                        self.session_id.clone(),
-                        None,
-                        perm_id.clone(),
-                        resp_tx,
-                    );
-                    let args = serde_json::json!({
-                        "command": bash_command.as_deref().unwrap_or(""),
-                        "security": {
-                            "action": "ask",
-                            "reason": format!("Sensitive path access: {}", reason),
-                            "review_level": sensitive.review_level.as_deref().unwrap_or("standard"),
-                        }
-                    });
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                        session_id: self.session_id.clone(),
-                        perm_id: perm_id.clone(),
-                        turn_id: None,
-                        tool: (*tc.name).clone(),
-                        path: path.clone(),
-                        args: Some(args),
-                    });
-                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
-                    {
-                        Ok(Ok(choice)) => choice,
-                        _ => PermissionDecision::DenyOnce,
-                    };
-                    PermissionRegistry::unregister(&perm_id);
-                    if choice.allowed() {
-                        ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt("user_choice"),
-                        }
-                    } else {
-                        ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied: access to sensitive path refused",
-                                tc.name
-                            ),
-                        }
-                    }
-                } else if matches!(
-                    security_hint.action,
-                    crate::security::policy::SecurityAction::Deny
-                ) {
-                    ToolPermissionOutcome::Denied {
-                        tool_id: tc.id.to_string(),
-                        message: format!(
-                            "Tool '{}' denied by security policy: {}",
-                            tc.name, security_hint.reason
-                        ),
-                    }
-                } else if matches!(
-                    security_hint.action,
-                    crate::security::policy::SecurityAction::Ask
-                ) {
-                    let perm_id = format!("{}-{}", tc.id, tc.name);
-                    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                    PermissionRegistry::register_with_session(
-                        self.session_id.clone(),
-                        None,
-                        perm_id.clone(),
-                        resp_tx,
-                    );
-                    let args = serde_json::json!({
-                        "command": bash_command.as_deref().unwrap_or(""),
-                        "security": {
-                            "action": "ask",
-                            "reason": security_hint.reason,
-                            "category": security_hint.finding.as_ref().map(|f| format!("{:?}", f.category)).unwrap_or_default(),
-                        }
-                    });
-                    crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                        session_id: self.session_id.clone(),
-                        perm_id: perm_id.clone(),
-                        turn_id: None,
-                        tool: (*tc.name).clone(),
-                        path: path.clone(),
-                        args: Some(args),
-                    });
-                    let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await
-                    {
-                        Ok(Ok(choice)) => choice,
-                        _ => PermissionDecision::DenyOnce,
-                    };
-                    PermissionRegistry::unregister(&perm_id);
-                    if choice.allowed() {
-                        ToolPermissionOutcome::Allowed {
-                            tool_call: tc.clone(),
-                            receipt: self.accepted_permission_receipt("user_choice"),
-                        }
-                    } else {
-                        ToolPermissionOutcome::Denied {
-                            tool_id: tc.id.to_string(),
-                            message: format!(
-                                "Tool '{}' denied by user (security escalation)",
-                                tc.name
-                            ),
-                        }
-                    }
-                } else {
-                    ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("permission_evaluation"),
-                    }
-                }
-            }
-            PermissionResult::Deny => ToolPermissionOutcome::Denied {
-                tool_id: tc.id.to_string(),
-                message: format!("Tool '{}' denied by permissions", tc.name),
-            },
-            PermissionResult::Ask(req) => {
-                // Preserve the narrow local-file UX exception. External MCP
-                // origin is never evidence that an unknown tool is safe.
-                if is_workspace_file_mutation(
-                    tc.name.as_str(),
-                    req.path.as_deref(),
-                    &self.workspace_root,
-                ) && is_path_within_workspace(req.path.as_deref(), &self.workspace_root)
-                    && sensitive_match.is_none()
-                {
-                    return ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("workspace_file_mutation"),
-                    };
-                }
-
-                let perm_id = format!("{}-{}", tc.id, tc.name);
-                let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-                PermissionRegistry::register_with_session(
-                    self.session_id.clone(),
-                    None,
-                    perm_id.clone(),
-                    resp_tx,
-                );
-                crate::bus::global::GlobalEventBus::publish(AppEvent::PermissionPending {
-                    session_id: self.session_id.clone(),
-                    perm_id: perm_id.clone(),
-                    turn_id: None,
-                    tool: req.tool.clone(),
-                    path: req.path.clone(),
-                    args: req.args.clone(),
-                });
-                let choice = match tokio::time::timeout(Duration::from_secs(300), resp_rx).await {
-                    Ok(Ok(choice)) => choice,
-                    _ => PermissionDecision::DenyOnce,
-                };
-                PermissionRegistry::unregister(&perm_id);
-                let allowed = choice.allowed();
-                if choice.persist() {
-                    if allowed {
-                        self.permission_checker
-                            .always_allow(&tc.name, req.path.as_deref(), Some(&self.session_id))
-                            .await;
-                    } else {
-                        self.permission_checker
-                            .always_deny(&tc.name, req.path.as_deref(), Some(&self.session_id))
-                            .await;
-                    }
-                }
-                if allowed {
-                    ToolPermissionOutcome::Allowed {
-                        tool_call: tc.clone(),
-                        receipt: self.accepted_permission_receipt("user_choice"),
-                    }
-                } else {
-                    ToolPermissionOutcome::Denied {
-                        tool_id: tc.id.to_string(),
-                        message: format!("Tool '{}' denied by user", tc.name),
-                    }
-                }
-            }
-        }
-    }
-}
+impl AgentLoop {}
 
 pub struct AgentLoopState {
     pub current_agent: String,
@@ -1360,78 +399,79 @@ impl Default for ExecutionLimits {
 }
 
 pub struct AgentLoop {
-    agents: HashMap<String, Agent>,
-    state: AgentLoopState,
-    limits: ExecutionLimits,
-    provider: Box<dyn crate::provider::Provider>,
-    permission_checker: PermissionChecker,
-    tool_registry: ToolRegistry,
-    hook_registry: Option<Arc<crate::hooks::HookRegistry>>,
-    context_tracker: ContextTracker,
-    progress_recovery: RecoveryController,
-    recovery_parallel_limit: Option<usize>,
-    steering: AtomicBool,
-    follow_up_tx: mpsc::UnboundedSender<String>,
-    follow_up_rx: mpsc::UnboundedReceiver<String>,
-    config: Config,
-    question_tx: Option<tokio::sync::oneshot::Sender<String>>,
-    question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
-    plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
-    session_id: String,
-    mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
-    tool_def_cache: Option<ToolDefCache>,
-    deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
-    model_router: ModelRouter,
-    snapshot_manager: Option<crate::snapshot::SnapshotManager>,
-    file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
-    usage_store: Option<Arc<crate::session::UsageStore>>,
+    pub(super) agents: HashMap<String, Agent>,
+    pub(super) state: AgentLoopState,
+    pub(super) limits: ExecutionLimits,
+    pub(super) provider: Box<dyn crate::provider::Provider>,
+    pub(super) permission_checker: PermissionChecker,
+    pub(super) tool_registry: ToolRegistry,
+    pub(super) hook_registry: Option<Arc<crate::hooks::HookRegistry>>,
+    pub(super) context_tracker: ContextTracker,
+    pub(super) progress_recovery: RecoveryController,
+    pub(super) recovery_parallel_limit: Option<usize>,
+    pub(super) steering: AtomicBool,
+    pub(super) follow_up_tx: mpsc::UnboundedSender<String>,
+    pub(super) follow_up_rx: mpsc::UnboundedReceiver<String>,
+    pub(super) config: Config,
+    pub(super) question_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
+    pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
+    pub(super) session_id: String,
+    pub(super) mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
+    pub(super) tool_def_cache: Option<ToolDefCache>,
+    pub(super) deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
+    pub(super) model_router: ModelRouter,
+    pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
+    pub(super) file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
+    pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
     #[allow(dead_code)]
-    pricing_service: crate::util::pricing::PricingService,
-    security_service: crate::security::service::SecurityService,
-    recent_findings: Vec<crate::security::finding::SecurityFinding>,
-    todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
-    task_state_policy: crate::model_profile::types::TaskStatePolicy,
-    todo_pool: Option<sqlx::SqlitePool>,
-    event_store: Option<Arc<crate::session::EventStore>>,
+    pub(super) pricing_service: crate::util::pricing::PricingService,
+    pub(super) security_service: crate::security::service::SecurityService,
+    pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
+    pub(super) todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
+    pub(super) task_state_policy: crate::model_profile::types::TaskStatePolicy,
+    pub(super) todo_pool: Option<sqlx::SqlitePool>,
+    pub(super) event_store: Option<Arc<crate::session::EventStore>>,
     #[allow(dead_code)]
-    active_tool_timings: HashMap<String, Instant>,
-    execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
-    original_user_prompt: Option<String>,
-    subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
-    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub(super) active_tool_timings: HashMap<String, Instant>,
+    pub(super) execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
+    pub(super) original_user_prompt: Option<String>,
+    pub(super) subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+    pub(super) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Immutable workspace authority captured during construction.
-    workspace_root: std::path::PathBuf,
-    max_tool_calls: Option<usize>,
-    goal_store: Option<Arc<crate::goal::GoalStore>>,
-    goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
-    cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
-    steer_rx: Option<mpsc::UnboundedReceiver<String>>,
-    pending_steer: Option<String>,
-    context_ledger: crate::agent::context_frame::ContextLedgerState,
-    artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
-    projection_config: crate::context::ProjectionConfig,
-    context_packer_config: crate::config::schema::ContextPackerConfig,
-    context_policy_config: crate::config::schema::ContextPolicyConfig,
-    context_cache_stats: crate::context::ContextCacheStats,
+    pub(super) workspace_root: std::path::PathBuf,
+    pub(super) max_tool_calls: Option<usize>,
+    pub(super) goal_store: Option<Arc<crate::goal::GoalStore>>,
+    pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
+    pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
+    pub(super) steer_rx: Option<mpsc::UnboundedReceiver<String>>,
+    pub(super) pending_steer: Option<String>,
+    pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
+    pub(super) artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
+    pub(super) projection_config: crate::context::ProjectionConfig,
+    pub(super) context_packer_config: crate::config::schema::ContextPackerConfig,
+    pub(super) context_policy_config: crate::config::schema::ContextPolicyConfig,
+    pub(super) context_cache_stats: crate::context::ContextCacheStats,
     /// Compound identity of the last provider-facing context plan.
-    context_plan_cache_key: Option<String>,
+    pub(super) context_plan_cache_key: Option<String>,
     /// Fingerprint emitted by PromptCompiler for the current turn. This is
     /// authoritative context identity; flattened system text is not rehashed
     /// as a substitute.
-    prompt_compiler_fingerprint: Option<String>,
+    pub(super) prompt_compiler_fingerprint: Option<String>,
     /// Full profile-filtered tool palette for the current run (source of truth for policy reductions).
     /// Captured once after model-profile filter at start of run(); reductions derive from this, not from
     /// the (possibly previously reduced) request.tools. Enables non-cumulative, restorable palettes.
-    base_request_tools: Vec<crate::provider::ToolDefinition>,
+    pub(super) base_request_tools: Vec<crate::provider::ToolDefinition>,
     /// In-memory backoff/starvation state for the context policy (resets per run()).
-    context_policy_runtime: ContextPolicyRuntimeState,
+    pub(super) context_policy_runtime: ContextPolicyRuntimeState,
     /// Immutable runtime-asset identity captured for this agent run.
-    runtime_asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    pub(super) runtime_asset_pin:
+        Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     /// Canonical tool broker for executing production tool calls.
     /// Built from `tool_registry` at construction time.
-    tool_broker: Arc<crate::tool::ToolBroker>,
+    pub(super) tool_broker: Arc<crate::tool::ToolBroker>,
     /// Optional notification service for background tool program completions.
-    notification_service:
+    pub(super) notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
 
@@ -1842,7 +882,7 @@ impl AgentLoop {
         self.limits.max_turns = turns;
     }
 
-    fn tool_timeout(&self) -> u64 {
+    pub(super) fn tool_timeout(&self) -> u64 {
         self.config
             .server
             .as_ref()
@@ -1850,7 +890,7 @@ impl AgentLoop {
             .unwrap_or(120)
     }
 
-    fn permission_version(&self) -> u64 {
+    pub(super) fn permission_version(&self) -> u64 {
         if let Some(ref perm) = self.config.permission {
             let json = serde_json::to_string(perm).unwrap_or_default();
             use std::hash::{Hash, Hasher};
@@ -1862,7 +902,7 @@ impl AgentLoop {
         }
     }
 
-    fn max_parallel_tools(&self) -> usize {
+    pub(super) fn max_parallel_tools(&self) -> usize {
         if let Some(limit) = self.recovery_parallel_limit {
             return self.max_parallel_tools_unconstrained().min(limit.max(1));
         }
@@ -4186,7 +3226,7 @@ impl AgentLoop {
     }
 
     /// Capture a snapshot of the project state if snapshot_manager is configured
-    async fn capture_snapshot_if_needed(&mut self) {
+    pub(super) async fn capture_snapshot_if_needed(&mut self) {
         if let Some(ref mut snapshot_manager) = self.snapshot_manager {
             let session_id = self.session_id.clone();
             match snapshot_manager.capture(&session_id, None).await {
@@ -4348,7 +3388,7 @@ impl AgentLoop {
         });
     }
 
-    fn drain_file_change_events(&mut self) -> Vec<(String, Option<String>)> {
+    pub(super) fn drain_file_change_events(&mut self) -> Vec<(String, Option<String>)> {
         let mut changes = Vec::new();
         loop {
             match self.file_change_rx.try_recv() {
@@ -4368,7 +3408,7 @@ impl AgentLoop {
         changes
     }
 
-    async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
+    pub(super) async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
         if self.snapshot_manager.is_none() {
             return;
         }
@@ -4396,842 +3436,6 @@ impl AgentLoop {
                 }
             }
         }
-    }
-
-    #[allow(clippy::incompatible_msrv)]
-    #[instrument(skip(self, tool_calls), fields(tool_count = tool_calls.len()))]
-    pub(super) async fn execute_tool_calls_impl(
-        &mut self,
-        tool_calls: &[ToolCall],
-    ) -> Result<Vec<(String, ToolExecutionOutcome)>, AppError> {
-        let mut tool_results = Vec::with_capacity(16);
-        let mut has_pending_question = false;
-
-        let mut allowed_tools = Vec::with_capacity(tool_calls.len());
-        for (idx, tc) in tool_calls.iter().enumerate() {
-            match self.check_tool_permission(tc).await {
-                ToolPermissionOutcome::QuestionTool => {
-                    has_pending_question = true;
-                    tool_results.push((
-                        idx,
-                        tc.id.to_string(),
-                        ToolExecutionOutcome::success("__QUESTION_PENDING__"),
-                    ));
-                }
-                ToolPermissionOutcome::Allowed { tool_call, receipt } => {
-                    allowed_tools.push((idx, tool_call, receipt));
-                }
-                ToolPermissionOutcome::Denied { tool_id, message } => {
-                    let outcome = if message.starts_with("Error: invalid tool call") {
-                        ToolExecutionOutcome {
-                            status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                            model_text: message,
-                        }
-                    } else {
-                        ToolExecutionOutcome {
-                            status: crate::agent::progress_recovery::ToolExecutionStatus::Denied,
-                            model_text: message,
-                        }
-                    };
-                    tool_results.push((idx, tool_id, outcome));
-                }
-            }
-        }
-
-        // Capture snapshot before executing file-modifying tools
-        let has_file_modifying = allowed_tools
-            .iter()
-            .any(|(_, tc, _)| is_file_modifying_tool(&tc.name));
-        if has_file_modifying {
-            // Clear stale file-change events so we only checkpoint this batch.
-            let _ = self.drain_file_change_events();
-            self.capture_snapshot_if_needed().await;
-        }
-
-        let _timeout_secs = self.tool_timeout();
-        let max_parallel = self.max_parallel_tools();
-        const MAX_PARALLEL_DEFAULT: usize = 100;
-        let effective_max = if max_parallel == usize::MAX {
-            MAX_PARALLEL_DEFAULT
-        } else {
-            max_parallel
-        };
-        let regular_tool_count = allowed_tools.len();
-        let registry = &self.tool_registry;
-
-        let mut mcp_tool_calls = Vec::with_capacity(4);
-        let regular_tools: Vec<_> = allowed_tools
-            .into_iter()
-            .filter(|(idx, tc, _)| {
-                if tc.name.starts_with("mcp__") {
-                    mcp_tool_calls.push((*idx, tc.clone()));
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        let mcp_timeout = Duration::from_secs(60);
-        let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
-        for (orig_idx, tc) in mcp_tool_calls {
-            let name = tc.name.clone();
-            let mcp_arc = self.mcp_service.clone();
-            mcp_futures.push(async move {
-                if let Some((server, tool)) = parse_mcp_tool_name(&name) {
-                    if let Some(mcp_arc) = mcp_arc {
-                        // Retry up to 3 times with brief backoff if RwLock is held
-                        let mut last_err = None;
-                        for attempt in 0..3 {
-                            if attempt > 0 {
-                                tokio::time::sleep(Duration::from_millis(50 * (attempt as u64))).await;
-                            }
-                            match mcp_arc.try_read() {
-                                Ok(mcp) => {
-                                    let call_result = tokio::time::timeout(
-                                        mcp_timeout,
-                                        mcp.call_tool(server, tool, tc.arguments.clone()),
-                                    )
-                                    .await;
-                                    match call_result {
-                                        Ok(Ok(result)) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome::success(result),
-                                            );
-                                        }
-                                        Ok(Err(e)) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome {
-                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                                    model_text: format!("Error: {}", e),
-                                                },
-                                            );
-                                        }
-                                        Err(_) => {
-                                            return (
-                                                orig_idx,
-                                                tc.id.to_string(),
-                                                ToolExecutionOutcome {
-                                                    status: crate::agent::progress_recovery::ToolExecutionStatus::Timeout,
-                                                    model_text: format!(
-                                                        "Error: MCP tool '{}' on server '{}' timed out after {:?}",
-                                                        tool, server, mcp_timeout
-                                                    ),
-                                                },
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(_) => {
-                                    last_err = Some(format!(
-                                        "MCP service locked (attempt {}/3)",
-                                        attempt + 1
-                                    ));
-                                }
-                            }
-                        }
-                        (
-                            orig_idx,
-                            tc.id.to_string(),
-                            ToolExecutionOutcome {
-                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                model_text: format!("Error: {}", last_err.unwrap_or_default()),
-                            },
-                        )
-                    } else {
-                        (
-                            orig_idx,
-                            tc.id.to_string(),
-                            ToolExecutionOutcome {
-                                status: crate::agent::progress_recovery::ToolExecutionStatus::ToolError,
-                                model_text: "Error: MCP service not available".into(),
-                            },
-                        )
-                    }
-                } else {
-                    (
-                        orig_idx,
-                        tc.id.to_string(),
-                        ToolExecutionOutcome {
-                            status: crate::agent::progress_recovery::ToolExecutionStatus::ProtocolError,
-                            model_text: format!("Error: Invalid MCP tool name '{}'", name),
-                        },
-                    )
-                }
-            });
-        }
-        let mcp_results = futures_util::future::join_all(mcp_futures).await;
-        for result in mcp_results {
-            tool_results.push(result);
-        }
-
-        let mut results = Vec::with_capacity(regular_tool_count);
-        let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
-        let mut futures = Vec::with_capacity(regular_tool_count);
-        let hook_registry = self.hook_registry.as_ref().map(Arc::clone);
-        let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
-        let event_store = self.event_store.clone();
-        let tool_broker = Arc::clone(&self.tool_broker);
-        let authority_ref = {
-            // M012-F01: Derive authority from the agent's real identity.
-            // The agent_id is the current agent's name (e.g. "code", "plan"),
-            // replacing the legacy synthetic session-based format.
-            let agent_id = &self.state.current_agent;
-            format!("agent:{}", agent_id)
-        };
-        // M012-F01: Derive workspace identity from the workspace root path.
-        let agent_workspace_id = {
-            use sha2::Digest;
-            format!(
-                "ws:{:x}",
-                sha2::Sha256::digest(self.workspace_root.to_string_lossy().as_bytes())
-            )
-        };
-        let agent_id = self.state.current_agent.clone();
-        for (orig_idx, tc, receipt) in regular_tools {
-            // Build the structured-execution context here (before
-            // `tc` is moved into an Arc) so the helper, which takes
-            // `&self`, can read live state without forcing the
-            // `async move` closure to capture `self` by move.
-            let tool_name_for_ctx = tc.name.clone();
-            let timeout = self.get_tool_timeout(&tool_name_for_ctx);
-            let exec_ctx =
-                self.build_tool_execution_context(&tc, Some(timeout.as_millis() as u64), &receipt);
-            let tc_arc = Arc::new(tc);
-            let sem = Arc::clone(&sem);
-            let id = tc_arc.id.clone();
-            let tool_name = tc_arc.name.clone();
-            let hook_registry = hook_registry.clone();
-            let plugin_service = plugin_service.clone();
-            let session_id = self.session_id.clone();
-            let authority_ref = authority_ref.clone();
-            let agent_workspace_id = agent_workspace_id.clone();
-            let agent_id = agent_id.clone();
-            let idx_for_results = orig_idx;
-            let event_store = event_store.clone();
-            let tool_broker = Arc::clone(&tool_broker);
-            futures.push(async move {
-                let permit = match sem.acquire().await {
-                    Ok(p) => p,
-                    Err(_) => {
-                        return (
-                            idx_for_results,
-                            id,
-                            Err(ToolError::Execution(
-                                "semaphore closed during tool execution".into(),
-                            )),
-                        );
-                    }
-                };
-
-                let pre_ctx = crate::hooks::HookContext {
-                    event: crate::hooks::HookEvent::PreToolExecute,
-                    session_id: Some(session_id.clone()),
-                    tool_name: Some(tool_name.to_string()),
-                    tool_arguments: Some(tc_arc.arguments.clone()),
-                    tool_result: None,
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                };
-                if let Some(ref hr) = hook_registry {
-                    for err in hr
-                        .run_hooks(crate::hooks::HookEvent::PreToolExecute, &pre_ctx)
-                        .await
-                    {
-                        tracing::error!("Pre-tool hook error: {}", err);
-                    }
-                }
-
-                let mut effective_args = tc_arc.arguments.clone();
-                if let Some(ref ps) = plugin_service {
-                    use crate::plugin::lifecycle::{
-                        LifecycleHooks, PluginHookOutcome, ToolBeforeAction, ToolBeforeHookInput,
-                    };
-                    let risk = classify_tool_risk(&tool_name, &tc_arc.arguments);
-                    let lifecycle_hooks = LifecycleHooks::new(
-                        ps.clone(),
-                        crate::plugin::policy::PluginLifecyclePolicy::default(),
-                    );
-                    let before_input = ToolBeforeHookInput {
-                        tool_name: tool_name.to_string(),
-                        tool_call_id: id.to_string(),
-                        args: tc_arc.arguments.clone(),
-                        session_id: session_id.clone(),
-                        risk: risk.to_string(),
-                    };
-                    match lifecycle_hooks.before_tool_execute(before_input).await {
-                        PluginHookOutcome::Ok(output, effects) => {
-                            match output.action {
-                                ToolBeforeAction::Deny => {
-                                    tracing::warn!(
-                                        tool = %tool_name,
-                                        reason = output.reason.as_deref().unwrap_or("no reason"),
-                                        "Tool execution denied by plugin hook"
-                                    );
-                                    drop(permit);
-                                    return (
-                                        idx_for_results,
-                                        id,
-                                        Err(ToolError::Execution(format!(
-                                            "blocked by plugin: {}",
-                                            output.reason.unwrap_or_default()
-                                        ))),
-                                    );
-                                }
-                                ToolBeforeAction::Modify => {
-                                    if let Some(new_args) = output.args {
-                                        tracing::debug!(
-                                            tool = %tool_name,
-                                            "Plugin modified tool arguments"
-                                        );
-                                        effective_args = new_args;
-                                    }
-                                }
-                                ToolBeforeAction::Allow => {}
-                            }
-                            for effect in effects {
-                                crate::bus::global::GlobalEventBus::publish(
-                                    crate::bus::events::AppEvent::PluginUiEffect {
-                                        session_id: Some(session_id.clone()),
-                                        plugin_id: "lifecycle".into(),
-                                        invocation_id: None,
-                                        effect,
-                                    },
-                                );
-                            }
-                        }
-                        PluginHookOutcome::Blocked { reason } => {
-                            tracing::warn!(
-                                tool = %tool_name,
-                                reason = reason.as_deref().unwrap_or("no reason"),
-                                "Tool execution blocked by plugin hook"
-                            );
-                            drop(permit);
-                            return (
-                                idx_for_results,
-                                id,
-                                Err(ToolError::Execution(format!(
-                                    "blocked by plugin: {}",
-                                    reason.unwrap_or_default()
-                                ))),
-                            );
-                        }
-                        PluginHookOutcome::Failed { error } => {
-                            tracing::warn!(
-                                tool = %tool_name,
-                                error = %error,
-                                "Before-tool hook failed"
-                            );
-                        }
-                        PluginHookOutcome::Skipped => {}
-                    }
-                }
-
-                let tool_start = Instant::now();
-                let risk = classify_tool_risk(&tool_name, &effective_args);
-                {
-                    let meta = crate::session::events::EventMeta::new(&session_id);
-                    let event = crate::session::events::SessionEvent::ToolCallStarted(
-                        crate::session::events::ToolCallStartedEvent {
-                            meta,
-                            tool_call_id: id.to_string(),
-                            tool_name: tool_name.to_string(),
-                            arguments: effective_args.to_string(),
-                            risk: risk.clone(),
-                        },
-                    );
-                    if let Some(ref store) = event_store {
-                        let store = Arc::clone(store);
-                        let ev = event.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = store.append(&ev).await {
-                                tracing::warn!("Failed to store ToolCallStarted event: {}", e);
-                            }
-                        });
-                    }
-                }
-
-                let result = {
-                    let tc_inner = Arc::clone(&tc_arc);
-                    if registry.get(&tc_inner.name).is_none() {
-                        Err(ToolError::NotFound(tc_inner.name.to_string()))
-                    } else {
-                        let mut last_result: Result<String, ToolError> =
-                            Err(ToolError::NotFound("no attempts made".into()));
-                        for attempt in 0..2 {
-                            if attempt > 0 {
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                                tracing::info!(
-                                    "Retrying tool '{}' (attempt {})",
-                                    tc_inner.name,
-                                    attempt + 1
-                                );
-                            }
-                            let exec_ctx = exec_ctx.clone();
-                            let exec_args = effective_args.clone();
-                            let tool_name_clone = tc_inner.name.clone();
-                            let broker_for_exec = Arc::clone(&tool_broker);
-                            let authority_ref = authority_ref.clone();
-                            let agent_workspace_id = agent_workspace_id.clone();
-                            let agent_id = agent_id.clone();
-                            let exec_fut = async move {
-                                // M014-A2: Build manifest digest from the tool name.
-                                // For AgentLoop direct calls, the manifest is the
-                                // single tool being invoked.
-                                let manifest_digest = {
-                                    use sha2::Digest;
-                                    format!(
-                                        "sha256:{:x}",
-                                        sha2::Sha256::digest(tool_name_clone.as_bytes())
-                                    )
-                                };
-                                // M014-A2: Use the real decision fields from the
-                                // execution context rather than synthesizing
-                                // authority from identity strings.
-                                let now = chrono::Utc::now().timestamp_millis();
-                                let principal_ref = exec_ctx
-                                    .principal_identity
-                                    .clone()
-                                    .unwrap_or_else(|| authority_ref.clone());
-                                let workspace_path_policy_id = exec_ctx
-                                    .workspace_path_policy_id
-                                    .clone()
-                                    .unwrap_or_else(|| format!("workspace:{}", agent_workspace_id));
-                                let policy_revision = exec_ctx
-                                    .permission_policy_revision
-                                    .clone()
-                                    .or_else(|| exec_ctx.workspace_path_policy_revision.clone())
-                                    .unwrap_or_else(|| {
-                                        format!(
-                                            "agent:{}:{}",
-                                            agent_id,
-                                            exec_ctx.session_id.as_deref().unwrap_or("anon")
-                                        )
-                                    });
-                                let policy_revision_for_ctx = policy_revision.clone();
-                                let ws_id = agent_workspace_id.clone();
-                                let ws_id_for_ctx = agent_workspace_id.clone();
-                                let grant = codegg_core::jobs::ToolAuthorityGrant {
-                                    schema_version: 1,
-                                    grant_id: exec_ctx
-                                        .decision_id
-                                        .clone()
-                                        .unwrap_or_else(|| authority_ref.clone()),
-                                    principal_ref: principal_ref.clone(),
-                                    workspace_id: ws_id,
-                                    workspace_path_policy_id: workspace_path_policy_id.clone(),
-                                    session_id: exec_ctx.session_id.clone(),
-                                    agent_id: Some(agent_id.clone()),
-                                    turn_id: exec_ctx.turn_id.clone(),
-                                    permission_mode: exec_ctx.permission_mode.clone(),
-                                    policy_revision,
-                                    allowed_caller_class: exec_ctx
-                                        .caller_class
-                                        .clone()
-                                        .unwrap_or_else(|| "agent".into()),
-                                    allowed_effect_class: exec_ctx
-                                        .max_effect_class
-                                        .clone()
-                                        .unwrap_or_else(|| "non_idempotent".into()),
-                                    manifest_digest,
-                                    source_digest: String::new(),
-                                    ir_digest: String::new(),
-                                    contract_digest: String::new(),
-                                    contract_snapshot_json: String::new(),
-                                    issued_at: exec_ctx.decision_issued_at.unwrap_or(now),
-                                    expires_at: exec_ctx.decision_expires_at,
-                                    revoked_at: exec_ctx.decision_revoked_at,
-                                    decision_digest: String::new(),
-                                };
-                                let decision_digest = grant.compute_digest();
-                                let grant = codegg_core::jobs::ToolAuthorityGrant {
-                                    decision_digest,
-                                    ..grant
-                                };
-                                let broker_ctx = crate::tool::broker::BrokerInvocationContext {
-                                    caller: crate::tool::contract::ToolCaller::Agent,
-                                    cwd: exec_ctx.cwd.clone(),
-                                    session_id: exec_ctx.session_id.clone(),
-                                    workspace_id: Some(ws_id_for_ctx.clone()),
-                                    agent_id: Some(agent_id.clone()),
-                                    turn_id: exec_ctx.turn_id.clone(),
-                                    job_id: None,
-                                    attempt_id: None,
-                                    permission_mode: exec_ctx.permission_mode.clone(),
-                                    timeout_ms: exec_ctx.timeout_ms,
-                                    submission_key: None,
-                                    authority: crate::tool::broker::BrokerAuthority::from_grant(
-                                        grant,
-                                    ),
-                                    cancellation: exec_ctx.cancellation.clone(),
-                                    deadline: exec_ctx.deadline,
-                                    // Bind the broker context to the same
-                                    // principal used to issue the grant. The
-                                    // decision identity is not a principal.
-                                    principal_ref: Some(principal_ref.clone()),
-                                    workspace_path_policy_id: Some(format!(
-                                        "workspace:{}",
-                                        ws_id_for_ctx
-                                    )),
-                                    allowed_tools: None,
-                                    current_policy_revision: Some(policy_revision_for_ctx),
-                                };
-                                let broker_result = broker_for_exec
-                                    .execute(registry, &tool_name_clone, exec_args, broker_ctx)
-                                    .await
-                                    .map_err(|e| match e {
-                                        crate::tool::broker::BrokerError::NotFound(name) => {
-                                            ToolError::NotFound(name)
-                                        }
-                                        crate::tool::broker::BrokerError::NoContract(name) => {
-                                            ToolError::NotFound(name)
-                                        }
-                                        crate::tool::broker::BrokerError::CallerDenied {
-                                            tool,
-                                            ..
-                                        } => ToolError::Permission(format!(
-                                            "caller denied for tool: {}",
-                                            tool
-                                        )),
-                                        crate::tool::broker::BrokerError::InputTooLarge {
-                                            tool,
-                                            size,
-                                            max,
-                                        } => ToolError::Execution(format!(
-                                            "input for {} is {} bytes, max is {}",
-                                            tool, size, max
-                                        )),
-                                        crate::tool::broker::BrokerError::Execution(msg) => {
-                                            ToolError::Execution(msg)
-                                        }
-                                        crate::tool::broker::BrokerError::AuthorityError {
-                                            tool,
-                                            reason,
-                                        } => ToolError::Permission(format!(
-                                            "authority error for tool {}: {}",
-                                            tool, reason
-                                        )),
-                                    })?;
-                                if let Some(ref p) = broker_result.value.provenance {
-                                    tracing::debug!(
-                                        tool = %tool_name_clone,
-                                        backend = %p.backend,
-                                        implementation = %p.implementation,
-                                        elapsed_ms = ?p.elapsed_ms,
-                                        trust = ?p.trust,
-                                        "broker: native tool completed with provenance"
-                                    );
-                                }
-                                Ok::<String, ToolError>(broker_result.value.display)
-                            };
-                            match tokio::time::timeout(timeout, exec_fut).await {
-                                Ok(r) => match &r {
-                                    Ok(_) => {
-                                        last_result = r;
-                                        break;
-                                    }
-                                    Err(e) if e.is_retryable() => {
-                                        tracing::warn!(
-                                            "Tool '{}' retryable error: {}",
-                                            tc_inner.name,
-                                            e
-                                        );
-                                        last_result = r;
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Tool '{}' non-retryable error: {}",
-                                            tc_inner.name,
-                                            e
-                                        );
-                                        last_result = r;
-                                        break;
-                                    }
-                                },
-                                Err(_) => {
-                                    last_result = Err(ToolError::Timeout(format!(
-                                        "Tool '{}' timed out after {:?}",
-                                        tc_inner.name, timeout
-                                    )));
-                                    break;
-                                }
-                            }
-                        }
-                        last_result
-                    }
-                };
-
-                if let Some(ref ps) = plugin_service {
-                    use crate::plugin::lifecycle::{
-                        LifecycleHooks, PluginHookOutcome, ToolAfterHookInput,
-                    };
-                    let duration_ms = tool_start.elapsed().as_millis() as u64;
-                    let lifecycle_hooks = LifecycleHooks::new(
-                        ps.clone(),
-                        crate::plugin::policy::PluginLifecyclePolicy::default(),
-                    );
-                    let after_input = ToolAfterHookInput {
-                        tool_name: tool_name.to_string(),
-                        tool_call_id: id.to_string(),
-                        args: effective_args.clone(),
-                        success: result.is_ok(),
-                        output: result
-                            .as_ref()
-                            .ok()
-                            .map(|o| {
-                                if o.len() > 500 {
-                                    format!("{}...", &o[..497])
-                                } else {
-                                    o.clone()
-                                }
-                            })
-                            .unwrap_or_default(),
-                        duration_ms,
-                    };
-                    if let PluginHookOutcome::Failed { error } =
-                        lifecycle_hooks.after_tool_execute(after_input).await
-                    {
-                        tracing::warn!(tool = %tool_name, error = %error, "After-tool hook failed");
-                    }
-                }
-
-                let post_ctx = crate::hooks::HookContext {
-                    event: crate::hooks::HookEvent::PostToolExecute,
-                    session_id: Some(session_id.clone()),
-                    tool_name: Some(tool_name.to_string()),
-                    tool_arguments: Some(effective_args.clone()),
-                    tool_result: result.as_ref().ok().cloned(),
-                    timestamp: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as i64,
-                };
-                if let Some(ref hr) = hook_registry {
-                    for err in hr
-                        .run_hooks(crate::hooks::HookEvent::PostToolExecute, &post_ctx)
-                        .await
-                    {
-                        tracing::error!("Post-tool hook error: {}", err);
-                    }
-                }
-
-                let duration_ms = tool_start.elapsed().as_millis() as u64;
-                let success = result.is_ok();
-                let output_preview = result.as_ref().ok().map(|o| {
-                    summarize_tool_output(&tool_name, o, success).unwrap_or_else(|| {
-                        if o.len() > 200 {
-                            format!("{}...", &o[..197])
-                        } else {
-                            o.clone()
-                        }
-                    })
-                });
-                {
-                    let meta = crate::session::events::EventMeta::new(&session_id);
-                    let event = crate::session::events::SessionEvent::ToolCallFinished(
-                        crate::session::events::ToolCallFinishedEvent {
-                            meta,
-                            tool_call_id: id.to_string(),
-                            tool_name: tool_name.to_string(),
-                            status: if success {
-                                crate::session::events::ToolCallStatus::Success
-                            } else {
-                                crate::session::events::ToolCallStatus::Error
-                            },
-                            duration_ms: Some(duration_ms),
-                            output_preview,
-                        },
-                    );
-                    if let Some(ref store) = event_store {
-                        let store = Arc::clone(store);
-                        let ev = event.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = store.append(&ev).await {
-                                tracing::warn!("Failed to store ToolCallFinished event: {}", e);
-                            }
-                        });
-                    }
-
-                    // Emit test run events for test commands
-                    if *tool_name == *"bash" {
-                        if let Some(cmd) = tc_arc.arguments.get("command").and_then(|v| v.as_str())
-                        {
-                            if is_test_command(cmd) {
-                                let test_meta = crate::session::events::EventMeta::new(&session_id);
-                                let start_event =
-                                    crate::session::events::SessionEvent::TestRunStarted(
-                                        crate::session::events::TestRunStartedEvent {
-                                            meta: test_meta,
-                                            command: cmd.to_string(),
-                                        },
-                                    );
-                                if let Some(ref store) = event_store {
-                                    let store = Arc::clone(store);
-                                    let ev = start_event;
-                                    tokio::spawn(async move {
-                                        if let Err(e) = store.append(&ev).await {
-                                            tracing::warn!(
-                                                "Failed to store TestRunStarted event: {}",
-                                                e
-                                            );
-                                        }
-                                    });
-                                }
-
-                                let test_output = result.as_ref().ok().cloned().unwrap_or_default();
-                                let passed = success && !test_output.starts_with("Error: ");
-                                let summary = if passed {
-                                    "passed".to_string()
-                                } else {
-                                    let preview = truncate_test_event_preview(&test_output, 200);
-                                    format!("failed: {}", preview)
-                                };
-                                let finish_meta =
-                                    crate::session::events::EventMeta::new(&session_id);
-                                let finish_event =
-                                    crate::session::events::SessionEvent::TestRunFinished(
-                                        crate::session::events::TestRunFinishedEvent {
-                                            meta: finish_meta,
-                                            command: cmd.to_string(),
-                                            passed,
-                                            duration_ms: Some(duration_ms),
-                                            summary,
-                                        },
-                                    );
-                                if let Some(ref store) = event_store {
-                                    let store = Arc::clone(store);
-                                    let ev = finish_event;
-                                    tokio::spawn(async move {
-                                        if let Err(e) = store.append(&ev).await {
-                                            tracing::warn!(
-                                                "Failed to store TestRunFinished event: {}",
-                                                e
-                                            );
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-
-                drop(permit);
-                (idx_for_results, id, result)
-            });
-        }
-        let all_results = futures_util::future::join_all(futures).await;
-        results.extend(all_results);
-
-        const MAX_TOOL_RESULT_BYTES_FALLBACK: usize = 512 * 1024; // 512KB per tool result
-        let max_tool_result_bytes = self
-            .execution_policy
-            .as_ref()
-            .map_or(MAX_TOOL_RESULT_BYTES_FALLBACK, |p| {
-                p.max_tool_result_tokens * 4
-            });
-        for (idx, id, result) in results {
-            let mut outcome = match result {
-                Ok(output) => ToolExecutionOutcome::success(output),
-                Err(error) => ToolExecutionOutcome::from_tool_error(error),
-            };
-            let output = &outcome.model_text;
-            if output.len() > max_tool_result_bytes {
-                let safe_end = output.floor_char_boundary(max_tool_result_bytes);
-                let mut truncated = output[..safe_end].to_string();
-                truncated.push_str(&format!(
-                    "\n... [truncated: output was {} bytes, limit is {} bytes]",
-                    output.len(),
-                    max_tool_result_bytes
-                ));
-                outcome.model_text = truncated;
-            }
-            tool_results.push((idx, id.to_string(), outcome));
-        }
-
-        if has_file_modifying {
-            self.capture_incremental_snapshot_if_needed(Some("incremental-pre-change".to_string()))
-                .await;
-        }
-
-        if has_pending_question {
-            if let Some(rx) = self.question_rx.take() {
-                match tokio::time::timeout(Duration::from_secs(300), rx).await {
-                    Ok(Ok(answers)) => {
-                        let formatted = format_question_answers(&answers);
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.model_text = formatted.clone();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
-                    }
-                    Ok(Err(_)) => {
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Cancelled;
-                                    outcome.model_text = "[question cancelled by user]".to_string();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
-                    }
-                    Err(_) => {
-                        tool_results = tool_results
-                            .into_iter()
-                            .map(|(idx, id, mut outcome)| {
-                                if outcome.model_text == "__QUESTION_PENDING__" {
-                                    outcome.status = crate::agent::progress_recovery::ToolExecutionStatus::Timeout;
-                                    outcome.model_text =
-                                        "[question timed out waiting for user response]".to_string();
-                                } else {
-                                    return (idx, id, outcome);
-                                }
-                                (idx, id, outcome)
-                            })
-                            .collect();
-                    }
-                }
-                QuestionRegistry::unregister(&self.session_id);
-            } else {
-                tool_results = tool_results
-                    .into_iter()
-                    .map(|(idx, id, mut outcome)| {
-                        if outcome.model_text == "__QUESTION_PENDING__" {
-                            outcome.status =
-                                crate::agent::progress_recovery::ToolExecutionStatus::ToolError;
-                            outcome.model_text =
-                                "[question not supported in exec mode]".to_string();
-                        } else {
-                            return (idx, id, outcome);
-                        }
-                        (idx, id, outcome)
-                    })
-                    .collect();
-            }
-        }
-
-        tool_results.sort_by_key(|(idx, _, _)| *idx);
-        let ordered_results: Vec<(String, ToolExecutionOutcome)> = tool_results
-            .into_iter()
-            .map(|(_, id, outcome)| (id, outcome))
-            .collect();
-
-        Ok(ordered_results)
     }
 
     /// Drains queued follow-up prompts, if any are already queued.

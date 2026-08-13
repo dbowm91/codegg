@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M003 corrective pass / M005 closed / M006 audit blocked | M006 measurement audit is recorded in `plans/closure/runtime-consolidation-deletion-footprint/006-status.md`; strict closure remains blocked on M003 corrective physical extraction. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M006 ready / M007 blocked | M003 corrective extraction is closed; M006 must accept post-extraction measurements before M007. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -43,7 +43,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | corrective pass required | `plans/closure/runtime-consolidation-deletion-footprint/003-status.md`; corrective plan `plans/implementation/runtime-consolidation-deletion-footprint/008-m003-corrective-physical-extraction.md` | Physical extraction remains incomplete; M004/M005 ready, M006 blocked. |
+| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | ready | `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md` | M001–M005 closed; repeat measurements on consolidated tree. |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Active closure work
@@ -54,10 +54,9 @@ This roadmap is a new cross-cutting consolidation workstream based on current re
 
 Execution order:
 
-1. M002, M004, and M005 are closed; M003 corrective physical extraction remains outstanding; M001 is closed.
-2. M003 corrective physical extraction remains outstanding. M005's verification audit confirms that M006 must measure the post-extraction tree, not the current transitional tree.
-3. M006's audit was run against the post-M005 tree, but strict closure remains blocked until the M003 corrective physical extraction closes; the recorded measurements are diagnostic and must be repeated on the consolidated tree.
-4. M007 starts only after M002-M006 close and owns the single broad integration/hosted closure pass.
+1. M001–M005 are closed, including the M003 corrective physical extraction.
+2. M006 is ready and must record measurements against the consolidated tree.
+3. M007 starts only after M006 closes and owns the single broad integration/hosted closure pass.
 
 Verification remains minimal and change-specific. This roadmap explicitly forbids new CI lanes/matrices, scheduled audits, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
 
@@ -82,8 +81,8 @@ M011 was the sole controlling strict closure milestone for that workstream and i
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Audit complete but strict closure blocked: M003 corrective physical extraction remains incomplete; see `plans/closure/runtime-consolidation-deletion-footprint/006-status.md`. |
-| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependencies: M002-M006 closed; M001 is closed. |
+| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependency: M006 must close after post-extraction measurements. |
+| Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Ready after M003 corrective physical extraction; repeat the recorded audit. |
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
 
 ## Agent-runtime correctness execution order
@@ -115,7 +114,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 |---|---|---|---|
 | Runtime consolidation, deletion, and footprint | M001 — legacy background scheduler deletion | closed | `plans/closure/runtime-consolidation-deletion-footprint/001-status.md`; implementation commits `9594429`, `fcfed87` |
 | Runtime consolidation, deletion, and footprint | M002 — structured outcome and recovery convergence | closed | `plans/closure/runtime-consolidation-deletion-footprint/002-status.md` |
-| Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | corrective pass required | `plans/closure/runtime-consolidation-deletion-footprint/003-status.md`; physical extraction remains outstanding |
+| Runtime consolidation, deletion, and footprint | M003 — AgentLoop ownership decomposition | closed | `plans/closure/runtime-consolidation-deletion-footprint/003-status.md`; corrective physical extraction accepted |
 | Runtime consolidation, deletion, and footprint | M004 — prompt/provider/history legacy deletion | closed | `plans/closure/runtime-consolidation-deletion-footprint/004-status.md`; implementation commit `0363d8f` |
 | Runtime consolidation, deletion, and footprint | M005 — verification ratchet retirement and documentation contraction | closed | `plans/closure/runtime-consolidation-deletion-footprint/005-status.md` |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
