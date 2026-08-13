@@ -220,10 +220,11 @@ Stop optimization when the next meaningful reduction would require feature loss,
 
 ## 10. Execution disposition
 
-The M006 measurement audit was performed against the post-M005 branch state, but
-strict M006 closure is blocked by the hard M003 dependency. The remaining
-`AgentLoop` physical extraction is tracked by
-`plans/implementation/runtime-consolidation-deletion-footprint/008-m003-corrective-physical-extraction.md`.
+The original M006 measurement audit was performed against the post-M005 branch
+state and was correctly blocked by the hard M003 dependency at that time. The
+remaining physical extraction was completed by M009; final-tree measurements
+and strict closure are recorded in
+`plans/closure/runtime-consolidation-deletion-footprint/006-status.md`.
 
 The audit found no safe dependency declaration, feature, duplicate-version,
 upstream-maintenance, or release-profile change to land in M006. The measured
