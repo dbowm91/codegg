@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M006 ready / M007 blocked | M003 corrective extraction is closed; M006 must accept post-extraction measurements before M007. |
+| Runtime consolidation, deletion, and footprint | closing | `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md` | M007 conditionally closed | `plans/closure/runtime-consolidation-deletion-footprint/007-status.md`; hosted run `31710798729` and production-feature footprint evidence remain named conditions. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -81,7 +81,7 @@ M011 was the sole controlling strict closure milestone for that workstream and i
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | Hard dependency: M006 must close after post-extraction measurements. |
+| Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | conditionally closed | `plans/closure/runtime-consolidation-deletion-footprint/007-status.md`; hosted and production-feature evidence conditions remain. |
 | Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | Ready after M003 corrective physical extraction; repeat the recorded audit. |
 | Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
 

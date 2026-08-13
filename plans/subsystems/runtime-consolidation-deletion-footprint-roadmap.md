@@ -241,7 +241,7 @@ Measure release contributors and feature graph after code deletion, narrow only 
 
 ### M007 — Integration, verification, and strict closure
 
-Status: blocked on M006
+Status: conditionally closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/007-integration-verification-closure.md`
 
