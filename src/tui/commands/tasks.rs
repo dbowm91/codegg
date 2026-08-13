@@ -8,6 +8,66 @@ use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+fn durable_schedule_spec(
+    workspace_id: String,
+    session_id: String,
+    interval_secs: u64,
+    message: String,
+) -> crate::protocol::dto::ScheduleCreateDto {
+    use codegg_core::jobs::schedule::{JobTemplate, MissedRunPolicy, OverlapPolicy, ScheduleKind};
+    use codegg_core::jobs::JobKind;
+
+    let kind = ScheduleKind::Interval {
+        every: std::time::Duration::from_secs(interval_secs),
+        anchor: chrono::Utc::now(),
+    };
+    let job_template = JobTemplate::for_subagent(
+        JobKind::Subagent,
+        message,
+        "build".to_string(),
+        Some(session_id.clone()),
+    );
+
+    crate::protocol::dto::ScheduleCreateDto {
+        workspace_id,
+        session_id: Some(session_id),
+        kind: serde_json::to_value(kind).expect("durable schedule kind is serializable"),
+        job_template: serde_json::to_value(job_template)
+            .expect("durable schedule job template is serializable"),
+        overlap_policy: serde_json::to_value(OverlapPolicy::SkipIfRunning)
+            .expect("durable overlap policy is serializable")
+            .as_str()
+            .expect("overlap policy serializes as a string")
+            .to_string(),
+        missed_run_policy: serde_json::to_value(MissedRunPolicy::RunOnceNow)
+            .expect("durable missed-run policy is serializable"),
+        labels: std::collections::HashMap::new(),
+    }
+}
+
+fn durable_schedule_task_value(
+    schedule: &crate::protocol::dto::ScheduleSummaryDto,
+) -> serde_json::Value {
+    let kind = schedule
+        .kind
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("schedule");
+    let interval_secs = schedule
+        .kind
+        .get("every")
+        .and_then(|every| every.get("secs"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+
+    serde_json::json!({
+        "id": schedule.schedule_id,
+        "kind": kind,
+        "state": schedule.state,
+        "interval_secs": interval_secs,
+    })
+}
+
 fn worktree_label(tree: &serde_json::Value) -> Option<String> {
     let path = tree.get("path").and_then(|v| v.as_str())?.trim();
     if path.is_empty() {
@@ -27,6 +87,17 @@ fn worktree_label(tree: &serde_json::Value) -> Option<String> {
 }
 
 pub(crate) fn start_list_tasks(app: &mut App) {
+    let Some(workspace_id) = app
+        .session_state
+        .session
+        .as_ref()
+        .and_then(|session| session.workspace_id.clone())
+    else {
+        app.messages_state
+            .toasts
+            .warning("Task schedules require an active workspace");
+        return;
+    };
     let request_id = app.dialog_state.task_list_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -46,15 +117,14 @@ pub(crate) fn start_list_tasks(app: &mut App) {
             };
             let request = crate::core::new_request(
                 format!("task-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TaskList,
+                CoreRequest::ScheduleList {
+                    workspace_id: Some(workspace_id),
+                    include_archived: false,
+                },
             );
             match core_client.request(request).await {
-                Ok(CoreResponse::Json { data }) => {
-                    let tasks = data
-                        .get("tasks")
-                        .and_then(|v| v.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+                Ok(CoreResponse::ScheduleList { schedules }) => {
+                    let tasks = schedules.iter().map(durable_schedule_task_value).collect();
                     Some(TuiCommand::TasksListed {
                         request_id,
                         tasks,
@@ -112,11 +182,13 @@ pub(crate) fn apply_tasks_listed(
                     .get("message")
                     .and_then(|v| v.as_str())
                     .unwrap_or_default();
+                let kind = t.get("kind").and_then(|v| v.as_str()).unwrap_or("schedule");
+                let label = if message.is_empty() { kind } else { message };
                 let interval_secs = t.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
                 format!(
                     "{}: {} ({}s)",
                     id.chars().take(8).collect::<String>(),
-                    message.chars().take(30).collect::<String>(),
+                    label.chars().take(30).collect::<String>(),
                     interval_secs
                 )
             })
@@ -143,14 +215,6 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
         TuiTaskKind::Command,
         "delete_task",
         async move {
-            let Ok(parsed_id) = id.parse::<u64>() else {
-                return Some(TuiCommand::TaskOperationFinished {
-                    request_id,
-                    op: "delete".to_string(),
-                    task_id: None,
-                    error: Some("Task id must be numeric".to_string()),
-                });
-            };
             let Some(core_client) = core_client else {
                 return Some(TuiCommand::TaskOperationFinished {
                     request_id,
@@ -161,41 +225,37 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
             };
             let request = crate::core::new_request(
                 format!("task-delete-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TaskDelete { id: parsed_id },
+                CoreRequest::ScheduleDelete {
+                    schedule_id: id.clone(),
+                },
             );
             match core_client.request(request).await {
-                Ok(CoreResponse::Ack) => Some(TuiCommand::TaskOperationFinished {
-                    request_id,
-                    op: "delete".to_string(),
-                    task_id: Some(parsed_id.to_string()),
-                    error: None,
-                }),
-                Ok(CoreResponse::Error { code, .. }) if code == "task_not_found" => {
+                Ok(CoreResponse::ScheduleDeleted { schedule_id }) => {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,
                         op: "delete".to_string(),
-                        task_id: Some(parsed_id.to_string()),
-                        error: Some("Task not found".to_string()),
+                        task_id: Some(schedule_id),
+                        error: None,
                     })
                 }
                 Ok(CoreResponse::Error { message, .. }) => {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,
                         op: "delete".to_string(),
-                        task_id: Some(parsed_id.to_string()),
+                        task_id: Some(id.clone()),
                         error: Some(format!("Failed to delete task: {}", message)),
                     })
                 }
                 Ok(_other) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "delete".to_string(),
-                    task_id: Some(parsed_id.to_string()),
+                    task_id: Some(id.clone()),
                     error: Some("Unexpected task response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "delete".to_string(),
-                    task_id: Some(parsed_id.to_string()),
+                    task_id: Some(id),
                     error: Some(format!("Failed to delete task: {}", e)),
                 }),
             }
@@ -246,14 +306,21 @@ pub(crate) fn apply_task_operation_finished(
 }
 
 pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: String) {
+    let Some(session) = app.session_state.session.as_ref() else {
+        app.messages_state
+            .toasts
+            .warning("Task schedules require an active session");
+        return;
+    };
+    let Some(workspace_id) = session.workspace_id.clone() else {
+        app.messages_state
+            .toasts
+            .warning("Task schedules require an active workspace");
+        return;
+    };
     let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
-    let session_id = app
-        .session_state
-        .session
-        .as_ref()
-        .map(|s| s.id.clone())
-        .unwrap_or_default();
+    let session_id = session.id.clone();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -272,22 +339,16 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
             };
             let request = crate::core::new_request(
                 format!("task-schedule-{}", uuid::Uuid::new_v4()),
-                CoreRequest::TaskSchedule {
-                    session_id,
-                    interval_secs,
-                    message,
+                CoreRequest::ScheduleCreate {
+                    spec: durable_schedule_spec(workspace_id, session_id, interval_secs, message),
                 },
             );
             match core_client.request(request).await {
-                Ok(CoreResponse::Json { data }) => {
-                    let task_id = data
-                        .get("task_id")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                Ok(CoreResponse::ScheduleCreated { schedule_id }) => {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,
                         op: "schedule".to_string(),
-                        task_id,
+                        task_id: Some(schedule_id),
                         error: None,
                     })
                 }
@@ -314,148 +375,6 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
             }
         },
     );
-}
-
-#[allow(dead_code)]
-pub(crate) async fn handle_task_schedule(app: &mut App, interval_secs: u64, message: String) {
-    let Some(core_client) = app.core_client.clone() else {
-        app.messages_state.toasts.warning("Core client unavailable");
-        return;
-    };
-    let session_id = app
-        .session_state
-        .session
-        .as_ref()
-        .map(|s| s.id.clone())
-        .unwrap_or_default();
-    let request = crate::core::new_request(
-        format!("task-schedule-{}", uuid::Uuid::new_v4()),
-        CoreRequest::TaskSchedule {
-            session_id,
-            interval_secs,
-            message,
-        },
-    );
-    match core_client.request(request).await {
-        Ok(CoreResponse::Json { data }) => {
-            let task_id = data
-                .get("task_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            app.messages_state.toasts.info(&format!(
-                "Task {} scheduled (every {}s)",
-                task_id.chars().take(8).collect::<String>(),
-                interval_secs
-            ));
-        }
-        Ok(CoreResponse::Error { message, .. }) => app
-            .messages_state
-            .toasts
-            .warning(&format!("Failed to schedule task: {}", message)),
-        Ok(_other) => app
-            .messages_state
-            .toasts
-            .warning("Unexpected task response"),
-        Err(e) => app
-            .messages_state
-            .toasts
-            .warning(&format!("Failed to schedule task: {}", e)),
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn handle_list_tasks(app: &mut App) {
-    if let Some(core_client) = app.core_client.clone() {
-        let request = crate::core::new_request(
-            format!("task-list-{}", uuid::Uuid::new_v4()),
-            CoreRequest::TaskList,
-        );
-        match core_client.request(request).await {
-            Ok(CoreResponse::Json { data }) => {
-                let tasks = data
-                    .get("tasks")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default();
-                if tasks.is_empty() {
-                    app.messages_state.toasts.info("No background tasks");
-                } else {
-                    let list: Vec<String> = tasks
-                        .iter()
-                        .map(|t| {
-                            let id = t.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                            let message = t
-                                .get("message")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or_default();
-                            let interval_secs =
-                                t.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
-                            format!(
-                                "{}: {} ({}s)",
-                                id.chars().take(8).collect::<String>(),
-                                message.chars().take(30).collect::<String>(),
-                                interval_secs
-                            )
-                        })
-                        .collect();
-                    app.messages_state.toasts.info(&list.join(" | "));
-                }
-            }
-            Ok(CoreResponse::Error { message, .. }) => {
-                app.messages_state
-                    .toasts
-                    .warning(&format!("Failed to list tasks: {}", message));
-            }
-            Ok(_other) => {
-                app.messages_state
-                    .toasts
-                    .warning("Unexpected task response");
-            }
-            Err(e) => {
-                app.messages_state
-                    .toasts
-                    .warning(&format!("Failed to list tasks: {}", e));
-            }
-        }
-    } else {
-        app.messages_state.toasts.warning("Core client unavailable");
-    }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn handle_delete_task(app: &mut App, id: String) {
-    if let Some(core_client) = app.core_client.clone() {
-        let parsed_id = id.parse::<u64>().ok();
-        let Some(parsed_id) = parsed_id else {
-            app.messages_state.toasts.warning("Task id must be numeric");
-            return;
-        };
-        let request = crate::core::new_request(
-            format!("task-delete-{}", uuid::Uuid::new_v4()),
-            CoreRequest::TaskDelete { id: parsed_id },
-        );
-        match core_client.request(request).await {
-            Ok(CoreResponse::Ack) => app.messages_state.toasts.info("Task deleted"),
-            Ok(CoreResponse::Error { code, .. }) if code == "task_not_found" => {
-                app.messages_state.toasts.warning("Task not found");
-            }
-            Ok(CoreResponse::Error { message, .. }) => {
-                app.messages_state
-                    .toasts
-                    .warning(&format!("Failed to delete task: {}", message));
-            }
-            Ok(_other) => app
-                .messages_state
-                .toasts
-                .warning("Unexpected task response"),
-            Err(e) => app
-                .messages_state
-                .toasts
-                .warning(&format!("Failed to delete task: {}", e)),
-        }
-    } else {
-        app.messages_state.toasts.warning("Core client unavailable");
-    }
 }
 
 pub(crate) fn start_worktree_list(app: &mut App) {
@@ -825,8 +744,53 @@ pub(crate) fn handle_file_diff_stats_ready(
 
 #[cfg(test)]
 mod tests {
-    use super::worktree_label;
+    use super::{durable_schedule_spec, durable_schedule_task_value, worktree_label};
     use serde_json::json;
+
+    #[test]
+    fn task_schedule_uses_durable_opaque_schedule_contract() {
+        let spec = durable_schedule_spec(
+            "workspace-1".to_string(),
+            "session-1".to_string(),
+            300,
+            "check the build".to_string(),
+        );
+
+        assert_eq!(spec.workspace_id, "workspace-1");
+        assert_eq!(spec.session_id.as_deref(), Some("session-1"));
+        assert_eq!(spec.overlap_policy, "skip_if_running");
+        assert_eq!(spec.kind["kind"], "interval");
+        assert_eq!(spec.kind["every"]["secs"], 300);
+        assert_eq!(spec.job_template["kind"], "subagent");
+        assert_eq!(spec.job_template["payload"]["prompt"], "check the build");
+        assert_eq!(spec.job_template["payload"]["parent_id"], "session-1");
+    }
+
+    #[test]
+    fn task_list_projects_durable_schedule_summary_for_existing_view() {
+        let schedule = crate::protocol::dto::ScheduleSummaryDto {
+            schedule_id: "schedule-opaque-id".to_string(),
+            workspace_id: "workspace-1".to_string(),
+            session_id: Some("session-1".to_string()),
+            kind: json!({
+                "kind": "interval",
+                "every": {"secs": 60, "nanos": 0},
+            }),
+            state: "active".to_string(),
+            overlap_policy: "skip_if_running".to_string(),
+            missed_run_policy: json!("run_once_now"),
+            next_run_at_ms: None,
+            last_occurrence_at_ms: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        };
+
+        let task = durable_schedule_task_value(&schedule);
+        assert_eq!(task["id"], "schedule-opaque-id");
+        assert_eq!(task["kind"], "interval");
+        assert_eq!(task["interval_secs"], 60);
+        assert_eq!(task["state"], "active");
+    }
 
     #[test]
     fn worktree_label_uses_path_and_branch() {

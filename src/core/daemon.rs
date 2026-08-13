@@ -6353,6 +6353,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_schedule_protocol_supports_create_list_delete() {
+        let daemon = test_daemon().await;
+        let root = tempfile::tempdir().unwrap();
+        let (_project_id, workspace_id) = seed_test_context(&daemon, root.path()).await;
+        let session_id = "schedule-session".to_string();
+        let kind = codegg_core::jobs::ScheduleKind::Interval {
+            every: std::time::Duration::from_secs(60),
+            anchor: chrono::Utc::now(),
+        };
+        let template = codegg_core::jobs::schedule::JobTemplate::for_subagent(
+            codegg_core::jobs::JobKind::Subagent,
+            "check the build".to_string(),
+            "build".to_string(),
+            Some(session_id.clone()),
+        );
+        let spec = crate::protocol::dto::ScheduleCreateDto {
+            workspace_id: workspace_id.clone(),
+            session_id: Some(session_id),
+            kind: serde_json::to_value(kind).unwrap(),
+            job_template: serde_json::to_value(template).unwrap(),
+            overlap_policy: "skip_if_running".to_string(),
+            missed_run_policy: serde_json::to_value(codegg_core::jobs::MissedRunPolicy::RunOnceNow)
+                .unwrap(),
+            labels: std::collections::HashMap::new(),
+        };
+
+        let schedule_id = match daemon
+            .handle_request(crate::core::new_request(
+                "schedule-create".into(),
+                CoreRequest::ScheduleCreate { spec },
+            ))
+            .await
+            .unwrap()
+        {
+            CoreResponse::ScheduleCreated { schedule_id } => schedule_id,
+            other => panic!("unexpected schedule creation response: {other:?}"),
+        };
+
+        let listed = daemon
+            .handle_request(crate::core::new_request(
+                "schedule-list".into(),
+                CoreRequest::ScheduleList {
+                    workspace_id: Some(workspace_id),
+                    include_archived: false,
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            listed,
+            CoreResponse::ScheduleList { schedules }
+                if schedules.iter().any(|schedule| schedule.schedule_id == schedule_id)
+        ));
+
+        let deleted = daemon
+            .handle_request(crate::core::new_request(
+                "schedule-delete".into(),
+                CoreRequest::ScheduleDelete {
+                    schedule_id: schedule_id.clone(),
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(matches!(
+            deleted,
+            CoreResponse::ScheduleDeleted { schedule_id: deleted_id }
+                if deleted_id == schedule_id
+        ));
+    }
+
+    #[tokio::test]
     async fn session_create_through_daemon() {
         let daemon = test_daemon().await;
         let (project_id, workspace_id) =
