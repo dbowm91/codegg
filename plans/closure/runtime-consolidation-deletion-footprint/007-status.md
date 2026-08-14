@@ -1,76 +1,106 @@
 # Runtime Consolidation, Deletion, and Footprint M007 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan: `plans/implementation/runtime-consolidation-deletion-footprint/007-integration-verification-closure.md`
 Source subsystem roadmap: `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md`
-Repository baseline reviewed: `0dae4d8ce9a7988aef3b11db5ffa8b5993722712`
-Implementation commits: `0dae4d8c` — physical AgentLoop ownership extraction and planning transition
+
+Historical provisional baseline: `0dae4d8ce9a7988aef3b11db5ffa8b5993722712`
+
+Accepted final candidate: `c8c31d909310131ca4b1cc38c725e0163f86a47d`
+
+Implementation commit: `c8c31d90` — final corrective compatibility and
+ownership pass
+
+Hosted evidence: [CI run 31724978736](https://github.com/dbowm91/codegg/actions/runs/31724978736), [verify job 94530985774](https://github.com/dbowm91/codegg/actions/runs/31724978736/job/94530985774), green on the exact accepted candidate.
 
 ## 1. Executive finding
 
-The production consolidation is complete and the integration evidence is green
-for the changed boundaries. M001–M005 are closed, M003’s corrective physical
-extraction is accepted, and the remaining local/hosted operational evidence is
-being recorded on the exact pushed candidate. Strict closure is conditional only
-until the ordinary hosted run and production-feature release measurement finish.
+M007 is strictly closed. M001–M006 are accepted, the audited TUI compatibility
+and provider-turn ownership gaps are corrected by M009, the final default and
+production-feature measurements are complete, the capped local workspace
+verification is green, and the ordinary hosted CI contract passed on the exact
+final production candidate.
+
+The earlier provisional record remains represented by its historical baseline
+and incomplete-evidence notes in Git history; this record does not erase that
+M006 was previously blocked or that the prior hosted/local attempts were not
+yet conclusive.
 
 ## 2. Requirement-to-evidence matrix
 
 | Requirement | Evidence | Result |
 |---|---|---|
-| One durable scheduling owner and no UUID/u64 bridge | M001 closure; scheduler source/guard review | pass |
+| One durable scheduling owner and no UUID/u64 bridge | M001 closure; scheduler guards; source review | pass |
+| Active TUI schedule/list/delete behavior | durable `ScheduleCreate`/`ScheduleList`/`ScheduleDelete` handlers and protocol test | pass |
 | Structured status/effect facts remain authoritative | M002 closure; recovery tests | pass |
-| AgentLoop ownership physically decomposed | `context_runtime.rs`, `tool_batch.rs`; loop 6,641→4,845 LOC | pass |
+| AgentLoop ownership physically decomposed | `context_runtime.rs`, `tool_batch.rs`, and real provider body in `provider_turn.rs` | pass |
 | Prompt/runtime/history authority remains canonical | M004 closure and architecture review | pass |
-| Verification ratchets/docs remain current | M005 closure; quick verification | pass |
-| Post-consolidation dependency/feature review | M006 audit; locked tree review | pass |
-| Focused behavior and harness verification | 39 loop, 14 recovery, 40 harness tests | pass |
-| Broad workspace, feature build, and hosted CI | local full workspace run reached default LSP suite and was stopped; hosted run `31710798729` is in progress; production-feature release build was stopped after prolonged LTO | conditional |
+| Verification ratchets/docs remain current | M005 closure; final guards and architecture updates | pass |
+| M006 final dependency/feature/size review | `006-status.md` on `c8c31d90` | pass |
+| Focused behavior and harness verification | TUI, durable-schedule protocol, loop/recovery, and 40 harness tests | pass |
+| Broad local verification | `CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1` | pass |
+| Hosted CI on exact final candidate | run `31724978736`, job `94530985774` | pass |
 
 ## 3. Production implementation evidence
 
-Context packing, observation, palette reduction, starvation/backoff, and cache
-statistics now live in `src/agent/context_runtime.rs`. Permission evaluation,
-execution-context construction, native backend resolution, and the complete
-structured tool batch executor now live in `src/agent/tool_batch.rs`. The loop
-retains orchestration and state, with no new framework or authority.
+The active TUI task commands now require the session's canonical workspace and
+send durable schedule requests. Schedule creation uses an existing durable
+subagent `JobTemplate`, interval recurrence, `skip_if_running`, and
+`run_once_now`; list/delete use opaque `ScheduleId` values and project durable
+summaries for the existing view. The old `Task*` request rejection remains an
+explicit compatibility boundary for external legacy callers.
 
-## 4. Verification executed
+`ProviderTurnAdapter` now contains the provider retry, timeout/stall timeout,
+streaming, normalized event publication, usage accounting, and error body.
+`AgentLoop` no longer contains a parallel `stream_with_retry_impl` or
+`stream_once` implementation.
 
-Passed locally: `cargo fmt --all`, `cargo check -p codegg --lib`, focused AgentLoop,
-recovery, and harness tests, `scripts/verify.sh quick`, locked workspace Clippy,
-core-boundary/CWD/execution-ownership guards, and `git diff --check`.
+## 4. Verification and measurements
 
-The required capped workspace test command was started but stopped after the
-default `lsp` integration binary ran for nearly five minutes without progress;
-the plan explicitly excludes real external LSP compatibility testing.
+Passed locally on the accepted candidate:
 
-Default release measurement completed on the consolidated tree:
-`/tmp/codegg-m007-default-target/release/codegg` = 54,347,888 bytes.
-Production-feature release measurement was attempted in an isolated target but
-was stopped during prolonged LTO; M006’s prior diagnostic value was 63,583,200
-bytes and is not claimed as an exact M007 measurement.
+```text
+cargo fmt --all -- --check
+cargo check -p codegg --lib --locked
+cargo test -p codegg --lib tui::commands::tasks::tests -- --nocapture
+cargo test -p codegg --lib core::daemon::tests::durable_schedule_protocol_supports_create_list_delete -- --nocapture
+cargo test -p codegg-core jobs::schedule -- --nocapture
+cargo test -p codegg --lib agent::progress_recovery -- --nocapture
+cargo test -p codegg --lib agent::r#loop::tests -- --nocapture
+cargo test --test agent_loop_harness -- --test-threads=1
+scripts/verify.sh quick
+CARGO_BUILD_JOBS=1 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo check -p codegg --locked --features server,plugins,lsp-test-support
+CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
+git diff --check
+```
+
+M006 isolated release measurements are 54,347,840 bytes by default and
+63,566,624 bytes with `server,plugins,lsp-test-support`; the full measurement
+record is in `006-status.md`.
 
 ## 5. Invariant, failure, recovery, migration, compatibility, and security review
 
-No scheduler, protocol, storage, provider, permission, cancellation, retry,
-workspace-authority, or supported-feature semantics changed. The moved methods
-retain their existing typed outcomes, permission receipts, snapshot handling,
-MCP/native dispatch, ordering, and bounded recovery behavior. No new security
-finding was introduced.
+No storage migration or schema change was required. Existing durable schedule
+stores and daemon services remain authoritative. Workspace/session authority,
+scheduler admission, permission and Tool Broker enforcement, cancellation,
+retry/idempotency, private-reasoning projection, provider credential handling,
+path policy, and execution ownership are unchanged. Legacy task requests fail
+deterministically and cannot reach removed scheduler state. The provider move
+does not change provider wire formats or retry semantics.
 
 ## 6. Unresolved findings
 
 | Severity | Finding | Disposition |
 |---|---|---|
 | critical/high/medium | None in scope | closed |
-| low | Production-feature release measurement not completed locally | operational condition; repeat before strict archival closure |
-| low | Full workspace test command cannot complete locally in the default LSP suite | operational condition; hosted CI is authoritative for routine CI contract |
+| low | None requiring follow-up | closed |
+| deferred | Independent Provider M007, Tool Programs M019, and DVR M006 workstreams | retained in their own registries; not unblocked by this roadmap |
 
 ## 7. Roadmap and registry disposition
 
-M003 is closed and M006 is dependency-ready. No unrelated registered plan was
-unblocked by M003 alone. M007 remains conditionally closed pending the named
-hosted run and exact production-feature measurement; no new CI lane or workflow
-was introduced.
+The runtime-consolidation roadmap is closed by this exact-candidate record and
+M009. No unrelated registered future plan was newly unblocked. The Development
+Verification and Release M006 plan remains blocked on Provider M007 and Tool
+Programs M019; Tool Programs M019 remains ready for its own strict review.

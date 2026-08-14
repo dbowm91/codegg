@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M003 Corrective Pass — Physical Extraction
 
-Status: ready for handoff
+Status: implemented — closure accepted by M009
 
 Source plan: `plans/implementation/runtime-consolidation-deletion-footprint/003-agent-loop-ownership-decomposition.md`
 

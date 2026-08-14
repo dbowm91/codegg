@@ -14,14 +14,16 @@ Repository baseline reviewed: `bd9b3b610af0fa72ce3fe5a8b8f59222659f006d`
 
 Implementation commits or pull requests:
 
-- Pending commit — corrective physical extraction of context policy and tool-batch ownership.
+- `c8c31d90` — corrective physical extraction of context/tool ownership and
+  provider-turn ownership, with durable TUI schedule compatibility repair.
 
 ## 1. Executive finding
 
 M003 is strictly closed. The corrective pass physically moved context packing
-and policy methods into `context_runtime.rs` and permission, execution-context,
-and batch execution methods into `tool_batch.rs`. `AgentLoop` remains the
-orchestration owner, while concrete subsystem modules now own their bodies.
+and policy methods into `context_runtime.rs`, permission/execution-context and
+batch execution methods into `tool_batch.rs`, and the remaining provider
+streaming/retry/normalization body into `provider_turn.rs`. `AgentLoop` remains
+the orchestration owner, while concrete subsystem modules now own their bodies.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -81,7 +83,7 @@ does not broaden tool authority or alter path validation.
 
 ## 9. Documentation and operations
 
-`architecture/agent.md` now documents concrete ownership boundaries and the
+`architecture/agent.md` documents concrete ownership boundaries and the
 provider/tool/context module seams.
 
 ## 10. Unresolved findings
@@ -92,12 +94,12 @@ No critical, high, medium, or low finding remains in M003 scope.
 
 ## 11. Roadmap disposition
 
-M003 is closed. M006 is now dependency-ready because M001–M005 are closed;
-M007 remains blocked until the post-extraction M006 measurement and disposition
-are accepted.
+M003 is closed. M006 and M007 are now closed by the M009 corrective closure
+pass after final-tree measurement and hosted verification.
 
 ## 12. Registry updates
 
-- M003 is marked closed after the corrective physical extraction.
-- M006 is promoted to ready for its required post-extraction measurement pass.
-- M007 remains blocked on M006.
+- M003 remains marked closed after the corrective physical extraction.
+- M006 final-tree measurement and strict closure are recorded in `006-status.md`.
+- M007 final integration and hosted closure are recorded in `007-status.md`.
+- M009 records the combined corrective closure and audited future-plan status.

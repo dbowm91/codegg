@@ -1167,8 +1167,9 @@ Counts identical tool calls. If threshold exceeded (default 20, configurable):
 ### Bounded autonomy recovery
 
 The generic agent loop uses one turn-local `AutonomyState` for recovery
-transitions. Provider/network retries remain in `stream_with_retry` and are
-not charged against model recovery. The state machine admits at most one
+transitions. Provider/network retries remain in the concrete
+`ProviderTurnAdapter` implementation in `provider_turn.rs` and are not charged
+against model recovery. The state machine admits at most one
 adapter repair and one post-tool continuation, while `RecoveryController`
 tracks bounded fingerprints for repeated calls, equivalent results, denied
 tools, and short cycles. Observable progress resets the incident; otherwise

@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M007 — Integration, Verification, and Strict Closure
 
-Status: blocked
+Status: closed — exact-candidate closure accepted by M009
 
 Source roadmap:
 

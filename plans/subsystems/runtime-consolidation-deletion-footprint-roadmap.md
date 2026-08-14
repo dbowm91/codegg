@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `bd9b3b610af0fa72ce3fe5a8b8f59222659f006d`
 
@@ -233,7 +233,7 @@ Classify static guards as permanent invariants or temporary migration ratchets, 
 
 ### M006 — Measured dependency and binary-footprint cleanup
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/006-measured-dependency-binary-cleanup.md`
 
@@ -241,11 +241,24 @@ Measure release contributors and feature graph after code deletion, narrow only 
 
 ### M007 — Integration, verification, and strict closure
 
-Status: conditionally closed
+Status: closed
 
 Plan: `plans/implementation/runtime-consolidation-deletion-footprint/007-integration-verification-closure.md`
 
 Reconcile architecture docs, run one broad existing verification pass, capture final footprint evidence, confirm no capability regression, and write the closure record.
+
+### M009 — Final corrective compatibility, ownership, measurement, and closure
+
+Status: closed
+
+Plan: `plans/implementation/runtime-consolidation-deletion-footprint/009-final-corrective-runtime-consolidation-closure.md`
+
+Closure: `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`
+
+The accepted candidate restores the active TUI durable schedule flow, completes
+provider-turn physical ownership, closes final-tree M006 measurements, and
+accepts M007 on green local and hosted evidence. No unrelated future plan was
+newly unblocked by this roadmap closure.
 
 ## 8. Verification posture
 
