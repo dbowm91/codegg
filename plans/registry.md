@@ -37,7 +37,7 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Post-audit correctness, simplification, and footprint | closing | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closure review | Implementation landed; closure evidence is being accepted. C001/C002 remain historical closed evidence. |
+| Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 
 ## Dependency-ready implementation plans
 
@@ -46,10 +46,6 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Closure work and dependencies
-
-### Post-audit daemon lifecycle corrective pass
-
-C003 implementation landed in `0bb7d5b`; closure review is tracked by `plans/closure/post-audit-correctness-simplification/012-status.md`. No registered plan depends on C003, so the blocked-work disposition remains unchanged pending final closure acceptance.
 
 ### Runtime consolidation, deletion, and footprint
 
@@ -146,6 +142,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runtime, model adaptation, and ACP | M017 — corrective integration evidence and closure | closed | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
+| Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
 | Runtime safety, resource control, and footprint | C002 | conditionally closed | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
 | Provider connections and Eggpool | M007 | conditionally closed | `plans/closure/provider-connections/007-status.md` |
 | Programmatic tool execution and Tool Programs | M018 | provisional/conditional implementation evidence | `plans/closure/tool-programs/018-status.md`; strict review owned by M019 |

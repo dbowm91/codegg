@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint — Daemon Lifecycle Corrective Addendum
 
-Status: closing
+Status: closed
 
 Source roadmap:
 
@@ -161,4 +161,4 @@ C003 may return this workstream to `closed` only when:
 - focused tests and `scripts/verify.sh quick` pass;
 - closure evidence records exact implementation commits and any intentionally deferred low/medium findings.
 
-The implementation is landed and the subsystem is in `closing` status pending the accepted C003 closure record. The prior post-audit closure remains historical evidence and is not rewritten.
+C003 is closed by `plans/closure/post-audit-correctness-simplification/012-status.md`. The prior post-audit closure remains historical evidence and is not rewritten.

@@ -442,57 +442,57 @@ C003 is complete only when every required criterion below is met.
 
 ### Production startup
 
-- [ ] Plain `codegg` can start from a fresh runtime/data root without `--standalone` and reach the TUI startup/event-loop boundary.
-- [ ] `connect_or_start_daemon` never kills a successfully started daemon because its local child handle is dropped.
-- [ ] The started daemon survives independently of the initiating frontend.
-- [ ] The parent frontend does not accumulate an unreaped daemon child while it remains alive.
-- [ ] Concurrent first-client startup yields exactly one live daemon and all clients converge on it.
-- [ ] Failed/timed-out autostart does not leave an unintended helper-owned child behind.
+- [x] Plain `codegg` can start from a fresh runtime/data root without `--standalone` and reach the TUI startup/event-loop boundary.
+- [x] `connect_or_start_daemon` never kills a successfully started daemon because its local child handle is dropped.
+- [x] The started daemon survives independently of the initiating frontend.
+- [x] The parent frontend does not accumulate an unreaped daemon child while it remains alive.
+- [x] Concurrent first-client startup yields exactly one live daemon and all clients converge on it.
+- [x] Failed/timed-out autostart does not leave an unintended helper-owned child behind.
 
 ### Storage bootstrap
 
-- [ ] Production `run_daemon` uses a migrated user-scoped daemon catalog.
-- [ ] Fresh catalog startup succeeds.
-- [ ] Project-local legacy storage is not used as production daemon authority.
-- [ ] Existing legacy import/compatibility behavior is not deleted or silently redefined.
+- [x] Production `run_daemon` uses a migrated user-scoped daemon catalog.
+- [x] Fresh catalog startup succeeds.
+- [x] Project-local legacy storage is not used as production daemon authority.
+- [x] Existing legacy import/compatibility behavior is not deleted or silently redefined.
 
 ### Socket lifecycle
 
-- [ ] Connection readiness requires a successful CodeGG handshake.
-- [ ] Startup readiness/status proof is bounded by the configured startup deadline.
-- [ ] EOF/read failure releases every pending request waiter associated with the failed connection.
-- [ ] A non-responsive or non-CodeGG Unix listener cannot make startup hang indefinitely.
-- [ ] Reconnect either fully restores negotiated state/subscriptions or fails explicitly for a fresh higher-level reconnect; no partial silent reconnect remains.
+- [x] Connection readiness requires a successful CodeGG handshake.
+- [x] Startup readiness/status proof is bounded by the configured startup deadline.
+- [x] EOF/read failure releases every pending request waiter associated with the failed connection.
+- [x] A non-responsive or non-CodeGG Unix listener cannot make startup hang indefinitely.
+- [x] Reconnect either fully restores negotiated state/subscriptions or fails explicitly for a fresh higher-level reconnect; no partial silent reconnect remains.
 
 ### Endpoint correctness
 
-- [ ] CLI endpoint override is honored by the TUI/socket path.
-- [ ] `AttachDaemon --endpoint` reaches the requested endpoint.
-- [ ] `CODEGG_CORE_ENDPOINT` follows documented precedence.
-- [ ] Duplicate Linux default-socket fallback logic is removed or made impossible to diverge.
+- [x] CLI endpoint override is honored by the TUI/socket path.
+- [x] `AttachDaemon --endpoint` reaches the requested endpoint.
+- [x] `CODEGG_CORE_ENDPOINT` follows documented precedence.
+- [x] Duplicate Linux default-socket fallback logic is removed or made impossible to diverge.
 
 ### Shutdown
 
-- [ ] SIGINT and SIGTERM enter the same graceful daemon cancellation path on supported Unix.
-- [ ] `shutdown_timeout_ms` bounds graceful connection draining.
-- [ ] Socket, PID, and metadata cleanup occurs on graceful SIGTERM.
-- [ ] The lock is released and an immediate restart succeeds after `daemon stop`/SIGTERM.
-- [ ] No unverified PID is force-killed as a timeout fallback.
+- [x] SIGINT and SIGTERM enter the same graceful daemon cancellation path on supported Unix.
+- [x] `shutdown_timeout_ms` bounds graceful connection draining.
+- [x] Socket, PID, and metadata cleanup occurs on graceful SIGTERM.
+- [x] The lock is released and an immediate restart succeeds after `daemon stop`/SIGTERM.
+- [x] No unverified PID is force-killed as a timeout fallback.
 
 ### Diagnostics and child processes
 
-- [ ] Autostart daemon stdout/stderr are not discarded without an operator-readable path.
-- [ ] `daemon logs` defaults to that same user-scoped daemon log.
-- [ ] Local MCP stderr is continuously drained with bounded memory.
-- [ ] Noisy MCP stderr cannot deadlock initialization or tool requests.
+- [x] Autostart daemon stdout/stderr are not discarded without an operator-readable path.
+- [x] `daemon logs` defaults to that same user-scoped daemon log.
+- [x] Local MCP stderr is continuously drained with bounded memory.
+- [x] Noisy MCP stderr cannot deadlock initialization or tool requests.
 
 ### Verification/closure
 
-- [ ] Focused lifecycle/process tests pass.
-- [ ] `scripts/verify.sh quick` passes.
-- [ ] No new CI lane/matrix/release automation/service-manager dependency is added.
-- [ ] No critical/high unresolved C003 finding remains.
-- [ ] `plans/closure/post-audit-correctness-simplification/012-status.md` records exact implementation SHA(s), test evidence, and any lower-severity deferred findings.
+- [x] Focused lifecycle/process tests pass.
+- [x] `scripts/verify.sh quick` passes.
+- [x] No new CI lane/matrix/release automation/service-manager dependency is added.
+- [x] No critical/high unresolved C003 finding remains.
+- [x] `plans/closure/post-audit-correctness-simplification/012-status.md` records exact implementation SHA(s), test evidence, and any lower-severity deferred findings.
 
 ## 12. Stop conditions
 
