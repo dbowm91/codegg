@@ -37,13 +37,14 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-corrective-closure-addendum.md` | C002 closed | Corrective `/dev/null` Landlock path-rights defect closed with hosted run `31425564638`. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 ready | Ordinary production `codegg` startup has confirmed daemon autostart/bootstrap/lifecycle defects; C001/C002 remain historical closed evidence. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
+| Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | ready | `plans/implementation/post-audit-correctness-simplification/012-daemon-startup-shutdown-and-process-lifecycle-corrective-pass.md` | No hard dependency; current `main` contains a production startup blocker in daemon autostart plus confirmed bootstrap/socket/shutdown lifecycle defects. |
 
 ## Closure work and dependencies
 
@@ -71,6 +72,20 @@ M010 remains historical conditional evidence in `plans/closure/agent-runtime-cor
 - ordinary native tool execution still had `Result<String, ToolError>` available but rendered failures to strings before recovery, so known `Permission`/`Timeout` status was not yet preserved through the authoritative path.
 
 M011 was the sole controlling strict closure milestone for that workstream and is now strictly closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Its exact candidate `e3b671ad` passed hosted run `31525206176` / job `93891703941` through Workspace tests.
+
+### Post-audit daemon lifecycle corrective pass
+
+C001/C002 remain accepted historical closure evidence. C003 is a new corrective control point created from later production-entrypoint evidence and must not rewrite those records.
+
+C003 owns the smallest coherent production lifecycle correction:
+
+1. restore production daemon catalog bootstrap/migration instead of project-local legacy-store authority;
+2. make connect-or-start ownership/race semantics correct so an autostarted daemon survives its initiating frontend and concurrent clients converge on one lock winner;
+3. make local socket handshake/readiness, peer-death propagation, reconnect disposition, and endpoint overrides finite and coherent;
+4. make SIGTERM use graceful cancellation with bounded connection draining and owned runtime-artifact cleanup;
+5. make daemon startup logs observable and drain local-MCP stderr so piped child output cannot deadlock the child.
+
+C003 closure requires a real ordinary-startup smoke path, multi-process lifecycle regressions, focused transport/process tests, and `scripts/verify.sh quick`. It must not add a service manager, new CI topology, binary split, or scheduler/protocol redesign.
 
 ### Other active closure dependencies
 
