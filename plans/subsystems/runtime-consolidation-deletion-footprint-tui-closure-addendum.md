@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint — TUI Closure Addendum
 
-Status: active
+Status: closed
 
 Source roadmap: `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md`
 

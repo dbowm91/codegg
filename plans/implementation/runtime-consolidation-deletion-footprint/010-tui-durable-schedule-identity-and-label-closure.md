@@ -1,6 +1,6 @@
 # Runtime Consolidation, Deletion, and Footprint M010 — TUI Durable Schedule Identity and Label Closure
 
-Status: active
+Status: implemented
 
 Source roadmap: `plans/subsystems/runtime-consolidation-deletion-footprint-roadmap.md`
 
@@ -334,7 +334,7 @@ While M010 is open:
 
 - source roadmap history: closed by M009, preserved;
 - current corrective disposition: active through the TUI closure addendum;
-- M010: active implementation and closure review;
+- M010: implemented; closure accepted in `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`;
 - M001–M009: historical predecessor records, not reopened for implementation;
 - M006 footprint evidence: remains accepted and is not a dependency of this small pass;
 - unrelated Provider M007, Tool Programs M019, DVR M006, and runtime-safety work: unchanged.
