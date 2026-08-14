@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-corrective-closure-addendum.md` | M009 closed | `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`; exact candidate `c8c31d90`, hosted run `31724978736` / job `94530985774` green. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 ready | Post-M009 audit found that the TUI displays only an 8-character durable schedule token while delete requires the exact full ID, and `/tasks` no longer exposes the scheduled prompt. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -43,30 +43,26 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
+| Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | ready | `plans/implementation/runtime-consolidation-deletion-footprint/010-tui-durable-schedule-identity-and-label-closure.md` | M009 architectural work landed; current `main` still exposes only a shortened schedule ID while delete requires the exact durable ID. |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Closure work and dependencies
 
 ### Runtime consolidation, deletion, and footprint
 
-The August 13 post-implementation audit is closed by M009. The existing
-`plans/closure/runtime-consolidation-deletion-footprint/007-status.md` preserves
-the provisional historical evidence; strict closure is recorded in the updated
-M006/M007/M009 records.
+M009 remains the historical architectural closure record: it converged the TUI on the durable `Schedule*` API, completed provider-turn physical ownership, closed M006 final-tree measurements, and obtained exact-candidate hosted verification. A later audit found one narrower supported-TUI contract defect that M009's regression evidence did not exercise.
 
-Controlling execution order:
+Current controlling execution order:
 
-1. M001–M005 production work remains landed; do not reopen unrelated scope.
-2. M009 restored the active TUI schedule/list/delete flow through the durable
-   `Schedule*` API and finished provider-turn physical ownership extraction.
-3. M006 closed on the post-M009 production tree with final feature/dependency
-   and default/production-feature measurements.
-4. M007 closed after the existing broad verification contract and one ordinary
-   hosted `CI / verify` run on the exact final candidate.
+1. Preserve M001–M009 implementation and closure history; do not reopen scheduler architecture, provider ownership, prompt/recovery, or footprint work.
+2. M010 is the sole ready corrective handoff. It must make the short schedule token shown by `/tasks` and the schedule-created toast resolvable to exactly one full durable ID in the active workspace before deletion.
+3. M010 must restore a meaningful `/tasks` prompt/label through the existing durable `ScheduleGet` record path, without another persistence source or public prefix-delete API.
+4. M010 closure requires focused resolver/label tests plus one create -> list -> displayed-token -> delete -> list-absent regression through the durable client/daemon path.
+5. After accepted `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`, the TUI closure addendum may return to closed and M010 moves out of dependency-ready work.
 
-M009 also reconciles stale M003/008 commit/status metadata and must preserve the earlier incomplete M006/M007 evidence rather than rewriting history.
+M006 footprint measurements remain accepted and are not rerun for this TUI-only correction unless implementation unexpectedly changes dependencies, features, release profile, or topology.
 
-Verification remains minimal and change-specific. This roadmap explicitly forbids new CI lanes/matrices, scheduled audits, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
+Verification remains minimal and change-specific. Do not add CI lanes/matrices, scheduled audits, source scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
 
 ### Agent runtime correctness, autonomy, and simplification
 
@@ -126,7 +122,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Runtime consolidation, deletion, and footprint | M007 — integration evidence (historical provisional record) | archived/superseded | `plans/closure/runtime-consolidation-deletion-footprint/007-status.md`; earlier provisional evidence is retained by history and superseded by the strict record below. |
 | Runtime consolidation, deletion, and footprint | M006 — measured dependency and binary-footprint cleanup | closed | `plans/closure/runtime-consolidation-deletion-footprint/006-status.md`; final candidate `c8c31d90`, default 54,347,840 bytes, production features 63,566,624 bytes |
 | Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/007-status.md`; exact hosted run `31724978736` / job `94530985774` |
-| Runtime consolidation, deletion, and footprint | M009 — final corrective compatibility, ownership, measurement, and closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`; exact candidate `c8c31d90`, hosted run `31724978736` / job `94530985774` |
+| Runtime consolidation, deletion, and footprint | M009 — architectural corrective closure (historical) | closed; current TUI disposition superseded by M010 | `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`; later audit found the short-ID deletion and missing-label defects now owned by M010. |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
