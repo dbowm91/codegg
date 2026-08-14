@@ -38,6 +38,9 @@ impl DaemonPaths {
 
     /// Resolve the platform-default data root.
     pub fn default_data_root() -> PathBuf {
+        if let Some(root) = std::env::var_os("CODEGG_DATA_HOME") {
+            return PathBuf::from(root).join("codegg");
+        }
         dirs::data_dir()
             .map(|d| d.join("codegg"))
             .or_else(|| dirs::home_dir().map(|h| h.join(".local").join("share").join("codegg")))

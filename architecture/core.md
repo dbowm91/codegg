@@ -241,7 +241,11 @@ Production locations: macOS `$HOME/Library/Application Support/codegg`, Linux `$
 
 **`DaemonInstanceMetadata`** (`daemon.json`) carries: `daemon_id`, `generation` (UUID), `pid`, `socket_path`, `protocol_version`, `started_at`, `binary_version`. Written atomically (temp file + rename) after socket bind. The lock is authoritative; metadata is diagnostic.
 
-**`connect_or_start_daemon`** is the canonical frontend entry point (`src/core/instance.rs`). It tries connecting to the user-scoped endpoint; if absent and autostart is enabled, spawns a child daemon process (`codegg daemon start`) and polls for readiness with a bounded timeout. Returns a live `SocketCoreClient` on success.
+**`connect_or_start_daemon`** is the canonical frontend entry point (`src/core/instance.rs`). It tries a verified connection to the user-scoped endpoint; readiness requires a compatible ClientHello/ServerHello handshake and a bounded `SnapshotDaemon` identity probe. If unavailable and autostart is enabled, it spawns `codegg daemon start` in a detached Unix session, directs diagnostics to `daemon.log`, observes the child during startup, and reaps it after readiness without making the frontend its lifetime owner. Concurrent starters converge on whichever process owns the singleton lock, and failed startup reaps only the child it spawned.
+
+The ordinary TUI remains a daemon client by default. `startup_timeout_ms` bounds the complete connect/handshake/identity proof and `shutdown_timeout_ms` bounds only graceful Unix-socket connection draining after daemon shutdown begins. SIGINT and SIGTERM use the same cancellation path; graceful shutdown stops accepting clients, drains within the configured bound, removes the owned socket/PID/metadata artifacts, and releases the lock. `daemon stop` verifies the live wire daemon identity against metadata before signaling and waits boundedly for observable cleanup without force-killing an unverified PID.
+
+Endpoint selection is centralized in `DaemonPaths::resolve_for_endpoint`: an explicit CLI endpoint wins over `CODEGG_CORE_ENDPOINT`, otherwise the platform default is used. Custom sockets reuse the documented user-scoped lock, metadata, and log root. The production daemon opens and migrates the user-scoped catalog (`codegg.db`) before normal runtime initialization; project-local `.codegg/sessions.db` remains legacy/import storage only.
 
 **`CoreRuntimeMode`** enum:
 - `DaemonClient` (default) — connect-or-start against the singleton daemon

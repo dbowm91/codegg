@@ -53,6 +53,7 @@ pub struct LocalClient {
     stdin: Option<tokio::process::ChildStdin>,
     pending: PendingSenders,
     shutdown_notify: Arc<Notify>,
+    stderr_task: Option<tokio::task::JoinHandle<()>>,
     request_id: AtomicU64,
 }
 
@@ -72,6 +73,7 @@ impl LocalClient {
             stdin: None,
             pending: Arc::new(Mutex::new(HashMap::new())),
             shutdown_notify: Arc::new(Notify::new()),
+            stderr_task: None,
             request_id: AtomicU64::new(1),
         }
     }
@@ -131,9 +133,14 @@ impl LocalClient {
             .stdout
             .take()
             .ok_or_else(|| McpError::Connection("failed to take stdout".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| McpError::Connection("failed to take stderr".into()))?;
 
         self.child = Some(child);
         self.stdin = Some(stdin);
+        self.stderr_task = Some(tokio::spawn(Self::drain_stderr(stderr)));
 
         let pending = Arc::clone(&self.pending);
         let shutdown = Arc::clone(&self.shutdown_notify);
@@ -372,6 +379,9 @@ impl LocalClient {
             let _ = child.kill().await;
             let _ = child.wait().await;
         }
+        if let Some(task) = self.stderr_task.take() {
+            let _ = task.await;
+        }
         self.child = None;
         self.stdin = None;
         Ok(())
@@ -524,6 +534,17 @@ impl LocalClient {
             )));
         }
     }
+
+    async fn drain_stderr(stderr: tokio::process::ChildStderr) {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match tokio::io::AsyncReadExt::read(&mut reader, &mut buffer).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
 }
 
 impl Drop for LocalClient {
@@ -531,5 +552,33 @@ impl Drop for LocalClient {
         if let Some(ref mut child) = self.child {
             let _ = child.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn noisy_stderr_does_not_block_initialize() {
+        let script = r#"
+            head -c 131072 /dev/zero >&2
+            while IFS= read -r line; do
+                case "$line" in
+                    *initialize*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{}}' ;;
+                esac
+            done
+        "#;
+        let mut client = LocalClient::new(
+            "sh",
+            vec!["-c".to_string(), script.to_string()],
+            HashMap::new(),
+            2_000,
+        );
+        client
+            .initialize()
+            .await
+            .expect("noisy MCP stderr must not deadlock initialization");
+        client.shutdown().await.expect("shutdown noisy MCP fixture");
     }
 }

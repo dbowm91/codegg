@@ -119,6 +119,19 @@ pub async fn init_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, Stor
     init_pool_at(&db_path).await
 }
 
+/// Initialize the user-scoped daemon catalog after applying all migrations.
+///
+/// Migration deliberately uses a single-connection pool because the schema
+/// migrator runs its statements inside an explicit transaction. The migrated
+/// pool is closed before the normal runtime pool is opened so daemon startup
+/// has one obvious, reusable bootstrap contract.
+pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError> {
+    let migration_pool = init_pool_at_for_migration(&paths.catalog_db_path()).await?;
+    crate::session::schema::migrate(&migration_pool).await?;
+    migration_pool.close().await;
+    init_daemon_catalog(paths).await
+}
+
 /// Initialize a legacy project-local SQLite database at
 /// `<project_root>/.codegg/sessions.db`. Retained for backward compat
 /// and for the migration tooling that imports legacy project databases

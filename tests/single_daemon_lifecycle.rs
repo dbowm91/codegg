@@ -17,7 +17,10 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use codegg::core::instance::{read_metadata_for_paths, DaemonInstanceGuard, DaemonPaths};
+use codegg::core::instance::{
+    connect_or_start_daemon, read_metadata_for_paths, ConnectOrStartOptions, DaemonInstanceGuard,
+    DaemonPaths,
+};
 use tokio::process::Command;
 use tokio::time::sleep;
 
@@ -71,6 +74,191 @@ async fn wait_for_daemon_ready(paths: &DaemonPaths, timeout: Duration) -> bool {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn connect_or_start_keeps_autostarted_daemon_alive_after_return() {
+    let root = temp_root("autostart");
+    let data_root = root.join("data");
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+
+    let old_runtime = std::env::var_os("CODEGG_DAEMON_HOME");
+    let old_data = std::env::var_os("CODEGG_DATA_HOME");
+    std::env::set_var("CODEGG_DAEMON_HOME", &root);
+    std::env::set_var("CODEGG_DATA_HOME", &data_root);
+    let result = connect_or_start_daemon(ConnectOrStartOptions {
+        paths: DaemonPaths::with_root(root.clone()),
+        autostart: true,
+        startup_timeout: Duration::from_secs(10),
+        poll_interval: Duration::from_millis(50),
+        executable: Some(bin.clone()),
+    })
+    .await
+    .expect("connect-or-start should autostart a daemon");
+    assert!(result.started_pid.is_some());
+    drop(result.client);
+
+    let second = codegg::core::transport::SocketCoreClient::connect(
+        &DaemonPaths::with_root(root.clone()).endpoint_uri(),
+    )
+    .await
+    .expect("autostarted daemon must survive helper return");
+    assert!(!second
+        .daemon_id()
+        .await
+        .expect("live daemon identity")
+        .is_empty());
+
+    let stop = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("stop autostarted daemon");
+    assert!(
+        stop.status.success(),
+        "autostarted daemon stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+
+    match old_runtime {
+        Some(value) => std::env::set_var("CODEGG_DAEMON_HOME", value),
+        None => std::env::remove_var("CODEGG_DAEMON_HOME"),
+    }
+    match old_data {
+        Some(value) => std::env::set_var("CODEGG_DATA_HOME", value),
+        None => std::env::remove_var("CODEGG_DATA_HOME"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_connect_or_start_calls_converge_on_one_daemon() {
+    let root = temp_root("autostart-race");
+    let data_root = root.join("data");
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+
+    let old_runtime = std::env::var_os("CODEGG_DAEMON_HOME");
+    let old_data = std::env::var_os("CODEGG_DATA_HOME");
+    std::env::set_var("CODEGG_DAEMON_HOME", &root);
+    std::env::set_var("CODEGG_DATA_HOME", &data_root);
+    let options = || ConnectOrStartOptions {
+        paths: DaemonPaths::with_root(root.clone()),
+        autostart: true,
+        startup_timeout: Duration::from_secs(10),
+        poll_interval: Duration::from_millis(50),
+        executable: Some(bin.clone()),
+    };
+    let (left, right) = tokio::join!(
+        connect_or_start_daemon(options()),
+        connect_or_start_daemon(options())
+    );
+    assert!(
+        left.is_ok(),
+        "left starter failed: {:?}",
+        left.as_ref().err()
+    );
+    assert!(
+        right.is_ok(),
+        "right starter failed: {:?}",
+        right.as_ref().err()
+    );
+    let left = left.expect("left connection");
+    let right = right.expect("right connection");
+    assert_eq!(left.daemon_id, right.daemon_id);
+    drop(left.client);
+    drop(right.client);
+
+    let stop = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("stop raced daemon");
+    assert!(stop.status.success(), "race daemon stop failed");
+
+    match old_runtime {
+        Some(value) => std::env::set_var("CODEGG_DAEMON_HOME", value),
+        None => std::env::remove_var("CODEGG_DAEMON_HOME"),
+    }
+    match old_data {
+        Some(value) => std::env::set_var("CODEGG_DATA_HOME", value),
+        None => std::env::remove_var("CODEGG_DATA_HOME"),
+    }
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn plain_entrypoint_reaches_tui_startup_boundary_without_prestarted_daemon() {
+    let root = temp_root("plain-startup");
+    let data_root = root.join("data");
+    let bin = codegg_binary();
+    if !bin.exists() {
+        eprintln!(
+            "skipping: codegg binary not found at {}; set CODEGG_TEST_BIN to run",
+            bin.display()
+        );
+        return;
+    }
+
+    let output = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .env("CODEGG_TUI_STARTUP_PROBE", "1")
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["--no-session"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("plain codegg startup probe");
+    assert!(
+        output.status.success(),
+        "plain startup probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("event-loop boundary"));
+    assert!(
+        DaemonPaths::with_root(root.clone()).log_path.exists(),
+        "plain startup should leave diagnostics at the canonical daemon log path"
+    );
+
+    let stop = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", &data_root)
+        .args(["daemon", "stop"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .expect("stop plain-startup daemon");
+    assert!(stop.status.success(), "plain-startup daemon stop failed");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn second_daemon_start_against_live_daemon_does_not_steal_lock() {
     let root = temp_root("second");
     let paths = DaemonPaths::with_root(root.clone());
@@ -87,6 +275,7 @@ async fn second_daemon_start_against_live_daemon_does_not_steal_lock() {
     // Start daemon A.
     let mut a = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -111,6 +300,7 @@ async fn second_daemon_start_against_live_daemon_does_not_steal_lock() {
     // Start daemon B against the same lock/endpoint.
     let b_out = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -154,6 +344,7 @@ async fn stale_socket_after_ungraceful_exit_is_recoverable() {
     // Start daemon X.
     let mut x = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -196,6 +387,7 @@ async fn stale_socket_after_ungraceful_exit_is_recoverable() {
     // (it sees the stale socket, fails to connect, and removes it).
     let mut y = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -238,6 +430,7 @@ async fn status_reports_daemon_identity_with_metadata() {
 
     let mut d = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -254,6 +447,7 @@ async fn status_reports_daemon_identity_with_metadata() {
 
     let status_out = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "status"])
         .stdin(Stdio::null())
@@ -289,6 +483,7 @@ async fn stop_requires_matching_live_daemon_identity() {
 
     let mut daemon = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -313,6 +508,7 @@ async fn stop_requires_matching_live_daemon_identity() {
 
     let stop_out = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "stop"])
         .stdin(Stdio::null())
@@ -366,6 +562,7 @@ async fn stop_signals_the_current_daemon_after_identity_match() {
 
     let mut daemon = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "start"])
         .stdin(Stdio::null())
@@ -381,6 +578,7 @@ async fn stop_signals_the_current_daemon_after_identity_match() {
 
     let stop_out = Command::new(&bin)
         .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
         .env_remove("CODEGG_CORE_ENDPOINT")
         .args(["daemon", "stop"])
         .stdin(Stdio::null())
@@ -396,14 +594,46 @@ async fn stop_signals_the_current_daemon_after_identity_match() {
         String::from_utf8_lossy(&stop_out.stderr)
     );
     assert!(String::from_utf8_lossy(&stop_out.stdout).contains("Sent SIGTERM"));
+    assert!(
+        !paths.socket_path.exists(),
+        "SIGTERM left the socket behind"
+    );
+    assert!(
+        !paths.metadata_path.exists(),
+        "SIGTERM left daemon metadata behind"
+    );
+    assert!(
+        !paths.socket_path.with_extension("pid").exists(),
+        "SIGTERM left the legacy PID file behind"
+    );
 
     let exit = tokio::time::timeout(Duration::from_secs(10), daemon.wait())
         .await
         .expect("daemon did not exit after SIGTERM")
         .expect("wait for daemon");
     assert!(
-        !exit.success(),
-        "SIGTERM should terminate the daemon process"
+        exit.success(),
+        "SIGTERM should enter the graceful daemon shutdown path"
     );
+
+    // The singleton lock must be released as part of the same graceful
+    // lifecycle; a fresh daemon can start without manual stale-state cleanup.
+    let mut restarted = Command::new(&bin)
+        .env("CODEGG_DAEMON_HOME", &root)
+        .env("CODEGG_DATA_HOME", root.join("data"))
+        .env_remove("CODEGG_CORE_ENDPOINT")
+        .args(["daemon", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("restart daemon after graceful stop");
+    assert!(
+        wait_for_daemon_ready(&paths, Duration::from_secs(10)).await,
+        "daemon could not restart after graceful stop"
+    );
+    let _ = restarted.kill().await;
+    let _ = restarted.wait().await;
     std::fs::remove_dir_all(&root).ok();
 }

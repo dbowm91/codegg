@@ -28,6 +28,7 @@ The TUI no longer talks directly to session storage for most migrated flows. Ins
 
 Local transport selection is handled by `CoreRuntimeMode` (default `DaemonClient`):
 - `DaemonClient` (default) — connects to or auto-starts the user-scoped singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`). Uses `SocketCoreClient`.
+- Plain startup reaches the TUI through that verified daemon-client path without requiring a manually prestarted daemon. An autostarted daemon remains independent of the initiating frontend; startup and graceful-shutdown bounds are controlled by the daemon configuration.
 - `StandaloneInproc` — keeps the core in the same process via `InprocCoreClient`. Requires `--standalone`.
 - `StandaloneStdio` — spawns `codegg core-stdio` via `StdioCoreClient`. Requires `--stdio`.
 

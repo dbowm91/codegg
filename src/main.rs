@@ -378,32 +378,8 @@ enum DaemonCommand {
     },
 }
 
-fn default_socket_path() -> String {
-    #[cfg(target_os = "macos")]
-    {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{}/Library/Application Support/codegg/core.sock", home)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{}/codegg/core.sock", runtime_dir)
-    }
-    #[cfg(not(target_os = "macos"))]
-    #[cfg(not(target_os = "linux"))]
-    {
-        "/tmp/codegg-core.sock".to_string()
-    }
-}
-
-fn default_log_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("codegg_debug.log")
-}
-
 fn resolve_endpoint(endpoint: Option<String>) -> String {
-    endpoint
-        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok())
-        .unwrap_or_else(default_socket_path)
+    codegg::core::instance::DaemonPaths::resolve_for_endpoint(endpoint.as_deref()).endpoint_uri()
 }
 
 impl OutputFormat {
@@ -578,16 +554,7 @@ async fn main() -> Result<(), AppError> {
                 }
                 DaemonCommand::Stop { endpoint } => {
                     use codegg::core::instance::DaemonPaths;
-                    let override_ep = endpoint
-                        .clone()
-                        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
-                    let paths = if let Some(ep) = override_ep {
-                        DaemonPaths::resolve().with_socket(std::path::PathBuf::from(
-                            ep.strip_prefix("unix://").unwrap_or(&ep),
-                        ))
-                    } else {
-                        DaemonPaths::resolve()
-                    };
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
                     let metadata = match codegg::core::instance::read_metadata_for_paths(&paths) {
                         Some(metadata) => metadata,
                         None => {
@@ -639,19 +606,33 @@ async fn main() -> Result<(), AppError> {
                         "Sent SIGTERM to daemon (PID {}, generation {})",
                         pid, metadata.generation
                     );
+                    let shutdown_timeout = std::time::Duration::from_millis(
+                        Config::load()
+                            .ok()
+                            .and_then(|config| config.daemon)
+                            .and_then(|daemon| daemon.shutdown_timeout_ms)
+                            .unwrap_or(10_000),
+                    );
+                    let pid_file = paths.socket_path.with_extension("pid");
+                    let wait_result = tokio::time::timeout(shutdown_timeout, async {
+                        while paths.socket_path.exists()
+                            || paths.metadata_path.exists()
+                            || pid_file.exists()
+                        {
+                            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                        }
+                    })
+                    .await;
+                    if wait_result.is_err() {
+                        eprintln!(
+                            "Daemon did not finish graceful shutdown within {:?}; no force-kill was sent",
+                            shutdown_timeout
+                        );
+                    }
                 }
                 DaemonCommand::Status { endpoint } => {
                     use codegg::core::instance::DaemonPaths;
-                    let override_ep = endpoint
-                        .clone()
-                        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
-                    let paths = if let Some(ep) = override_ep {
-                        DaemonPaths::resolve().with_socket(std::path::PathBuf::from(
-                            ep.strip_prefix("unix://").unwrap_or(&ep),
-                        ))
-                    } else {
-                        DaemonPaths::resolve()
-                    };
+                    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
                     let pid_file = paths.socket_path.with_extension("pid");
                     let md = codegg::core::instance::read_metadata_for_paths(&paths);
                     match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
@@ -719,10 +700,10 @@ async fn main() -> Result<(), AppError> {
                     }
                 }
                 DaemonCommand::Logs { file, lines } => {
-                    let log_path = file
-                        .clone()
-                        .map(std::path::PathBuf::from)
-                        .unwrap_or_else(default_log_path);
+                    let log_path = file.clone().map(std::path::PathBuf::from).map_or_else(
+                        || codegg::core::instance::DaemonPaths::resolve().log_path,
+                        std::path::PathBuf::from,
+                    );
                     match tokio::fs::read_to_string(&log_path).await {
                         Ok(content) => {
                             let all_lines: Vec<&str> = content.lines().collect();
@@ -1718,7 +1699,8 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     } else if is_socket_mode {
         // DaemonClient mode. Try to connect to an existing daemon; if
         // `auto_start` is enabled (default true), spawn one and wait.
-        let paths = codegg::core::instance::DaemonPaths::resolve();
+        let paths =
+            codegg::core::instance::DaemonPaths::resolve_for_endpoint(cli.core_endpoint.as_deref());
         let auto_start = config
             .daemon
             .as_ref()
@@ -1736,6 +1718,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             autostart: auto_start,
             startup_timeout,
             poll_interval: std::time::Duration::from_millis(100),
+            executable: None,
         })
         .await;
         match outcome {
@@ -1797,6 +1780,15 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         {
             app.agent_state.current_agent = idx;
         }
+    }
+
+    // Deterministic integration seam: exercise ordinary daemon-client and
+    // TUI initialization without entering the terminal event loop. This is
+    // intentionally opt-in and test-only; normal invocations continue into
+    // the real event loop below.
+    if std::env::var_os("CODEGG_TUI_STARTUP_PROBE").is_some() {
+        println!("TUI startup probe reached event-loop boundary");
+        return Ok(());
     }
 
     if let Some(model) = &cli.model {
@@ -2088,18 +2080,7 @@ async fn run_daemon(endpoint: Option<String>) {
     // Resolve paths. Honor explicit --endpoint or CODEGG_CORE_ENDPOINT only
     // when an alternate endpoint is genuinely requested; the default
     // resolves to the user-scoped singleton location.
-    let override_endpoint = endpoint
-        .clone()
-        .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
-    let paths = if let Some(ep) = override_endpoint {
-        let p = std::path::PathBuf::from(ep.strip_prefix("unix://").unwrap_or(&ep));
-        // Custom endpoint — reuse CODEGG_DAEMON_HOME if set, otherwise
-        // fall through to default. This keeps lock paths consistent with
-        // the chosen socket in the common case.
-        DaemonPaths::resolve().with_socket(p)
-    } else {
-        DaemonPaths::resolve()
-    };
+    let paths = DaemonPaths::resolve_for_endpoint(endpoint.as_deref());
 
     // Step 1: acquire the singleton lock first, BEFORE binding the socket.
     paths.ensure_root().unwrap_or_else(|e| {
@@ -2154,7 +2135,8 @@ async fn run_daemon(endpoint: Option<String>) {
     }
 
     // Step 3: build the runtime stack.
-    let pool = match storage::init_legacy_project_store(Path::new(&project_dir)).await {
+    let catalog_paths = storage::DaemonPaths::default();
+    let pool = match storage::init_migrated_daemon_catalog(&catalog_paths).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to initialize storage: {}", e);
@@ -2246,18 +2228,42 @@ async fn run_daemon(endpoint: Option<String>) {
     let shutdown = CancellationToken::new();
     let shutdown_signal = shutdown.clone();
     tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let Ok(mut sigint) = signal(SignalKind::interrupt()) else {
+                return;
+            };
+            let Ok(mut sigterm) = signal(SignalKind::terminate()) else {
+                return;
+            };
+            tokio::select! {
+                _ = sigint.recv() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
         let _ = tokio::signal::ctrl_c().await;
         tracing::info!("Received SIGINT/SIGTERM; shutting down daemon");
         shutdown_signal.cancel();
     });
 
-    let serve_result = codegg::core::transport::daemon_socket::run_core_socket_with_listener(
-        Arc::clone(&daemon),
-        listener,
-        &paths.socket_path,
-        shutdown.clone(),
-    )
-    .await;
+    let shutdown_timeout = std::time::Duration::from_millis(
+        config
+            .daemon
+            .as_ref()
+            .and_then(|daemon| daemon.shutdown_timeout_ms)
+            .unwrap_or(10_000),
+    );
+    let serve_result =
+        codegg::core::transport::daemon_socket::run_core_socket_with_listener_with_timeout(
+            Arc::clone(&daemon),
+            listener,
+            &paths.socket_path,
+            shutdown.clone(),
+            shutdown_timeout,
+        )
+        .await;
 
     // Cleanup: drop socket, pid, metadata. Guard's Drop removes metadata;
     // we explicitly remove the socket and pid file here.
@@ -2279,11 +2285,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
         .map(std::path::PathBuf::from)
         .map(|data_root| storage::DaemonPaths::with_overrides(Some(data_root), None))
         .unwrap_or_default();
-    let migration_pool =
-        storage::init_pool_at_for_migration(&catalog_paths.catalog_db_path()).await?;
-    codegg::session::schema::migrate(&migration_pool).await?;
-    migration_pool.close().await;
-    let pool = storage::init_daemon_catalog(&catalog_paths).await?;
+    let pool = storage::init_migrated_daemon_catalog(&catalog_paths).await?;
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
     let mut config = Config::load().unwrap_or_default();

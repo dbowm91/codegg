@@ -45,6 +45,7 @@ impl Database {
 
 ```rust
 pub async fn init_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError>
+pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError>
 pub async fn init_legacy_project_store(project_root: &Path) -> Result<SqlitePool, StorageError>
 pub async fn init_pool_at(db_path: &Path) -> Result<SqlitePool, StorageError>
 
@@ -54,17 +55,20 @@ pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError>
 
 Note: `init_daemon_catalog`, `init_legacy_project_store`, and
 `init_pool_at` all call `connect_and_configure()` directly and return a
-bare `SqlitePool` (not a `Database` struct). The `Database` struct is a
-separate wrapper used when you need `health_check()` or `migrate()`
-methods. `init` is retained as a deprecated wrapper that routes to one
-of the new entry points based on whether `project_dir` is empty or a
-real directory; new code MUST NOT use it.
+bare `SqlitePool` (not a `Database` struct). Production daemon startup uses
+`init_migrated_daemon_catalog`, which runs current schema migrations on a
+single-connection bootstrap pool, closes it, and then opens the normal
+catalog pool. The `Database` struct is a separate wrapper used when you need
+`health_check()` or `migrate()` methods. `init` is retained as a deprecated
+wrapper that routes to one of the new entry points based on whether
+`project_dir` is empty or a real directory; new code MUST NOT use it.
 
 **Path Resolution (Phase 3 split)**:
 
 | Entry point | Database path |
 |-------------|---------------|
 | `init_daemon_catalog(paths)` | `paths.catalog_db_path()` — `~/Library/Application Support/codegg/codegg.db` on macOS, `$XDG_DATA_HOME/codegg/codegg.db` on Linux. |
+| `init_migrated_daemon_catalog(paths)` | Same user-scoped catalog path, after applying all current migrations; production daemon bootstrap authority. |
 | `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
 | `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
 

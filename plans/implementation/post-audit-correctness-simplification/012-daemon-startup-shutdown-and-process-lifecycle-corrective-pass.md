@@ -1,6 +1,6 @@
 # Post-Audit Correctness, Simplification, and Footprint C003 — Daemon Startup, Shutdown, and Process-Lifecycle Corrective Pass
 
-Status: ready
+Status: active
 
 Source subsystem roadmap and corrective control surface:
 

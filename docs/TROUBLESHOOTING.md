@@ -10,6 +10,8 @@ Common issues and solutions for codegg.
 
 **This is expected behavior.** Codegg runs exactly one user-scoped daemon per OS user (singleton invariant). The second invocation connects to the running daemon via `connect_or_start_daemon`.
 
+The ordinary `codegg` frontend is not the daemon's lifetime owner. If it autostarts the daemon, the daemon is detached from the initiating Unix terminal/process group and remains available to later clients. Startup requires a bounded handshake and live identity probe; diagnostics are written to the user-scoped `daemon.log` shown by `codegg daemon logs`.
+
 **Solutions:**
 1. Use `codegg daemon status` to see the active daemon's identity, PID, generation, and uptime.
 2. Use `codegg daemon stop` to stop the running daemon if needed.
@@ -33,6 +35,15 @@ Common issues and solutions for codegg.
 2. Check `CODEGG_DAEMON_HOME` if you have overridden the daemon path.
 3. Verify the lock file is not held by a dead process: `ls -la <daemon-home>/daemon.lock`.
 4. Try `codegg daemon start` to start a fresh daemon.
+5. If startup times out, run `codegg daemon logs` and inspect the reported user-scoped log path. A non-responsive or incompatible socket is not treated as a ready daemon.
+
+### Endpoint overrides
+
+Use `--endpoint /path/to/core.sock` with daemon commands or `codegg attach --endpoint /path/to/core.sock`. The explicit CLI endpoint takes precedence over `CODEGG_CORE_ENDPOINT`; without either, CodeGG uses the platform default under the user-scoped daemon home. All forms use the same lock and metadata root.
+
+### Graceful daemon stop
+
+`codegg daemon stop` verifies the live daemon identity before sending SIGTERM. On supported Unix systems SIGTERM and SIGINT follow the same graceful shutdown path. The configured `shutdown_timeout_ms` limits only socket-client draining; after cleanup, the socket, PID file, metadata, and singleton lock are released so a subsequent daemon can start immediately. A timeout is reported without force-killing an unverified PID.
 
 ### Server mode refuses to start
 

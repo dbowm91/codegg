@@ -37,14 +37,14 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 ready | Ordinary production `codegg` startup has confirmed daemon autostart/bootstrap/lifecycle defects; C001/C002 remain historical closed evidence. |
+| Post-audit correctness, simplification, and footprint | active | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 active | C003 implementation is in progress; C001/C002 remain historical closed evidence. |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
-| Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | ready | `plans/implementation/post-audit-correctness-simplification/012-daemon-startup-shutdown-and-process-lifecycle-corrective-pass.md` | No hard dependency; current `main` contains a production startup blocker in daemon autostart plus confirmed bootstrap/socket/shutdown lifecycle defects. |
+| Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | active | `plans/implementation/post-audit-correctness-simplification/012-daemon-startup-shutdown-and-process-lifecycle-corrective-pass.md` | No hard dependency; implementation and focused verification are in progress. |
 
 ## Closure work and dependencies
 

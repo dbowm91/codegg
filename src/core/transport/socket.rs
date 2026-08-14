@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -15,7 +16,7 @@ pub struct SocketCoreClient {
     #[allow(dead_code)]
     endpoint: String,
     write_stream: Arc<Mutex<Option<tokio::net::unix::OwnedWriteHalf>>>,
-    pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>>,
+    pending: Arc<DashMap<String, oneshot::Sender<Result<CoreResponse, AppError>>>>,
     event_bus: broadcast::Sender<EventEnvelope<CoreEvent>>,
     /// Client id negotiated by the daemon via `ServerHello`. Populated by the
     /// reader task once the handshake completes; readers should not assume it
@@ -24,6 +25,7 @@ pub struct SocketCoreClient {
     /// Daemon identity negotiated by the server's `ServerHello`.
     server_daemon_id: Arc<Mutex<Option<String>>>,
     server_hello_notify: Arc<Notify>,
+    connection_closed: Arc<AtomicBool>,
 }
 
 impl SocketCoreClient {
@@ -41,7 +43,7 @@ impl SocketCoreClient {
         let reader = BufReader::new(read_half);
 
         let (event_bus, _) = broadcast::channel(256);
-        let pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>> = Arc::new(DashMap::new());
+        let pending = Arc::new(DashMap::new());
 
         let client = Self {
             endpoint: endpoint.to_string(),
@@ -51,43 +53,13 @@ impl SocketCoreClient {
             client_id: Arc::new(Mutex::new(None)),
             server_daemon_id: Arc::new(Mutex::new(None)),
             server_hello_notify: Arc::new(Notify::new()),
+            connection_closed: Arc::new(AtomicBool::new(false)),
         };
 
         client.spawn_reader(reader, pending, event_bus);
 
-        {
-            let hello = CoreFrame::ClientHello(ClientHello {
-                client_name: "codegg-tui".to_string(),
-                client_kind: ClientKind::Tui,
-                protocol_version: crate::protocol::core::PROTOCOL_VERSION,
-                capabilities: ClientCapabilities {
-                    visual_notifications: true,
-                    desktop_notifications: true,
-                    audio: true,
-                    tts: true,
-                    multi_session_view: false,
-                    plugin_ui_dialog: false,
-                    plugin_ui_toast: false,
-                    plugin_ui_panel: false,
-                    plugin_ui_status_item: false,
-                    plugin_ui_table: false,
-                    plugin_ui_markdown: false,
-                    plugin_ui_code: false,
-                    plugin_ui_progress: false,
-                    workspace_registration: true,
-                    project_catalog: true,
-                    session_projection: true,
-                },
-            });
-            if let Ok(json) = serde_json::to_string(&hello) {
-                let mut guard = client.write_stream.lock().await;
-                if let Some(stream) = guard.as_mut() {
-                    let _ = stream.write_all(json.as_bytes()).await;
-                    let _ = stream.write_all(b"\n").await;
-                    let _ = stream.flush().await;
-                }
-            }
-        }
+        client.send_client_hello().await?;
+        client.daemon_id().await?;
 
         Ok(client)
     }
@@ -103,11 +75,42 @@ impl SocketCoreClient {
 
         let (read_half, write_half) = stream.into_split();
         *self.write_stream.lock().await = Some(write_half);
-
+        self.connection_closed.store(false, Ordering::Release);
+        *self.client_id.lock().await = None;
+        *self.server_daemon_id.lock().await = None;
         let reader = BufReader::new(read_half);
         self.spawn_reader(reader, Arc::clone(&self.pending), self.event_bus.clone());
+        self.send_client_hello().await?;
+        self.daemon_id().await?;
 
         Ok(())
+    }
+
+    async fn send_client_hello(&self) -> Result<(), AppError> {
+        let hello = CoreFrame::ClientHello(ClientHello {
+            client_name: "codegg-tui".to_string(),
+            client_kind: ClientKind::Tui,
+            protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+            capabilities: ClientCapabilities {
+                visual_notifications: true,
+                desktop_notifications: true,
+                audio: true,
+                tts: true,
+                multi_session_view: false,
+                plugin_ui_dialog: false,
+                plugin_ui_toast: false,
+                plugin_ui_panel: false,
+                plugin_ui_status_item: false,
+                plugin_ui_table: false,
+                plugin_ui_markdown: false,
+                plugin_ui_code: false,
+                plugin_ui_progress: false,
+                workspace_registration: true,
+                project_catalog: true,
+                session_projection: true,
+            },
+        });
+        self.send_frame(&hello).await
     }
 
     /// Return the negotiated `client_id` once the `ServerHello` has been
@@ -167,7 +170,7 @@ impl SocketCoreClient {
     fn spawn_reader(
         &self,
         mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-        pending: Arc<DashMap<String, oneshot::Sender<CoreResponse>>>,
+        pending: Arc<DashMap<String, oneshot::Sender<Result<CoreResponse, AppError>>>>,
         event_bus: broadcast::Sender<EventEnvelope<CoreEvent>>,
     ) {
         // Capture handles we need back in the parent so the reader can record
@@ -177,6 +180,7 @@ impl SocketCoreClient {
         let server_daemon_id_slot = Arc::clone(&self.server_daemon_id);
         let server_hello_notify = Arc::clone(&self.server_hello_notify);
         let write_stream = Arc::clone(&self.write_stream);
+        let connection_closed = Arc::clone(&self.connection_closed);
 
         tokio::spawn(async move {
             let mut line = String::new();
@@ -196,7 +200,7 @@ impl SocketCoreClient {
                                     response,
                                 } => {
                                     if let Some((_, tx)) = pending.remove(&request_id) {
-                                        let _ = tx.send(*response);
+                                        let _ = tx.send(Ok(*response));
                                     }
                                 }
                                 CoreFrame::Event(envelope) => {
@@ -204,6 +208,16 @@ impl SocketCoreClient {
                                 }
                                 CoreFrame::Pong => {}
                                 CoreFrame::ServerHello(hello) => {
+                                    if hello.protocol_version
+                                        != crate::protocol::core::PROTOCOL_VERSION
+                                    {
+                                        tracing::warn!(
+                                            "incompatible daemon protocol version {} (expected {})",
+                                            hello.protocol_version,
+                                            crate::protocol::core::PROTOCOL_VERSION
+                                        );
+                                        break;
+                                    }
                                     tracing::info!(
                                         "Server connected: {} (protocol v{}, client_id={})",
                                         hello.daemon_id,
@@ -254,6 +268,17 @@ impl SocketCoreClient {
                     }
                 }
             }
+            connection_closed.store(true, Ordering::Release);
+            *write_stream.lock().await = None;
+            for entry in pending.iter() {
+                let request_id = entry.key().clone();
+                if let Some((_, tx)) = pending.remove(&request_id) {
+                    let _ = tx.send(Err(AppError::Other(anyhow::anyhow!(
+                        "socket core connection closed"
+                    ))));
+                }
+            }
+            server_hello_notify.notify_waiters();
         });
     }
 
@@ -262,6 +287,11 @@ impl SocketCoreClient {
         loop {
             if let Some(daemon_id) = self.server_daemon_id.lock().await.clone() {
                 return Ok(daemon_id);
+            }
+            if self.connection_closed.load(Ordering::Acquire) {
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "socket core connection closed before ServerHello"
+                )));
             }
 
             let notified = self.server_hello_notify.notified();
@@ -292,58 +322,39 @@ impl CoreClient for SocketCoreClient {
 
         {
             let mut guard = self.write_stream.lock().await;
-            let stream = guard.as_mut().ok_or_else(|| {
-                AppError::Other(anyhow::anyhow!("socket core stream unavailable"))
-            })?;
+            let Some(stream) = guard.as_mut() else {
+                self.pending.remove(&request_id);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "socket core stream unavailable"
+                )));
+            };
             if let Err(e) = stream.write_all(payload.as_bytes()).await {
-                drop(guard);
-                if self.reconnect().await.is_ok() {
-                    let mut guard = self.write_stream.lock().await;
-                    let stream = guard.as_mut().ok_or_else(|| {
-                        AppError::Other(anyhow::anyhow!(
-                            "socket core stream unavailable after reconnect"
-                        ))
-                    })?;
-                    stream.write_all(payload.as_bytes()).await.map_err(|e| {
-                        AppError::Other(anyhow::anyhow!(
-                            "socket write failed after reconnect: {}",
-                            e
-                        ))
-                    })?;
-                    stream.write_all(b"\n").await.map_err(|e| {
-                        AppError::Other(anyhow::anyhow!(
-                            "socket write failed after reconnect: {}",
-                            e
-                        ))
-                    })?;
-                    stream.flush().await.map_err(|e| {
-                        AppError::Other(anyhow::anyhow!(
-                            "socket flush failed after reconnect: {}",
-                            e
-                        ))
-                    })?;
-                } else {
-                    return Err(AppError::Other(anyhow::anyhow!(
-                        "socket write failed and reconnect failed: {}",
-                        e
-                    )));
-                }
-            } else {
-                stream
-                    .write_all(b"\n")
-                    .await
-                    .map_err(|e| AppError::Other(anyhow::anyhow!("socket write failed: {}", e)))?;
-                stream
-                    .flush()
-                    .await
-                    .map_err(|e| AppError::Other(anyhow::anyhow!("socket flush failed: {}", e)))?;
+                self.pending.remove(&request_id);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "socket write failed: {}",
+                    e
+                )));
+            }
+            if let Err(e) = stream.write_all(b"\n").await {
+                self.pending.remove(&request_id);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "socket write failed: {}",
+                    e
+                )));
+            }
+            if let Err(e) = stream.flush().await {
+                self.pending.remove(&request_id);
+                return Err(AppError::Other(anyhow::anyhow!(
+                    "socket flush failed: {}",
+                    e
+                )));
             }
         }
 
-        rx.await.map_err(|_| {
+        Ok(rx.await.map_err(|_| {
             self.pending.remove(&request_id);
             AppError::Other(anyhow::anyhow!("response channel closed"))
-        })
+        })??)
     }
 
     fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>> {
@@ -365,5 +376,78 @@ impl CoreClient for SocketCoreClient {
             }
         });
         rx
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::frames::{ServerCapabilities, ServerHello};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixListener;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn peer_death_releases_pending_request_with_error() {
+        let socket = std::path::PathBuf::from(format!(
+            "/tmp/cgpd-{}.sock",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        ));
+        let listener = UnixListener::bind(&socket).expect("bind test socket");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                reader.read_line(&mut line),
+            )
+            .await
+            .expect("read ClientHello timeout")
+            .expect("read ClientHello");
+            let hello = CoreFrame::ServerHello(ServerHello {
+                daemon_id: "peer-death-daemon".into(),
+                protocol_version: crate::protocol::core::PROTOCOL_VERSION,
+                server_capabilities: ServerCapabilities {
+                    event_replay: true,
+                    session_management: true,
+                    permission_routing: true,
+                    workspace_registration: true,
+                    workspace_snapshots: true,
+                    durable_jobs: true,
+                    durable_schedules: true,
+                    identity_aware_context: true,
+                    project_catalog: true,
+                    session_projection: true,
+                },
+                client_id: "peer-death-client".into(),
+            });
+            let encoded = serde_json::to_string(&hello).expect("serialize ServerHello");
+            write_half
+                .write_all(format!("{encoded}\n").as_bytes())
+                .await
+                .expect("write ServerHello");
+            write_half.flush().await.expect("flush ServerHello");
+            drop(reader);
+            drop(write_half);
+        });
+
+        let endpoint = format!("unix://{}", socket.display());
+        let client = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            SocketCoreClient::connect(&endpoint),
+        )
+        .await
+        .expect("handshake with fixture timeout")
+        .expect("handshake with fixture");
+        let request =
+            crate::core::new_request("peer-death-request".into(), CoreRequest::SnapshotDaemon);
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client.request(request))
+                .await
+                .expect("pending request must resolve after peer death");
+        assert!(result.is_err(), "peer death must fail the request waiter");
+        server.await.expect("peer-death fixture");
+        let _ = std::fs::remove_file(socket);
     }
 }

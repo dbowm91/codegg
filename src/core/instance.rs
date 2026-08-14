@@ -102,6 +102,25 @@ impl DaemonPaths {
         Self::with_root(root)
     }
 
+    /// Resolve the canonical daemon paths, applying an explicit endpoint or
+    /// `CODEGG_CORE_ENDPOINT` to the socket while retaining the user-scoped
+    /// lock, metadata, and log paths.
+    pub fn resolve_for_endpoint(explicit_endpoint: Option<&str>) -> Self {
+        let endpoint = explicit_endpoint
+            .map(str::to_owned)
+            .or_else(|| std::env::var("CODEGG_CORE_ENDPOINT").ok());
+        let paths = Self::resolve();
+        endpoint
+            .as_deref()
+            .map(Self::normalize_endpoint)
+            .map_or(paths.clone(), |socket| paths.with_socket(socket))
+    }
+
+    /// Normalize a filesystem socket path or `unix://` endpoint.
+    pub fn normalize_endpoint(endpoint: &str) -> PathBuf {
+        PathBuf::from(endpoint.strip_prefix("unix://").unwrap_or(endpoint))
+    }
+
     /// Construct paths rooted at `root`. Used by production and by tests.
     pub fn with_root(root: PathBuf) -> Self {
         let lock_path = root.join("daemon.lock");
@@ -151,6 +170,26 @@ impl DaemonPaths {
     /// Socket path as a plain filesystem path.
     pub fn socket_path_str(&self) -> String {
         self.socket_path.to_string_lossy().into_owned()
+    }
+
+    /// Open the append-only daemon log with user-only permissions.
+    pub fn open_log_file(&self) -> Result<std::fs::File, AppError> {
+        self.ensure_root()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).append(true).read(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(&self.log_path).map_err(|e| {
+            AppError::Other(anyhow::anyhow!(
+                "failed to open daemon log {}: {}",
+                self.log_path.display(),
+                e
+            ))
+        })?;
+        set_user_only_permissions(&self.log_path);
+        Ok(file)
     }
 }
 
@@ -300,7 +339,11 @@ pub struct ConnectOrStartOutcome {
 pub enum DaemonConnectError {
     /// The startup attempt exhausted its budget before the daemon became
     /// responsive.
-    StartupTimeout { endpoint: String, timeout: Duration },
+    StartupTimeout {
+        endpoint: String,
+        timeout: Duration,
+        log_path: PathBuf,
+    },
     /// The user-scoped lock is held but the socket is unreachable; do not
     /// unlink or steal the lock.
     InconsistentState { endpoint: String, detail: String },
@@ -313,11 +356,16 @@ pub enum DaemonConnectError {
 impl std::fmt::Display for DaemonConnectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::StartupTimeout { endpoint, timeout } => write!(
+            Self::StartupTimeout {
+                endpoint,
+                timeout,
+                log_path,
+            } => write!(
                 f,
-                "daemon did not become ready within {} ms at {}",
+                "daemon did not become ready within {} ms at {}; see {}",
                 timeout.as_millis(),
-                endpoint
+                endpoint,
+                log_path.display()
             ),
             Self::InconsistentState { endpoint, detail } => {
                 write!(f, "inconsistent daemon state at {}: {}", endpoint, detail)
@@ -349,6 +397,10 @@ pub struct ConnectOrStartOptions {
     pub startup_timeout: Duration,
     /// Poll interval when probing for readiness.
     pub poll_interval: Duration,
+    /// Optional executable override used by embedded/test launchers. Normal
+    /// production callers leave this unset and the current executable is
+    /// used.
+    pub executable: Option<PathBuf>,
 }
 
 impl ConnectOrStartOptions {
@@ -360,6 +412,7 @@ impl ConnectOrStartOptions {
             autostart: true,
             startup_timeout: Duration::from_secs(10),
             poll_interval: Duration::from_millis(100),
+            executable: None,
         }
     }
 }
@@ -379,12 +432,11 @@ pub async fn connect_or_start_daemon(
         .ensure_root()
         .map_err(DaemonConnectError::Io)?;
 
-    // 1. Try connecting directly.
-    if let Ok(client) = crate::core::transport::SocketCoreClient::connect(&endpoint).await {
-        let daemon_id = match client.request(snapshot_request()).await {
-            Ok(crate::protocol::core::CoreResponse::SnapshotDaemon { daemon_id, .. }) => daemon_id,
-            _ => "unknown".to_string(),
-        };
+    let deadline = tokio::time::Instant::now() + options.startup_timeout;
+
+    // 1. Try connecting directly. A socket is not ready until the complete
+    // handshake and bounded control-plane identity probe succeed.
+    if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await {
         return Ok(ConnectOrStartOutcome {
             client,
             daemon_id,
@@ -416,63 +468,152 @@ pub async fn connect_or_start_daemon(
     }
 
     // 2. Spawn a detached child process that runs the singleton daemon.
-    let exe = std::env::current_exe().map_err(|e| {
+    let exe = options
+        .executable
+        .clone()
+        .or_else(|| std::env::var_os("CODEGG_DAEMON_EXECUTABLE").map(PathBuf::from))
+        .or_else(|| std::env::current_exe().ok())
+        .ok_or_else(|| {
+            DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
+                "cannot resolve daemon executable"
+            )))
+        })?;
+    let log = options
+        .paths
+        .open_log_file()
+        .map_err(DaemonConnectError::Io)?;
+    let log_for_stderr = log.try_clone().map_err(|e| {
         DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-            "cannot resolve current exe: {}",
+            "failed to duplicate daemon log {}: {}",
+            options.paths.log_path.display(),
             e
         )))
     })?;
-    let mut child = tokio::process::Command::new(exe)
-        .args(["daemon", "start"])
+    let socket_arg = options.paths.socket_path_str();
+    let mut command = tokio::process::Command::new(exe);
+    command
+        .args(["daemon", "start", "--endpoint", socket_arg.as_str()])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| {
-            DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
-                "failed to spawn daemon: {}",
-                e
-            )))
-        })?;
+        .stdout(std::process::Stdio::from(log))
+        .stderr(std::process::Stdio::from(log_for_stderr));
+    detach_daemon_process(&mut command);
+    let mut child = command.spawn().map_err(|e| {
+        DaemonConnectError::Io(AppError::Other(anyhow::anyhow!(
+            "failed to spawn daemon: {}",
+            e
+        )))
+    })?;
     let child_pid = child.id().unwrap_or(0);
 
-    // 3. Poll for readiness.
-    let deadline = tokio::time::Instant::now() + options.startup_timeout;
+    // 3. Poll for readiness. If this child loses the singleton race and
+    // exits, perform one final verified probe before classifying the exit.
     loop {
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(DaemonConnectError::ChildExited {
-                endpoint,
-                detail: format!("daemon child exited with {:?}", status),
-            });
-        }
-        match crate::core::transport::SocketCoreClient::connect(&endpoint).await {
-            Ok(client) => {
-                let daemon_id = match client.request(snapshot_request()).await {
-                    Ok(crate::protocol::core::CoreResponse::SnapshotDaemon {
-                        daemon_id, ..
-                    }) => daemon_id,
-                    _ => "unknown".to_string(),
-                };
-                return Ok(ConnectOrStartOutcome {
-                    client,
-                    daemon_id,
-                    endpoint,
-                    started_pid: Some(child_pid),
-                });
-            }
-            Err(_) => {
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(DaemonConnectError::StartupTimeout {
+            // The losing starter can exit before the lock winner has bound
+            // its socket. Keep probing through the original deadline so the
+            // frontend converges on that winner instead of reporting the
+            // harmless helper exit as a startup failure.
+            while tokio::time::Instant::now() < deadline {
+                if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await
+                {
+                    return Ok(ConnectOrStartOutcome {
+                        client,
+                        daemon_id,
                         endpoint,
-                        timeout: options.startup_timeout,
+                        started_pid: Some(child_pid),
                     });
                 }
-                tokio::time::sleep(options.poll_interval).await;
+                tokio::time::sleep(
+                    options
+                        .poll_interval
+                        .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+                )
+                .await;
             }
+            return Err(DaemonConnectError::ChildExited {
+                endpoint,
+                detail: format!(
+                    "daemon child exited with {:?}; see {}",
+                    status,
+                    options.paths.log_path.display()
+                ),
+            });
         }
+        if let Some((client, daemon_id)) = verified_connect_until(&endpoint, deadline).await {
+            tokio::spawn(async move {
+                if let Err(error) = child.wait().await {
+                    tracing::debug!("autostarted daemon reaper failed: {}", error);
+                }
+            });
+            return Ok(ConnectOrStartOutcome {
+                client,
+                daemon_id,
+                endpoint,
+                started_pid: Some(child_pid),
+            });
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(DaemonConnectError::StartupTimeout {
+                endpoint,
+                timeout: options.startup_timeout,
+                log_path: options.paths.log_path,
+            });
+        }
+        tokio::time::sleep(
+            options
+                .poll_interval
+                .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
     }
 }
+
+async fn verified_connect_until(
+    endpoint: &str,
+    deadline: tokio::time::Instant,
+) -> Option<(crate::core::transport::SocketCoreClient, String)> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    if remaining.is_zero() {
+        return None;
+    }
+    let result = tokio::time::timeout(remaining, async {
+        let client = crate::core::transport::SocketCoreClient::connect(endpoint)
+            .await
+            .ok()?;
+        let response = client.request(snapshot_request()).await.ok()?;
+        match response {
+            crate::protocol::core::CoreResponse::SnapshotDaemon { daemon_id, .. } => {
+                Some((client, daemon_id))
+            }
+            _ => None,
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    result
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn detach_daemon_process(command: &mut tokio::process::Command) {
+    // The daemon is user-scoped and must outlive the frontend that happened
+    // to start it. A new session prevents terminal/process-group teardown
+    // from coupling their lifetimes.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn detach_daemon_process(_command: &mut tokio::process::Command) {}
 
 // -----------------------------------------------------------------------------
 // helpers
@@ -705,6 +846,21 @@ mod tests {
         assert_eq!(p.lock_path, root.join("daemon.lock"));
         assert_eq!(p.metadata_path, root.join("daemon.json"));
         assert_eq!(p.socket_path, root.join("core.sock"));
+    }
+
+    #[test]
+    fn endpoint_normalization_preserves_singleton_paths() {
+        let root = temp_root("endpoint");
+        let base = DaemonPaths::with_root(root.clone());
+        let custom = root.join("custom.sock");
+        let paths = base.with_socket(DaemonPaths::normalize_endpoint(&format!(
+            "unix://{}",
+            custom.display()
+        )));
+        assert_eq!(paths.socket_path, custom);
+        assert_eq!(paths.lock_path, root.join("daemon.lock"));
+        assert_eq!(paths.metadata_path, root.join("daemon.json"));
+        assert_eq!(paths.log_path, root.join("daemon.log"));
     }
 
     #[test]

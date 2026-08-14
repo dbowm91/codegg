@@ -103,6 +103,28 @@ pub async fn run_core_socket_with_listener(
     .await
 }
 
+/// Serve a listener with an explicit maximum connection-drain interval after
+/// shutdown begins. The bound applies only to socket connection tasks; core
+/// jobs and scheduler semantics are owned elsewhere.
+pub async fn run_core_socket_with_listener_with_timeout(
+    daemon: Arc<CoreDaemon>,
+    listener: UnixListener,
+    endpoint: &Path,
+    shutdown: CancellationToken,
+    shutdown_timeout: std::time::Duration,
+) -> Result<(), AppError> {
+    run_core_socket_with_listener_and_seam_and_observer_with_timeout(
+        daemon,
+        listener,
+        endpoint,
+        shutdown,
+        ProjectionLifecycleSeam::default(),
+        None,
+        shutdown_timeout,
+    )
+    .await
+}
+
 /// Serve a pre-bound listener with an adapter-local lifecycle seam. The seam
 /// is normally a no-op; integration tests use it to pause or fail at the
 /// response/receiver/activation boundaries without global mutable hooks.
@@ -131,6 +153,27 @@ pub async fn run_core_socket_with_listener_and_seam_and_observer(
     shutdown: CancellationToken,
     lifecycle_seam: ProjectionLifecycleSeam,
     socket_write_observer: Option<SocketWriteObserver>,
+) -> Result<(), AppError> {
+    run_core_socket_with_listener_and_seam_and_observer_with_timeout(
+        daemon,
+        listener,
+        endpoint,
+        shutdown,
+        lifecycle_seam,
+        socket_write_observer,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+}
+
+async fn run_core_socket_with_listener_and_seam_and_observer_with_timeout(
+    daemon: Arc<CoreDaemon>,
+    listener: UnixListener,
+    endpoint: &Path,
+    shutdown: CancellationToken,
+    lifecycle_seam: ProjectionLifecycleSeam,
+    socket_write_observer: Option<SocketWriteObserver>,
+    shutdown_timeout: std::time::Duration,
 ) -> Result<(), AppError> {
     tracing::info!("Core daemon listening on {}", endpoint.display());
     let mut clients = JoinSet::new();
@@ -172,12 +215,26 @@ pub async fn run_core_socket_with_listener_and_seam_and_observer(
     }
     // Let connection handlers observe shutdown and perform their own cleanup.
     shutdown.cancel();
-    while let Some(result) = clients.join_next().await {
-        if let Err(error) = result {
-            tracing::warn!(
-                "Core daemon client cleanup terminated abnormally: {}",
-                error
-            );
+    let drain = async {
+        while let Some(result) = clients.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(
+                    "Core daemon client cleanup terminated abnormally: {}",
+                    error
+                );
+            }
+        }
+    };
+    if tokio::time::timeout(shutdown_timeout, drain).await.is_err() {
+        tracing::warn!(
+            "daemon connection drain exceeded {:?}; aborting remaining clients",
+            shutdown_timeout
+        );
+        clients.abort_all();
+        while let Some(result) = clients.join_next().await {
+            if let Err(error) = result {
+                tracing::debug!("aborted daemon client task: {}", error);
+            }
         }
     }
     Ok(())
