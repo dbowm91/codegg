@@ -273,6 +273,7 @@ fn spawn_child(resolved: &ResolvedTestCommand) -> Result<Child, TestRunError> {
         cmd.args(&resolved.argv[1..]);
     }
     cmd.current_dir(&resolved.cwd)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 

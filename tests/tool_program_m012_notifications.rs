@@ -229,7 +229,7 @@ async fn notification_store_error_enum_exists() {
 
 // ── C-08 concurrent SQLite claim ────────────────────────────────────
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c08_concurrent_sqlite_claim_exactly_one_succeeds() {
     // C-08: Two service instances sharing a SQLite pool concurrently race to claim
     // the same pending notification. Exactly one succeeds via CAS.

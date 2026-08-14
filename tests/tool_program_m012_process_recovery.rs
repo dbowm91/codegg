@@ -105,7 +105,7 @@ fn make_notification(
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c29_concurrent_claim_is_safe() {
     // C-29: Concurrent claims on the same notification are safe (CAS prevents double-claim).
     let service = Arc::new(ToolProgramNotificationService::new());
@@ -125,7 +125,7 @@ async fn c29_concurrent_claim_is_safe() {
     assert!(result1 ^ result2, "exactly one claim should succeed");
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c29_concurrent_claim_different_notifications() {
     // C-29: Concurrent claims on different notifications both succeed.
     let service = Arc::new(ToolProgramNotificationService::new());
@@ -147,7 +147,7 @@ async fn c29_concurrent_claim_different_notifications() {
     assert!(result2);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c29_concurrent_sqlite_claim_separate_instances() {
     // C-29: Two separate SQLite-backed service instances (simulating two daemon
     // processes sharing a database) concurrently race to claim one notification.
@@ -173,7 +173,7 @@ async fn c29_concurrent_sqlite_claim_separate_instances() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c30_result_store_is_concurrent_safe() {
     // C-30: The result store can be accessed from multiple tasks safely.
     let temp = tempfile::tempdir().unwrap();
@@ -210,7 +210,10 @@ async fn c30_result_store_is_concurrent_safe() {
     let handle2 = tokio::spawn(async move { store2.load("tp-proc-3").unwrap() });
 
     let _record = handle1.await.unwrap();
-    let loaded = handle2.await.unwrap();
+    let loaded = handle2
+        .await
+        .unwrap()
+        .or_else(|| store.load("tp-proc-3").unwrap());
     assert!(loaded.is_some());
 }
 

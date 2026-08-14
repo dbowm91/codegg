@@ -624,7 +624,7 @@ async fn conservative_legacy_association_idempotent() {
     assert!(report2.already_migrated);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_duplicate_registration_converges() {
     let (p, _dir) = concurrent_pool().await;
     let storage = ProjectStorage::new(p.clone());

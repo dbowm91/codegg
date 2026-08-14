@@ -36,7 +36,7 @@ async fn c45_daemon_binary_exists_and_starts() {
 
 /// C-46: Tests kill the daemon at deterministic failpoints and restart a
 /// fresh process against the same state.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c46_kill_and_restart_daemon() {
     let temp = tempfile::tempdir().unwrap();
     let workspace = temp.path().join("workspace");

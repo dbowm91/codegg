@@ -350,7 +350,7 @@ async fn stop_requires_matching_live_daemon_identity() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_signals_the_current_daemon_after_identity_match() {
     let root = temp_root("stop-current");
     let paths = DaemonPaths::with_root(root.clone());

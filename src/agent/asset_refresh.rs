@@ -654,7 +654,7 @@ mod tests {
         assert_eq!(retained.generation, Some(1));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn different_scopes_are_isolated() {
         let a = TempDir::new().unwrap();
         let b = TempDir::new().unwrap();

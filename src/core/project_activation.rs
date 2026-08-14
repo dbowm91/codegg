@@ -734,7 +734,7 @@ mod tests {
         assert_eq!(registry.active_count(), 0);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn capacity_is_enforced_across_distinct_concurrent_keys() {
         let workspaces = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
             .await

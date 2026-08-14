@@ -2077,7 +2077,7 @@ mod tests {
         assert_eq!(stored.display_name, "Rotated Eggpool");
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn refresh_coalesces_and_preserves_revision_for_unchanged_catalog() {
         let _master = MasterKeyGuard::new("eggpool-workflow-refresh-master");
         let directory = tempdir().expect("credential tempdir");
@@ -2151,7 +2151,7 @@ mod tests {
         assert_eq!(stored_revision, revision as i64);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_compensates_operation_owned_credential() {
         let _master = MasterKeyGuard::new("eggpool-workflow-cancel-master");
         let directory = tempdir().expect("credential tempdir");

@@ -327,7 +327,7 @@ async fn jobwait_returns_bounded_completion() {
 
 // ── Test 3: JobList bounded response ──────────────────────────────────
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn joblist_bounded_response() {
     let (scheduler, submission, store, ws_id) = setup_managed_argv().await;
     let sched = scheduler.clone();

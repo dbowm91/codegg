@@ -165,7 +165,7 @@ fn active_accessors_reflect_compat_state() {
     assert!(!app.active_agent().is_empty());
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn catalog_capability_unsupported_keeps_compat_tab_usable() {
     let fake = Arc::new(FakeProjectCatalogClient::with_capability(false));
     let mut app = codegg::tui::app::App::new_for_testing("/tmp/foo".to_string());

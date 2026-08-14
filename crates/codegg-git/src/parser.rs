@@ -993,17 +993,27 @@ fn parse_clean(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
 
     while ctx.has_more() {
         let arg = ctx.next_arg().unwrap();
-        if is_short_flag(&arg, 'f') || is_long_flag(&arg, "--force") {
-            force = true;
-        } else if is_short_flag(&arg, 'n') || is_long_flag(&arg, "--dry-run") {
-            dry_run = true;
-        } else if is_short_flag(&arg, 'd') || is_long_flag(&arg, "--dirs") {
-            dirs = true;
-        } else if is_short_flag(&arg, 'x') || is_long_flag(&arg, "--ignored") {
-            ignored = true;
-        } else if is_double_dash(&arg) {
+        if is_double_dash(&arg) {
             paths = collect_pathspecs_after_double_dash(ctx)?;
             break;
+        } else if arg.starts_with('-') && !arg.starts_with("--") {
+            for flag in arg[1..].chars() {
+                match flag {
+                    'f' => force = true,
+                    'n' => dry_run = true,
+                    'd' => dirs = true,
+                    'x' => ignored = true,
+                    _ => {}
+                }
+            }
+        } else if is_long_flag(&arg, "--force") {
+            force = true;
+        } else if is_long_flag(&arg, "--dry-run") {
+            dry_run = true;
+        } else if is_long_flag(&arg, "--dirs") {
+            dirs = true;
+        } else if is_long_flag(&arg, "--ignored") {
+            ignored = true;
         } else if !is_flag(&arg) {
             paths.push(to_pathspec(&arg)?);
         }

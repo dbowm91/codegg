@@ -1231,7 +1231,7 @@ mod tests {
         assert_eq!(result, Err(CriticalDeliveryError::WriterClosed));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn raw_forwarder_cancellation_releases_receiver_and_shared_state() {
         let (event_tx, event_rx) = broadcast::channel(4);
         let (writer_stream, _peer_stream) = tokio::net::UnixStream::pair().unwrap();
@@ -1259,7 +1259,7 @@ mod tests {
         assert_eq!(Arc::strong_count(&filters), 1);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn raw_forwarder_writer_failure_terminates_without_a_retained_receiver() {
         let (event_tx, event_rx) = broadcast::channel(4);
         let (writer_stream, peer_stream) = tokio::net::UnixStream::pair().unwrap();

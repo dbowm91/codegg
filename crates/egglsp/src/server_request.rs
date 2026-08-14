@@ -1045,7 +1045,7 @@ mod tests {
 
     // ── Dispatch timeout tests ──────────────────────────────────────
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_completes_within_timeout() {
         // All current handlers are fast and local — verify they complete
         // well within the 5-second SERVER_REQUEST_TIMEOUT.

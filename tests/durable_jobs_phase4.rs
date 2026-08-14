@@ -305,7 +305,7 @@ async fn retry_creates_increasing_sequence() {
     assert_eq!(attempts[1].sequence, 2);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_attempt_creation_yields_one_active() {
     let store = Arc::new(InMemoryJobStore::new()) as Arc<dyn JobStore>;
     let w = ws();
@@ -707,7 +707,7 @@ async fn sqlite_filter_by_kind_and_workspace() {
     assert_eq!(w1_tests[0].kind, JobKind::Test);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sqlite_transactional_begin_attempt() {
     let pool = setup_sqlite().await;
     let store = Arc::new(SqliteJobStore::new(pool)) as Arc<dyn JobStore>;

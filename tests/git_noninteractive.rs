@@ -48,7 +48,7 @@ async fn auth_failure_returns_promptly_with_terminal_prompt_zero() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn timeout_kills_long_running_subprocess() {
     if !git_available() {
         eprintln!("git not available — skipping");
@@ -73,7 +73,7 @@ async fn timeout_kills_long_running_subprocess() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_does_not_leave_child_running() {
     if !git_available() {
         eprintln!("git not available — skipping");

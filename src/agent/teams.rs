@@ -665,7 +665,7 @@ mod tests {
         assert!(task_list.can_start("task2").await);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_idle_notifier() {
         let notifier = Arc::new(IdleNotifier::new());
         let rx = notifier.register("agent1".to_string()).await;

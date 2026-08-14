@@ -135,7 +135,7 @@ async fn deeper_mixed_lineage_is_deterministic_and_converges() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_sqlite_cycle_is_bounded() {
     let pool = common::pool::isolated_pool().await;
     let store = codegg_core::jobs::SqliteJobStore::new(pool.clone());

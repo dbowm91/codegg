@@ -2536,7 +2536,7 @@ mod tests {
     /// coordinator. We start a long-backoff coordinator and
     /// cancel the lease token; the coordinator must observe the
     /// cancellation and abort with `InitializationCancelled`.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lease_token_cancellation_aborts_coordinator() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -2731,7 +2731,7 @@ mod tests {
     /// barrier to keep the first owner installed, cancel its
     /// token, then release it; the waiter must observe
     /// `Finished` exactly once.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn owner_completion_waiter_resolves_on_release() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -3759,7 +3759,7 @@ mod tests {
     /// readiness mock holds the coordinator inside the
     /// readiness check long enough for the cancellation to be
     /// observable from a concurrent cancel task.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn post_publication_cancellation_returns_live_outcome() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -3862,7 +3862,7 @@ mod tests {
     /// observably fires *after* the publication boundary). The
     /// forced readiness mock returns `Ready` so the coordinator
     /// can reach the success branch.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_after_publication_finishes_replacement() {
         let shared = MockShared::new();
         let mut descriptor = dummy_descriptor("test:rust-analyzer");
@@ -4072,7 +4072,7 @@ mod tests {
     /// becomes free and a new acquisition succeeds. This locks
     /// down the invariant that `Finished` is the ownership
     /// release boundary, not the cancellation signal.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn completion_release_allows_new_owner() {
         let map: RestartTaskMap = Arc::new(Mutex::new(HashMap::new()));
         let counter = Arc::new(AtomicU64::new(0));
@@ -4252,7 +4252,7 @@ mod tests {
     /// this by holding a lease alive across the cancellation
     /// and release sequence and asserting that a second
     /// acquisition is blocked while the lease is held.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn manual_acquires_only_after_finished() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4325,7 +4325,7 @@ mod tests {
     /// `verify_slot_free` step MUST succeed. This is the happy
     /// path that lets manual supersession proceed after the
     /// in-flight automatic restart exits cleanly.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn finished_signal_after_release_resolves_waiter() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4386,7 +4386,7 @@ mod tests {
     /// race the removal, observe `Finished`, and either return
     /// `Ok` while the slot was still installed (false success) or
     /// block forever behind the contended lock.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn finished_is_not_observable_until_slot_is_removed() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4493,7 +4493,7 @@ mod tests {
     /// separate task, then verify the waiter observes
     /// `Finished` only after the lock releases and the cleanup
     /// task removes the entry.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn drop_fallback_removes_before_finished() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4562,7 +4562,7 @@ mod tests {
     /// MUST NOT send `Finished` (because the slot is not theirs
     /// to free). The newer owner's wait and acquisition must
     /// remain unblocked by the older owner's signal.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn old_owner_release_does_not_signal_for_new_owner() {
         use super::super::restart::cancel_restart_ownership;
 
@@ -4737,7 +4737,7 @@ mod tests {
     ///    remove-before-signal completes).
     /// 8. Assert the slot is absent and a new acquisition
     ///    succeeds with a fresh owner_id.
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelled_async_release_falls_back_to_drop_cleanup() {
         use super::super::restart::cancel_restart_ownership;
 

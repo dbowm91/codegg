@@ -34,6 +34,18 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type PerConnectionProbeServer = std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+            Output = (
+                SocketAddr,
+                Arc<CoreDaemon>,
+                Arc<codegg::server::ws::ConnectionProbeRegistry>,
+                tokio::task::JoinHandle<()>,
+            ),
+        >,
+    >,
+>;
 
 fn projection_test_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()
@@ -500,13 +512,13 @@ async fn next_tui_projection_envelope(
     codegg::protocol::projection::event::ProjectionEnvelope,
 )> {
     loop {
-        match recv_json::<TuiMessage>(client).await? {
-            TuiMessage::ProjectionEvent {
-                subscription_id,
-                stream_id,
-                envelope,
-            } => return Some((subscription_id, stream_id, envelope)),
-            _ => {}
+        if let TuiMessage::ProjectionEvent {
+            subscription_id,
+            stream_id,
+            envelope,
+        } = recv_json::<TuiMessage>(client).await?
+        {
+            return Some((subscription_id, stream_id, envelope));
         }
     }
 }
@@ -568,12 +580,9 @@ async fn tui_reject_foreign_unsubscribe(
 }
 
 async fn drain_tui_messages(client: &mut Client) {
-    loop {
-        match timeout(Duration::from_millis(20), client.next()).await {
-            Ok(Some(Ok(Message::Text(_)))) => {}
-            _ => break,
-        }
-    }
+    while let Ok(Some(Ok(Message::Text(_)))) =
+        timeout(Duration::from_millis(20), client.next()).await
+    {}
 }
 
 // ===== Helpers for Work Packages B–E =====
@@ -4388,15 +4397,14 @@ async fn real_tui_pending_replay_interruption_then_retry_impl() {
     wait_until_writer_gates_reached(&observer, count_before + 1).await;
     writer_gate.release();
     let (new_subscription, replay) = loop {
-        match recv_json::<TuiMessage>(&mut third_client)
+        if let TuiMessage::ProjectionReplay {
+            subscription_id,
+            batch,
+        } = recv_json::<TuiMessage>(&mut third_client)
             .await
             .expect("TUI replay after interrupted retry")
         {
-            TuiMessage::ProjectionReplay {
-                subscription_id,
-                batch,
-            } => break (subscription_id, batch),
-            _ => {}
+            break (subscription_id, batch);
         }
     };
     assert_ne!(_first_subscription, new_subscription);
@@ -4454,18 +4462,7 @@ async fn real_tui_pending_replay_interruption_then_retry_impl() {
 fn spawn_server_with_per_connection_probe(
     projection_lifecycle_seam: ProjectionLifecycleSeam,
     transport_test_config: Option<codegg::server::ws::ProjectionTransportTestConfig>,
-) -> std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-            Output = (
-                SocketAddr,
-                Arc<CoreDaemon>,
-                Arc<codegg::server::ws::ConnectionProbeRegistry>,
-                tokio::task::JoinHandle<()>,
-            ),
-        >,
-    >,
-> {
+) -> PerConnectionProbeServer {
     Box::pin(async move {
         std::env::set_var("CODEGG_SERVER_AUTH_DISABLED", "1");
         let pool = common::projection_replay::test_pool().await;
@@ -4512,9 +4509,11 @@ fn spawn_server_with_per_connection_probe(
 /// counter readings are not shared with other connections.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_core_full_queue_operation_correlated_timeout() {
-    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
-    config.outbound_queue_capacity = Some(1);
-    config.gate_before_recv = true;
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig {
+        outbound_queue_capacity: Some(1),
+        gate_before_recv: true,
+        ..Default::default()
+    };
     config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
     let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
     config.observer = Some(Arc::clone(&observer));
@@ -4627,13 +4626,13 @@ async fn real_core_full_queue_operation_correlated_timeout() {
         target.queue_full_before_send,
         "queue must have been full before this critical send began"
     );
-    assert_eq!(target.enqueue_started, true, "enqueue must have started");
-    assert_eq!(
-        target.enqueue_completed, false,
+    assert!(target.enqueue_started, "enqueue must have started");
+    assert!(
+        !target.enqueue_completed,
         "enqueue must not have completed (Timeout fired during reservation)"
     );
-    assert_eq!(
-        target.receipt_wait_started, false,
+    assert!(
+        !target.receipt_wait_started,
         "receipt wait must not have begun"
     );
     assert!(
@@ -4682,9 +4681,8 @@ async fn real_core_full_queue_operation_correlated_timeout() {
         }
     })
     .await
-    .map(|probe| {
+    .inspect(|probe| {
         probe.assert_all_at_baseline();
-        probe
     })
     .unwrap_or_else(|_| panic!("per-connection probe should reach baseline within 5s"));
 
@@ -4726,9 +4724,11 @@ fn real_tui_full_queue_operation_correlated_timeout() {
 }
 
 async fn real_tui_full_queue_operation_correlated_timeout_impl() {
-    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
-    config.outbound_queue_capacity = Some(1);
-    config.gate_before_recv = true;
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig {
+        outbound_queue_capacity: Some(1),
+        gate_before_recv: true,
+        ..Default::default()
+    };
     config.writer_gate = Some(Arc::new(codegg::server::ws::WriterGate::new()));
     let observer = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
     config.observer = Some(Arc::clone(&observer));
@@ -4821,9 +4821,9 @@ async fn real_tui_full_queue_operation_correlated_timeout_impl() {
     );
     let target = matched[0];
     assert!(target.queue_full_before_send);
-    assert_eq!(target.enqueue_started, true);
-    assert_eq!(target.enqueue_completed, false);
-    assert_eq!(target.receipt_wait_started, false);
+    assert!(target.enqueue_started);
+    assert!(!target.enqueue_completed);
+    assert!(!target.receipt_wait_started);
     assert!(matches!(
         target.final_result,
         Err(CriticalDeliveryError::Timeout)
@@ -5066,7 +5066,7 @@ async fn real_connection_task_set_six_case_production_teardown_matrix() {
 /// Unit-level guard for Work Package G: prove that `join_after_first_exit`
 /// awaits every sibling and consumes every handle. Completion is established
 /// by drop guards and exact probe counts, not by elapsed sleep duration.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn join_after_first_exit_waits_for_sibling_joins_not_just_abort() {
     use codegg::server::ws::{ConnectionTaskKind, ConnectionTaskProbe};
 
@@ -5231,9 +5231,11 @@ async fn real_tui_raw_source_first_exit_via_cancellation_token_impl() {
 /// have only checked daemon subscription count.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn real_core_rollback_harness_asserts_unrelated_client_continuity() {
-    let mut config = codegg::server::ws::ProjectionTransportTestConfig::default();
-    config.outbound_queue_capacity = Some(1);
-    config.gate_before_recv = false;
+    let mut config = codegg::server::ws::ProjectionTransportTestConfig {
+        outbound_queue_capacity: Some(1),
+        gate_before_recv: false,
+        ..Default::default()
+    };
     config.writer_gate = None;
     let observer_a = Arc::new(codegg::server::ws::TransportLifecycleObserver::new());
     config.observer = Some(Arc::clone(&observer_a));

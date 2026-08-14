@@ -131,7 +131,7 @@ async fn two_workspaces_get_isolated_bundles() {
     assert_eq!(factory.activation_count(), 2);
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_acquire_produces_single_activation() {
     let factory = Arc::new(CountingFactory::new());
     let (workspace_registry, services) = build_registry(factory.clone()).await;
@@ -242,7 +242,7 @@ async fn peek_returns_none_for_unregistered_workspace() {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_lock_table_serializes_acquire_repository() {
     let table = Arc::new(WorkspaceLockTable::new());
     let counter = Arc::new(AtomicUsize::new(0));

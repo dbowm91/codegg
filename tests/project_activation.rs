@@ -118,7 +118,7 @@ async fn activation_refreshes_assets_and_is_idempotent_per_owner() {
         .is_none());
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_same_owner_activation_coalesces_scope_and_bundle() {
     let daemon = std::sync::Arc::new(CoreDaemon::new(Some(pool().await), None, None));
     let root = tempfile::tempdir().unwrap();

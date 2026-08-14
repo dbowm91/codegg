@@ -366,6 +366,12 @@ impl WriterGate {
     }
 }
 
+impl Default for WriterGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Connection-local lifecycle observer. Tests clone this `Arc` so they
 /// can read counters after the connection ends. Only the production code
 /// populates these fields.
@@ -468,7 +474,7 @@ impl TransportLifecycleObserver {
 
     pub fn record_final_send_result(&self, result: Result<(), CriticalSendFailure>) {
         if let Ok(mut guard) = self.final_send_result.lock() {
-            *guard = Some(result.clone());
+            *guard = Some(result);
         }
         if let Ok(mut history) = self.send_result_history.lock() {
             history.push(result);
@@ -511,10 +517,7 @@ impl TransportLifecycleObserver {
     }
 
     pub fn final_send_result(&self) -> Option<Result<(), CriticalSendFailure>> {
-        self.final_send_result
-            .lock()
-            .ok()
-            .and_then(|guard| guard.clone())
+        self.final_send_result.lock().ok().and_then(|guard| *guard)
     }
 
     /// Snapshot of every recorded critical-send result. Tests use this to
@@ -695,7 +698,9 @@ impl ConnectionTaskSet {
     /// cancel/abort side effects. The `_for_test` suffix marks this as a
     /// test-only public API surface.
     pub async fn first_exit_classification_for_test(&mut self) -> (ConnectionTaskKind, bool) {
-        let (first_kind, first_result) = if self.request_handler.is_some() {
+        let (first_kind, first_result) = if let Some(request_handler) =
+            self.request_handler.as_mut()
+        {
             tokio::select! {
                 result = self.send.as_mut().expect("connection send task is retained") => {
                     (ConnectionTaskKind::Send, result)
@@ -706,7 +711,7 @@ impl ConnectionTaskSet {
                 result = self.raw_event.as_mut().expect("connection raw task is retained") => {
                     (ConnectionTaskKind::RawEvent, result)
                 }
-                result = self.request_handler.as_mut().expect("TUI request handler is retained") => {
+                result = request_handler => {
                     (ConnectionTaskKind::RequestHandler, result)
                 }
             }
@@ -732,10 +737,11 @@ impl ConnectionTaskSet {
             self.receive.take(),
             self.request_handler.take(),
             self.raw_event.take(),
-        ] {
-            if let Some(h) = handle {
-                h.abort();
-            }
+        ]
+        .into_iter()
+        .flatten()
+        {
+            handle.abort();
         }
         (first_kind, panicked)
     }
@@ -745,7 +751,9 @@ impl ConnectionTaskSet {
         cancellation: &CancellationToken,
         connection_id: &str,
     ) {
-        let (first_kind, first_result) = if self.request_handler.is_some() {
+        let (first_kind, first_result) = if let Some(request_handler) =
+            self.request_handler.as_mut()
+        {
             tokio::select! {
                 result = self.send.as_mut().expect("connection send task is retained") => {
                     (ConnectionTaskKind::Send, result)
@@ -756,7 +764,7 @@ impl ConnectionTaskSet {
                 result = self.raw_event.as_mut().expect("connection raw task is retained") => {
                     (ConnectionTaskKind::RawEvent, result)
                 }
-                result = self.request_handler.as_mut().expect("TUI request handler is retained") => {
+                result = request_handler => {
                     (ConnectionTaskKind::RequestHandler, result)
                 }
             }
@@ -829,14 +837,15 @@ impl ConnectionTaskSet {
 
         fire_connection_cancel(cancellation, self.probe.as_ref());
         for handle in [
-            &self.send,
-            &self.receive,
-            &self.request_handler,
-            &self.raw_event,
-        ] {
-            if let Some(handle) = handle.as_ref() {
-                handle.abort();
-            }
+            self.send.as_ref(),
+            self.receive.as_ref(),
+            self.request_handler.as_ref(),
+            self.raw_event.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            handle.abort();
         }
 
         self.join_remaining(ConnectionTaskKind::Send, connection_id)
@@ -1004,9 +1013,9 @@ async fn critical_send_canonical<T: serde::Serialize>(
         Ok(json) => json,
         Err(_) => {
             let result = Err(CriticalSendFailure::Serialization);
-            observation.final_result = result.clone();
+            observation.final_result = result;
             if let Some(observer) = observer {
-                observer.record_final_send_result(result.clone());
+                observer.record_final_send_result(result);
                 observer.record_critical_send_observation(observation);
             }
             return result;
@@ -1037,9 +1046,9 @@ async fn critical_send_canonical<T: serde::Serialize>(
     observation.enqueue_completed = enqueue_completed.load(std::sync::atomic::Ordering::Acquire);
     observation.receipt_wait_started =
         receipt_wait_started.load(std::sync::atomic::Ordering::Acquire);
-    observation.final_result = result.clone();
+    observation.final_result = result;
     if let Some(observer) = observer {
-        observer.record_final_send_result(result.clone());
+        observer.record_final_send_result(result);
         observer.record_critical_send_observation(observation);
     }
     result
@@ -1120,9 +1129,9 @@ async fn staged_critical_send_canonical<T: serde::Serialize>(
         Ok(json) => json,
         Err(_) => {
             let result = Err(CriticalSendFailure::Serialization);
-            observation.final_result = result.clone();
+            observation.final_result = result;
             if let Some(observer) = observer {
-                observer.record_final_send_result(result.clone());
+                observer.record_final_send_result(result);
                 observer.record_critical_send_observation(observation);
             }
             return result;
@@ -1164,9 +1173,9 @@ async fn staged_critical_send_canonical<T: serde::Serialize>(
     observation.enqueue_completed = enqueue_completed.load(std::sync::atomic::Ordering::Acquire);
     observation.receipt_wait_started =
         receipt_wait_started.load(std::sync::atomic::Ordering::Acquire);
-    observation.final_result = result.clone();
+    observation.final_result = result;
     if let Some(observer) = observer {
-        observer.record_final_send_result(result.clone());
+        observer.record_final_send_result(result);
         observer.record_critical_send_observation(observation);
     }
     result
@@ -3046,6 +3055,9 @@ async fn require_projection_primary(
     }
 }
 
+// This adapter mirrors the protocol's projection/control channels, so keeping
+// the arguments explicit makes ownership and cancellation boundaries visible.
+#[allow(clippy::too_many_arguments)]
 async fn install_tui_projection_receiver(
     daemon: &Arc<crate::core::daemon::CoreDaemon>,
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
@@ -3192,6 +3204,9 @@ async fn rollback_tui_projection_subscription(
     unsubscribe_tui_daemon_subscription(daemon, subscription_id, client_id).await;
 }
 
+// This adapter mirrors the protocol's projection/control channels, so keeping
+// the arguments explicit makes ownership and cancellation boundaries visible.
+#[allow(clippy::too_many_arguments)]
 async fn emit_tui_projection_response(
     daemon: &Arc<crate::core::daemon::CoreDaemon>,
     projection: &Arc<tokio::sync::Mutex<ProjectionConnectionState>>,
@@ -4334,7 +4349,7 @@ async fn handle_core_frame(
                     .subscriptions()
                     .map(|subscription| subscription.subscription_id.clone())
                     .collect();
-                cleanup_projection_connection_state(&projection).await;
+                cleanup_projection_connection_state(projection).await;
                 for subscription_id in subscription_ids {
                     let _ = daemon
                         .handle_request_for_client(
@@ -4713,7 +4728,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn critical_send_reports_typed_failure_outcomes() {
         let cancellation = CancellationToken::new();
         let (tx, mut rx) = mpsc::channel::<OutboundMessage>(1);
@@ -4778,7 +4793,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn observed_and_unobserved_critical_send_have_identical_terminal_results() {
         let cancellation = CancellationToken::new();
         let (plain_tx, _plain_rx) = mpsc::channel::<OutboundMessage>(1);
@@ -4881,7 +4896,7 @@ mod tests {
         assert_eq!(plain_cancelled, observed_cancelled);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn connection_task_set_cancels_aborts_and_joins_all_tasks() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
@@ -4921,7 +4936,7 @@ mod tests {
         assert!(tasks.raw_event.is_none());
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tui_raw_route_drops_a_after_switch_and_delivers_b() {
         let state = test_session_state();
         update_tui_session_info(&state, "session-a".into(), "model".into()).await;
@@ -4955,7 +4970,7 @@ mod tests {
         assert_eq!(sink.messages[0].clone().into_text().unwrap(), "session-b");
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tui_raw_route_a_to_b_to_a_drops_both_prior_generations() {
         let state = test_session_state();
         update_tui_session_info(&state, "session-a".into(), "model".into()).await;
@@ -4995,7 +5010,7 @@ mod tests {
         assert_eq!(sink.messages[0].clone().into_text().unwrap(), "current-a");
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unchanged_tui_session_info_keeps_raw_route_generation() {
         let state = test_session_state();
         update_tui_session_info(&state, "session-a".into(), "model-a".into()).await;
@@ -5028,7 +5043,7 @@ mod tests {
         assert_eq!(current_route_generation(&state).await, empty_generation);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn tui_raw_global_allowlist_is_preserved_and_generation_tagged() {
         let allowed = global_event(CoreEvent::SnapshotModels {
             current_model: None,
@@ -5067,7 +5082,7 @@ mod tests {
         assert!(sink.messages.is_empty());
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn projection_primary_suppresses_queued_raw_event_after_route_race() {
         let state = test_session_state();
         update_tui_session_info(&state, "session-a".into(), "model".into()).await;

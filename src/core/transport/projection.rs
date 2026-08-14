@@ -818,7 +818,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cleanup_aborts_and_awaits_forwarders() {
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
@@ -849,7 +849,7 @@ mod tests {
         assert!(!b.owns(&ProjectionSubscriptionId::new("sub-a")));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn critical_delivery_is_bounded() {
         let cancellation = CancellationToken::new();
         let result = bounded_critical_delivery(&cancellation, async {
@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(result, Err(CriticalDeliveryError::Timeout));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn critical_delivery_observes_connection_cancellation() {
         let cancellation = CancellationToken::new();
         let cancel = cancellation.clone();
@@ -875,7 +875,7 @@ mod tests {
         assert_eq!(task.await.unwrap(), Err(CriticalDeliveryError::Cancelled));
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn lifecycle_seam_injects_failure_and_cancellable_pause() {
         let seam = ProjectionLifecycleSeam::default();
         let mut state = ProjectionConnectionState::new_with_lifecycle_seam("connection-a", seam);

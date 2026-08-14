@@ -54,7 +54,7 @@ async fn sqlite_write_failure_returns_error_without_cache_success() {
     assert!(service.get("tp-write-fail").await.is_err());
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn independent_services_have_one_durable_claim_winner() {
     let pool = common::pool::isolated_pool().await;
     let first = ToolProgramNotificationService::with_pool(pool.clone());

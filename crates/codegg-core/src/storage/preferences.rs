@@ -152,7 +152,7 @@ mod tests {
         assert!(got.is_none());
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn updated_at_advances_on_rewrite() {
         let prefs = UserPreferences::new(temp_pool().await);
         prefs.set(KEY_THEME_ACTIVE, "midnight").await.unwrap();

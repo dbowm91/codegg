@@ -341,7 +341,7 @@ emit({"result": r})
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn chaos_cancellation_converges() {
     let source = r#"
 total = 0

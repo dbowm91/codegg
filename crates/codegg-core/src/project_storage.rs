@@ -1327,7 +1327,7 @@ mod tests {
         assert_eq!(first_binding.repository_id, second_binding.repository_id);
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_registration_converges_on_one_project_and_repository() {
         let (pool, _directory) = concurrent_pool().await;
         let storage = ProjectStorage::new(pool);

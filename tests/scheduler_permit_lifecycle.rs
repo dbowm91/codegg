@@ -480,7 +480,7 @@ async fn concurrent_submissions_do_not_double_reserve() {
     assert_eq!(snap.used_process, 0, "all permits released");
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancel_before_admission_does_not_leak() {
     let (scheduler, submission, workspace_id) = make_scheduler_env(1).await;
     let handle = scheduler.spawn_run();
@@ -546,7 +546,7 @@ async fn attempt_executor_consistency() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn immediate_shutdown_cancels_running_and_releases_permits() {
     let root = tempfile::tempdir().expect("temp workspace");
     let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))

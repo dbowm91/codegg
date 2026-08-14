@@ -1911,12 +1911,10 @@ mod tests {
     }
 
     // ── Round-trip: parse then render preserves argv shape ──
-    // These tests verify the invariant that render(parse(argv)) == argv
-    // once the parser supports all subcommands. They are currently #[ignore]
-    // because the parser is still a stub.
+    // These tests verify the invariant that render(parse(argv)) == argv for
+    // the supported non-trivial subcommands.
 
     #[test]
-    #[ignore = "parser stub does not support status yet"]
     fn roundtrip_status_short() {
         let argv = vec!["git".into(), "status".into(), "-s".into()];
         let op = crate::parser::parse_git_argv(&argv).unwrap();
@@ -1925,7 +1923,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support commit yet"]
     fn roundtrip_commit() {
         let argv = vec!["git".into(), "commit".into(), "-m".into(), "fix bug".into()];
         let op = crate::parser::parse_git_argv(&argv).unwrap();
@@ -1934,7 +1931,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support branch yet"]
     fn roundtrip_branch_delete_force() {
         let argv = vec!["git".into(), "branch".into(), "-D".into(), "feat".into()];
         let op = crate::parser::parse_git_argv(&argv).unwrap();
@@ -1943,7 +1939,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support push yet"]
     fn roundtrip_push_upstream() {
         let argv = vec![
             "git".into(),
@@ -1958,7 +1953,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support reset yet"]
     fn roundtrip_reset_hard() {
         let argv = vec![
             "git".into(),
@@ -1972,7 +1966,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support diff yet"]
     fn roundtrip_diff_staged_stat() {
         let argv = vec![
             "git".into(),
@@ -1986,7 +1979,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "parser stub does not support clean yet"]
     fn roundtrip_clean_all_flags() {
         let argv = vec!["git".into(), "clean".into(), "-fndx".into()];
         let op = crate::parser::parse_git_argv(&argv).unwrap();

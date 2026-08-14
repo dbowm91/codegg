@@ -160,7 +160,7 @@ async fn g3_input_digest_is_deterministic() {
 }
 
 /// M013 G1+G4: concurrent reservations for different sequences must not lose updates.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_concurrent_reservations_do_not_lose_updates() {
     let temp = tempfile::tempdir().unwrap();
     let ledger = Arc::new(ToolProgramLedger::new(temp.path()));
@@ -233,7 +233,7 @@ async fn g1_concurrent_reservations_do_not_lose_updates() {
 }
 
 /// M013 G1: concurrent completions for distinct sequences must all persist.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn g1_concurrent_completions_do_not_overwrite() {
     let temp = tempfile::tempdir().unwrap();
     let ledger = Arc::new(ToolProgramLedger::new(temp.path()));
