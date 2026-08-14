@@ -5918,7 +5918,9 @@ impl App {
                 if id.is_empty() {
                     self.messages_state
                         .toasts
-                        .warning("Usage: /task-del <id> (use /tasks to see IDs)");
+                        .warning(
+                            "Usage: /task-del <id> (use the ID shown by /tasks; full schedule IDs also work)",
+                        );
                 } else if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = tx.try_send(TuiCommand::DeleteTask { id: id.to_string() });
                 } else {

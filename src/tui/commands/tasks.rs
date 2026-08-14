@@ -1,5 +1,6 @@
 //! Task, worktree, template, notification, and miscellaneous command handlers.
 
+use crate::core::CoreClient;
 use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::app::App;
 use crate::tui::app::Dialog;
@@ -7,6 +8,74 @@ use crate::tui::app::SessionStatus;
 use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
+
+pub(crate) const SCHEDULE_DISPLAY_ID_LEN: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScheduleIdResolutionError {
+    Empty,
+    TooShort { minimum: usize },
+    NotFound(String),
+    Ambiguous { input: String, matches: usize },
+}
+
+impl std::fmt::Display for ScheduleIdResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "Schedule ID cannot be empty"),
+            Self::TooShort { minimum } => write!(
+                f,
+                "Schedule ID prefix must be at least {minimum} characters (use the ID shown by /tasks)"
+            ),
+            Self::NotFound(input) => write!(f, "No schedule found for ID '{input}'"),
+            Self::Ambiguous { input, matches } => write!(
+                f,
+                "Schedule ID prefix '{input}' is ambiguous ({matches} matches); use a longer or full schedule ID"
+            ),
+        }
+    }
+}
+
+pub(crate) fn schedule_display_id(schedule_id: &str) -> String {
+    schedule_id.chars().take(SCHEDULE_DISPLAY_ID_LEN).collect()
+}
+
+pub(crate) fn resolve_schedule_id(
+    input: &str,
+    schedules: &[crate::protocol::dto::ScheduleSummaryDto],
+) -> Result<String, ScheduleIdResolutionError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(ScheduleIdResolutionError::Empty);
+    }
+
+    if let Some(schedule) = schedules
+        .iter()
+        .find(|schedule| schedule.schedule_id == input)
+    {
+        return Ok(schedule.schedule_id.clone());
+    }
+
+    if input.chars().count() < SCHEDULE_DISPLAY_ID_LEN {
+        return Err(ScheduleIdResolutionError::TooShort {
+            minimum: SCHEDULE_DISPLAY_ID_LEN,
+        });
+    }
+
+    let matches: Vec<&str> = schedules
+        .iter()
+        .filter(|schedule| schedule.schedule_id.starts_with(input))
+        .map(|schedule| schedule.schedule_id.as_str())
+        .collect();
+    match matches.as_slice() {
+        [schedule_id] => Ok((*schedule_id).to_string()),
+        [] => Err(ScheduleIdResolutionError::NotFound(input.to_string())),
+        matches => Err(ScheduleIdResolutionError::Ambiguous {
+            input: input.to_string(),
+            matches: matches.len(),
+        }),
+    }
+}
 
 fn durable_schedule_spec(
     workspace_id: String,
@@ -45,14 +114,36 @@ fn durable_schedule_spec(
     }
 }
 
-fn durable_schedule_task_value(
-    schedule: &crate::protocol::dto::ScheduleSummaryDto,
-) -> serde_json::Value {
-    let kind = schedule
+fn schedule_kind(schedule: &crate::protocol::dto::ScheduleSummaryDto) -> &str {
+    schedule
         .kind
         .get("kind")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("schedule");
+        .unwrap_or("schedule")
+}
+
+fn schedule_fallback_label(schedule: &crate::protocol::dto::ScheduleSummaryDto) -> String {
+    format!("{}/{}", schedule_kind(schedule), schedule.state)
+}
+
+pub(crate) fn schedule_label(
+    summary: &crate::protocol::dto::ScheduleSummaryDto,
+    detail: Option<&crate::protocol::dto::ScheduleRecordDto>,
+) -> String {
+    detail
+        .and_then(|record| record.job_template.get("payload"))
+        .and_then(|payload| payload.get("prompt"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| schedule_fallback_label(summary))
+}
+
+fn durable_schedule_task_value_with_label(
+    schedule: &crate::protocol::dto::ScheduleSummaryDto,
+    label: &str,
+) -> serde_json::Value {
     let interval_secs = schedule
         .kind
         .get("every")
@@ -62,10 +153,81 @@ fn durable_schedule_task_value(
 
     serde_json::json!({
         "id": schedule.schedule_id,
-        "kind": kind,
+        "kind": schedule_kind(schedule),
         "state": schedule.state,
         "interval_secs": interval_secs,
+        "message": label,
     })
+}
+
+fn durable_schedule_task_value(
+    schedule: &crate::protocol::dto::ScheduleSummaryDto,
+) -> serde_json::Value {
+    let label = schedule_label(schedule, None);
+    durable_schedule_task_value_with_label(schedule, &label)
+}
+
+fn durable_schedule_task_line(task: &serde_json::Value) -> String {
+    let id = task.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+    let message = task
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let kind = task
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("schedule");
+    let state = task
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let label = if message.is_empty() { kind } else { message };
+    let interval_secs = task
+        .get("interval_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    format!(
+        "{}: {} ({}s, {})",
+        schedule_display_id(id),
+        label.chars().take(30).collect::<String>(),
+        interval_secs,
+        state,
+    )
+}
+
+async fn request_workspace_schedules(
+    core_client: &dyn CoreClient,
+    workspace_id: &str,
+) -> Result<Vec<crate::protocol::dto::ScheduleSummaryDto>, String> {
+    let request = crate::core::new_request(
+        format!("task-list-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ScheduleList {
+            workspace_id: Some(workspace_id.to_string()),
+            include_archived: false,
+        },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::ScheduleList { schedules }) => Ok(schedules),
+        Ok(CoreResponse::Error { message, .. }) => Err(format!("Failed to list tasks: {message}")),
+        Ok(_other) => Err("Unexpected task response".to_string()),
+        Err(error) => Err(format!("Failed to list tasks: {error}")),
+    }
+}
+
+async fn request_schedule_detail(
+    core_client: &dyn CoreClient,
+    schedule_id: &str,
+) -> Option<crate::protocol::dto::ScheduleRecordDto> {
+    let request = crate::core::new_request(
+        format!("task-get-{}", uuid::Uuid::new_v4()),
+        CoreRequest::ScheduleGet {
+            schedule_id: schedule_id.to_string(),
+        },
+    );
+    match core_client.request(request).await {
+        Ok(CoreResponse::ScheduleGet { schedule }) => Some(schedule),
+        _ => None,
+    }
 }
 
 fn worktree_label(tree: &serde_json::Value) -> Option<String> {
@@ -115,36 +277,33 @@ pub(crate) fn start_list_tasks(app: &mut App) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
-            let request = crate::core::new_request(
-                format!("task-list-{}", uuid::Uuid::new_v4()),
-                CoreRequest::ScheduleList {
-                    workspace_id: Some(workspace_id),
-                    include_archived: false,
-                },
-            );
-            match core_client.request(request).await {
-                Ok(CoreResponse::ScheduleList { schedules }) => {
-                    let tasks = schedules.iter().map(durable_schedule_task_value).collect();
+            match request_workspace_schedules(core_client.as_ref(), &workspace_id).await {
+                Ok(schedules) => {
+                    let mut tasks = Vec::with_capacity(schedules.len());
+                    for schedule in &schedules {
+                        let detail =
+                            request_schedule_detail(core_client.as_ref(), &schedule.schedule_id)
+                                .await;
+                        let detail = detail.filter(|record| record.workspace_id == workspace_id);
+                        let task = match detail.as_ref() {
+                            Some(detail) => {
+                                let label = schedule_label(schedule, Some(detail));
+                                durable_schedule_task_value_with_label(schedule, &label)
+                            }
+                            None => durable_schedule_task_value(schedule),
+                        };
+                        tasks.push(task);
+                    }
                     Some(TuiCommand::TasksListed {
                         request_id,
                         tasks,
                         error: None,
                     })
                 }
-                Ok(CoreResponse::Error { message, .. }) => Some(TuiCommand::TasksListed {
+                Err(error) => Some(TuiCommand::TasksListed {
                     request_id,
                     tasks: Vec::new(),
-                    error: Some(format!("Failed to list tasks: {}", message)),
-                }),
-                Ok(_other) => Some(TuiCommand::TasksListed {
-                    request_id,
-                    tasks: Vec::new(),
-                    error: Some("Unexpected task response".to_string()),
-                }),
-                Err(e) => Some(TuiCommand::TasksListed {
-                    request_id,
-                    tasks: Vec::new(),
-                    error: Some(format!("Failed to list tasks: {}", e)),
+                    error: Some(error),
                 }),
             }
         },
@@ -174,25 +333,7 @@ pub(crate) fn apply_tasks_listed(
     if tasks.is_empty() {
         app.messages_state.toasts.info("No background tasks");
     } else {
-        let list: Vec<String> = tasks
-            .iter()
-            .map(|t| {
-                let id = t.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                let message = t
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let kind = t.get("kind").and_then(|v| v.as_str()).unwrap_or("schedule");
-                let label = if message.is_empty() { kind } else { message };
-                let interval_secs = t.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(0);
-                format!(
-                    "{}: {} ({}s)",
-                    id.chars().take(8).collect::<String>(),
-                    label.chars().take(30).collect::<String>(),
-                    interval_secs
-                )
-            })
-            .collect();
+        let list: Vec<String> = tasks.iter().map(durable_schedule_task_line).collect();
         if list.len() > 5 {
             app.open_info_dialog(
                 crate::tui::components::dialogs::info::InfoType::TaskList,
@@ -205,6 +346,17 @@ pub(crate) fn apply_tasks_listed(
 }
 
 pub(crate) fn start_delete_task(app: &mut App, id: String) {
+    let Some(workspace_id) = app
+        .session_state
+        .session
+        .as_ref()
+        .and_then(|session| session.workspace_id.clone())
+    else {
+        app.messages_state
+            .toasts
+            .warning("Task schedules require an active workspace");
+        return;
+    };
     let request_id = app.dialog_state.task_delete_request.begin();
     let core_client = app.core_client.clone();
     let tx = app.tui_cmd_tx.clone();
@@ -223,10 +375,33 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     error: Some("Core unavailable — check daemon status with /doctor".to_string()),
                 });
             };
+            let schedules =
+                match request_workspace_schedules(core_client.as_ref(), &workspace_id).await {
+                    Ok(schedules) => schedules,
+                    Err(error) => {
+                        return Some(TuiCommand::TaskOperationFinished {
+                            request_id,
+                            op: "delete".to_string(),
+                            task_id: Some(id.clone()),
+                            error: Some(error),
+                        });
+                    }
+                };
+            let resolved_id = match resolve_schedule_id(&id, &schedules) {
+                Ok(schedule_id) => schedule_id,
+                Err(error) => {
+                    return Some(TuiCommand::TaskOperationFinished {
+                        request_id,
+                        op: "delete".to_string(),
+                        task_id: Some(id.clone()),
+                        error: Some(error.to_string()),
+                    });
+                }
+            };
             let request = crate::core::new_request(
                 format!("task-delete-{}", uuid::Uuid::new_v4()),
                 CoreRequest::ScheduleDelete {
-                    schedule_id: id.clone(),
+                    schedule_id: resolved_id.clone(),
                 },
             );
             match core_client.request(request).await {
@@ -242,20 +417,20 @@ pub(crate) fn start_delete_task(app: &mut App, id: String) {
                     Some(TuiCommand::TaskOperationFinished {
                         request_id,
                         op: "delete".to_string(),
-                        task_id: Some(id.clone()),
+                        task_id: Some(resolved_id.clone()),
                         error: Some(format!("Failed to delete task: {}", message)),
                     })
                 }
                 Ok(_other) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "delete".to_string(),
-                    task_id: Some(id.clone()),
+                    task_id: Some(resolved_id.clone()),
                     error: Some("Unexpected task response".to_string()),
                 }),
                 Err(e) => Some(TuiCommand::TaskOperationFinished {
                     request_id,
                     op: "delete".to_string(),
-                    task_id: Some(id),
+                    task_id: Some(resolved_id),
                     error: Some(format!("Failed to delete task: {}", e)),
                 }),
             }
@@ -289,12 +464,7 @@ pub(crate) fn apply_task_operation_finished(
             app.messages_state.toasts.info("Task deleted");
         }
         "schedule" => {
-            let display_id = task_id
-                .as_deref()
-                .unwrap_or("")
-                .chars()
-                .take(8)
-                .collect::<String>();
+            let display_id = schedule_display_id(task_id.as_deref().unwrap_or(""));
             app.messages_state
                 .toasts
                 .info(&format!("Task {} scheduled", display_id));
@@ -744,8 +914,55 @@ pub(crate) fn handle_file_diff_stats_ready(
 
 #[cfg(test)]
 mod tests {
-    use super::{durable_schedule_spec, durable_schedule_task_value, worktree_label};
+    use super::{
+        durable_schedule_spec, durable_schedule_task_line, durable_schedule_task_value,
+        durable_schedule_task_value_with_label, resolve_schedule_id, schedule_display_id,
+        schedule_label, worktree_label, ScheduleIdResolutionError, SCHEDULE_DISPLAY_ID_LEN,
+    };
     use serde_json::json;
+
+    fn summary(id: &str, workspace_id: &str) -> crate::protocol::dto::ScheduleSummaryDto {
+        crate::protocol::dto::ScheduleSummaryDto {
+            schedule_id: id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            session_id: Some("session-1".to_string()),
+            kind: json!({
+                "kind": "interval",
+                "every": {"secs": 60, "nanos": 0},
+            }),
+            state: "active".to_string(),
+            overlap_policy: "skip_if_running".to_string(),
+            missed_run_policy: json!("run_once_now"),
+            next_run_at_ms: None,
+            last_occurrence_at_ms: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    fn record(
+        id: &str,
+        workspace_id: &str,
+        job_template: serde_json::Value,
+    ) -> crate::protocol::dto::ScheduleRecordDto {
+        crate::protocol::dto::ScheduleRecordDto {
+            schedule_id: id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            session_id: Some("session-1".to_string()),
+            kind: json!({
+                "kind": "interval",
+                "every": {"secs": 60, "nanos": 0},
+            }),
+            job_template,
+            state: "active".to_string(),
+            overlap_policy: "skip_if_running".to_string(),
+            missed_run_policy: json!("run_once_now"),
+            next_run_at_ms: None,
+            last_occurrence_at_ms: None,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
 
     #[test]
     fn task_schedule_uses_durable_opaque_schedule_contract() {
@@ -790,6 +1007,129 @@ mod tests {
         assert_eq!(task["kind"], "interval");
         assert_eq!(task["interval_secs"], 60);
         assert_eq!(task["state"], "active");
+        assert_eq!(task["message"], "interval/active");
+    }
+
+    #[test]
+    fn schedule_display_token_is_centralized_and_bounded() {
+        assert_eq!(schedule_display_id("1234567890"), "12345678");
+        assert_eq!(schedule_display_id("short"), "short");
+        assert_eq!(SCHEDULE_DISPLAY_ID_LEN, 8);
+    }
+
+    #[test]
+    fn schedule_id_resolver_accepts_exact_and_unique_display_prefix() {
+        let schedules = vec![summary("12345678-full-id", "workspace-1")];
+
+        assert_eq!(
+            resolve_schedule_id("  12345678-full-id  ", &schedules),
+            Ok("12345678-full-id".to_string())
+        );
+        assert_eq!(
+            resolve_schedule_id("12345678", &schedules),
+            Ok("12345678-full-id".to_string())
+        );
+    }
+
+    #[test]
+    fn schedule_id_resolver_rejects_empty_too_short_and_unknown_input() {
+        let schedules = vec![summary("12345678-full-id", "workspace-1")];
+
+        assert_eq!(
+            resolve_schedule_id(" ", &schedules),
+            Err(ScheduleIdResolutionError::Empty)
+        );
+        assert_eq!(
+            resolve_schedule_id("1234567", &schedules),
+            Err(ScheduleIdResolutionError::TooShort {
+                minimum: SCHEDULE_DISPLAY_ID_LEN
+            })
+        );
+        assert_eq!(
+            resolve_schedule_id("abcdefgh", &schedules),
+            Err(ScheduleIdResolutionError::NotFound("abcdefgh".to_string()))
+        );
+    }
+
+    #[test]
+    fn schedule_id_resolver_rejects_ambiguous_prefix_without_selecting_one() {
+        let schedules = vec![
+            summary("12345678-first", "workspace-1"),
+            summary("12345678-second", "workspace-1"),
+        ];
+
+        assert_eq!(
+            resolve_schedule_id("12345678", &schedules),
+            Err(ScheduleIdResolutionError::Ambiguous {
+                input: "12345678".to_string(),
+                matches: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn schedule_id_resolver_only_considers_workspace_scoped_list_results() {
+        let active_workspace_schedules = vec![summary("active-12345678", "workspace-1")];
+
+        assert_eq!(
+            resolve_schedule_id("other-12345678", &active_workspace_schedules),
+            Err(ScheduleIdResolutionError::NotFound(
+                "other-12345678".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn schedule_label_extracts_prompt_from_durable_subagent_record() {
+        let schedule = summary("schedule-1", "workspace-1");
+        let detail = record(
+            "schedule-1",
+            "workspace-1",
+            json!({
+                "kind": "subagent",
+                "payload": {"kind": "subagent", "prompt": "check the build"}
+            }),
+        );
+
+        assert_eq!(schedule_label(&schedule, Some(&detail)), "check the build");
+    }
+
+    #[test]
+    fn schedule_label_falls_back_for_missing_or_unsupported_detail() {
+        let schedule = summary("schedule-1", "workspace-1");
+        let unsupported = record("schedule-1", "workspace-1", json!({"kind": "unknown"}));
+
+        assert_eq!(
+            schedule_label(&schedule, Some(&unsupported)),
+            "interval/active"
+        );
+        assert_eq!(schedule_label(&schedule, None), "interval/active");
+        assert_eq!(
+            durable_schedule_task_value(&schedule)["message"],
+            "interval/active"
+        );
+    }
+
+    #[test]
+    fn schedule_label_and_row_keep_long_prompt_bounded_at_presentation_boundary() {
+        let schedule = summary("schedule-1", "workspace-1");
+        let detail = record(
+            "schedule-1",
+            "workspace-1",
+            json!({
+                "kind": "subagent",
+                "payload": {"kind": "subagent", "prompt": "abcdefghijklmnopqrstuvwxyz1234567890"}
+            }),
+        );
+        let task = durable_schedule_task_value_with_label(
+            &schedule,
+            &schedule_label(&schedule, Some(&detail)),
+        );
+
+        assert_eq!(
+            durable_schedule_task_line(&task),
+            "schedule: abcdefghijklmnopqrstuvwxyz1234 (60s, active)"
+        );
     }
 
     #[test]

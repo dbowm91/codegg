@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 ready | Post-M009 audit found that the TUI displays only an 8-character durable schedule token while delete requires the exact full ID, and `/tasks` no longer exposes the scheduled prompt. |
+| Runtime consolidation, deletion, and footprint | active | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 active | M010 is implementing the workspace-scoped short schedule token resolver and durable ScheduleGet-backed task labels. |
 | Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
@@ -43,7 +43,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
-| Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | ready | `plans/implementation/runtime-consolidation-deletion-footprint/010-tui-durable-schedule-identity-and-label-closure.md` | M009 architectural work landed; current `main` still exposes only a shortened schedule ID while delete requires the exact durable ID. |
+| Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | active | `plans/implementation/runtime-consolidation-deletion-footprint/010-tui-durable-schedule-identity-and-label-closure.md` | Implementation and focused closure evidence are in progress; M009 remains historical predecessor evidence. |
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
 
 ## Closure work and dependencies
