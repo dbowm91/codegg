@@ -64,6 +64,7 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 |--------|---------|-----------|------|
 | Agent | Main agent loop, compaction, routing, team coordination, multi-agent orchestration | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs`, `team.rs` | [agent.md](agent.md) |
 | AssetContext / Snapshot / Refresh | Explicit context, immutable snapshot builder, generation coordinator, bounded operator refresh, turn/agent-run pinning, lazy resource handles, and inert remote manifest DTOs (Runtime Assets Milestones 2–4) | `asset_context.rs`, `instructions.rs`, `asset_snapshot.rs`, `asset_snapshot_builder.rs`, `asset_refresh.rs`, `skills/resource.rs`, `codegg-protocol/src/runtime_assets.rs` | [agent.md](agent.md) |
+| ACP | Agent Client Protocol v1 stdio adapter — presentation layer over the singleton daemon, JSON-RPC framing, projection event translation | `acp.rs` | [acp.md](acp.md) |
 | Command Intent | Command intent classification, risk assessment, execution capability model — pipeline stage 1 | `mod.rs`, `shell_shape.rs`, `plan.rs` | [command_intent.md](command_intent.md) |
 | Command Planner | Maps classified intents to execution backends, generates permissions, selects projection policy — pipeline stage 2 | `plan.rs` (re-exported via `src/command_planner.rs`) | [command_planner.md](command_planner.md) |
 | Command Routing | Resolves planned execution to concrete subsystems (TestRunner, Shell, Python, Git, ManagedProcess) — pipeline stage 3 | `src/command_routing.rs` | [command_routing.md](command_routing.md) |
@@ -201,7 +202,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
 | DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
 | Integration tests | 160 | `tests/` |
-| Architecture docs | 69 | `architecture/` |
+| Architecture docs | 72 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
@@ -303,6 +304,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 
 ### Agent and Execution
 - [Agent Loop](agent.md) — Main execution cycle, compaction, routing, multi-agent teams
+- [ACP](acp.md) — Agent Client Protocol v1 stdio adapter
 - [Command Intent](command_intent.md) — Command classification, risk assessment, execution capabilities
 - [Command Planner](command_planner.md) — Backend mapping, permission generation, projection policy
 - [Command Routing](command_routing.md) — Concrete subsystem dispatch
@@ -378,10 +380,12 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [LSP Disk Cache Threat Model](lsp_disk_cache_threat_model.md) — LSP cache security
 
 ### Additional References
+- [Agent Tool Surface](agent-tool-surface.md) — Agent-facing tool definitions and categories
 - [Cache-Aware Context](cache-aware-context.md) — Cache-aware context packing
 - [Compaction](compaction.md) — Context window overflow management
 - [Context Ledger](context-ledger.md) — Token counting and context utilities
 - [CodeGG Core](codegg_core.md) — codegg-core crate internals
+- [Model Adapters](model-adapters.md) — Model adapter patterns and conversions
 - [Testing](testing.md) — Test resource taxonomy, Tokio runtime rules
 
 ## Directory Layout
@@ -443,7 +447,7 @@ codegg/
 │   ├── agents/                 # 9 built-in agent TOML definitions
 │   └── prompts/               # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (69 docs)
+├── architecture/               # Architecture documentation (72 docs)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
 └── examples/                   # Plugin SDKs and examples
