@@ -28,11 +28,18 @@ impl Tool for ResearchSearchTool {
                     "type": "string",
                     "description": "Search query for research content"
                 },
-                "domains": {
+                "research_domain": {
+                    "type": "string",
+                    "description": "Research domain hint"
+                },
+                "desired_source_types": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Provider or domain hints (e.g. ['arxiv', 'pubmed'])"
+                    "description": "Desired source types"
                 },
+                "workflow": { "type": "string", "description": "Research workflow" },
+                "depth": { "type": "string", "enum": ["quick", "standard", "deep"], "description": "Research depth" },
+                "providers": { "type": "array", "items": { "type": "string" }, "description": "Explicit provider IDs" },
                 "max_results": {
                     "type": "number",
                     "description": "Maximum results to return (default: 10, max: 15)"

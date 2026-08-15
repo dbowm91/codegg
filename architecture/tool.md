@@ -140,12 +140,12 @@ fallback). Raw `mcp__eggsearch__*` equivalents are hidden by default.
 | Tool | File | Description |
 |------|------|-------------|
 | **repo_search** | `repo_search.rs` | Search repositories via eggsearch. Wraps `repo_search` MCP tool. |
-| **repo_fetch** | `repo_fetch.rs` | Fetch repository file content via eggsearch. Wraps `repo_fetch` MCP tool. |
-| **repo_map** | `repo_map.rs` | Get repository directory structure via eggsearch. Wraps `repo_map` MCP tool. |
-| **security_search** | `security_search.rs` | Search security advisories via eggsearch. Wraps `security_search` MCP tool. |
-| **research_search** | `research_search.rs` | Search academic/research sources via eggsearch. Wraps `research_search` MCP tool. |
-| **batch_fetch** | `batch_fetch.rs` | Fetch multiple URLs in parallel via eggsearch. Wraps `batch_fetch` MCP tool. |
-| **evidence_bundle** | `evidence_bundle.rs` | Build evidence bundles from multiple sources via eggsearch. Wraps `build_evidence_bundle` MCP tool. |
+| **repo_fetch** | repo_fetch.rs | Fetch repository file content via eggsearch using explicit owner, repo, path, and current line-range fields; accepts an unambiguous combined locator as a compatibility alias. |
+| **repo_map** | repo_map.rs | Get repository directory structure via eggsearch using explicit owner, repo, and max_depth; path-scoped maps are rejected because the upstream contract has no path field. |
+| **security_search** | security_search.rs | Search security advisories via eggsearch, including current CVE/GHSA/OSV/RustSec identifier fields. |
+| **research_search** | research_search.rs | Search academic/research sources via eggsearch using current research-domain, source-type, workflow, and depth fields. |
+| **batch_fetch** | batch_fetch.rs | Fetch tagged web or repository items via eggsearch; legacy URL arrays are normalized to current tagged items. |
+| **evidence_bundle** | evidence_bundle.rs | Build bundles from current eggsearch source-card and linked fetch inputs; historical pseudo-source descriptors are rejected. |
 
 `websearch` and `webfetch` always present the stable native tool
 names to the model. The raw `mcp__eggsearch__*` tools are hidden

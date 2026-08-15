@@ -36,10 +36,14 @@ impl Tool for SecuritySearchTool {
                     "type": "string",
                     "description": "Package name to search advisories for"
                 },
-                "cve": {
+                "cve_id": {
                     "type": "string",
                     "description": "Specific CVE identifier (e.g. 'CVE-2024-1234')"
                 },
+                "ghsa_id": { "type": "string", "description": "Specific GitHub Security Advisory identifier" },
+                "osv_id": { "type": "string", "description": "Specific OSV identifier" },
+                "rustsec_id": { "type": "string", "description": "Specific RustSec identifier" },
+                "version": { "type": "string", "description": "Package version" },
                 "max_results": {
                     "type": "number",
                     "description": "Maximum results to return (default: 10, max: 20)"

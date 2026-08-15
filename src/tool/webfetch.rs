@@ -87,6 +87,15 @@ impl Tool for WebFetchTool {
                 "max_length": {
                     "type": "number",
                     "description": "Maximum characters to return (default: 10000)"
+                },
+                "extract_mode": {
+                    "type": "string",
+                    "enum": ["text", "markdown", "metadata_only"],
+                    "description": "Eggsearch extraction mode (default: text)"
+                },
+                "include_links": {
+                    "type": "boolean",
+                    "description": "Include extracted links (default: false)"
                 }
             },
             "required": ["url"]

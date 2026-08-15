@@ -121,6 +121,8 @@ lists missing tools.
 - Reads `provider` and maps known hints to a `providers` list
   (see `translate_provider_hint`). Unknown hints let eggsearch
   auto-pick.
+- Forwards the current `intent`, `freshness`, and `safe_search`
+  hints when supplied.
 - Calls `McpService::call_tool(server, "web_search", args)` with a
   configurable timeout (default 60s).
 - Clamps output to `max_search_output_chars` and wraps in
@@ -131,7 +133,8 @@ lists missing tools.
 - Reads `url` (required). Validates URL (non-empty, ≤2048 bytes,
   http/https scheme only) via `validate_fetch_url()`.
 - Reads `max_length` (or alias `max_chars`); default 10_000.
-- Always sends `extract_mode = "text"`, `include_links = false`.
+- Forwards `extract_mode` and `include_links`, defaulting to
+  `text` and `false`.
 - Calls `McpService::call_tool(server, "web_fetch", args)`.
 - Clamps output to `max_fetch_output_chars` and wraps in
   `frame_fetched_page`.
@@ -139,7 +142,12 @@ lists missing tools.
 ### `eggsearch::call_repo_search(server, input, max_chars, timeout_ms)`
 
 - Reads `query` (required, non-empty).
-- Reads optional `num_results` (default 8, max 30).
+- Normalizes an optional combined `repo = "owner/name"` locator, or
+  prefers explicit `owner` + `repo` fields.
+- Forwards the supported subset: `host`, `path`, `file`,
+  `language`, `symbol`, `profile`, `include_local`, and `mode`.
+- Does not send the historical `include_snippets` field.
+- Reads `max_results` (default 10, max 30).
 - Calls `call_tool(server, "repo_search", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_repo_search_output_chars` (default 15k), frames
@@ -147,8 +155,13 @@ lists missing tools.
 
 ### `eggsearch::call_repo_fetch(server, input, max_chars, timeout_ms)`
 
-- Reads `url` or `repo`+`path` (required).
-- Reads optional `max_length` (default 10k).
+- Requires `path` and a repository locator. The locator is emitted as
+  separate upstream `owner` and `repo` fields; explicit `host`,
+  `ref_name`, and `commit_sha` are forwarded.
+- Emits current `line_start`/`line_end` names and accepts
+  `start_line`/`end_line` as compatibility aliases when unambiguous.
+- Forwards current context, symbol, block-expansion, and local-preference
+  options.
 - Calls `call_tool(server, "repo_fetch", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_repo_fetch_output_chars`, frames with
@@ -156,8 +169,11 @@ lists missing tools.
 
 ### `eggsearch::call_repo_map(server, input, max_chars, timeout_ms)`
 
-- Reads `repo` (required).
-- Reads optional `path` (default root).
+- Requires a complete repository locator and emits separate `owner` and
+  `repo` fields.
+- Emits current `max_depth` (default 2, capped at 3). The historical
+  subdirectory `path` is rejected because eggsearch has no equivalent
+  `repo_map` input; use `repo_search` or `repo_fetch` for path-scoped work.
 - Calls `call_tool(server, "repo_map", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_repo_map_output_chars`, frames with `frame_repo_map`.
@@ -165,6 +181,8 @@ lists missing tools.
 ### `eggsearch::call_security_search(server, input, max_chars, timeout_ms)`
 
 - Reads `query` (required, non-empty).
+- Maps legacy `cve` to current `cve_id` and forwards current GHSA,
+  OSV, RustSec, package/version, applicability, and workflow fields.
 - Calls `call_tool(server, "security_search", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_security_output_chars` (default 10k), frames with
@@ -173,7 +191,12 @@ lists missing tools.
 ### `eggsearch::call_research_search(server, input, max_chars, timeout_ms)`
 
 - Reads `query` (required, non-empty).
-- Reads optional `num_results` (default 8, max 30).
+- Forwards `research_domain`, `desired_source_types`, workflow/depth,
+  freshness, provider, comparison, constraint, and context fields.
+- A legacy `domains` array is translated only when it is clearly a
+  provider list or one unambiguous research domain; ambiguous values
+  fail validation.
+- Reads `max_results` (default 10, max 15).
 - Calls `call_tool(server, "research_search", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_research_output_chars` (default 15k), frames with
@@ -181,9 +204,12 @@ lists missing tools.
 
 ### `eggsearch::call_batch_fetch(server, input, max_chars, timeout_ms)`
 
-- Reads `urls` (required, non-empty array). Validates each URL via
-  `validate_fetch_url()`.
-- Reads optional `max_length_per_url` (default 10k).
+- Canonicalizes requests to a non-empty tagged `items` array. Legacy
+  `urls` become `{ "type": "web", "url": "..." }` items, while
+  repository items become tagged objects with separate `owner`, `repo`,
+  and `path` fields.
+- Validates every web URL before calling eggsearch and bounds item and
+  aggregate character limits.
 - Calls `call_tool(server, "batch_fetch", args)` with configurable
   timeout (default 60s).
 - Clamps to `max_batch_output_chars` (default 50k), frames with
@@ -191,7 +217,10 @@ lists missing tools.
 
 ### `eggsearch::call_build_evidence_bundle(server, input, max_chars, timeout_ms)`
 
-- Reads `sources` (required, array of source descriptors).
+- Accepts current source-card `sources` and linked `fetches` inputs;
+  either collection may provide the bundle contents.
+- Rejects historical pseudo-source descriptors with a `type` field
+  instead of silently discarding their semantics.
 - Calls `call_tool(server, "build_evidence_bundle", args)` with
   configurable timeout (default 60s).
 - Clamps to `max_evidence_output_chars` (default 100k), frames with

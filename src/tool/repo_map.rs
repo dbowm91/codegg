@@ -26,16 +26,24 @@ impl Tool for RepoMapTool {
             "properties": {
                 "repo": {
                     "type": "string",
-                    "description": "Repository locator (e.g. 'owner/repo')"
+                    "description": "Repository name; use with owner, or pass a legacy combined owner/repo locator"
                 },
-                "path": {
+                "owner": {
                     "type": "string",
-                    "description": "Subdirectory path to map (default: root)"
+                    "description": "Repository owner; preferred with an explicit repo name"
                 },
-                "depth": {
+                "host": { "type": "string", "description": "Code host" },
+                "ref_name": { "type": "string", "description": "Branch, tag, or commit ref" },
+                "commit_sha": { "type": "string", "description": "Full commit SHA" },
+                "max_entries": { "type": "number", "description": "Maximum root entries" },
+                "max_depth": {
                     "type": "number",
                     "description": "Maximum directory depth (default: 2, max: 3)"
-                }
+                },
+                "include_files": { "type": "boolean", "description": "Include file entries" },
+                "include_directories": { "type": "boolean", "description": "Include directory entries" },
+                "include_ci": { "type": "boolean", "description": "Include CI configuration details" },
+                "include_security": { "type": "boolean", "description": "Include security policy details" }
             },
             "required": ["repo"]
         })

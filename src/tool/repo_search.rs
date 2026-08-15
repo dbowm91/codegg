@@ -30,19 +30,40 @@ impl Tool for RepoSearchTool {
                 },
                 "repo": {
                     "type": "string",
-                    "description": "Repository locator (e.g. 'owner/repo')"
+                    "description": "Repository name, or legacy combined locator (e.g. 'owner/repo')"
+                },
+                "host": {
+                    "type": "string",
+                    "description": "Code host (e.g. github, gitlab, codeberg, gitea, forgejo)"
+                },
+                "owner": {
+                    "type": "string",
+                    "description": "Repository owner; preferred with an explicit repo name"
                 },
                 "language": {
                     "type": "string",
                     "description": "Programming language filter"
                 },
+                "path": { "type": "string", "description": "Path hint" },
+                "file": { "type": "string", "description": "File-name hint" },
+                "symbol": { "type": "string", "description": "Symbol hint" },
+                "profile": {
+                    "type": "string",
+                    "enum": ["generic", "coding", "security", "research"],
+                    "description": "Provider-selection profile"
+                },
+                "include_local": {
+                    "type": "boolean",
+                    "description": "Include matching local workspace results when eggsearch provides them"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["default", "exact_error"],
+                    "description": "Search mode"
+                },
                 "max_results": {
                     "type": "number",
                     "description": "Maximum results to return (default: 10, max: 30)"
-                },
-                "include_snippets": {
-                    "type": "boolean",
-                    "description": "Include code snippets in results"
                 }
             },
             "required": ["query"]

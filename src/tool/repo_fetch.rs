@@ -26,20 +26,37 @@ impl Tool for RepoFetchTool {
             "properties": {
                 "repo": {
                     "type": "string",
-                    "description": "Repository locator (e.g. 'owner/repo')"
+                    "description": "Repository name; use with owner, or pass a legacy combined owner/repo locator"
+                },
+                "owner": {
+                    "type": "string",
+                    "description": "Repository owner; preferred with an explicit repo name"
+                },
+                "host": {
+                    "type": "string",
+                    "description": "Code host"
                 },
                 "path": {
                     "type": "string",
                     "description": "File path within the repository"
                 },
-                "start_line": {
+                "line_start": {
                     "type": "number",
                     "description": "Start line number (1-indexed)"
                 },
-                "end_line": {
+                "line_end": {
                     "type": "number",
                     "description": "End line number (1-indexed, inclusive)"
                 },
+                "ref_name": { "type": "string", "description": "Branch, tag, or commit ref" },
+                "commit_sha": { "type": "string", "description": "Full commit SHA" },
+                "context_before": { "type": "number", "description": "Extra context lines before the range" },
+                "context_after": { "type": "number", "description": "Extra context lines after the range" },
+                "symbol_kind": { "type": "string", "description": "Symbol kind" },
+                "match_text": { "type": "string", "description": "Text to locate before selecting a span" },
+                "expand_to_block": { "type": "boolean", "description": "Expand a selected symbol/text match to its enclosing block" },
+                "max_block_lines": { "type": "number", "description": "Maximum lines when expanding to a block" },
+                "prefer_local": { "type": "boolean", "description": "Prefer a matching eggsearch local checkout" },
                 "symbol": {
                     "type": "string",
                     "description": "Symbol name to locate"

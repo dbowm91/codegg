@@ -16,6 +16,365 @@ use super::framing::{
     frame_security_results,
 };
 
+fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
+    for field in fields {
+        if let Some(value) = input.get(*field).filter(|value| !value.is_null()) {
+            args[*field] = value.clone();
+        }
+    }
+}
+
+fn non_empty_string(input: &Value, field: &str) -> Result<Option<String>, ToolError> {
+    match input.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| ToolError::Execution(format!("'{field}' must be a non-empty string")))
+            .map(Some),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RepositoryLocator {
+    host: Option<String>,
+    owner: Option<String>,
+    repo: String,
+    ref_name: Option<String>,
+}
+
+fn repository_locator(input: &Value, require_owner: bool) -> Result<RepositoryLocator, ToolError> {
+    let explicit_owner = non_empty_string(input, "owner")?;
+    let repo = non_empty_string(input, "repo")?
+        .ok_or_else(|| ToolError::Execution("missing 'repo' parameter".to_string()))?;
+
+    let (owner, repo) = match explicit_owner {
+        Some(_owner) if repo.contains('/') => {
+            return Err(ToolError::Execution(
+                "'repo' must be a repository name when 'owner' is provided; use one combined owner/repo locator or separate fields, not both".to_string(),
+            ));
+        }
+        Some(owner) => (Some(owner), repo),
+        None if repo.matches('/').count() == 1 => {
+            let (owner, repo_name) = repo.split_once('/').expect("one slash implies split");
+            if owner.is_empty() || repo_name.is_empty() {
+                return Err(ToolError::Execution(format!(
+                    "invalid repository locator '{repo}'; expected owner/repo"
+                )));
+            }
+            (Some(owner.to_string()), repo_name.to_string())
+        }
+        None if repo.contains('/') => {
+            return Err(ToolError::Execution(format!(
+                "ambiguous repository locator '{repo}'; provide explicit 'owner' and 'repo'"
+            )));
+        }
+        None => (None, repo),
+    };
+
+    if require_owner && owner.is_none() {
+        return Err(ToolError::Execution(
+            "repository fetch/map requires explicit 'owner' and 'repo' or an unambiguous 'owner/repo' locator".to_string(),
+        ));
+    }
+
+    Ok(RepositoryLocator {
+        host: non_empty_string(input, "host")?,
+        owner,
+        repo,
+        ref_name: non_empty_string(input, "ref_name")?,
+    })
+}
+
+fn add_repository_locator(args: &mut Value, locator: RepositoryLocator) {
+    if let Some(host) = locator.host {
+        args["host"] = Value::String(host);
+    }
+    if let Some(owner) = locator.owner {
+        args["owner"] = Value::String(owner);
+    }
+    args["repo"] = Value::String(locator.repo);
+    if let Some(ref_name) = locator.ref_name {
+        args["ref_name"] = Value::String(ref_name);
+    }
+}
+
+fn range_alias(input: &Value, current: &str, legacy: &str) -> Result<Option<u64>, ToolError> {
+    let current_value = input.get(current).and_then(Value::as_u64);
+    let legacy_value = input.get(legacy).and_then(Value::as_u64);
+    if input
+        .get(current)
+        .is_some_and(|_value| current_value.is_none())
+    {
+        return Err(ToolError::Execution(format!(
+            "'{current}' must be a non-negative integer"
+        )));
+    }
+    if input
+        .get(legacy)
+        .is_some_and(|_value| legacy_value.is_none())
+    {
+        return Err(ToolError::Execution(format!(
+            "'{legacy}' must be a non-negative integer"
+        )));
+    }
+    if let (Some(current_value), Some(legacy_value)) = (current_value, legacy_value) {
+        if current_value != legacy_value {
+            return Err(ToolError::Execution(format!(
+                "'{current}' and legacy '{legacy}' disagree"
+            )));
+        }
+    }
+    Ok(current_value.or(legacy_value))
+}
+
+fn build_web_search_args(input: &Value) -> Result<Value, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|query| !query.is_empty())
+        .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
+    let max_results = input
+        .get("num_results")
+        .or_else(|| input.get("max_results"))
+        .and_then(Value::as_u64)
+        .unwrap_or(8)
+        .min(30);
+    let mut args = json!({"query": query, "max_results": max_results});
+    if let Some(providers) = translate_provider_hint(input.get("provider").and_then(Value::as_str))
+    {
+        if !providers.is_empty() {
+            args["providers"] = Value::Array(providers.into_iter().map(Value::String).collect());
+        }
+    }
+    copy_fields(&mut args, input, &["intent", "freshness", "safe_search"]);
+    Ok(args)
+}
+
+fn build_web_fetch_args(input: &Value) -> Result<Value, ToolError> {
+    let url = input
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::Execution("missing 'url' parameter".to_string()))?;
+    validate_fetch_url(url)?;
+    let max_chars = input
+        .get("max_length")
+        .or_else(|| input.get("max_chars"))
+        .and_then(Value::as_u64)
+        .unwrap_or(10_000);
+    let mut args = json!({"url": url, "max_chars": max_chars});
+    args["extract_mode"] = input
+        .get("extract_mode")
+        .cloned()
+        .unwrap_or_else(|| json!("text"));
+    args["include_links"] = input
+        .get("include_links")
+        .cloned()
+        .unwrap_or_else(|| json!(false));
+    Ok(args)
+}
+
+fn translate_legacy_research_domains(input: &Value, args: &mut Value) -> Result<(), ToolError> {
+    let Some(domains) = input.get("domains") else {
+        return Ok(());
+    };
+    let domains = domains.as_array().ok_or_else(|| {
+        ToolError::Execution("legacy 'domains' must be an array of strings".to_string())
+    })?;
+    if domains.is_empty() {
+        return Err(ToolError::Execution(
+            "legacy 'domains' is empty; use 'research_domain' or 'providers' instead".to_string(),
+        ));
+    }
+    let values = domains
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    ToolError::Execution(
+                        "legacy 'domains' must contain non-empty strings".to_string(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.iter().all(|value| is_known_provider(value)) {
+        if input.get("providers").is_some() {
+            return Err(ToolError::Execution(
+                "legacy 'domains' and current 'providers' cannot both be supplied".to_string(),
+            ));
+        }
+        let provider_values = values
+            .iter()
+            .filter_map(|value| translate_provider_hint(Some(value)))
+            .flatten()
+            .map(Value::String)
+            .collect();
+        args["providers"] = Value::Array(provider_values);
+    } else if values.len() == 1 && input.get("research_domain").is_none() {
+        args["research_domain"] = Value::String(values[0].to_string());
+    } else {
+        return Err(ToolError::Execution(
+            "legacy 'domains' is ambiguous; use one current 'research_domain' or an explicit 'providers' list".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn is_known_provider(value: &str) -> bool {
+    matches!(
+        value,
+        "duckduckgo"
+            | "mojeek"
+            | "wikipedia"
+            | "arxiv"
+            | "openalex"
+            | "pubmed"
+            | "hn_algolia"
+            | "google_news"
+            | "github"
+            | "exa"
+            | "tavily"
+            | "brave"
+            | "brave_api"
+            | "kagi"
+            | "serpapi"
+    )
+}
+
+fn normalize_batch_item(item: &Value, index: usize) -> Result<Value, ToolError> {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if item_type == Some("web") || (item_type.is_none() && item.get("url").is_some()) {
+        let url = item
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::Execution(format!("batch item {index} is missing 'url'")))?;
+        validate_fetch_url(url)?;
+        let mut normalized = json!({"type": "web", "url": url});
+        copy_fields(
+            &mut normalized,
+            item,
+            &["extract_mode", "include_links", "max_chars"],
+        );
+        return Ok(normalized);
+    }
+
+    if item_type == Some("repo") || item_type.is_none() && item.get("repo").is_some() {
+        let path = non_empty_string(item, "path")?.ok_or_else(|| {
+            ToolError::Execution(format!("batch repo item {index} is missing 'path'"))
+        })?;
+        let mut normalized = json!({"type": "repo", "path": path});
+        add_repository_locator(&mut normalized, repository_locator(item, true)?);
+        copy_fields(
+            &mut normalized,
+            item,
+            &[
+                "commit_sha",
+                "line_start",
+                "line_end",
+                "context_before",
+                "context_after",
+                "max_chars",
+            ],
+        );
+        if let Some(line_start) = range_alias(item, "line_start", "start_line")? {
+            normalized["line_start"] = json!(line_start);
+        }
+        if let Some(line_end) = range_alias(item, "line_end", "end_line")? {
+            normalized["line_end"] = json!(line_end);
+        }
+        return Ok(normalized);
+    }
+
+    Err(ToolError::Execution(format!(
+        "batch item {index} must be a tagged 'web' or 'repo' item"
+    )))
+}
+
+fn build_batch_fetch_args(input: &Value) -> Result<Value, ToolError> {
+    let mut raw_items = Vec::new();
+    if let Some(urls) = input.get("urls") {
+        let urls = urls.as_array().ok_or_else(|| {
+            ToolError::Execution("legacy 'urls' must be an array of HTTP(S) strings".to_string())
+        })?;
+        raw_items.extend(urls.iter().map(|url| json!({"type": "web", "url": url})));
+    }
+    if let Some(items) = input.get("items") {
+        let items = items
+            .as_array()
+            .ok_or_else(|| ToolError::Execution("'items' must be an array".to_string()))?;
+        raw_items.extend(items.iter().cloned());
+    }
+    if raw_items.is_empty() {
+        return Err(ToolError::Execution(
+            "batch_fetch requires a non-empty 'items' array (legacy 'urls' is also accepted)"
+                .to_string(),
+        ));
+    }
+    let items = raw_items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| normalize_batch_item(item, index))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut args = json!({"items": items});
+    copy_fields(&mut args, input, &["continue_on_error"]);
+    args["max_items"] = json!(bounded_u64(input, "max_items", 100, 100)?);
+    args["max_chars_per_item"] = json!(bounded_u64(input, "max_chars_per_item", 10_000, 50_000,)?);
+    if input.get("max_total_chars").is_some() {
+        args["max_total_chars"] = json!(bounded_u64(input, "max_total_chars", 100_000, 500_000,)?);
+    }
+    Ok(args)
+}
+
+fn bounded_u64(input: &Value, field: &str, default: u64, cap: u64) -> Result<u64, ToolError> {
+    match input.get(field) {
+        None => Ok(default),
+        Some(value) => value.as_u64().map(|value| value.min(cap)).ok_or_else(|| {
+            ToolError::Execution(format!("'{field}' must be a non-negative integer"))
+        }),
+    }
+}
+
+fn build_evidence_bundle_args(input: &Value) -> Result<Value, ToolError> {
+    let sources = input
+        .get("sources")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let fetches = input.get("fetches").and_then(Value::as_array);
+    if sources.is_empty() && fetches.map_or(true, Vec::is_empty) {
+        return Err(ToolError::Execution(
+            "evidence_bundle requires at least one current source or fetch input".to_string(),
+        ));
+    }
+    for (index, source) in sources.iter().enumerate() {
+        if source.get("type").is_some() {
+            return Err(ToolError::Execution(format!(
+                "sources[{index}].type is a legacy pseudo-source field; pass current source-card fields instead"
+            )));
+        }
+    }
+    let mut args = json!({"sources": sources});
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "goal",
+            "fetches",
+            "include_unfetched_sources",
+            "max_sources",
+            "max_fetched_items",
+            "max_total_chars",
+        ],
+    );
+    Ok(args)
+}
+
 /// Translate a native `websearch` call into an eggsearch `web_search`
 /// call and execute it.
 ///
@@ -35,35 +394,7 @@ pub async fn call_web_search(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let query = input
-        .get("query")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
-    if query.is_empty() {
-        return Err(ToolError::Execution(
-            "'query' must not be empty".to_string(),
-        ));
-    }
-
-    let num_results = input
-        .get("num_results")
-        .or_else(|| input.get("max_results"))
-        .and_then(Value::as_u64)
-        .unwrap_or(8)
-        .min(30) as usize;
-
-    let mut args = json!({
-        "query": query,
-        "max_results": num_results,
-    });
-
-    if let Some(providers) = translate_provider_hint(input.get("provider").and_then(Value::as_str))
-    {
-        if !providers.is_empty() {
-            args["providers"] = Value::Array(providers.into_iter().map(Value::String).collect());
-        }
-    }
+    let args = build_web_search_args(input)?;
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -92,24 +423,7 @@ pub async fn call_web_fetch(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let url = input
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::Execution("missing 'url' parameter".to_string()))?;
-    validate_fetch_url(url)?;
-
-    let max_chars = input
-        .get("max_length")
-        .or_else(|| input.get("max_chars"))
-        .and_then(Value::as_u64)
-        .unwrap_or(10_000) as usize;
-
-    let args = json!({
-        "url": url,
-        "max_chars": max_chars,
-        "extract_mode": "text",
-        "include_links": false,
-    });
+    let args = build_web_fetch_args(input)?;
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -142,34 +456,36 @@ pub async fn call_repo_search(
         .get("query")
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|query| !query.is_empty())
         .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
-    if query.is_empty() {
+    let mut args = json!({"query": query});
+    if input.get("include_snippets").is_some() {
         return Err(ToolError::Execution(
-            "'query' must not be empty".to_string(),
+            "'include_snippets' is not part of the current eggsearch repo_search contract; omit it and use the returned source snippets".to_string(),
         ));
     }
-
-    let mut args = json!({
-        "query": query,
-    });
-
-    if let Some(repo) = input.get("repo").and_then(Value::as_str) {
-        args["repo"] = Value::String(repo.to_string());
+    if input.get("repo").is_some() || input.get("owner").is_some() {
+        add_repository_locator(&mut args, repository_locator(input, false)?);
     }
-    if let Some(language) = input.get("language").and_then(Value::as_str) {
-        args["language"] = Value::String(language.to_string());
-    }
-
-    let max_results = input
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "host",
+            "path",
+            "file",
+            "language",
+            "symbol",
+            "profile",
+            "include_local",
+            "mode",
+        ],
+    );
+    args["max_results"] = json!(input
         .get("max_results")
         .and_then(Value::as_u64)
         .unwrap_or(10)
-        .min(30) as usize;
-    args["max_results"] = json!(max_results);
-
-    if let Some(include_snippets) = input.get("include_snippets").and_then(Value::as_bool) {
-        args["include_snippets"] = json!(include_snippets);
-    }
+        .min(30));
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -198,26 +514,31 @@ pub async fn call_repo_fetch(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let path = input
-        .get("path")
-        .and_then(Value::as_str)
+    let path = non_empty_string(input, "path")?
         .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
-
-    let mut args = json!({
-        "path": path,
-    });
-
-    if let Some(repo) = input.get("repo").and_then(Value::as_str) {
-        args["repo"] = Value::String(repo.to_string());
+    let mut args = json!({"path": path});
+    add_repository_locator(&mut args, repository_locator(input, true)?);
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "commit_sha",
+            "context_before",
+            "context_after",
+            "max_chars",
+            "symbol",
+            "symbol_kind",
+            "match_text",
+            "expand_to_block",
+            "max_block_lines",
+            "prefer_local",
+        ],
+    );
+    if let Some(line_start) = range_alias(input, "line_start", "start_line")? {
+        args["line_start"] = json!(line_start);
     }
-    if let Some(start_line) = input.get("start_line").and_then(Value::as_i64) {
-        args["start_line"] = json!(start_line);
-    }
-    if let Some(end_line) = input.get("end_line").and_then(Value::as_i64) {
-        args["end_line"] = json!(end_line);
-    }
-    if let Some(symbol) = input.get("symbol").and_then(Value::as_str) {
-        args["symbol"] = Value::String(symbol.to_string());
+    if let Some(line_end) = range_alias(input, "line_end", "end_line")? {
+        args["line_end"] = json!(line_end);
     }
 
     let svc = super::state::mcp_service()
@@ -247,21 +568,36 @@ pub async fn call_repo_map(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let repo = input
-        .get("repo")
+    if input
+        .get("path")
         .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::Execution("missing 'repo' parameter".to_string()))?;
-
-    let mut args = json!({
-        "repo": repo,
-    });
-
-    if let Some(path) = input.get("path").and_then(Value::as_str) {
-        args["path"] = Value::String(path.to_string());
+        .is_some_and(|path| !path.trim().is_empty())
+    {
+        return Err(ToolError::Execution(
+            "repo_map does not support a subdirectory 'path' in the current eggsearch contract; use repo_search or repo_fetch for a path-scoped request".to_string(),
+        ));
     }
-    if let Some(depth) = input.get("depth").and_then(Value::as_i64) {
-        args["depth"] = json!(depth.min(3));
-    }
+    let mut args = json!({});
+    add_repository_locator(&mut args, repository_locator(input, true)?);
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "commit_sha",
+            "max_entries",
+            "include_files",
+            "include_directories",
+            "include_ci",
+            "include_security",
+        ],
+    );
+    let depth = input
+        .get("max_depth")
+        .or_else(|| input.get("depth"))
+        .and_then(Value::as_u64)
+        .unwrap_or(2)
+        .min(3);
+    args["max_depth"] = json!(depth);
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -290,33 +626,49 @@ pub async fn call_security_search(
         .get("query")
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|query| !query.is_empty())
         .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
-    if query.is_empty() {
-        return Err(ToolError::Execution(
-            "'query' must not be empty".to_string(),
-        ));
+    let mut args = json!({"query": query});
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "ecosystem",
+            "package",
+            "version",
+            "cve_id",
+            "ghsa_id",
+            "osv_id",
+            "rustsec_id",
+            "severity_min",
+            "include_kev",
+            "include_exploit_context",
+            "include_defensive_guidance",
+            "include_vendor_advisories",
+            "max_per_group",
+            "freshness",
+            "providers",
+            "assess_applicability",
+            "dependency_files",
+            "workflow",
+        ],
+    );
+    if let Some(cve) = non_empty_string(input, "cve")? {
+        if input
+            .get("cve_id")
+            .is_some_and(|value| value != &Value::String(cve.clone()))
+        {
+            return Err(ToolError::Execution(
+                "'cve' and 'cve_id' disagree; use the current 'cve_id' field".to_string(),
+            ));
+        }
+        args["cve_id"] = Value::String(cve);
     }
-
-    let mut args = json!({
-        "query": query,
-    });
-
-    if let Some(ecosystem) = input.get("ecosystem").and_then(Value::as_str) {
-        args["ecosystem"] = Value::String(ecosystem.to_string());
-    }
-    if let Some(package) = input.get("package").and_then(Value::as_str) {
-        args["package"] = Value::String(package.to_string());
-    }
-    if let Some(cve) = input.get("cve").and_then(Value::as_str) {
-        args["cve"] = Value::String(cve.to_string());
-    }
-
-    let max_results = input
+    args["max_results"] = json!(input
         .get("max_results")
         .and_then(Value::as_u64)
         .unwrap_or(10)
-        .min(20) as usize;
-    args["max_results"] = json!(max_results);
+        .min(20));
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -349,33 +701,34 @@ pub async fn call_research_search(
         .get("query")
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|query| !query.is_empty())
         .ok_or_else(|| ToolError::Execution("missing 'query' parameter".to_string()))?;
-    if query.is_empty() {
-        return Err(ToolError::Execution(
-            "'query' must not be empty".to_string(),
-        ));
-    }
-
-    let mut args = json!({
-        "query": query,
-    });
-
-    if let Some(domains) = input.get("domains").and_then(Value::as_array) {
-        let domain_strs: Vec<Value> = domains
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| Value::String(s.to_string())))
-            .collect();
-        if !domain_strs.is_empty() {
-            args["domains"] = Value::Array(domain_strs);
-        }
-    }
-
-    let max_results = input
+    let mut args = json!({"query": query});
+    copy_fields(
+        &mut args,
+        input,
+        &[
+            "research_domain",
+            "desired_source_types",
+            "include_counterpoints",
+            "include_primary_sources",
+            "include_recent_discussion",
+            "include_security_considerations",
+            "freshness",
+            "providers",
+            "workflow",
+            "depth",
+            "compare_targets",
+            "constraints",
+            "known_context",
+        ],
+    );
+    translate_legacy_research_domains(input, &mut args)?;
+    args["max_results"] = json!(input
         .get("max_results")
         .and_then(Value::as_u64)
         .unwrap_or(10)
-        .min(15) as usize;
-    args["max_results"] = json!(max_results);
+        .min(15));
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -404,31 +757,7 @@ pub async fn call_batch_fetch(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let mut args = json!({});
-
-    if let Some(urls) = input.get("urls").and_then(Value::as_array) {
-        for url_val in urls {
-            if let Some(url_str) = url_val.as_str() {
-                validate_fetch_url(url_str)?;
-            }
-        }
-        args["urls"] = Value::Array(urls.clone());
-    }
-    if let Some(items) = input.get("items").and_then(Value::as_array) {
-        for item in items {
-            if let Some(url_str) = item.get("url").and_then(Value::as_str) {
-                validate_fetch_url(url_str)?;
-            }
-        }
-        args["items"] = Value::Array(items.clone());
-    }
-
-    let max_chars_per_item = input
-        .get("max_chars_per_item")
-        .and_then(Value::as_u64)
-        .unwrap_or(10_000)
-        .min(50_000) as usize;
-    args["max_chars_per_item"] = json!(max_chars_per_item);
+    let args = build_batch_fetch_args(input)?;
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -457,26 +786,7 @@ pub async fn call_build_evidence_bundle(
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let sources = input
-        .get("sources")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ToolError::Execution("missing 'sources' parameter".to_string()))?;
-    if sources.is_empty() {
-        return Err(ToolError::Execution(
-            "'sources' must not be empty".to_string(),
-        ));
-    }
-
-    let mut args = json!({
-        "sources": sources,
-    });
-
-    let max_total_chars = input
-        .get("max_total_chars")
-        .and_then(Value::as_u64)
-        .unwrap_or(50_000)
-        .min(100_000) as usize;
-    args["max_total_chars"] = json!(max_total_chars);
+    let args = build_evidence_bundle_args(input)?;
 
     let svc = super::state::mcp_service()
         .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
@@ -754,6 +1064,97 @@ mod tests {
     #[test]
     fn validate_fetch_url_accepts_valid_https() {
         assert!(super::validate_fetch_url("https://example.com/path?q=1").is_ok());
+    }
+
+    #[test]
+    fn repository_locator_splits_unambiguous_legacy_form() {
+        let locator = repository_locator(&json!({"repo": "owner/name"}), true).unwrap();
+        assert_eq!(
+            locator,
+            RepositoryLocator {
+                host: None,
+                owner: Some("owner".to_string()),
+                repo: "name".to_string(),
+                ref_name: None,
+            }
+        );
+    }
+
+    #[test]
+    fn repository_locator_rejects_ambiguous_nested_legacy_form() {
+        let err = repository_locator(&json!({"repo": "group/subgroup/name"}), true).unwrap_err();
+        assert!(err.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn repository_locator_prefers_explicit_fields_and_forwards_host_ref() {
+        let locator = repository_locator(
+            &json!({
+                "host": "gitlab",
+                "owner": "group/subgroup",
+                "repo": "project",
+                "ref_name": "main",
+            }),
+            true,
+        )
+        .unwrap();
+        assert_eq!(locator.owner.as_deref(), Some("group/subgroup"));
+        assert_eq!(locator.host.as_deref(), Some("gitlab"));
+        assert_eq!(locator.ref_name.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn range_aliases_translate_and_conflicts_fail() {
+        assert_eq!(
+            range_alias(&json!({"start_line": 4}), "line_start", "start_line").unwrap(),
+            Some(4)
+        );
+        let err = range_alias(
+            &json!({"line_start": 4, "start_line": 5}),
+            "line_start",
+            "start_line",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("disagree"));
+    }
+
+    #[test]
+    fn legacy_research_provider_domains_translate_without_stale_field() {
+        let mut args = json!({"query": "papers"});
+        translate_legacy_research_domains(&json!({"domains": ["arxiv"]}), &mut args).unwrap();
+        assert_eq!(args["providers"], json!(["arxiv"]));
+        assert!(args.get("domains").is_none());
+    }
+
+    #[test]
+    fn legacy_research_ambiguous_domains_fail() {
+        let mut args = json!({"query": "papers"});
+        let err = translate_legacy_research_domains(
+            &json!({"domains": ["machine learning", "systems"]}),
+            &mut args,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn batch_urls_become_tagged_web_items() {
+        let args = build_batch_fetch_args(&json!({"urls": ["https://example.com"]})).unwrap();
+        assert_eq!(
+            args["items"],
+            json!([{"type": "web", "url": "https://example.com"}])
+        );
+        assert!(args.get("urls").is_none());
+    }
+
+    #[test]
+    fn evidence_bundle_accepts_fetch_only_current_input() {
+        let args = build_evidence_bundle_args(&json!({
+            "fetches": [{"url": "https://example.com", "fetched": true}]
+        }))
+        .unwrap();
+        assert_eq!(args["sources"], json!([]));
+        assert!(args["fetches"].is_array());
     }
 
     #[test]

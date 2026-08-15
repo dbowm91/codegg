@@ -107,6 +107,7 @@ fn build_mock_eggsearch(
         "eggsearch",
         tools,
         Box::new(move |tool, args| {
+            validate_current_eggsearch_request(tool, &args)?;
             if let Ok(mut g) = calls.try_lock() {
                 g.push((tool.to_string(), args.clone()));
             }
@@ -121,6 +122,160 @@ fn build_mock_eggsearch(
         }),
     );
     svc
+}
+
+fn validate_current_eggsearch_request(
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<(), McpError> {
+    let object = args
+        .as_object()
+        .ok_or_else(|| McpError::Server(format!("{tool} request must be an object")))?;
+    let require = |field: &str| {
+        object
+            .get(field)
+            .filter(|value| !value.is_null())
+            .ok_or_else(|| McpError::Server(format!("{tool} request missing {field}")))
+    };
+    match tool {
+        "web_search" => {
+            require("query")?;
+            require("max_results")?;
+            if object.contains_key("domains") {
+                return Err(McpError::Server(
+                    "web_search received stale domains".to_string(),
+                ));
+            }
+        }
+        "web_fetch" => {
+            require("url")?;
+            require("max_chars")?;
+            require("extract_mode")?;
+            require("include_links")?;
+        }
+        "repo_search" => {
+            require("query")?;
+            require("max_results")?;
+            if object.contains_key("include_snippets") {
+                return Err(McpError::Server(
+                    "repo_search received stale include_snippets".to_string(),
+                ));
+            }
+            if object.contains_key("owner") {
+                require("repo")?;
+            }
+        }
+        "repo_fetch" => {
+            for field in ["owner", "repo", "path"] {
+                require(field)?;
+            }
+            for field in ["start_line", "end_line"] {
+                if object.contains_key(field) {
+                    return Err(McpError::Server(format!(
+                        "repo_fetch received stale {field}"
+                    )));
+                }
+            }
+        }
+        "repo_map" => {
+            for field in ["owner", "repo", "max_depth"] {
+                require(field)?;
+            }
+            for field in ["path", "depth"] {
+                if object.contains_key(field) {
+                    return Err(McpError::Server(format!("repo_map received stale {field}")));
+                }
+            }
+        }
+        "security_search" => {
+            require("query")?;
+            require("max_results")?;
+            if object.contains_key("cve") {
+                return Err(McpError::Server(
+                    "security_search received stale cve".to_string(),
+                ));
+            }
+        }
+        "research_search" => {
+            require("query")?;
+            require("max_results")?;
+            if object.contains_key("domains") {
+                return Err(McpError::Server(
+                    "research_search received stale domains".to_string(),
+                ));
+            }
+        }
+        "batch_fetch" => {
+            let items = object
+                .get("items")
+                .and_then(serde_json::Value::as_array)
+                .filter(|items| !items.is_empty())
+                .ok_or_else(|| {
+                    McpError::Server("batch_fetch requires non-empty items".to_string())
+                })?;
+            if object.contains_key("urls") {
+                return Err(McpError::Server(
+                    "batch_fetch received stale urls".to_string(),
+                ));
+            }
+            for item in items {
+                let kind = item.get("type").and_then(serde_json::Value::as_str);
+                match kind {
+                    Some("web") => {
+                        if item
+                            .get("url")
+                            .and_then(serde_json::Value::as_str)
+                            .is_none()
+                        {
+                            return Err(McpError::Server("web batch item missing url".to_string()));
+                        }
+                    }
+                    Some("repo") => {
+                        for field in ["owner", "repo", "path"] {
+                            if item.get(field).is_none() {
+                                return Err(McpError::Server(format!(
+                                    "repo batch item missing {field}"
+                                )));
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(McpError::Server(
+                            "batch item missing valid type".to_string(),
+                        ))
+                    }
+                }
+            }
+        }
+        "build_evidence_bundle" => {
+            let has_sources = object
+                .get("sources")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|sources| !sources.is_empty());
+            let has_fetches = object
+                .get("fetches")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|fetches| !fetches.is_empty());
+            if !has_sources && !has_fetches {
+                return Err(McpError::Server(
+                    "evidence bundle requires sources or fetches".to_string(),
+                ));
+            }
+            if object
+                .get("sources")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|source| source.get("type").is_some())
+            {
+                return Err(McpError::Server(
+                    "evidence bundle received stale source type".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Verify that `websearch` dispatches to the `web_search` MCP tool
@@ -424,6 +579,13 @@ async fn repo_search_dispatches_to_mcp() {
 
     let out = codegg::search_backend::dispatch_repo_search(&serde_json::json!({
         "query": "async runtime",
+        "owner": "tokio-rs",
+        "repo": "tokio",
+        "path": "tokio/src",
+        "language": "rust",
+        "profile": "coding",
+        "include_local": true,
+        "mode": "default",
     }))
     .await
     .expect("repo_search dispatch ok");
@@ -433,6 +595,10 @@ async fn repo_search_dispatches_to_mcp() {
     let (tool, args) = recorded.last().expect("at least one call");
     assert_eq!(tool, "repo_search");
     assert_eq!(args["query"], "async runtime");
+    assert_eq!(args["owner"], "tokio-rs");
+    assert_eq!(args["repo"], "tokio");
+    assert_eq!(args["profile"], "coding");
+    assert!(!args.as_object().unwrap().contains_key("include_snippets"));
 }
 
 #[tokio::test]
@@ -448,7 +614,11 @@ async fn repo_fetch_dispatches_to_mcp() {
 
     let out = codegg::search_backend::dispatch_repo_fetch(&serde_json::json!({
         "path": "src/main.rs",
-        "repo": "tokio-rs/tokio",
+        "repo": "tokio",
+        "owner": "tokio-rs",
+        "start_line": 4,
+        "end_line": 12,
+        "symbol": "main",
     }))
     .await
     .expect("repo_fetch dispatch ok");
@@ -458,7 +628,11 @@ async fn repo_fetch_dispatches_to_mcp() {
     let (tool, args) = recorded.last().unwrap();
     assert_eq!(tool, "repo_fetch");
     assert_eq!(args["path"], "src/main.rs");
-    assert_eq!(args["repo"], "tokio-rs/tokio");
+    assert_eq!(args["owner"], "tokio-rs");
+    assert_eq!(args["repo"], "tokio");
+    assert_eq!(args["line_start"], 4);
+    assert_eq!(args["line_end"], 12);
+    assert_eq!(args["symbol"], "main");
 }
 
 #[tokio::test]
@@ -474,6 +648,7 @@ async fn repo_map_dispatches_to_mcp() {
 
     let out = codegg::search_backend::dispatch_repo_map(&serde_json::json!({
         "repo": "tokio-rs/tokio",
+        "depth": 3,
     }))
     .await
     .expect("repo_map dispatch ok");
@@ -482,7 +657,10 @@ async fn repo_map_dispatches_to_mcp() {
     let recorded = calls.lock().await;
     let (tool, args) = recorded.last().unwrap();
     assert_eq!(tool, "repo_map");
-    assert_eq!(args["repo"], "tokio-rs/tokio");
+    assert_eq!(args["owner"], "tokio-rs");
+    assert_eq!(args["repo"], "tokio");
+    assert!(args.get("max_depth").is_some());
+    assert_eq!(args["max_depth"], 3);
 }
 
 #[tokio::test]
@@ -498,6 +676,11 @@ async fn security_search_dispatches_to_mcp() {
 
     let out = codegg::search_backend::dispatch_security_search(&serde_json::json!({
         "query": "CVE-2024-1234",
+        "cve": "CVE-2024-1234",
+        "ghsa_id": "GHSA-abcd-1234-efgh",
+        "osv_id": "OSV-2024-1234",
+        "rustsec_id": "RUSTSEC-2024-0001",
+        "version": "1.2.3",
     }))
     .await
     .expect("security_search dispatch ok");
@@ -507,6 +690,8 @@ async fn security_search_dispatches_to_mcp() {
     let (tool, args) = recorded.last().unwrap();
     assert_eq!(tool, "security_search");
     assert_eq!(args["query"], "CVE-2024-1234");
+    assert_eq!(args["cve_id"], "CVE-2024-1234");
+    assert!(!args.as_object().unwrap().contains_key("cve"));
 }
 
 #[tokio::test]
@@ -522,6 +707,11 @@ async fn research_search_dispatches_to_mcp() {
 
     let out = codegg::search_backend::dispatch_research_search(&serde_json::json!({
         "query": "transformer attention",
+        "research_domain": "machine learning",
+        "desired_source_types": ["paper", "official_docs"],
+        "workflow": "general",
+        "depth": "quick",
+        "providers": ["arxiv"],
     }))
     .await
     .expect("research_search dispatch ok");
@@ -530,6 +720,9 @@ async fn research_search_dispatches_to_mcp() {
     let recorded = calls.lock().await;
     let (tool, _) = recorded.last().unwrap();
     assert_eq!(tool, "research_search");
+    let (_, args) = recorded.last().unwrap();
+    assert_eq!(args["research_domain"], "machine learning");
+    assert!(!args.as_object().unwrap().contains_key("domains"));
 }
 
 #[tokio::test]
@@ -553,6 +746,10 @@ async fn batch_fetch_dispatches_to_mcp() {
     let recorded = calls.lock().await;
     let (tool, _) = recorded.last().unwrap();
     assert_eq!(tool, "batch_fetch");
+    let (_, args) = recorded.last().unwrap();
+    assert_eq!(args["items"][0]["type"], "web");
+    assert_eq!(args["items"][1]["type"], "web");
+    assert!(!args.as_object().unwrap().contains_key("urls"));
 }
 
 #[tokio::test]
@@ -567,7 +764,7 @@ async fn evidence_bundle_dispatches_to_mcp() {
     state::install_search_config(eggsearch_config_all_caps());
 
     let out = codegg::search_backend::dispatch_evidence_bundle(&serde_json::json!({
-        "sources": [{"type": "url", "url": "https://example.com"}],
+        "sources": [{"id": "src_1", "url": "https://example.com", "title": "Example"}],
     }))
     .await
     .expect("evidence_bundle dispatch ok");
@@ -576,6 +773,88 @@ async fn evidence_bundle_dispatches_to_mcp() {
     let recorded = calls.lock().await;
     let (tool, _) = recorded.last().unwrap();
     assert_eq!(tool, "build_evidence_bundle");
+    let (_, args) = recorded.last().unwrap();
+    assert_eq!(args["sources"][0]["id"], "src_1");
+    assert!(args.get("type").is_none());
+}
+
+#[tokio::test]
+async fn legacy_and_ambiguous_requests_are_rejected_before_mcp() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let err = codegg::search_backend::dispatch_repo_map(&serde_json::json!({
+        "repo": "group/subgroup/repo",
+    }))
+    .await
+    .expect_err("ambiguous locator should fail");
+    assert!(err.to_string().contains("ambiguous"));
+
+    let err = codegg::search_backend::dispatch_repo_map(&serde_json::json!({
+        "repo": "tokio-rs/tokio",
+        "path": "src",
+    }))
+    .await
+    .expect_err("unsupported repo map path should fail");
+    assert!(err.to_string().contains("does not support"));
+
+    let err = codegg::search_backend::dispatch_batch_fetch(&serde_json::json!({
+        "items": [],
+    }))
+    .await
+    .expect_err("empty batch should fail");
+    assert!(err.to_string().contains("non-empty"));
+
+    let err = codegg::search_backend::dispatch_evidence_bundle(&serde_json::json!({
+        "sources": [{"type": "url", "url": "https://example.com"}],
+    }))
+    .await
+    .expect_err("legacy evidence pseudo-source should fail");
+    assert!(err.to_string().contains("legacy pseudo-source"));
+
+    assert!(
+        calls.lock().await.is_empty(),
+        "local validation failures must not invoke MCP"
+    );
+}
+
+#[tokio::test]
+async fn batch_fetch_normalizes_mixed_legacy_repo_and_web_items() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    codegg::search_backend::dispatch_batch_fetch(&serde_json::json!({
+        "items": [
+            {"type": "web", "url": "https://example.com", "include_links": true},
+            {"repo": "tokio-rs/tokio", "path": "src/lib.rs", "start_line": 1, "end_line": 8},
+        ],
+        "max_total_chars": 5000,
+    }))
+    .await
+    .expect("mixed batch dispatch ok");
+
+    let recorded = calls.lock().await;
+    let (_, args) = recorded.last().unwrap();
+    assert_eq!(args["items"][0]["type"], "web");
+    assert_eq!(args["items"][0]["include_links"], true);
+    assert_eq!(args["items"][1]["type"], "repo");
+    assert_eq!(args["items"][1]["owner"], "tokio-rs");
+    assert_eq!(args["items"][1]["repo"], "tokio");
+    assert_eq!(args["items"][1]["line_start"], 1);
+    assert_eq!(args["items"][1]["line_end"], 8);
+    assert_eq!(args["max_total_chars"], 5000);
 }
 
 /// Server returns oversized output; Codegg should clamp and mark truncation.

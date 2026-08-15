@@ -27,23 +27,39 @@ impl Tool for BatchFetchTool {
                 "urls": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "List of HTTP(S) URLs to fetch"
+                    "description": "Legacy alias: converted to tagged web items"
                 },
                 "items": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
+                            "type": { "type": "string", "enum": ["web", "repo"] },
+                            "url": { "type": "string" },
+                            "host": { "type": "string" },
+                            "owner": { "type": "string" },
                             "repo": { "type": "string" },
-                            "path": { "type": "string" }
+                            "path": { "type": "string" },
+                            "ref_name": { "type": "string" },
+                            "commit_sha": { "type": "string" },
+                            "line_start": { "type": "number" },
+                            "line_end": { "type": "number" },
+                            "context_before": { "type": "number" },
+                            "context_after": { "type": "number" },
+                            "max_chars": { "type": "number" },
+                            "extract_mode": { "type": "string" },
+                            "include_links": { "type": "boolean" }
                         }
                     },
-                    "description": "List of repo/file locators to fetch"
+                    "description": "Tagged web or repository fetch items; must be non-empty"
                 },
+                "max_items": { "type": "number", "description": "Maximum items" },
                 "max_chars_per_item": {
                     "type": "number",
                     "description": "Maximum characters per item (default: 10000, max: 50000)"
-                }
+                },
+                "max_total_chars": { "type": "number", "description": "Aggregate character budget" },
+                "continue_on_error": { "type": "boolean", "description": "Continue after an item failure" }
             }
         })
     }

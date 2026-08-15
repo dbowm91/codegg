@@ -50,6 +50,14 @@ impl Tool for WebSearchTool {
                         "openalex", "pubmed", "hn_algolia", "google_news", "github",
                         "exa", "tavily", "brave", "kagi", "serpapi"
                     ]
+                },
+                "intent": {
+                    "type": "string",
+                    "description": "Optional eggsearch retrieval intent hint (web, docs, code, issues, releases, security, or news)"
+                },
+                "freshness": {
+                    "type": "string",
+                    "description": "Optional freshness hint (any, day, week, month, or year)"
                 }
             },
             "required": ["query"]

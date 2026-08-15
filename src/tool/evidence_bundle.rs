@@ -29,21 +29,35 @@ impl Tool for EvidenceBundleTool {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "type": { "type": "string", "enum": ["search", "fetch", "repo"] },
-                            "query": { "type": "string" },
+                            "id": { "type": "string" },
                             "url": { "type": "string" },
-                            "repo": { "type": "string" },
-                            "path": { "type": "string" }
+                            "title": { "type": "string" },
+                            "snippet": { "type": "string" },
+                            "providers": { "type": "array", "items": { "type": "string" } },
+                            "score": { "type": "number" },
+                            "trust": { "type": "string" },
+                            "trust_markers": { "type": "object" },
+                            "metadata": { "type": "object" },
+                            "quality": { "type": "object" }
                         }
                     },
-                    "description": "List of sources to bundle"
+                    "description": "Source-card inputs from search responses"
                 },
+                "fetches": {
+                    "type": "array",
+                    "items": { "type": "object" },
+                    "description": "Fetch inputs linked to source cards"
+                },
+                "goal": { "type": "string", "description": "Optional bundle goal" },
+                "include_unfetched_sources": { "type": "boolean" },
+                "max_sources": { "type": "number" },
+                "max_fetched_items": { "type": "number" },
                 "max_total_chars": {
                     "type": "number",
                     "description": "Maximum total characters for the bundle (default: 50000, max: 100000)"
                 }
             },
-            "required": ["sources"]
+            "required": []
         })
     }
 
