@@ -9,7 +9,7 @@ and parser library with no dependencies on TUI, provider, Bash, or agent types.
 
 ### `operation.rs` — `GitOperation` enum
 
-The central type. 47 variants organized by domain:
+The central type. 54 variants organized by domain:
 
 | Domain | Variants |
 |--------|----------|

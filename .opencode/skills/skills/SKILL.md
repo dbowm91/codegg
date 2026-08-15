@@ -80,8 +80,8 @@ You have access to advanced git operations...
 
 Skills are loaded from two locations:
 - **Global**: `~/.config/codegg/skills/`
-- **Project**: `.opencode/skills/` (in project directory; legacy `.codegg/skills/` remains a compatibility path)
-- **Workspace mirror**: `.agents/skills` (symlink to `.opencode/skills/` for workspace-root convenience)
+- **Project**: `.codegg/skills/` (in project directory)
+- **Workspace mirror**: `.agents/skills` is a symlink to `.opencode/skills/` for workspace-root convenience; these are the agent-facing skill docs, not the runtime loading path
 
 Loading is done recursively:
 - Direct `.md` files are loaded as skills

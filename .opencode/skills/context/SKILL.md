@@ -27,6 +27,7 @@ The context module manages artifact storage, tool-output projection, the `contex
 | `handle.rs` | `ContextHandle::build_tool()` (checked) — only builder; raw `build_handle()` removed |
 | `projection.rs` | Tool-output projection/compression |
 | `read_tool.rs` | `context_read` tool registration |
+| `plan.rs` | `ContextPlan`, `ContextPlanDiagnostics`, `ContextPlanMode`, `PlannedMessage` |
 
 ## Key Facts
 

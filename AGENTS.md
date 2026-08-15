@@ -245,13 +245,13 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### Module Splits
 
 - **Error enums** live in `crates/codegg-core/src/error.rs`. Root `src/error.rs` re-exports + adds `AxumAppError`/`AxumServerRuntimeError` behind `#[cfg(feature = "server")]`.
-- **protocol_conversions**: Core conversions in `crates/codegg-core/src/protocol_conversions.rs`. Root re-exports core via `pub use codegg_core::protocol_conversions::*;`.
+- **protocol_conversions**: Core conversions in `crates/codegg-core/src/protocol_conversions.rs`. Root re-exports via `src/protocol_conversions.rs` which does `pub use codegg_core::protocol_conversions::*;`.
 - **Protocol is a re-export**: `src/protocol/` deleted. `src/lib.rs` has `pub use codegg_protocol as protocol;`. Use `codegg_protocol::dto` types.
 - **Provider is a re-export**: `src/provider/` re-exports from `crates/codegg-providers` as `codegg::provider`.
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~13K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (20 submodules). Runtime is in `src/tui/runtime/`.
+- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~15K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (20 submodules). Runtime is in `src/tui/runtime/`.
 - **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` -- never via a shell.
 - **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
@@ -270,7 +270,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
 - **~30 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools plus the `tool_program` foreground model tool.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
-- **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:698`) to inherit backend config.
+- **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:949`) to inherit backend config.
 - **patch_util.rs shared utilities**: `src/tool/patch_util.rs` is used by both `apply_patch` tool and LSP preview operations.
 - **eggsact is in-process, not MCP**: The `eggsact` dependency is consumed as a direct Rust dependency (`src/eggsact/adapter.rs`). `EggsactRuntime` wraps `eggsact::agent::ToolRegistry` in-process. Provenance must tag `backend = "native"`, `implementation = "eggsact/<tool_name>"`, `trust = LocalTrusted`.
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
@@ -284,7 +284,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### Agent Runtime
 
 - **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`.
-- **AgentLoop has ~49 fields** at `src/agent/loop.rs:1380`. Many docs claim 15.
+- **AgentLoop has ~57 fields** at `src/agent/loop.rs:401`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
 - **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime.
 - **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Prefer over `resolve_agents()`.
@@ -293,7 +293,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### LSP
 
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **40 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
 - **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops, not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
@@ -367,7 +367,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ## Architecture Docs
 
-`architecture/` has 69 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+`architecture/` has 73 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 
@@ -375,6 +375,6 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 - **New Web Search Providers**: Add to the **eggsearch** project, not to Codegg's built-in search provider registry (`src/search/`). The built-in registry is legacy fallback only.
 - **New Deterministic Validators**: Add to the **eggsact** crate. Codegg's `EggsactTool` wrapper in `src/tool/deterministic.rs` exposes eggsact tools to the model. New tools need: (1) implementation in eggsact, (2) registration in `build_eggsact_tools()`, (3) category assignment.
-- **New LSP Servers**: Add to `crates/egglsp/src/server.rs`. Each server needs a `LspRule` entry. See `architecture/lsp.md`.
+- **New LSP Servers**: Add to `crates/egglsp/src/server.rs` (server definitions) and `crates/egglsp/src/config.rs` (LspRule entries). See `architecture/lsp.md`.
 - **New Native Tool Crates**: Follow the library-first, MCP-second pattern in `architecture/native_crates.md`. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process.
 - **New Git Operations**: `codegg-git` (`crates/codegg-git`) is the typed Git operation model, argv parser, and risk classification crate. `classify_git()` delegates to `codegg_git::parse_git_argv()`. See `architecture/command_intent.md`.

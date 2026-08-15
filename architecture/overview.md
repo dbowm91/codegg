@@ -137,7 +137,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| LSP | Language Server Protocol client — 41 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
+| LSP | Language Server Protocol client — 39 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
 | MCP | Model Context Protocol client — local/remote server connections, OAuth auth, auto-reconnection | `mcp/` | [mcp.md](mcp.md) |
 | Search Backend | Wrapper between `websearch`/`webfetch` tools and eggsearch MCP server, with legacy in-tree fallback | `search_backend/` | [search_backend.md](search_backend.md) |
 | Plugin | WASM plugin system (Wasmtime), manifest parsing, hook system, built-in plugins, install/registry, lifecycle/policy | `plugin/` | [plugin.md](plugin.md) |
@@ -194,18 +194,18 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Item | Count | Source |
 |------|-------|--------|
 | Tools (default registry) | ~38 | `src/tool/mod.rs:with_options()` |
-| LSP servers | 40 | `crates/egglsp/src/server.rs` |
+| LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
 | DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
-| Integration tests | 165 | `tests/` |
+| Integration tests | 163 | `tests/` |
 | Architecture docs | 73 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
-| Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
+| Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
 | Git risk classes | 11 | `crates/codegg-git/src/lib.rs` |
 | Providers (auto-registered) | 16 | `crates/codegg-providers/` |
 | CI guard scripts | 19 | `scripts/` |
@@ -318,7 +318,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
 - [Preflight](preflight.md) — Harness-side validation before mutations
 - [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
-- [LSP](lsp.md) — Language Server Protocol (41 servers, egglsp authoritative)
+- [LSP](lsp.md) — Language Server Protocol (39 servers, egglsp authoritative)
 - [MCP](mcp.md) — Model Context Protocol client
 - [Search Backend](search_backend.md) — Web search/fetch with eggsearch backend
 - [Plugin](plugin.md) — WASM plugin system (Wasmtime)
@@ -349,7 +349,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Project Identity Storage](project_identity_storage.md) — Project/repository identity, binding, reconciliation
 
 ### Providers and Config
-- [Provider](provider.md) — LLM provider implementations (20 auto-registered)
+- [Provider](provider.md) — LLM provider implementations (16 auto-registered)
 - [Protocol](protocol.md) — Shared request/response envelopes
 - [Config](config.md) — Configuration loading and validation
 - [Model Profile & Task State](model_profile_task_state.md) — Model behavioral profiles, todo/task state

@@ -43,6 +43,8 @@ Load this skill when working on:
 | `src/scheduler/events.rs` | `SchedulerEvent`, `WokeReason` |
 | `src/scheduler/snapshot.rs` | `SchedulerSnapshot`, per-workspace summaries, executor health |
 | `src/scheduler/scheduler.rs` | `JobScheduler`, main loop, `wake`, `reconcile`, `admit_and_dispatch_batch` |
+| `src/scheduler/tool_program_executor.rs` | `ToolProgramExecutor`, `BrokerAdapter`, `ProgramCallCache` |
+| `src/scheduler/tool_program_notifications.rs` | `ToolProgramNotificationService`, projection events |
 | `tests/scheduler_phase5.rs` | integration tests (two-workspace fairness, admission budget, exclusivity keys, executor wiring) |
 | `scripts/check_scheduler_bypass.py` | static lint guarding direct TestRunner, subagent, and legacy background dispatch bypasses |
 

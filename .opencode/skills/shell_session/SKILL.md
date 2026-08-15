@@ -58,7 +58,7 @@ pub struct ShellResize {
 }
 ```
 
-## ShellManager
+## ShellManager (`session.rs`)
 
 ```rust
 pub struct ShellManager {
