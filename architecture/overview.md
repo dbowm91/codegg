@@ -201,7 +201,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
 | DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
-| Integration tests | 160 | `tests/` |
+| Integration tests | 165 | `tests/` |
 | Architecture docs | 73 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
