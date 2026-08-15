@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Milestone 002 — External Search Ownership Consolidation
 
-Status: blocked — hard dependency on M001 closure
+Status: ready for handoff
 
 Repository baseline:
 

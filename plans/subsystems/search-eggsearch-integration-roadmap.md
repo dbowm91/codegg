@@ -424,6 +424,6 @@ This roadmap is closed only when all three milestones have accepted closure reco
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 001 — current eggsearch request-contract repair | ready | `plans/implementation/search-eggsearch-integration/001-current-eggsearch-contract-repair.md` | — | — |
-| 002 — external search ownership consolidation | blocked | `plans/implementation/search-eggsearch-integration/002-external-search-ownership-consolidation.md` | — | M001 hard dependency |
+| 001 — current eggsearch request-contract repair | closed | `plans/implementation/search-eggsearch-integration/001-current-eggsearch-contract-repair.md` | `plans/closure/search-eggsearch-integration/001-status.md` | — |
+| 002 — external search ownership consolidation | ready | `plans/implementation/search-eggsearch-integration/002-external-search-ownership-consolidation.md` | — | M001 closed; no remaining hard dependency |
 | 003 — structured contract consumption and compatibility closure | blocked | `plans/implementation/search-eggsearch-integration/003-structured-contract-and-compatibility-closure.md` | — | M002 hard dependency; current eggsearch binary operational evidence for closure |

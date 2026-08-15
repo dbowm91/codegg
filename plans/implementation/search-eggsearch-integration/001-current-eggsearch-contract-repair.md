@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Milestone 001 — Current Eggsearch Contract Repair
 
-Status: active
+Status: implemented
 
 Repository baseline:
 
