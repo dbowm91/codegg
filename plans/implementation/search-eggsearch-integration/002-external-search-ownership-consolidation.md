@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Milestone 002 — External Search Ownership Consolidation
 
-Status: active
+Status: implemented
 
 Repository baseline:
 

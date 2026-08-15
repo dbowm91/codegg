@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Milestone 003 — Structured Contract and Compatibility Closure
 
-Status: blocked — hard dependency on M002 closure; operational real-binary evidence required for final closure
+Status: ready for handoff — operational real-binary evidence required for final closure
 
 Repository baseline:
 
@@ -44,13 +44,13 @@ M003 must preserve the stable model-facing CodeGG tool surface and its trust fra
 
 The final evidence requirement is intentionally small: one local real-binary compatibility smoke against eggsearch 0.3.6 or the current audited compatible successor. Do not create a permanent live-network CI matrix.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
 M003 has two prerequisites.
 
 Hard dependency:
 
-- M002 must be closed so the structured response work applies to the final single-owner external search architecture rather than preserving metadata for direct provider paths that are about to be removed.
+- M002 is closed, so the structured response work applies to the final single-owner external search architecture rather than preserving metadata for direct provider paths.
 
 Operational closure dependency:
 
