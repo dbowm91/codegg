@@ -238,6 +238,12 @@ fn invoke_modern(
 ) -> Result<PluginResponse, RuntimeError> {
     use wasmtime::{Linker, Store};
 
+    if invocation_json.len() > i32::MAX as usize {
+        return Err(RuntimeError::Spawn(
+            "WASM invocation exceeds the i32 length limit".into(),
+        ));
+    }
+    let invocation_len = invocation_json.len() as i32;
     let fuel = cache.reserve_fuel(plugin_id, fuel_per_call).unwrap_or(0);
 
     let result = (|| -> Result<PluginResponse, RuntimeError> {
@@ -264,7 +270,7 @@ fn invoke_modern(
         alloc_func
             .call(
                 &mut store,
-                &[wasmtime::Val::I32(invocation_json.len() as i32)],
+                &[wasmtime::Val::I32(invocation_len)],
                 &mut alloc_result,
             )
             .map_err(|e| RuntimeError::Spawn(format!("allocate call failed: {e}")))?;
@@ -273,17 +279,23 @@ fn invoke_modern(
             .i32()
             .ok_or_else(|| RuntimeError::Spawn("allocate returned non-i32".into()))?;
 
-        memory
-            .write(&mut store, input_ptr as usize, invocation_json)
-            .map_err(|e| RuntimeError::Io(format!("memory write failed: {e}")))?;
-
-        // Bounds check
+        // Check the destination before writing into guest memory. Besides
+        // preventing a partial write, the checked arithmetic rejects a
+        // malformed negative pointer or an overflowing range.
+        let input_offset = usize::try_from(input_ptr)
+            .map_err(|_| RuntimeError::Spawn("allocate returned a negative pointer".into()))?;
         let mem_size = memory.data_size(&store);
-        if input_ptr as usize + invocation_json.len() > mem_size {
+        let input_end = input_offset
+            .checked_add(invocation_json.len())
+            .ok_or_else(|| RuntimeError::Spawn("input memory range overflowed".into()))?;
+        if input_end > mem_size {
             return Err(RuntimeError::Spawn(
                 "input exceeds WASM memory bounds".into(),
             ));
         }
+        memory
+            .write(&mut store, input_offset, invocation_json)
+            .map_err(|e| RuntimeError::Io(format!("memory write failed: {e}")))?;
 
         // Call the modern entrypoint
         let func_name = entrypoint.unwrap_or("codegg_plugin_invoke");
@@ -296,7 +308,7 @@ fn invoke_modern(
             &mut store,
             &[
                 wasmtime::Val::I32(input_ptr),
-                wasmtime::Val::I32(invocation_json.len() as i32),
+                wasmtime::Val::I32(invocation_len),
             ],
             &mut result_vals,
         )

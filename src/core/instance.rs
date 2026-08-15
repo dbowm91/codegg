@@ -447,7 +447,7 @@ pub async fn connect_or_start_daemon(
 
     // Connection refused or socket missing — try startup if allowed.
     if !options.autostart {
-        let lock_held = is_lock_held(&options.paths.lock_path);
+        let lock_held = is_lock_held(&options.paths.lock_path)?;
         if lock_held {
             let md = DaemonInstanceGuard::read_metadata(&options.paths.metadata_path);
             return Err(DaemonConnectError::InconsistentState {
@@ -710,14 +710,18 @@ fn try_flock_exclusive(_file: &std::fs::File) -> Result<bool, AppError> {
 
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn is_lock_held(lock_path: &Path) -> bool {
+fn is_lock_held(lock_path: &Path) -> Result<bool, AppError> {
     use std::os::unix::fs::OpenOptionsExt;
     let open = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_CLOEXEC)
         .open(lock_path);
-    let Ok(file) = open else { return false };
+    let file = match open {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
     use std::os::fd::AsRawFd;
     let fd = file.as_raw_fd();
     // Try to acquire LOCK_EX | LOCK_NB. If it succeeds the lock is free; if
@@ -725,16 +729,25 @@ fn is_lock_held(lock_path: &Path) -> bool {
     let ret = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
     if ret == 0 {
         // Release immediately so we don't hold it.
-        unsafe { libc::flock(fd, libc::LOCK_UN) };
-        false
+        if unsafe { libc::flock(fd, libc::LOCK_UN) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(false)
     } else {
-        true
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK)
+            || error.raw_os_error() == Some(libc::EAGAIN)
+        {
+            Ok(true)
+        } else {
+            Err(error.into())
+        }
     }
 }
 
 #[cfg(not(unix))]
-fn is_lock_held(_lock_path: &Path) -> bool {
-    false
+fn is_lock_held(_lock_path: &Path) -> Result<bool, AppError> {
+    Ok(false)
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), AppError> {

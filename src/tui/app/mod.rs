@@ -2055,6 +2055,14 @@ impl App {
             return;
         };
         let messages = self.build_provider_context();
+        let agents =
+            match crate::protocol_conversions::agents_to_dtos(self.agent_state.agents.clone()) {
+                Ok(agents) => agents,
+                Err(error) => {
+                    tracing::error!(?error, "failed to serialize agents for turn submission");
+                    return;
+                }
+            };
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
             CoreRequest::TurnSubmit {
@@ -2062,9 +2070,7 @@ impl App {
                 text,
                 plan_mode: self.agent_state.plan_mode,
                 model: self.agent_state.current_model.clone(),
-                agents: crate::protocol_conversions::agents_to_dtos(
-                    self.agent_state.agents.clone(),
-                ),
+                agents,
                 current_agent_idx: self.agent_state.current_agent,
                 messages: crate::protocol_conversions::provider_messages_to_dtos(messages),
             },

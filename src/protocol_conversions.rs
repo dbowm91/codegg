@@ -18,21 +18,29 @@ pub use codegg_core::protocol_conversions::*;
 
 // ── Agent-specific conversions (root-only) ─────────────────────────────
 
-pub fn agent_to_dto(a: crate::agent::Agent) -> codegg_protocol::dto::Agent {
-    let json = serde_json::to_value(&a).expect("agent::Agent is always serializable");
-    serde_json::from_value(json).expect("dto::Agent is always deserializable from agent::Agent")
+pub fn agent_to_dto(
+    a: crate::agent::Agent,
+) -> Result<codegg_protocol::dto::Agent, serde_json::Error> {
+    let json = serde_json::to_value(&a)?;
+    serde_json::from_value(json)
 }
 
-pub fn agents_to_dtos(agents: Vec<crate::agent::Agent>) -> Vec<codegg_protocol::dto::Agent> {
+pub fn agents_to_dtos(
+    agents: Vec<crate::agent::Agent>,
+) -> Result<Vec<codegg_protocol::dto::Agent>, serde_json::Error> {
     agents.into_iter().map(agent_to_dto).collect()
 }
 
-pub fn dto_to_agent(a: codegg_protocol::dto::Agent) -> crate::agent::Agent {
-    let json = serde_json::to_value(&a).expect("dto::Agent is always serializable");
-    serde_json::from_value(json).expect("agent::Agent is always deserializable from dto::Agent")
+pub fn dto_to_agent(
+    a: codegg_protocol::dto::Agent,
+) -> Result<crate::agent::Agent, serde_json::Error> {
+    let json = serde_json::to_value(&a)?;
+    serde_json::from_value(json)
 }
 
-pub fn dtos_to_agents(agents: Vec<codegg_protocol::dto::Agent>) -> Vec<crate::agent::Agent> {
+pub fn dtos_to_agents(
+    agents: Vec<codegg_protocol::dto::Agent>,
+) -> Result<Vec<crate::agent::Agent>, serde_json::Error> {
     agents.into_iter().map(dto_to_agent).collect()
 }
 

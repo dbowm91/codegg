@@ -592,7 +592,13 @@ async fn main() -> Result<(), AppError> {
                     }
 
                     let pid = metadata.pid;
-                    let kill_result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                    let pid_for_signal = i32::try_from(pid).map_err(|_| {
+                        AppError::Other(anyhow::anyhow!(
+                            "daemon PID {} cannot be represented by this platform's pid_t; no signal sent",
+                            pid
+                        ))
+                    })?;
+                    let kill_result = unsafe { libc::kill(pid_for_signal, libc::SIGTERM) };
                     if kill_result != 0 {
                         return Err(AppError::Other(anyhow::anyhow!(
                             "daemon identity {} was verified, but SIGTERM to PID {} failed: {}",

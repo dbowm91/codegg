@@ -407,7 +407,14 @@ pub fn decide_volatile_tail(
             candidate_tokens: plan.candidate_tokens,
             planned_compaction_tokens: plan.planned_tokens,
         },
-        VolatileTailPolicyMode::Observe => unreachable!("handled above"),
+        VolatileTailPolicyMode::Observe => VolatileTailDecision {
+            kind: VolatileTailDecisionKind::Noop,
+            reason: "volatile tail mode is observe; no action".into(),
+            recommended_action: analysis.recommended_action,
+            candidate_count: plan.candidates.len(),
+            candidate_tokens: plan.candidate_tokens,
+            planned_compaction_tokens: plan.planned_tokens,
+        },
     }
 }
 

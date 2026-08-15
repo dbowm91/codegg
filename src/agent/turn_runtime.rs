@@ -269,15 +269,15 @@ impl TurnRuntime for DefaultTurnRuntime {
             .unwrap_or_default();
 
         // ── System prompt assembly ───────────────────────────────────
-        let agents = crate::protocol_conversions::dtos_to_agents(agents_dto.clone());
+        let agents = crate::protocol_conversions::dtos_to_agents(agents_dto.clone())?;
 
         let selected_agent = asset_snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.get_agent(&agents_dto[current_agent_idx].name))
-            .map(|resolved| resolved.agent.clone())
+            .map(|resolved| Ok(resolved.agent.clone()))
             .unwrap_or_else(|| {
                 crate::protocol_conversions::dto_to_agent(agents_dto[current_agent_idx].clone())
-            });
+            })?;
 
         // SecurityReview is a host-owned preparation stage layered over the
         // ordinary AgentLoop. It supplies bounded deterministic evidence and

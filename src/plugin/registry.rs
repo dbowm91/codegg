@@ -224,8 +224,11 @@ impl PluginRegistry {
             source: Some(PluginSourceMetadata::builtin()),
         };
 
-        // Best-effort: ignore duplicate errors for legacy registration
-        let _ = self.register(info).await;
+        // Legacy callers do not return a registration result, but a failed
+        // registration must remain visible instead of silently disappearing.
+        if let Err(error) = self.register(info).await {
+            tracing::warn!(plugin_id = %id, ?error, "legacy plugin registration failed");
+        }
 
         // For legacy, also add raw hook registrations
         self.hooks.write().await.extend(hook_specs);

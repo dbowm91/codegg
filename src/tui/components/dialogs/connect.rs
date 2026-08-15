@@ -495,7 +495,7 @@ impl Widget for &ConnectDialog {
                         "",
                     ),
                     ConnectStep::Review => ("Review and press Enter to connect:", ""),
-                    ConnectStep::SelectProvider => unreachable!(),
+                    ConnectStep::SelectProvider => ("Select a provider:", ""),
                 };
 
                 lines.push(Line::from(""));
@@ -528,7 +528,7 @@ impl Widget for &ConnectDialog {
                             },
                             ConnectStep::SelectScope => "Personal; press Enter",
                             ConnectStep::Review => "submit",
-                            _ => unreachable!(),
+                            _ => "continue",
                         }
                     )
                 } else if value.is_empty() {
@@ -847,7 +847,7 @@ impl Component for ConnectDialog {
                         "",
                     ),
                     ConnectStep::Review => ("Review and press Enter to connect:", ""),
-                    ConnectStep::SelectProvider => unreachable!(),
+                    ConnectStep::SelectProvider => ("Select a provider:", ""),
                 };
 
                 lines.push(Line::from(""));
@@ -880,7 +880,7 @@ impl Component for ConnectDialog {
                             },
                             ConnectStep::SelectScope => "Personal; press Enter",
                             ConnectStep::Review => "submit",
-                            _ => unreachable!(),
+                            _ => "continue",
                         }
                     )
                 } else if value.is_empty() {

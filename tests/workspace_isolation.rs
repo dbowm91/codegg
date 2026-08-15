@@ -212,7 +212,8 @@ async fn core_daemon_workspace_binding_rejects_unbound_turn_submit() {
         name: "test".into(),
         description: "test".into(),
         ..Default::default()
-    });
+    })
+    .unwrap();
     let req = codegg::protocol::core::CoreRequest::TurnSubmit {
         session_id: "never-created".into(),
         text: "hello".into(),

@@ -125,8 +125,8 @@ pub struct JobScheduler {
     shutdown: CancellationToken,
     config: Arc<ResolvedSchedulerConfig>,
     daemon_generation: DaemonGeneration,
-    /// Optional channel for emitting events. `None` in standalone /
-    /// test mode; the daemon sets a real bus sink.
+    /// Optional channel for emitting events. `None` when no runtime consumer
+    /// is installed, including standalone/test mode.
     event_tx: Arc<AsyncMutex<Option<mpsc::Sender<SchedulerEvent>>>>,
 }
 
@@ -208,8 +208,7 @@ impl JobScheduler {
     }
 
     /// Install an event sink. The scheduler forwards
-    /// [`SchedulerEvent`]s to this sender; the daemon bridges them to
-    /// the core event log.
+    /// [`SchedulerEvent`]s to this sender for a runtime consumer.
     pub async fn set_event_sink(&self, tx: mpsc::Sender<SchedulerEvent>) {
         let mut g = self.event_tx.lock().await;
         *g = Some(tx);
@@ -291,15 +290,12 @@ impl JobScheduler {
             kinds.into_iter().filter_map(|k| registry.get(k)).collect();
         // Push them through the async bulk-register using try_lock;
         // construction-time callers are single-writer so this is safe.
-        if let Ok(mut g) = self.executors.try_lock() {
-            for exec in execs {
-                if let Err(e) = g.register(exec) {
-                    tracing::warn!(
-                        target: "scheduler.executor",
-                        "duplicate executor at default registration: {e}"
-                    );
-                }
-            }
+        let mut g = self
+            .executors
+            .try_lock()
+            .map_err(|_| crate::scheduler::executor::ExecutorRegistryError::Busy)?;
+        for exec in execs {
+            g.register(exec)?;
         }
         Ok(())
     }

@@ -102,8 +102,14 @@ pub async fn register_builtins(registry: &crate::plugin::registry::PluginRegistr
 
         // register() extracts hooks from both capabilities and legacy hooks fields.
         // No need to pass explicit hook_specs — they would be double-counted.
-        let _ = registry.register(info).await;
-        register_builtin_handler(&id, bp.handler);
+        match registry.register(info).await {
+            Ok(()) => register_builtin_handler(&id, bp.handler),
+            Err(error) => tracing::error!(
+                plugin_id = %id,
+                ?error,
+                "failed to register builtin plugin"
+            ),
+        }
     }
 }
 

@@ -172,12 +172,19 @@ impl JobExecutor for TestJobExecutor {
                 }
             }
             Err(e) => {
-                let _ = ctx.cancellation.is_cancelled();
-                failure_completion(
-                    started,
-                    ExecutorStatus::Failed,
-                    format!("test runner error: {e}"),
-                )
+                if ctx.cancellation.is_cancelled() {
+                    failure_completion(
+                        started,
+                        ExecutorStatus::Cancelled,
+                        "test execution cancelled".to_string(),
+                    )
+                } else {
+                    failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("test runner error: {e}"),
+                    )
+                }
             }
         }
     }

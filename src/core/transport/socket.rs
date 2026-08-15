@@ -194,69 +194,87 @@ impl SocketCoreClient {
                             continue;
                         }
                         match serde_json::from_str::<CoreFrame>(trimmed) {
-                            Ok(frame) => match frame {
-                                CoreFrame::Response {
-                                    request_id,
-                                    response,
-                                } => {
-                                    if let Some((_, tx)) = pending.remove(&request_id) {
-                                        let _ = tx.send(Ok(*response));
+                            Ok(frame) => {
+                                match frame {
+                                    CoreFrame::Response {
+                                        request_id,
+                                        response,
+                                    } => {
+                                        if let Some((_, tx)) = pending.remove(&request_id) {
+                                            let _ = tx.send(Ok(*response));
+                                        }
                                     }
-                                }
-                                CoreFrame::Event(envelope) => {
-                                    let _ = event_bus.send(envelope);
-                                }
-                                CoreFrame::Pong => {}
-                                CoreFrame::ServerHello(hello) => {
-                                    if hello.protocol_version
-                                        != crate::protocol::core::PROTOCOL_VERSION
-                                    {
-                                        tracing::warn!(
+                                    CoreFrame::Event(envelope) => {
+                                        let _ = event_bus.send(envelope);
+                                    }
+                                    CoreFrame::Pong => {}
+                                    CoreFrame::ServerHello(hello) => {
+                                        if hello.protocol_version
+                                            != crate::protocol::core::PROTOCOL_VERSION
+                                        {
+                                            tracing::warn!(
                                             "incompatible daemon protocol version {} (expected {})",
                                             hello.protocol_version,
                                             crate::protocol::core::PROTOCOL_VERSION
                                         );
-                                        break;
-                                    }
-                                    tracing::info!(
-                                        "Server connected: {} (protocol v{}, client_id={})",
-                                        hello.daemon_id,
-                                        hello.protocol_version,
-                                        hello.client_id
-                                    );
-                                    *server_daemon_id_slot.lock().await =
-                                        Some(hello.daemon_id.clone());
-                                    server_hello_notify.notify_waiters();
-                                    // Record the negotiated id so callers can
-                                    // correlate the connection in the daemon's
-                                    // `ClientRegistry`.
-                                    *client_id_slot.lock().await = Some(hello.client_id.clone());
+                                            break;
+                                        }
+                                        tracing::info!(
+                                            "Server connected: {} (protocol v{}, client_id={})",
+                                            hello.daemon_id,
+                                            hello.protocol_version,
+                                            hello.client_id
+                                        );
+                                        *server_daemon_id_slot.lock().await =
+                                            Some(hello.daemon_id.clone());
+                                        server_hello_notify.notify_waiters();
+                                        // Record the negotiated id so callers can
+                                        // correlate the connection in the daemon's
+                                        // `ClientRegistry`.
+                                        *client_id_slot.lock().await =
+                                            Some(hello.client_id.clone());
 
-                                    // Default global subscription: a TUI
-                                    // client typically wants to see global
-                                    // events (e.g. session updates). Pass
-                                    // `from_event_seq: Some(0)` so any
-                                    // subsequent live events flow but no
-                                    // historical replay is sent on connect.
-                                    // Specific session subscriptions can be
-                                    // added later by sending another
-                                    // Subscribe frame with `session_id`.
-                                    let default_sub = CoreFrame::Subscribe {
-                                        client_id: hello.client_id.clone(),
-                                        session_id: None,
-                                        from_event_seq: Some(0),
-                                    };
-                                    if let Ok(json) = serde_json::to_string(&default_sub) {
-                                        let mut guard = write_stream.lock().await;
-                                        if let Some(stream) = guard.as_mut() {
-                                            let _ = stream.write_all(json.as_bytes()).await;
-                                            let _ = stream.write_all(b"\n").await;
-                                            let _ = stream.flush().await;
+                                        // Default global subscription: a TUI
+                                        // client typically wants to see global
+                                        // events (e.g. session updates). Pass
+                                        // `from_event_seq: Some(0)` so any
+                                        // subsequent live events flow but no
+                                        // historical replay is sent on connect.
+                                        // Specific session subscriptions can be
+                                        // added later by sending another
+                                        // Subscribe frame with `session_id`.
+                                        let default_sub = CoreFrame::Subscribe {
+                                            client_id: hello.client_id.clone(),
+                                            session_id: None,
+                                            from_event_seq: Some(0),
+                                        };
+                                        if let Ok(json) = serde_json::to_string(&default_sub) {
+                                            let mut guard = write_stream.lock().await;
+                                            if let Some(stream) = guard.as_mut() {
+                                                if let Err(error) =
+                                                    stream.write_all(json.as_bytes()).await
+                                                {
+                                                    tracing::warn!(?error, "failed to send default socket subscription");
+                                                    break;
+                                                }
+                                                if let Err(error) = stream.write_all(b"\n").await {
+                                                    tracing::warn!(?error, "failed to terminate default socket subscription");
+                                                    break;
+                                                }
+                                                if let Err(error) = stream.flush().await {
+                                                    tracing::warn!(?error, "failed to flush default socket subscription");
+                                                    break;
+                                                }
+                                            }
+                                        } else {
+                                            tracing::warn!(
+                                                "failed to serialize default socket subscription"
+                                            );
                                         }
                                     }
+                                    _ => {}
                                 }
-                                _ => {}
-                            },
+                            }
                             Err(e) => {
                                 tracing::warn!("Failed to deserialize core frame: {}", e);
                             }

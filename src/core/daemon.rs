@@ -264,10 +264,18 @@ impl CoreDaemon {
                 deps.daemon_generation.clone(),
             );
             // Register the default executor set synchronously.
-            let _ = scheduler_arc
-                .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone());
-            let (tx, _rx) = tokio::sync::mpsc::channel(64);
-            let _ = scheduler_arc.set_event_sink_blocking(tx);
+            if let Err(error) = scheduler_arc
+                .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone())
+            {
+                tracing::error!(
+                    ?error,
+                    "fatal scheduler startup error: default executor registration failed"
+                );
+                panic!("failed to register default scheduler executors: {error}");
+            }
+            // SchedulerEvent has no corresponding CoreEvent protocol variant.
+            // Leave the optional sink unset rather than attaching a sender whose
+            // receiver would be dropped and falsely reporting a live event path.
             (scheduler_arc, true)
         } else {
             // Even when disabled, build a placeholder scheduler so
@@ -916,7 +924,7 @@ impl CoreDaemon {
                         project: project.clone(),
                     }
                 };
-                let _ = self.event_log.publish(None, None, event).await;
+                self.event_log.publish(None, None, event).await;
                 Ok(if restore {
                     CoreResponse::ProjectRestored { project }
                 } else {
@@ -1624,8 +1632,7 @@ impl CoreDaemon {
                     }
                 };
                 let dto = Self::asset_refresh_report_dto(report);
-                let _ = self
-                    .event_log
+                self.event_log
                     .publish(
                         None,
                         None,
@@ -1858,8 +1865,7 @@ impl CoreDaemon {
                                     .saturating_sub(1),
                             );
                         }
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3303,8 +3309,7 @@ impl CoreDaemon {
                             .await
                             .ok()
                             .flatten();
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 record.as_ref().and_then(|r| r.session_id.clone()),
                                 None,
@@ -3438,8 +3443,7 @@ impl CoreDaemon {
                         let outcome_str =
                             crate::protocol_conversions::cancel_outcome_to_str(result.state)
                                 .to_string();
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3494,8 +3498,7 @@ impl CoreDaemon {
                             .await
                         {
                             Ok(new_attempt) => {
-                                let _ = self
-                                    .event_log
+                                self.event_log
                                     .publish(
                                         record.session_id.clone(),
                                         None,
@@ -3540,8 +3543,7 @@ impl CoreDaemon {
                 match self.deps.schedule_store.create(template).await {
                     Ok(record) => {
                         let schedule_id = record.schedule_id.as_str().to_string();
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3609,8 +3611,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(_record) => {
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3636,8 +3637,7 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(_record) => {
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3658,8 +3658,7 @@ impl CoreDaemon {
                 let id = codegg_core::jobs::ScheduleId::new_unchecked(schedule_id.clone());
                 match self.deps.schedule_store.delete(&id).await {
                     Ok(()) => {
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3822,8 +3821,7 @@ impl CoreDaemon {
                             codegg_core::protocol_conversions::project_catalog_record_to_dto(
                                 &record,
                             );
-                        let _ = self
-                            .event_log
+                        self.event_log
                             .publish(
                                 None,
                                 None,
@@ -3873,8 +3871,7 @@ impl CoreDaemon {
                     }
                 };
                 let health = Self::project_health_dto(&snapshot, None);
-                let _ = self
-                    .event_log
+                self.event_log
                     .publish(
                         None,
                         None,
@@ -3987,11 +3984,24 @@ impl CoreDaemon {
                             Err(_) => None,
                         };
                         if let Some(ref cp) = checkpoint_path {
-                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
-                                .bind(cp)
-                                .bind(&goal.id)
-                                .execute(&pool)
-                                .await;
+                            if let Err(error) =
+                                sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                    .bind(cp)
+                                    .bind(&goal.id)
+                                    .execute(&pool)
+                                    .await
+                            {
+                                tracing::error!(
+                                    goal_id = %goal.id,
+                                    checkpoint_path = %cp,
+                                    ?error,
+                                    "failed to record goal checkpoint path"
+                                );
+                                return Ok(CoreResponse::Error {
+                                    code: "goal_checkpoint_failed".to_string(),
+                                    message: format!("failed to record checkpoint path: {error}"),
+                                });
+                            }
                         }
                         let updated = goal_store.get(&goal.id).await.ok().flatten();
                         super::publish_goal_updated(&session_id, updated);
@@ -4088,11 +4098,24 @@ impl CoreDaemon {
                             Err(_) => None,
                         };
                         if let Some(ref cp) = checkpoint_path {
-                            let _ = sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
-                                .bind(cp)
-                                .bind(&goal.id)
-                                .execute(&pool)
-                                .await;
+                            if let Err(error) =
+                                sqlx::query("UPDATE goal SET checkpoint_path = ? WHERE id = ?")
+                                    .bind(cp)
+                                    .bind(&goal.id)
+                                    .execute(&pool)
+                                    .await
+                            {
+                                tracing::error!(
+                                    goal_id = %goal.id,
+                                    checkpoint_path = %cp,
+                                    ?error,
+                                    "failed to record goal checkpoint path"
+                                );
+                                return Ok(CoreResponse::Error {
+                                    code: "goal_checkpoint_failed".to_string(),
+                                    message: format!("failed to record checkpoint path: {error}"),
+                                });
+                            }
                         }
                         let updated = goal_store.get(&goal.id).await.ok().flatten();
                         super::publish_goal_updated(&session_id, updated);
@@ -4340,13 +4363,27 @@ impl CoreDaemon {
                             {
                                 Ok(path) => {
                                     let path_str = path.to_string_lossy().to_string();
-                                    let _ = sqlx::query(
+                                    if let Err(error) = sqlx::query(
                                         "UPDATE goal SET checkpoint_path = ? WHERE id = ?",
                                     )
                                     .bind(&path_str)
                                     .bind(&goal.id)
                                     .execute(&goal_store.pool)
-                                    .await;
+                                    .await
+                                    {
+                                        tracing::error!(
+                                            goal_id = %goal.id,
+                                            checkpoint_path = %path_str,
+                                            ?error,
+                                            "failed to record goal checkpoint path"
+                                        );
+                                        return Ok(CoreResponse::Error {
+                                            code: "goal_checkpoint_failed".to_string(),
+                                            message: format!(
+                                                "failed to record checkpoint path: {error}"
+                                            ),
+                                        });
+                                    }
                                     Ok(CoreResponse::Json {
                                         data: serde_json::json!({ "checkpoint_path": path_str, "created": true }),
                                     })
@@ -7272,7 +7309,7 @@ mod tests {
                 text: "hello".into(),
                 plan_mode: false,
                 model: "openai/gpt-4o".into(),
-                agents: vec![crate::protocol_conversions::agent_to_dto(agent)],
+                agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
                 messages: vec![],
             },
@@ -7553,7 +7590,7 @@ mod tests {
                 text: "hello".into(),
                 plan_mode: false,
                 model: "openai/gpt-4o".into(),
-                agents: vec![crate::protocol_conversions::agent_to_dto(agent)],
+                agents: vec![crate::protocol_conversions::agent_to_dto(agent).unwrap()],
                 current_agent_idx: 0,
                 messages: vec![],
             },

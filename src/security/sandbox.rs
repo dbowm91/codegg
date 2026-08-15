@@ -458,7 +458,12 @@ const MAX_CACHE_ENTRIES: usize = 100;
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
 fn get_canonical_paths(allowed_paths: &[String]) -> Vec<PathBuf> {
-    let mut cache = CANONICAL_PATHS_CACHE.lock().unwrap();
+    let mut cache = CANONICAL_PATHS_CACHE.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("canonical path cache mutex was poisoned; resetting the cache");
+        let mut cache = poisoned.into_inner();
+        *cache = None;
+        cache
+    });
     if cache.is_none() {
         *cache = Some((HashMap::new(), VecDeque::new()));
     }

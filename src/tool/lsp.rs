@@ -3984,7 +3984,12 @@ impl Tool for LspTool {
                     "workflow_interface" => egglsp::LspWorkflowRecipe::InterfaceBoundary,
                     "workflow_cross_repair" => egglsp::LspWorkflowRecipe::CrossFileRepair,
                     "workflow_call_neighbors" => egglsp::LspWorkflowRecipe::CallNeighborhood,
-                    _ => unreachable!(),
+                    _ => {
+                        return Err(ToolError::Execution(format!(
+                            "unsupported LSP workflow recipe: {}",
+                            parsed.operation
+                        )))
+                    }
                 };
                 let direction = parsed.direction.as_deref().and_then(|d| match d {
                     "incoming" => Some(egglsp::context::HierarchyDirection::Incoming),

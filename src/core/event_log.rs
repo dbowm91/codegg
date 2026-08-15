@@ -128,19 +128,31 @@ impl EventLog {
         if let Some(ref pool) = self.pool {
             if should_persist(&envelope.payload) {
                 let event_type = super::core_event_type(&envelope.payload).to_string();
-                if let Ok(payload_json) = serde_json::to_string(&envelope.payload) {
-                    let _ = sqlx::query(
-                        "INSERT OR IGNORE INTO core_event_log \
-                         (event_seq, session_id, turn_id, event_type, payload_json) \
-                         VALUES (?, ?, ?, ?, ?)",
-                    )
-                    .bind(seq as i64)
-                    .bind(&session_id)
-                    .bind(&turn_id)
-                    .bind(&event_type)
-                    .bind(&payload_json)
-                    .execute(pool)
-                    .await;
+                match serde_json::to_string(&envelope.payload) {
+                    Ok(payload_json) => {
+                        if let Err(error) = sqlx::query(
+                            "INSERT OR IGNORE INTO core_event_log \
+                             (event_seq, session_id, turn_id, event_type, payload_json) \
+                             VALUES (?, ?, ?, ?, ?)",
+                        )
+                        .bind(seq as i64)
+                        .bind(&session_id)
+                        .bind(&turn_id)
+                        .bind(&event_type)
+                        .bind(&payload_json)
+                        .execute(pool)
+                        .await
+                        {
+                            tracing::error!(
+                                event_seq = seq,
+                                ?error,
+                                "failed to persist core event"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(event_seq = seq, ?error, "failed to serialize core event");
+                    }
                 }
             }
         }

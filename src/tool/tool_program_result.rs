@@ -8,6 +8,7 @@
 //! their stored digest on every load. Corrupt or mismatched records fail
 //! closed and remain diagnostically inspectable.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
@@ -235,14 +236,26 @@ impl ToolProgramResultStore {
     ) -> Result<Option<ProgramResultRecord>, ToolProgramResultError> {
         validate_identity(program_id)?;
         let path = self.path(program_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let metadata = path.symlink_metadata()?;
-        if metadata.file_type().is_symlink() || metadata.len() as usize > MAX_RESULT_BYTES {
+        let metadata = match path.symlink_metadata() {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || metadata.len() > MAX_RESULT_BYTES as u64 {
             return Err(ToolProgramResultError::Oversized);
         }
-        let record: ProgramResultRecord = serde_json::from_slice(&std::fs::read(path)?)?;
+        let file = match open_result_file(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_RESULT_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_RESULT_BYTES {
+            return Err(ToolProgramResultError::Oversized);
+        }
+        let record: ProgramResultRecord = serde_json::from_slice(&bytes)?;
         if record.program_id != program_id {
             return Err(ToolProgramResultError::IdentityMismatch);
         }
@@ -268,6 +281,21 @@ impl ToolProgramResultStore {
     fn path(&self, program_id: &str) -> PathBuf {
         self.base_dir.join(format!("{program_id}.json"))
     }
+}
+
+#[cfg(unix)]
+fn open_result_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_result_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::File::open(path)
 }
 
 pub fn result_to_json(record: &ProgramResultRecord) -> serde_json::Value {
