@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -260,6 +260,10 @@ Deferred work:
 - provider features that belong upstream in eggsearch.
 
 ### Milestone 003 — Structured contract consumption and compatibility closure
+
+Status: closed — `plans/closure/search-eggsearch-integration/003-status.md`
+
+Implementation: `89dbac7`
 
 Class: infrastructure / compatibility closure
 

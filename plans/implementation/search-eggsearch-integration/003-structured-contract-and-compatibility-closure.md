@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Milestone 003 — Structured Contract and Compatibility Closure
 
-Status: ready for handoff — operational real-binary evidence required for final closure
+Status: implemented — strict closure accepted
 
 Repository baseline:
 

@@ -38,14 +38,13 @@ Canonical direction remains in:
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
-| Search and eggsearch integration | active | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M003 ready | M001–M002 closed; M003 retains its final-closure operational evidence requirement |
+| Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M003 closed | `plans/closure/search-eggsearch-integration/003-status.md`; no registered future plan was unblocked |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
-| Search and eggsearch integration | M003 — structured contract and compatibility closure | ready | `plans/implementation/search-eggsearch-integration/003-structured-contract-and-compatibility-closure.md` | M001–M002 closed; implementation ready, final closure still requires local current eggsearch binary |
 
 ## Closure work and dependencies
 
@@ -96,8 +95,8 @@ Current controlling execution order:
 
 1. M001 is closed by accepted `plans/closure/search-eggsearch-integration/001-status.md`. Its request-contract repair, compatibility aliases, and strict offline fixtures are complete.
 2. M002 is closed by `plans/closure/search-eggsearch-integration/002-status.md`. It removes direct Exa `codesearch` ownership, routes external deep-research evidence collection through eggsearch, and fences `src/search/*` as explicit compatibility fallback only.
-3. M003 is now ready for handoff. It preserves parsed eggsearch response values through `StructuredToolResult::value`, improves capability/doctor diagnostics, and owns the final real-current-eggsearch local compatibility smoke.
-4. The workstream must remain verification-light: focused deterministic tests plus `scripts/verify.sh quick`, with one local/opt-in real-binary smoke at M003 closure. Do not add a network CI lane, scheduled compatibility job, version matrix, source scanner, or release gate.
+3. M003 is strictly closed by `plans/closure/search-eggsearch-integration/003-status.md`. It preserves parsed eggsearch response values through `StructuredToolResult::value`, improves capability/doctor diagnostics, and records the final real-current-eggsearch local compatibility smoke.
+4. The workstream remains verification-light: focused deterministic tests plus `scripts/verify.sh quick`, with one local/opt-in real-binary smoke. No network CI lane, scheduled compatibility job, version matrix, source scanner, or release gate was added.
 
 ### Other active closure dependencies
 
@@ -161,6 +160,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Programmatic tool execution and Tool Programs | M018 | provisional/conditional implementation evidence | `plans/closure/tool-programs/018-status.md`; strict review owned by M019 |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
 | Search and eggsearch integration | M002 — external search ownership consolidation | closed | `plans/closure/search-eggsearch-integration/002-status.md`; implementation `e46f97d2`; M003 moved to ready |
+| Search and eggsearch integration | M003 — structured contract and compatibility closure | closed | `plans/closure/search-eggsearch-integration/003-status.md`; implementation `89dbac7`; no registered future plan was unblocked |
 
 Detailed predecessor history is intentionally not duplicated here. Use the source subsystem roadmaps and `plans/closure/` records for older milestones.
 
