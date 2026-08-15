@@ -10,6 +10,12 @@ scripts/verify.sh full               # broad verification (adds clippy, tests, f
 cargo fmt                            # format
 ```
 
+## Formatting and Linting
+
+- `rustfmt.toml`: `max_width = 100`, 4-space indent, `use_small_heuristics = "Default"`.
+- `clippy.toml`: `allow-dbg-in-tests = true`, `allow-print-in-tests = true` -- `dbg!` and `println!` are allowed in tests.
+- `.editorconfig` says 2-space indent for non-Rust files; Rust files use 4-space via `rustfmt`.
+
 ## Cargo Aliases (`.cargo/config.toml`)
 
 ```bash
@@ -105,78 +111,47 @@ Run these after changing execution surfaces, agent definitions, or codegg-core:
 python3 scripts/check-core-boundary.sh              # codegg-core boundary enforcement
 python3 scripts/check_sandbox_contract.py           # Python sandbox contract guard
 python3 scripts/check_daemon_cwd_usage.py           # workspace-bound daemon path guard
-python3 scripts/check_project_agent_pwd_inference.py # project-agent PWD-inference guard (Runtime Assets M2)
+python3 scripts/check_project_agent_pwd_inference.py # project-agent PWD-inference guard
 python3 scripts/check_discovery_invariants.py       # bounded project-discovery safety guard
 python3 scripts/check_project_catalog_invariants.py # project-catalog and discovery invariants
 python3 scripts/check_scheduler_bypass.py           # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py        # process-spawn site ownership manifest
 python3 scripts/check_git_forbidden_patterns.py     # git secret boundary + policy drift
 python3 scripts/check_identity_path_usage.py        # identity-path usage guard
-python3 scripts/check_tui_project_authority.py      # multi-project TUI authority guard (M4)
+python3 scripts/check_tui_project_authority.py      # multi-project TUI authority guard
 python3 scripts/check_tool_broker_boundary.py       # tool broker boundary guard
 scripts/check_provider_connections_m4_coverage.sh   # provider lifecycle/protocol coverage
 scripts/check_provider_connections_tombstone_compat.sh # additive tombstone/reference guard
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
-bash scripts/check_projection_disclosure.sh          # projection disclosure encapsulation guard (M3)
-bash scripts/check_projection_publication_seam.sh    # projection publication-seam guard
-python3 scripts/check_projection_transport_isolation.py # raw projection transport isolation guard (M5)
+bash scripts/check_projection_disclosure.sh         # projection disclosure encapsulation guard
+bash scripts/check_projection_publication_seam.sh   # projection publication-seam guard
+python3 scripts/check_projection_transport_isolation.py # raw projection transport isolation guard
 python3 scripts/check_projection_transport_lifecycle.py # projection transport lifecycle guard
-python3 scripts/check_websocket_bounds.py             # reject unbounded server WebSocket channels (M6)
+python3 scripts/check_websocket_bounds.py           # reject unbounded server WebSocket channels
 ```
 
 ## Testing
 
+Prefer the narrowest crate or test file. Run `scripts/verify.sh quick` first.
+
 ```bash
-# Core workspace crates
-cargo test -p codegg-core
-cargo test -p codegg-config
-cargo test -p codegg-protocol
-cargo test -p codegg-providers
-
-# Native tool crates
-cargo test -p eggsentry
-cargo test -p eggcontext
-cargo test -p egggit
-cargo test -p codegg-git
-cargo test -p egglsp
-
-# TUI
-cargo test --test tui_render
-cargo test --test tui
-
-# LSP integration (fake server, no network, needs lsp-test-support)
-cargo test -p egglsp --features lsp-test-support --test scenario_engine
-cargo test --features lsp-test-support --test lsp_composite_stdio
-
-# Real-server smoke tests (opt-in, requires installed servers)
-cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer --nocapture
-
-# Plugin example SDKs
-cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml
-PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v
-cargo build --target wasm32-unknown-unknown --manifest-path examples/plugins/wasm-command-table/Cargo.toml --release
-
-# Adversarial tests
-cargo test --test command_routing_adversarial
-cargo test --test python_sandbox_adversarial
-cargo test --test context_projection_adversarial
-cargo test --test command_routing_execution_ownership
-
-# Phase 4-5 durable jobs + scheduler tests
-cargo test --test durable_jobs_phase4
-cargo test --test scheduler_submission_idempotency
-cargo test --test scheduler_permit_lifecycle
-cargo test --test scheduler_cancellation
-cargo test --test scheduler_restart_recovery
-cargo test --test scheduler_contention
-cargo test --test scheduler_authority_matrix
-cargo test --test managed_process_descendants
-cargo test --test scheduler_resource_profiles
-cargo test --test scheduler_protocol_consistency
-
-# Tokio flavor audit
-python3 scripts/audit_tokio_tests.py
+cargo test -p codegg-core                           # single crate
+cargo test --test tui_render                        # single integration test
+cargo test -p egglsp --features lsp-test-support --test scenario_engine  # LSP (needs feature)
 ```
+
+Key test categories and where to find them:
+
+- **Workspace crate tests**: `cargo test -p <crate>` for core, config, protocol, providers, eggsentry, eggcontext, egggit, codegg-git, egglsp
+- **TUI integration**: `--test tui_render`, `--test tui`
+- **LSP integration** (needs `lsp-test-support` feature, fake server, no network): `--test scenario_engine`, `--test lsp_composite_stdio`
+- **LSP real-server** (opt-in, needs installed servers, `lsp-real-server-tests`): `--test real_server_smoke -- rust_analyzer`
+- **Adversarial/security**: `command_routing_adversarial`, `python_sandbox_adversarial`, `context_projection_adversarial`, `command_routing_execution_ownership`
+- **Scheduler/durable jobs**: `durable_jobs_phase4`, `scheduler_*`, `managed_process_descendants` (see `tests/scheduler_phase5.rs`)
+- **Tokio flavor audit**: `python3 scripts/audit_tokio_tests.py`
+- **Plugin SDKs**: `cargo test --manifest-path examples/plugins/sdk-rust/Cargo.toml`; Python: `PYTHONPATH=examples/plugins/sdk-python python3 -m unittest discover examples/plugins/sdk-python/tests -v`
+
+Integration tests with `required-features` (e.g., `lsp_composite_stdio` needs `lsp-test-support`, `projection_transport_real` needs `server`) are declared in root `Cargo.toml`.
 
 ## Built-in Agent Assets
 
