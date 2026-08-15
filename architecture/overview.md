@@ -202,7 +202,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
 | DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
 | Integration tests | 160 | `tests/` |
-| Architecture docs | 72 | `architecture/` |
+| Architecture docs | 73 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 47 | `crates/codegg-git/src/lib.rs` |
@@ -387,6 +387,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [CodeGG Core](codegg_core.md) — codegg-core crate internals
 - [Model Adapters](model-adapters.md) — Model adapter patterns and conversions
 - [Testing](testing.md) — Test resource taxonomy, Tokio runtime rules
+- [Review Findings](review-findings.md) — Systematic audit of all 72 architecture docs
 
 ## Directory Layout
 
