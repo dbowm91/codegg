@@ -417,6 +417,14 @@ dispatcher emits a `tracing::debug!` line summarising the
 `ToolProvenance` (backend, implementation, elapsed_ms, trust) so the
 structured metadata stays internal and never reaches the model.
 
+Eggsearch-backed wrappers additionally preserve the complete parsed upstream
+JSON in `StructuredToolResult::value`. Their model-facing `output` is still
+the bounded external-content frame, and its truncation flag describes only
+that display projection. The retained value is evidence metadata, not
+instructions: CodeGG preserves trust markers and warnings, but never executes
+upstream `next_actions` automatically. Text-only responses from older
+eggsearch servers remain explicit legacy results with no structured value.
+
 Raw MCP tool definitions are cached using a SHA-256 digest over sorted,
 provider-visible names, descriptions, parameter schemas, and defer-loading
 metadata. Equal-count identity or schema replacements therefore invalidate

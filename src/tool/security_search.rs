@@ -67,7 +67,7 @@ impl Tool for SecuritySearchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_security_search(&input).await?;
+        let result = search_backend::dispatch_security_search_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance =
             search_backend::provenance_for_security_search().unwrap_or_else(|| {
@@ -82,8 +82,6 @@ impl Tool for SecuritySearchTool {
                 }
             });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

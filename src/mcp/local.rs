@@ -9,7 +9,7 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, Notify};
 
 use crate::error::McpError;
-use crate::mcp::{McpPrompt, McpResource, McpResourceContent, PromptArgument};
+use crate::mcp::{McpPrompt, McpResource, McpResourceContent, McpToolCallResult, PromptArgument};
 use crate::provider::ToolDefinition;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -55,6 +55,7 @@ pub struct LocalClient {
     shutdown_notify: Arc<Notify>,
     stderr_task: Option<tokio::task::JoinHandle<()>>,
     request_id: AtomicU64,
+    server_version: Option<String>,
 }
 
 impl LocalClient {
@@ -75,6 +76,7 @@ impl LocalClient {
             shutdown_notify: Arc::new(Notify::new()),
             stderr_task: None,
             request_id: AtomicU64::new(1),
+            server_version: None,
         }
     }
 
@@ -157,12 +159,20 @@ impl LocalClient {
             }
         });
 
-        let _result = self.send_request("initialize", init_params).await?;
+        let result = self.send_request("initialize", init_params).await?;
+        self.server_version = result
+            .pointer("/serverInfo/version")
+            .and_then(|version| version.as_str())
+            .map(str::to_owned);
 
         self.send_notification("notifications/initialized", json!({}))
             .await?;
 
         Ok(())
+    }
+
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 
     pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
@@ -200,6 +210,14 @@ impl LocalClient {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<String, McpError> {
+        Ok(self.call_tool_structured(tool, arguments).await?.text)
+    }
+
+    pub async fn call_tool_structured(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallResult, McpError> {
         let params = json!({
             "name": tool,
             "arguments": arguments
@@ -221,8 +239,24 @@ impl LocalClient {
                     .map(String::from)
             })
             .collect();
+        let structured = result.get("structuredContent").cloned().or_else(|| {
+            content.iter().find_map(|c| {
+                (c.get("type").and_then(|t| t.as_str()) == Some("json"))
+                    .then(|| c.get("json").cloned())
+                    .flatten()
+            })
+        });
+        let text = text_parts.join("\n");
+        let text = if text.is_empty() {
+            structured
+                .as_ref()
+                .map(serde_json::Value::to_string)
+                .unwrap_or_default()
+        } else {
+            text
+        };
 
-        Ok(text_parts.join("\n"))
+        Ok(McpToolCallResult { text, structured })
     }
 
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {

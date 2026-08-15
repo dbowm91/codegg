@@ -60,6 +60,16 @@ pub struct McpTool {
     pub server: String,
 }
 
+/// The lossless portion of an MCP `tools/call` response needed by
+/// CodeGG-managed integrations. `text` remains the compatibility projection
+/// used by existing callers; `structured` retains `content[type=json]` or
+/// the protocol-level `structuredContent` value when a server provides it.
+#[derive(Debug, Clone, Default)]
+pub struct McpToolCallResult {
+    pub text: String,
+    pub structured: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum McpServerStatus {
     #[default]
@@ -73,6 +83,7 @@ pub struct McpServer {
     pub name: String,
     pub status: McpServerStatus,
     pub tools: Vec<McpTool>,
+    pub server_version: Option<String>,
     pub client: McpClientType,
 }
 
@@ -182,6 +193,7 @@ impl McpService {
 
         let mut client = LocalClient::new(command, args.to_vec(), env, timeout);
         client.initialize().await?;
+        let server_version = client.server_version().map(str::to_owned);
         let tools = client.discover_tools().await?;
         let mcp_tools = tools
             .into_iter()
@@ -197,6 +209,7 @@ impl McpService {
             name: name.to_string(),
             status: McpServerStatus::Connected,
             tools: mcp_tools,
+            server_version,
             client: McpClientType::Local(Arc::new(RwLock::new(client))),
         };
         self.servers.insert(key, server);
@@ -223,6 +236,7 @@ impl McpService {
         }
 
         manager.connect().await?;
+        let server_version = manager.server_version().map(str::to_owned);
         let tools = manager.discover_tools().await?;
         let mcp_tools = tools
             .into_iter()
@@ -238,6 +252,7 @@ impl McpService {
             name: name.to_string(),
             status: McpServerStatus::Connected,
             tools: mcp_tools,
+            server_version,
             client: McpClientType::Remote(Arc::new(RwLock::new(manager))),
         };
         self.servers.insert(name.to_string(), server);
@@ -272,15 +287,48 @@ impl McpService {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<String, McpError> {
+        Ok(self
+            .call_tool_structured(server, tool, arguments)
+            .await?
+            .text)
+    }
+
+    /// Call an MCP tool while retaining structured content when the
+    /// transport provides it. The legacy [`Self::call_tool`] API continues
+    /// to return only the text projection.
+    pub async fn call_tool_structured(
+        &self,
+        server: &str,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallResult, McpError> {
         let srv = self
             .servers
             .get(server)
             .ok_or_else(|| McpError::Server(format!("server {server} not found")))?;
 
         match &srv.client {
-            McpClientType::Local(client) => client.write().await.call_tool(tool, arguments).await,
-            McpClientType::Remote(client) => client.write().await.call_tool(tool, arguments).await,
-            McpClientType::Mock(handler) => (handler.lock().expect("mock lock"))(tool, arguments),
+            McpClientType::Local(client) => {
+                client
+                    .write()
+                    .await
+                    .call_tool_structured(tool, arguments)
+                    .await
+            }
+            McpClientType::Remote(client) => {
+                client
+                    .write()
+                    .await
+                    .call_tool_structured(tool, arguments)
+                    .await
+            }
+            McpClientType::Mock(handler) => {
+                let text = (handler.lock().expect("mock lock"))(tool, arguments)?;
+                Ok(McpToolCallResult {
+                    structured: serde_json::from_str(&text).ok(),
+                    text,
+                })
+            }
         }
     }
 
@@ -289,6 +337,12 @@ impl McpService {
             show_raw: true,
             hidden_servers: Vec::new(),
         })
+    }
+
+    pub fn server_version(&self, server: &str) -> Option<String> {
+        self.servers
+            .get(server)
+            .and_then(|s| s.server_version.clone())
     }
 
     /// List MCP tool definitions, filtered through the given
@@ -434,6 +488,7 @@ impl McpService {
             name: name.to_string(),
             status: McpServerStatus::Connected,
             tools,
+            server_version: None,
             client: McpClientType::Mock(Arc::new(std::sync::Mutex::new(handler))),
         };
         self.servers.insert(name.to_string(), server);

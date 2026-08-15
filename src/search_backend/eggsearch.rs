@@ -375,6 +375,54 @@ fn build_evidence_bundle_args(input: &Value) -> Result<Value, ToolError> {
     Ok(args)
 }
 
+/// Result of one eggsearch call. The display projection is deliberately
+/// separate from `value`: output caps and external-content framing apply
+/// only to the former.
+#[derive(Debug, Clone)]
+pub struct EggsearchCallResult {
+    pub output: String,
+    pub value: Option<Value>,
+    pub truncated: bool,
+}
+
+async fn call_structured_tool<F>(
+    mcp_server: &str,
+    tool: &str,
+    args: Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+    cap_label: &str,
+    frame: F,
+) -> Result<EggsearchCallResult, ToolError>
+where
+    F: FnOnce(&str, &str) -> String,
+{
+    let svc = super::state::mcp_service()
+        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
+        let guard = svc.read().await;
+        guard.call_tool_structured(mcp_server, tool, args).await
+    })
+    .await
+    .map_err(|_| ToolError::Timeout(format!("eggsearch {tool} timed out after {timeout_ms}ms")))?
+    .map_err(|e| ToolError::Execution(format!("eggsearch {tool}: {e}")))?;
+
+    // Current eggsearch emits a JSON object either through MCP structured
+    // content or as serialized JSON text. Keep text-only responses as an
+    // explicit compatibility projection for older servers and web-fetch
+    // bodies; they never masquerade as structured evidence.
+    let value = result
+        .structured
+        .or_else(|| serde_json::from_str::<Value>(&result.text).ok());
+    let (capped, truncated) = clamp_output(&result.text, max_output_chars, cap_label);
+    super::state::set_last_truncated(truncated);
+    Ok(EggsearchCallResult {
+        output: frame(&capped, "eggsearch"),
+        value,
+        truncated,
+    })
+}
+
 /// Translate a native `websearch` call into an eggsearch `web_search`
 /// call and execute it.
 ///
@@ -388,70 +436,82 @@ fn build_evidence_bundle_args(input: &Value) -> Result<Value, ToolError> {
 ///   "timeout_ms": null
 /// }
 /// ```
+pub async fn call_web_search_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    let args = build_web_search_args(input)?;
+
+    call_structured_tool(
+        mcp_server,
+        "web_search",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_search_output_chars",
+        frame_search_results,
+    )
+    .await
+}
+
 pub async fn call_web_search(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let args = build_web_search_args(input)?;
-
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "web_search", args).await
-    })
-    .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch web_search timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch web_search: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_search_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_search_results(&capped, "eggsearch"))
+    Ok(
+        call_web_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
 }
 
 /// Translate a native `webfetch` call into an eggsearch `web_fetch`
 /// call and execute it.
+pub async fn call_web_fetch_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    let args = build_web_fetch_args(input)?;
+
+    call_structured_tool(
+        mcp_server,
+        "web_fetch",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_fetch_output_chars",
+        frame_fetched_page,
+    )
+    .await
+}
+
 pub async fn call_web_fetch(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let args = build_web_fetch_args(input)?;
-
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "web_fetch", args).await
-    })
-    .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch web_fetch timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch web_fetch: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_fetch_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_fetched_page(&capped, "eggsearch"))
+    Ok(
+        call_web_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
 }
 
 /// Translate a native `repo_search` call into an eggsearch `repo_search`
 /// call and execute it.
-pub async fn call_repo_search(
+pub async fn call_repo_search_structured(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
-) -> Result<String, ToolError> {
+) -> Result<EggsearchCallResult, ToolError> {
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -487,33 +547,39 @@ pub async fn call_repo_search(
         .unwrap_or(10)
         .min(30));
 
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "repo_search", args).await
-    })
+    call_structured_tool(
+        mcp_server,
+        "repo_search",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_repo_output_chars",
+        frame_repo_results,
+    )
     .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch repo_search timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch repo_search: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_repo_results(&capped, "eggsearch"))
 }
 
-/// Translate a native `repo_fetch` call into an eggsearch `repo_fetch`
-/// call and execute it.
-pub async fn call_repo_fetch(
+pub async fn call_repo_search(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
+    Ok(
+        call_repo_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
+}
+
+/// Translate a native `repo_fetch` call into an eggsearch `repo_fetch`
+/// call and execute it.
+pub async fn call_repo_fetch_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
     let path = non_empty_string(input, "path")?
         .ok_or_else(|| ToolError::Execution("missing 'path' parameter".to_string()))?;
     let mut args = json!({"path": path});
@@ -541,33 +607,39 @@ pub async fn call_repo_fetch(
         args["line_end"] = json!(line_end);
     }
 
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "repo_fetch", args).await
-    })
+    call_structured_tool(
+        mcp_server,
+        "repo_fetch",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_repo_output_chars",
+        frame_repo_file,
+    )
     .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch repo_fetch timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch repo_fetch: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_repo_file(&capped, "eggsearch"))
 }
 
-/// Translate a native `repo_map` call into an eggsearch `repo_map`
-/// call and execute it.
-pub async fn call_repo_map(
+pub async fn call_repo_fetch(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
+    Ok(
+        call_repo_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
+}
+
+/// Translate a native `repo_map` call into an eggsearch `repo_map`
+/// call and execute it.
+pub async fn call_repo_map_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
     if input
         .get("path")
         .and_then(Value::as_str)
@@ -599,29 +671,39 @@ pub async fn call_repo_map(
         .min(3);
     args["max_depth"] = json!(depth);
 
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "repo_map", args).await
-    })
+    call_structured_tool(
+        mcp_server,
+        "repo_map",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_repo_output_chars",
+        frame_repo_map,
+    )
     .await
-    .map_err(|_| ToolError::Timeout(format!("eggsearch repo_map timed out after {timeout_ms}ms")))?
-    .map_err(|e| ToolError::Execution(format!("eggsearch repo_map: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_repo_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_repo_map(&capped, "eggsearch"))
 }
 
-/// Translate a native `security_search` call into an eggsearch
-/// `security_search` call and execute it.
-pub async fn call_security_search(
+pub async fn call_repo_map(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
+    Ok(
+        call_repo_map_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
+}
+
+/// Translate a native `security_search` call into an eggsearch
+/// `security_search` call and execute it.
+pub async fn call_security_search_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -670,33 +752,39 @@ pub async fn call_security_search(
         .unwrap_or(10)
         .min(20));
 
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "security_search", args).await
-    })
+    call_structured_tool(
+        mcp_server,
+        "security_search",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_security_output_chars",
+        frame_security_results,
+    )
     .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch security_search timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch security_search: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_security_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_security_results(&capped, "eggsearch"))
 }
 
-/// Translate a native `research_search` call into an eggsearch
-/// `research_search` call and execute it.
-pub async fn call_research_search(
+pub async fn call_security_search(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
+    Ok(
+        call_security_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
+}
+
+/// Translate a native `research_search` call into an eggsearch
+/// `research_search` call and execute it.
+pub async fn call_research_search_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
     let query = input
         .get("query")
         .and_then(Value::as_str)
@@ -730,83 +818,99 @@ pub async fn call_research_search(
         .unwrap_or(10)
         .min(15));
 
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "research_search", args).await
-    })
+    call_structured_tool(
+        mcp_server,
+        "research_search",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_research_output_chars",
+        frame_research_results,
+    )
     .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch research_search timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch research_search: {e}")))?;
+}
 
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_research_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_research_results(&capped, "eggsearch"))
+pub async fn call_research_search(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<String, ToolError> {
+    Ok(
+        call_research_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
 }
 
 /// Translate a native `batch_fetch` call into an eggsearch
 /// `batch_fetch` call and execute it.
+pub async fn call_batch_fetch_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    let args = build_batch_fetch_args(input)?;
+
+    call_structured_tool(
+        mcp_server,
+        "batch_fetch",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_batch_output_chars",
+        frame_batch_results,
+    )
+    .await
+}
+
 pub async fn call_batch_fetch(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let args = build_batch_fetch_args(input)?;
-
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard.call_tool(mcp_server, "batch_fetch", args).await
-    })
-    .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch batch_fetch timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch batch_fetch: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_batch_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_batch_results(&capped, "eggsearch"))
+    Ok(
+        call_batch_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
 }
 
 /// Translate a native `build_evidence_bundle` call into an eggsearch
 /// `build_evidence_bundle` call and execute it.
+pub async fn call_build_evidence_bundle_structured(
+    mcp_server: &str,
+    input: &Value,
+    max_output_chars: usize,
+    timeout_ms: u64,
+) -> Result<EggsearchCallResult, ToolError> {
+    let args = build_evidence_bundle_args(input)?;
+
+    call_structured_tool(
+        mcp_server,
+        "build_evidence_bundle",
+        args,
+        max_output_chars,
+        timeout_ms,
+        "max_evidence_output_chars",
+        frame_evidence_bundle,
+    )
+    .await
+}
+
 pub async fn call_build_evidence_bundle(
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
-    let args = build_evidence_bundle_args(input)?;
-
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
-    let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
-        let guard = svc.read().await;
-        guard
-            .call_tool(mcp_server, "build_evidence_bundle", args)
-            .await
-    })
-    .await
-    .map_err(|_| {
-        ToolError::Timeout(format!(
-            "eggsearch build_evidence_bundle timed out after {timeout_ms}ms"
-        ))
-    })?
-    .map_err(|e| ToolError::Execution(format!("eggsearch build_evidence_bundle: {e}")))?;
-
-    let (capped, truncated) = clamp_output(&raw, max_output_chars, "max_evidence_output_chars");
-    super::state::set_last_truncated(truncated);
-    Ok(frame_evidence_bundle(&capped, "eggsearch"))
+    Ok(
+        call_build_evidence_bundle_structured(mcp_server, input, max_output_chars, timeout_ms)
+            .await?
+            .output,
+    )
 }
 
 /// Best-effort translation of the historical Codegg `provider` hint to

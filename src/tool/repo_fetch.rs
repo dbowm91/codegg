@@ -80,7 +80,7 @@ impl Tool for RepoFetchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_repo_fetch(&input).await?;
+        let result = search_backend::dispatch_repo_fetch_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = search_backend::provenance_for_repo_fetch().unwrap_or_else(|| {
             use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
@@ -94,8 +94,6 @@ impl Tool for RepoFetchTool {
             }
         });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

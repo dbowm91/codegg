@@ -39,6 +39,15 @@ use codegg::search_backend::state;
 use codegg::search_backend::test_support::{
     acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
 };
+use codegg::tool::batch_fetch::BatchFetchTool;
+use codegg::tool::evidence_bundle::EvidenceBundleTool;
+use codegg::tool::repo_fetch::RepoFetchTool;
+use codegg::tool::repo_map::RepoMapTool;
+use codegg::tool::repo_search::RepoSearchTool;
+use codegg::tool::research_search::ResearchSearchTool;
+use codegg::tool::security_search::SecuritySearchTool;
+use codegg::tool::webfetch::WebFetchTool;
+use codegg::tool::websearch::WebSearchTool;
 use codegg::tool::Tool;
 use tokio::sync::{Mutex, MutexGuard};
 
@@ -953,6 +962,115 @@ async fn batch_fetch_normalizes_mixed_legacy_repo_and_web_items() {
     assert_eq!(args["items"][1]["line_start"], 1);
     assert_eq!(args["items"][1]["line_end"], 8);
     assert_eq!(args["max_total_chars"], 5000);
+}
+
+#[tokio::test]
+async fn structured_wrappers_preserve_upstream_value_and_bound_display() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let fixture = serde_json::json!({
+        "stable_id": "evidence-123",
+        "structured_warnings": [{"code": "prompt_injection", "severity": "high", "scope": "snippet"}],
+        "trust_markers": {"sanitized": true, "injection_detected": true},
+        "routing_decision": {"selected": ["duckduckgo"], "skipped": ["exa"], "degraded": true},
+        "next_actions": [{"tool": "web_fetch", "reason": "inspect", "priority": "normal", "input": {"url": "https://example.com"}}],
+        "repo_locator": {"owner": "owner", "repo": "repo", "path": "src/lib.rs"},
+        "security": {"confidence": "high", "applicability": "unknown"},
+        "research": {"claims": [{"id": "claim-1"}], "conflicts": [], "gaps": []},
+        "unknown_future_field": {"must_survive": true},
+        "payload": "large evidence payload"
+    });
+    let response = fixture.to_string();
+    let mut svc = McpService::new();
+    let tools = [
+        "web_search",
+        "web_fetch",
+        "repo_search",
+        "repo_fetch",
+        "repo_map",
+        "security_search",
+        "research_search",
+        "batch_fetch",
+        "build_evidence_bundle",
+    ]
+    .into_iter()
+    .map(|name| McpTool {
+        name: name.to_string(),
+        description: String::new(),
+        input_schema: serde_json::json!({"type": "object"}),
+        server: "eggsearch".to_string(),
+    })
+    .collect();
+    svc.register_mock_server(
+        "eggsearch",
+        tools,
+        Box::new(move |_, _| Ok(response.clone())),
+    );
+    state::install_mcp_service(Arc::new(tokio::sync::RwLock::new(svc)));
+    let mut cfg = eggsearch_config_all_caps();
+    cfg.max_search_output_chars = Some(40);
+    cfg.max_fetch_output_chars = Some(40);
+    cfg.max_repo_output_chars = Some(40);
+    cfg.max_security_output_chars = Some(40);
+    cfg.max_research_output_chars = Some(40);
+    cfg.max_batch_output_chars = Some(40);
+    cfg.max_evidence_output_chars = Some(40);
+    state::install_search_config(cfg);
+
+    let cases: Vec<(Box<dyn Tool>, serde_json::Value)> = vec![
+        (
+            Box::new(WebSearchTool::default()),
+            serde_json::json!({"query": "x"}),
+        ),
+        (
+            Box::new(WebFetchTool::default()),
+            serde_json::json!({"url": "https://example.com"}),
+        ),
+        (Box::new(RepoSearchTool), serde_json::json!({"query": "x"})),
+        (
+            Box::new(RepoFetchTool),
+            serde_json::json!({"repo": "owner/repo", "path": "src/lib.rs"}),
+        ),
+        (
+            Box::new(RepoMapTool),
+            serde_json::json!({"repo": "owner/repo"}),
+        ),
+        (
+            Box::new(SecuritySearchTool),
+            serde_json::json!({"query": "CVE-1"}),
+        ),
+        (
+            Box::new(ResearchSearchTool),
+            serde_json::json!({"query": "x"}),
+        ),
+        (
+            Box::new(BatchFetchTool),
+            serde_json::json!({"urls": ["https://example.com"]}),
+        ),
+        (
+            Box::new(EvidenceBundleTool),
+            serde_json::json!({"sources": [{"id": "src-1", "url": "https://example.com"}]}),
+        ),
+    ];
+
+    for (tool, input) in cases {
+        let result = tool
+            .execute_structured(input, None)
+            .await
+            .unwrap_or_else(|error| panic!("{}: {error}", tool.name()));
+        let value = result.value.expect("structured value");
+        assert_eq!(value["stable_id"], "evidence-123");
+        assert_eq!(value["structured_warnings"][0]["severity"], "high");
+        assert_eq!(value["trust_markers"]["injection_detected"], true);
+        assert_eq!(value["routing_decision"]["degraded"], true);
+        assert_eq!(value["next_actions"][0]["tool"], "web_fetch");
+        assert_eq!(value["unknown_future_field"]["must_survive"], true);
+        assert!(result.output.contains("trust=external_untrusted"));
+        assert!(result
+            .provenance
+            .as_ref()
+            .is_some_and(|provenance| provenance.truncated));
+    }
 }
 
 /// Server returns oversized output; Codegg should clamp and mark truncation.

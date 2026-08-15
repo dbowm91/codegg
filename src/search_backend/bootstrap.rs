@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::config::schema::{Config, SearchBackendConfig, SearchConfig};
@@ -145,6 +146,14 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
             .unwrap_or(60_000),
     );
 
+    // Install the connected service before the diagnostic call. The provider
+    // status helper intentionally uses the same process-wide service slot as
+    // normal wrappers, so doctor must exercise the live service rather than a
+    // pre-installation placeholder.
+    let svc = Arc::new(RwLock::new(mcp_service));
+    state::install_mcp_service(Arc::clone(&svc));
+    report.server_version = svc.read().await.server_version(&server_name);
+
     // Step 4: best-effort provider_status call (never break startup).
     if report.connected {
         let server = effective_server_name(&effective);
@@ -156,13 +165,8 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
         match super::eggsearch::call_provider_status(&server, ps_timeout).await {
             Ok(raw) => {
                 report.provider_status_ok = true;
-                // Truncate to a reasonable size for doctor output.
-                let display = if raw.len() > 512 {
-                    format!("{}... (truncated)", &raw[..512])
-                } else {
-                    raw
-                };
-                report.provider_status_summary = Some(display);
+                let summary = summarize_provider_status(&raw, &mut report);
+                report.provider_status_summary = Some(summary);
             }
             Err(e) => {
                 report.provider_status_summary = Some(format!("unavailable: {e}"));
@@ -188,8 +192,6 @@ pub async fn bootstrap_eggsearch(config: &Config) -> BootstrapReport {
         }
     }
 
-    let svc = Arc::new(RwLock::new(mcp_service));
-    state::install_mcp_service(svc);
     report
 }
 
@@ -298,6 +300,11 @@ pub struct BootstrapReport {
     pub provider_status_summary: Option<String>,
     /// Whether provider_status call succeeded.
     pub provider_status_ok: bool,
+    /// Server version reported by the structured provider-status response,
+    /// when the upstream contract supplies one.
+    pub server_version: Option<String>,
+    /// True when provider_status returned data that was not valid JSON.
+    pub provider_status_parse_error: bool,
     /// List of required upstream tools (web_search, web_fetch) and whether
     /// they were discovered on the server.
     pub required_tool_coverage: Vec<(String, bool)>,
@@ -435,6 +442,9 @@ impl BootstrapReport {
         // Provider status (best-effort).
         if self.provider_status_ok {
             lines.push("Provider status: available".to_string());
+            if let Some(version) = &self.server_version {
+                lines.push(format!("Eggsearch version: {version}"));
+            }
             if let Some(summary) = &self.provider_status_summary {
                 lines.push(format!("Provider details: {summary}"));
             }
@@ -445,6 +455,94 @@ impl BootstrapReport {
             lines.push(format!("Note: {note}"));
         }
         lines
+    }
+}
+
+fn summarize_provider_status(raw: &str, report: &mut BootstrapReport) -> String {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        report.provider_status_parse_error = true;
+        return "invalid structured provider_status response".to_string();
+    };
+
+    report.server_version = value
+        .get("server_version")
+        .or_else(|| value.get("version"))
+        .or_else(|| value.pointer("/server_info/version"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let Some(providers) = value.get("providers") else {
+        return "structured response received (provider list unavailable)".to_string();
+    };
+    let mut entries = Vec::new();
+    match providers {
+        Value::Object(map) => {
+            for (name, status) in map.iter().take(12) {
+                let label = provider_status_label(status);
+                entries.push(format!("{name}={label}"));
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter().take(12) {
+                if let Some(name) = item.as_str() {
+                    entries.push(format!("{name}=reported"));
+                } else if let Some(name) = item
+                    .get("name")
+                    .or_else(|| item.get("id"))
+                    .and_then(Value::as_str)
+                {
+                    entries.push(format!("{name}={}", provider_status_label(item)));
+                }
+            }
+        }
+        _ => {}
+    }
+    let capabilities = value
+        .get("server_capabilities")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, enabled)| {
+                    enabled.as_bool().map(|enabled| {
+                        format!(
+                            "{name}={}",
+                            if enabled { "available" } else { "unavailable" }
+                        )
+                    })
+                })
+                .take(12)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let provider_summary = if entries.is_empty() {
+        "providers=unavailable".to_string()
+    } else {
+        format!("providers={}", entries.join(","))
+    };
+    if capabilities.is_empty() {
+        provider_summary
+    } else {
+        format!(
+            "{provider_summary}; capabilities={}",
+            capabilities.join(",")
+        )
+    }
+}
+
+fn provider_status_label(value: &Value) -> &'static str {
+    if value.get("degraded").and_then(Value::as_bool) == Some(true) {
+        return "degraded";
+    }
+    if value.get("routable").and_then(Value::as_bool) == Some(false)
+        || value.get("available").and_then(Value::as_bool) == Some(false)
+    {
+        return "unavailable";
+    }
+    match value.get("status").and_then(Value::as_str) {
+        Some("degraded") => "degraded",
+        Some("unavailable") => "unavailable",
+        Some("ok" | "ready" | "available") => "available",
+        _ => "available",
     }
 }
 
@@ -727,6 +825,29 @@ mod tests {
         let lines = report.summary_lines();
         let joined = lines.join("\n");
         assert!(joined.contains("Provider status: unavailable: timeout"));
+    }
+
+    #[test]
+    fn provider_status_summary_is_bounded_and_does_not_echo_secrets() {
+        let mut report = BootstrapReport::default();
+        let summary = summarize_provider_status(
+            r#"{"version":"0.3.6","providers":{"duckduckgo":{"status":"ok"},"exa":{"available":false,"reason":"secret-value"}},"secret":"do-not-print"}"#,
+            &mut report,
+        );
+        assert_eq!(report.server_version.as_deref(), Some("0.3.6"));
+        assert!(summary.contains("duckduckgo=available"));
+        assert!(summary.contains("exa=unavailable"));
+        assert!(!summary.contains("secret-value"));
+        assert!(!summary.contains("do-not-print"));
+        assert!(!report.provider_status_parse_error);
+    }
+
+    #[test]
+    fn malformed_provider_status_is_diagnostic_not_raw_json() {
+        let mut report = BootstrapReport::default();
+        let summary = summarize_provider_status("not-json", &mut report);
+        assert_eq!(summary, "invalid structured provider_status response");
+        assert!(report.provider_status_parse_error);
     }
 
     #[test]

@@ -78,7 +78,7 @@ impl Tool for WebSearchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_web_search(&input).await?;
+        let result = search_backend::dispatch_web_search_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let provenance =
             search_backend::provenance_for_search().unwrap_or_else(|| ToolProvenance {
@@ -89,13 +89,9 @@ impl Tool for WebSearchTool {
                 truncated: false,
                 trust: ToolTrust::ExternalUntrusted,
             });
-        let truncated = provenance.truncated;
         let mut provenance = provenance;
         provenance.elapsed_ms = Some(elapsed_ms);
-        provenance.truncated = truncated;
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }
 
