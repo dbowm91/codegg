@@ -8,9 +8,8 @@ use crate::research::claims::{build_claims, build_claims_with_model};
 use crate::research::error::{ResearchError, Result};
 use crate::research::extract::{extract_evidence, extract_evidence_with_model};
 use crate::research::sources::{
-    advisory::AdvisorySource, crates_io::CratesIoSource, docs_rs::DocsRsSource,
-    github::GitHubSource, local_repo::LocalRepoSource, search_provider::SearchProvider,
-    search_provider::SearchProviderSource, url::UrlSource, ResearchSourceAdapter,
+    crates_io::CratesIoSource, docs_rs::DocsRsSource, eggsearch::EggsearchSource,
+    github::GitHubSource, local_repo::LocalRepoSource, url::UrlSource, ResearchSourceAdapter,
 };
 use crate::research::store::ResearchStore;
 use crate::research::synthesis;
@@ -41,6 +40,7 @@ impl ResearchCoordinator {
             Box::new(CratesIoSource::new()),
             Box::new(GitHubSource::new()),
             Box::new(DocsRsSource::new()),
+            Box::new(EggsearchSource::new()),
         ];
         Self {
             store,
@@ -50,25 +50,15 @@ impl ResearchCoordinator {
         }
     }
 
+    #[deprecated(note = "research provider selection is now owned by eggsearch")]
+    #[allow(deprecated)]
     pub fn with_search_provider(
         project_root: PathBuf,
         artifact_root: PathBuf,
-        provider: SearchProvider,
-        api_key: Option<String>,
+        _provider: crate::research::sources::eggsearch::SearchProvider,
+        _api_key: Option<String>,
     ) -> Self {
-        let store = ResearchStore::new(artifact_root);
-        let source_adapters: Vec<Box<dyn ResearchSourceAdapter>> = vec![
-            Box::new(LocalRepoSource::new(project_root.clone())),
-            Box::new(UrlSource::new()),
-            Box::new(AdvisorySource::new()),
-            Box::new(SearchProviderSource::new(provider, api_key)),
-        ];
-        Self {
-            store,
-            source_adapters,
-            provider: None,
-            model: None,
-        }
+        Self::new(project_root, artifact_root)
     }
 
     /// Set an LLM provider for model-backed evidence extraction and claim construction.

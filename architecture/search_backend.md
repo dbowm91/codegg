@@ -1,10 +1,19 @@
 # Search Backend Module
 
 The `search_backend` module is the wrapper layer between Codegg's
-agent-facing `websearch` and `webfetch` tools and the underlying
-provider. The default backend is the external `eggsearch` MCP
-server; the legacy in-tree implementation under `src/search/*` is
-retained as an explicit fallback.
+agent-facing search/evidence tools and the underlying provider. The
+default backend is the external `eggsearch` MCP server; the legacy
+in-tree implementation under `src/search/*` is retained only as an
+explicit generic web-search compatibility fallback.
+
+`eggsearch` is the sole normal owner of external search-provider
+execution. The `codesearch` model name is a compatibility alias over
+eggsearch `repo_search` with `profile = "coding"`, and deep research
+uses the shared eggsearch `research_search`/`security_search` boundary
+to collect external evidence. CodeGG retains orchestration, local
+source collection, synthesis, and conversion into research records;
+provider URLs, credentials, routing, and result shaping remain in
+eggsearch.
 
 ## Module layout
 

@@ -30,10 +30,16 @@ use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig}
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::provider::ToolDefinition;
+use codegg::research::sources::eggsearch::EggsearchSource;
+use codegg::research::sources::ResearchSourceAdapter;
+use codegg::research::types::{
+    ResearchAudience, ResearchBudget, ResearchDepth, ResearchMode, ResearchPlan, ResearchRequest,
+};
 use codegg::search_backend::state;
 use codegg::search_backend::test_support::{
     acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
 };
+use codegg::tool::Tool;
 use tokio::sync::{Mutex, MutexGuard};
 
 // Serialize every test in this file (and across all test binaries
@@ -494,6 +500,98 @@ fn raw_eggsearch_tools_filtered_at_agent_loop_layer() {
 
 // ── Extended dispatch tests for repo/security/research/batch/evidence ──
 
+#[tokio::test]
+async fn codesearch_compatibility_alias_uses_eggsearch_repo_search() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let output = codegg::tool::codesearch::CodeSearchTool
+        .execute(serde_json::json!({
+            "query": "rust async",
+            "tokens_num": 5000,
+        }))
+        .await
+        .expect("codesearch alias should dispatch");
+    assert!(output.contains("external_repo_evidence"));
+
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().expect("repo_search call");
+    assert_eq!(tool, "repo_search");
+    assert_eq!(args["query"], "rust async");
+    assert_eq!(args["profile"], "coding");
+    assert_eq!(args["max_results"], 10);
+}
+
+#[tokio::test]
+async fn research_eggsearch_source_honors_network_budget_and_converts_sources() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let source = EggsearchSource::new();
+    let plan = ResearchPlan {
+        scope: "test".to_string(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let request = |allow_network| ResearchRequest {
+        id: "research-test".to_string(),
+        question: "current async Rust research".to_string(),
+        mode: ResearchMode::Landscape,
+        audience: ResearchAudience::AgentPlanner,
+        depth: ResearchDepth::Medium,
+        output_profiles: vec![],
+        constraints: vec![],
+        sources: vec![],
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources: 4,
+            max_chunks_per_source: 1,
+            max_evidence_spans: 1,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network,
+        },
+        created_at: chrono::Utc::now(),
+    };
+
+    let denied = source.collect(&request(false), &plan).await;
+    assert!(matches!(
+        denied,
+        Err(codegg::research::error::ResearchError::NetworkNotAllowed)
+    ));
+    assert!(calls.lock().await.is_empty());
+
+    let sources = source
+        .collect(&request(true), &plan)
+        .await
+        .expect("network-enabled research should use eggsearch");
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].uri, "https://example.org/paper");
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "trust=external_untrusted"));
+    let recorded = calls.lock().await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "research_search");
+    assert_eq!(recorded[0].1["max_results"], 4);
+}
+
 /// Build a mock with ALL upstream tools registered.
 fn build_full_mock_eggsearch(
     recorded_calls: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
@@ -536,7 +634,7 @@ fn build_full_mock_eggsearch(
                 "repo_fetch" => Ok("file content".to_string()),
                 "repo_map" => Ok(r#"{"tree": []}"#.to_string()),
                 "security_search" => Ok(r#"{"vulns": []}"#.to_string()),
-                "research_search" => Ok(r#"{"papers": []}"#.to_string()),
+                "research_search" => Ok(r#"{"papers": [{"url": "https://example.org/paper", "title": "Mock paper", "abstract": "Mock abstract", "provider": "arxiv", "source_type": "paper"}]}"#.to_string()),
                 "batch_fetch" => Ok(r#"{"pages": []}"#.to_string()),
                 "build_evidence_bundle" => Ok(r#"{"bundle": {}}"#.to_string()),
                 _ => Err(McpError::Server(format!("unknown tool {tool}"))),

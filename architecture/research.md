@@ -60,7 +60,7 @@ Each adapter implements `ResearchSourceAdapter` with a `collect()` method:
 | `GitHubSource` | `github.rs` | GitHub files and issues |
 | `DocsRsSource` | `docs_rs.rs` | docs.rs documentation |
 | `AdvisorySource` | `advisory.rs` | Security advisory databases |
-| `SearchProviderSource` | `search_provider.rs` | External search API results |
+| `EggsearchSource` | `eggsearch.rs` | External search evidence through the shared eggsearch backend; provider routing and credentials remain outside CodeGG |
 
 Network-only adapters skip gracefully when `allow_network: false`.
 

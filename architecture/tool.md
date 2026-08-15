@@ -127,7 +127,7 @@ set varies with configuration and optional features. Use the registry and
 |------|------|-------------|
 | **webfetch** | `webfetch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_fetch`. Default backend is the external `eggsearch` MCP server's `web_fetch` tool; legacy reqwest/html2text implementation is retained as the `builtin` fallback. |
 | **websearch** | `websearch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_search`. Default backend is the external `eggsearch` MCP server's `web_search` tool; the in-tree `SearchProviderRegistry` is the `builtin` fallback. |
-| **codesearch** | `codesearch.rs` | Search for code examples, library docs, SDK patterns using Exa Code API. Uses EXA_API_KEY or EXA_CODE_API_KEY. |
+| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused `repo_search` through eggsearch. It does not own a provider client or require an Exa credential; prefer `repo_search` for structured repository queries. |
 | **research** | `research.rs` | Deep research tool. May invoke `websearch` and `webfetch` internally. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 
@@ -711,7 +711,7 @@ src/tool/
 ├── research_search.rs  # Academic/research search (dispatches to search_backend)
 ├── batch_fetch.rs  # Batch URL fetch (dispatches to search_backend)
 ├── evidence_bundle.rs  # Evidence bundle builder (dispatches to search_backend)
-├── codesearch.rs   # Code search via Exa
+├── codesearch.rs   # Coding-focused repo_search compatibility alias
 ├── question.rs     # User question asking
 ├── skill.rs        # Skill loading
 ├── review.rs       # LLM-based code review (uses egggit::diff_summary)

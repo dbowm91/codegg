@@ -5,6 +5,12 @@ tool domains live in workspace crates under `crates/` and are consumed
 directly in-process. The same crates can later expose optional MCP
 adapter binaries without changing the model-facing tool names.
 
+External search is the explicit exception to CodeGG-owned provider
+execution: eggsearch is the shared MCP-owned service for provider
+routing, credentials, and retrieval. CodeGG's wrappers and research
+orchestration consume that boundary rather than add provider clients
+under `src/search/*`.
+
 This document describes the runtime contract (Phase 1 of the plan), the
 backend-selection policy (Phase 3 / Phase 9), and the per-crate
 boundaries. See `architecture/tool.md` for the tool registry side of the contract.
