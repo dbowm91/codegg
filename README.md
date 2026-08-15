@@ -1,331 +1,295 @@
 # codegg
 
-codegg is a pure-Rust AI coding agent with a terminal UI, persistent
-sessions, configurable tools, and optional headless/server frontends.
+codegg is a Rust-native AI coding agent for terminal workflows. It combines an interactive TUI, persistent sessions, multiple LLM providers, code and shell tooling, custom agents and skills, MCP integration, LSP support, and a user-scoped daemon that can coordinate work across projects.
 
-This README is the short orientation. Detailed behavior and design notes live
-in the [architecture docs](architecture/overview.md) and the linked guides.
+The project is currently at `0.1.0` and under active development. The README describes the user-facing behavior implemented on `main`; deeper implementation notes live under [`architecture/`](architecture/).
 
-## What it includes
+## Highlights
 
-- Multiple LLM providers, model discovery, model profiles, routing, retries,
-  and circuit breaking.
-- A Ratatui TUI with sessions, agents, subagents, plans, goals, memory,
-  context/usage views, themes, keybindings, dialogs, completions, and
-  responsive background work.
-- File, search, git, shell, Python, LSP, security, deterministic, and MCP
-  tools. The `eggsearch` integration provides search/evidence backends;
-  `eggsact` provides in-process deterministic tools; and native `egggit`,
-  `eggcontext`, `eggsentry`, `egglsp`, and `codegg-git` crates keep core
-  functionality local and testable. The `git` tool supports typed reads
-  (status, diff, log, show, blame) plus the full mutation surface
-  (stage/commit/branch/stash/merge/rebase/cherry-pick/revert/fetch/pull/push/
-  reset/clean) with operation-aware continue/abort/skip recovery for
-  in-progress operations. See [`architecture/git.md`](architecture/git.md)
-  and the post-closure
-  [`architecture/git_polish_verification_handoff.md`](architecture/git_polish_verification_handoff.md)
-  for the canonical subprocess policy, the rerun argv secret
-  lifecycle, and the execution-origin matrix.
-- Human shell commands with explicit promotion: `!command` runs locally and
-  stays out of model context; `!!command` promotes the result. Output is
-  retained, bounded, redacted, and projected through native or RTK-backed
-  projectors when configured.
-- Preview-first LSP operations, stale-preview protection, semantic workflows,
-  diagnostics, restart supervision, and optional memory-only semantic cache.
-- Process, WASM, and builtin plugins, portable plugin UI, plugin management,
-  and reference SDKs under [`examples/plugins`](examples/plugins/).
-- Persistent SQLite sessions, import/export, background tasks, run history,
-  supervised test execution, context compaction, and security review.
-- Optional HTTP/WebSocket server and remote TUI transport (`server` feature).
+- Terminal-first Ratatui interface with persistent sessions, model and agent selection, context/usage views, planning, goals, memory, task tracking, and background work.
+- Native tools for files, search, shell/Python execution, Git, LSP, deterministic text operations, testing, and security-oriented workflows.
+- Multiple LLM backends with model discovery, provider-specific request handling, retries, circuit breaking, and model profiles.
+- Custom agents and portable skills, including compatible project/global skill locations used by CodeGG, `.agents`, OpenCode, and Claude-style harnesses.
+- MCP clients and servers, plus an ACP v1 stdio frontend via `codegg acp`.
+- A single user-scoped daemon by default, so sessions and process-consuming work can be coordinated rather than each TUI instance independently owning the machine.
+- Optional HTTP/WebSocket server, remote attach support, WASM plugins, and image support behind Cargo feature flags.
 
-Capabilities are preserved behind explicit feature gates where noted; the
-architecture and subsystem guides are the source of truth for details.
+## Requirements
 
-## Install and run
+- Rust `1.81` or newer.
+- Git for source installation and Git-backed agent operations.
+- Credentials for at least one configured LLM provider.
+- Any external programs required by integrations you enable, such as language servers or local MCP servers.
 
-Rust 1.81 or newer is required.
+Linux and macOS are the primary Unix runtime targets represented in the current daemon, sandbox, and path handling. Platform-specific behavior is documented in the architecture guides where relevant.
 
-### Singleton daemon
+## Install
 
-Codegg runs a single user-scoped daemon per OS user. The first `codegg`
-invocation acquires an advisory lock and starts the daemon; subsequent
-invocations connect to the running daemon automatically (connect-or-start).
-Use `codegg daemon start|stop|status` to manage the daemon lifecycle.
-
-Lock and metadata paths:
-
-| OS | Default location |
-|----|-----------------|
-| macOS | `$HOME/Library/Application Support/codegg/daemon.lock` |
-| Linux | `${XDG_RUNTIME_DIR:-/tmp}/codegg/daemon.lock` |
-
-Override with `CODEGG_DAEMON_HOME`. Use `--standalone` to run an in-process
-core without the daemon (visible non-production mode), or `--stdio` for the
-hidden `core-stdio` compatibility path. The legacy `--core-transport inproc|stdio`
-flags are deprecated and emit a warning.
-
-### Workspaces and execution context
-
-The daemon tracks every session as bound to exactly one registered
-[`Workspace`](architecture/core.md#workspace-registry-and-execution-context-phase-2)
-(a canonical project root). Workspace identity flows into every daemon-owned
-execution path through an immutable
-[`ExecutionContext`](architecture/core.md#workspace-registry-and-execution-context-phase-2)
-— `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject sessions that have not
-been bound to a workspace. Tools, subagents, Bash, Python, Git, LSP, TestRunner,
-and RunStore all anchor at `execution.workspace_root`, eliminating process-cwd
-as an execution identity source. See `architecture/core.md` for the full contract.
-
-### Workspace services and storage (Phase 3)
-
-Each registered workspace has a daemon-owned
-[`WorkspaceServices`](architecture/workspace_services.md) bundle that owns the
-per-workspace `RunStore`, path policy, lock table, and resolved configuration
-snapshot. Bundles are activated lazily by `WorkspaceServiceRegistry::acquire`
-with single-flight activation, leased to consumers through RAII
-`WorkspaceServicesLease` handles, and capped by `WorkspaceServicePolicy`
-(`max_active_workspaces`, `idle_evict_after`). Phase F Git mutation flows and
-the Bash-translation dispatcher contend on the same per-repository
-`WorkspaceLockTable::acquire_repository` lock.
-
-The daemon's authoritative SQLite catalog has moved to a user-scoped
-location:
-
-- macOS: `~/Library/Application Support/codegg/codegg.db`
-- Linux: `$XDG_DATA_HOME/codegg/codegg.db`
-
-`init_legacy_project_store(root)` retains backward compat for the legacy
-`<root>/.codegg/sessions.db` path, and `migrate_legacy_project_database`
-imports those legacy databases into the catalog idempotently. Storage
-layout marker is now `STORAGE_LAYOUT_VERSION = 35`. See
-`architecture/workspace_services.md` for the full contract.
-
-### Scheduler-owned execution
-
-In daemon mode, process-consuming work is submitted as a durable job and is
-admitted by the single global scheduler before execution. Tests, structured
-Bash test/build/lint/format routes, subagents, and scheduled work use this
-path; workspace lanes, resource profiles, exclusivity keys, cancellation,
-and daemon-generation recovery are visible through the scheduler snapshot
-and job protocol.
-
-The scheduler is enabled and mandatory by default. If it is explicitly
-disabled, daemon submission returns `SchedulerDisabled` rather than falling
-back to an unscheduled process. `--standalone` and `--stdio` remain explicit
-compatibility modes and do not participate in the user-scoped machine-wide
-admission guarantee. See
-`architecture/scheduler.md`.
+codegg is currently installed from source:
 
 ```bash
-git clone https://github.com/dbowm91/codegg
+git clone https://github.com/dbowm91/codegg.git
 cd codegg
-cargo install --path .
-
-codegg                         # start a new session (connect-or-start)
-codegg -c                      # resume the most recent session
-codegg -m anthropic/claude-sonnet-4-20250514
-codegg --run "Explain this code"
-codegg daemon status           # show daemon identity, PID, generation
-codegg daemon stop             # stop the running daemon
+cargo install --locked --path .
 ```
 
-For a source checkout without installing:
+To run directly from a checkout instead:
 
 ```bash
-cargo run -- --run "Explain this code"
+cargo run -- --help
+cargo run --
 ```
 
-Set a provider credential before starting. For example:
+The default build includes the TUI and clipboard support. Additional Cargo features include:
+
+- `server` — HTTP/WebSocket server and remote attach client.
+- `plugins` — WASM plugin runtime.
+- `image` — terminal image support.
+
+For example:
 
 ```bash
-export ANTHROPIC_API_KEY=...
+cargo install --locked --path . --features server,plugins
+```
+
+## Quick start
+
+Set a provider credential, inspect the models that provider exposes, and start the TUI:
+
+```bash
+export ANTHROPIC_API_KEY='...'
+
+codegg providers
+codegg models -p anthropic
+codegg -m anthropic/<model-id>
+```
+
+Once a default model is configured, ordinary use is simply:
+
+```bash
 codegg
 ```
 
-Use `codegg --help` for the complete CLI surface. The main commands are
-`providers`, `models`, `sessions`, `session`, `export`, `import`, `validate`,
-`doctor`, `exec`, `research`, `mcp`, `auth`, `daemon`, and `completions`.
-`server` and `attach` are available when the `server` feature is enabled.
+Useful startup forms include:
 
-## Configuration and credentials
+```bash
+codegg -c                              # resume the most recent session
+codegg -s <session-id>                 # open a specific session
+codegg -m <provider>/<model-id>        # override the model
+codegg -a <agent>                      # override the agent
+codegg --cwd /path/to/project          # choose the workspace
+codegg --run "Explain this project"   # run one prompt and exit
+```
 
-Configuration is JSON/JSON5. The canonical example is
-[`codegg.example.jsonc`](codegg.example.jsonc). Project configuration is
-usually `.codegg/codegg.jsonc`; the global file is usually
-`~/.config/codegg/codegg.jsonc`. `codegg.json`, `config.json`, `CODEGG_TUI_CONFIG`,
-system configuration, and parent-directory project configuration are also
-supported by the resolver.
+Use `codegg --help` for the complete CLI surface.
 
-Minimal provider configuration:
+## Daemon model
 
-```json
+Normal `codegg` startup uses a single daemon for the current OS user. The TUI connects to an existing daemon when one is available and, by default, starts it automatically when it is not. The daemon owns durable runtime state and coordinates process-consuming work across registered workspaces.
+
+You normally do not need to manage it manually. When needed:
+
+```bash
+codegg daemon status
+codegg daemon logs
+codegg daemon stop
+codegg daemon start
+```
+
+`--standalone` runs an in-process core without the singleton daemon. `--stdio` runs the compatibility stdio core transport. These modes are useful for development, diagnostics, and integrations, but they do not provide the daemon's machine-wide scheduling behavior.
+
+See [`architecture/core.md`](architecture/core.md), [`architecture/scheduler.md`](architecture/scheduler.md), and [`architecture/client.md`](architecture/client.md) for the runtime model.
+
+## Configuration
+
+Configuration is JSON/JSON5; JSONC comments are supported. The full example is [`codegg.example.jsonc`](codegg.example.jsonc).
+
+Project configuration is discovered upward from the working directory at locations such as:
+
+```text
+.codegg/codegg.jsonc
+.codegg/codegg.json
+codegg/codegg.jsonc
+codegg/codegg.json
+```
+
+Global configuration lives under the platform configuration directory in `codegg/codegg.jsonc` (for example `~/.config/codegg/codegg.jsonc` on a typical Linux system). `CODEGG_TUI_CONFIG` can also point at an explicit configuration file. System configuration is supported as well.
+
+A minimal provider configuration looks like:
+
+```jsonc
 {
-  "model": "anthropic/claude-sonnet-4-20250514",
+  "model": "openai/<model-id>",
   "provider": {
-    "anthropic": {
-      "auth": { "type": "api_key", "env": "ANTHROPIC_API_KEY" }
+    "openai": {
+      "auth": {
+        "type": "api_key",
+        "env": "OPENAI_API_KEY"
+      }
     }
   }
 }
 ```
 
-Providers include Anthropic, OpenAI-compatible endpoints, Google/Vertex,
-Azure, Bedrock, OpenRouter, Cloudflare, GitLab, xAI, Mistral, and other
-configured integrations. Run `codegg providers` and `codegg models` to inspect
-the providers and models available in the current configuration.
+Configuration can additionally control agents, model profiles, permissions, compaction/context policy, tools, formatters, LSP servers, MCP servers, skills, plugins, keybindings, notifications, daemon behavior, and other runtime options. See [`architecture/config.md`](architecture/config.md).
 
-The typed auth system supports environment-backed API keys, stored API keys,
-encrypted values, explicit no-auth, and recognized-but-not-yet-implemented
-OAuth/device and external-command modes. Manage stored API keys without
-printing secrets:
+## Providers and credentials
+
+The current built-in registration path supports Anthropic, OpenAI, Google, OpenRouter, OpenCode Zen, Mistral, Groq, DeepInfra, Cerebras, Cohere, Together, Perplexity, xAI, Venice, MiniMax, OpenCode Go, and General Compute when the corresponding credentials/configuration are present.
+
+Run these commands against your configuration rather than relying on a static model list:
 
 ```bash
-codegg auth status
+codegg providers
+codegg models
+codegg models -p openai
+```
+
+Environment-backed API keys are the simplest authentication path. Provider configuration can also reference the encrypted user credential store:
+
+```bash
+export CODEGG_MASTER_KEY='...'
 printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai
-printf '%s' "$OPENAI_API_KEY" | codegg auth set-key openai --account work
+codegg auth status
 codegg auth logout openai
 ```
 
-Storing credentials requires `CODEGG_MASTER_KEY` (or one of the supported
-encryption-key aliases). See [authentication](architecture/auth.md) and
-[configuration](architecture/config.md).
+`codegg auth status` does not print stored secrets. Stored keys require `CODEGG_MASTER_KEY` (or a supported compatibility encryption-key variable). Some typed authentication modes exist in the configuration schema but are not yet runtime-complete; API-key and stored-key flows are the documented production paths today.
 
-## TUI essentials
+See [`architecture/provider.md`](architecture/provider.md) and [`architecture/auth.md`](architecture/auth.md).
 
-Press `?` for mode-aware help and `/` for the command palette. Common actions:
+## TUI and sessions
 
-| Input | Action |
-| --- | --- |
-| `Enter` | Send the prompt |
-| `Shift+Enter` | Insert a newline |
-| `Esc` / `Ctrl+C` | Cancel or close the active surface |
-| `Ctrl+L` / `Ctrl+N` | Select a model / start a new session |
-| `Ctrl+T` / `Ctrl+W` | Toggle the sidebar / close the session |
-| `PgUp` / `PgDown` | Scroll the transcript |
-| `@` | Start file or agent completion |
-| `!cmd` / `!!cmd` | Run a hidden / promoted human shell command |
-| `Ctrl+Shift+F` | Toggle fullscreen |
-
-Useful slash-command families include:
-
-- Session and context: `/sessions`, `/new`, `/compact`, `/context`, `/cost`,
-  `/usage`, `/timeline`, `/undo`, `/redo`, `/export`.
-- Agents and work: `/agent`, `/agents`, `/plan`, `/goal`, `/memory`, `/tasks`,
-  `/worktree`, `/research`.
-- Engineering: `/test`, `/tests`, `/diff`, `/revert`, `/search`, `/doctor`.
-- LSP: `/lsp-status`, `/lsp-servers`, `/lsp-doctor`, `/lsp-preview`,
-  `/lsp-preview-apply`, `/lsp-restart`, `/lsp-stop`, and semantic workflows.
-- Integration: `/mcps`, `/plugins`, `/plugin-info`, `/plugin-doctor`,
-  `/themes`, `/keybinds`, `/tui`, `/tts`.
-
-`/test custom ...` accepts only validated argv-prefix commands and never runs
-through a shell. The complete command registry is discoverable in `/help` and
-the [TUI guide](architecture/tui.md).
-
-Vim mode is enabled with `"vim_mode": true`. Its normal-mode navigation uses
-`j/k`, `g/G`, `i`, `:`, and `q`.
-
-## Integrations
-
-### MCP
-
-Configure local or remote MCP servers under the `mcp` config key. Use
-`/mcps` in the TUI or `codegg mcp --help` on the CLI. See
-[MCP](docs/MCP.md).
-
-### Skills and agents
-
-Skills are loaded from `~/.config/codegg/skills/` and `.opencode/skills/` (legacy `.codegg/skills/` remains a compatibility path).
-Agents can be defined in `~/.config/codegg/agents/` or `.codegg/agents/` as
-TOML or Markdown. Use `/skills`, `/agent`, `/agents`, and `@agent-name`.
-Examples are in [`examples/agents`](examples/agents/) and the built-in agent
-catalog is documented in [`assets/agents`](assets/agents/).
-
-### Plugins
-
-Plugins may contribute commands, panels, status widgets, hooks, and UI. The
-runtime supports process, WASM, and builtin implementations; WASM is enabled
-with `--features plugins`. Use `/plugins`, `/plugin-install`,
-`/plugin-enable`, `/plugin-disable`, `/plugin-doctor`, and
-`/plugin-remove`. See [plugin documentation](docs/PLUGINS.md) and the SDK
-examples.
-
-### Server and transports
+Launching `codegg` without a subcommand opens the TUI. Sessions are persistent by default and can be resumed, inspected, exported, and imported from the CLI:
 
 ```bash
-cargo build --features server
-codegg server --host 127.0.0.1 --port 8080
-codegg attach http://127.0.0.1:8080 --token TOKEN
+codegg sessions
+codegg session <session-id>
+codegg export <session-id> -o session.json
+codegg import session.json
 ```
 
-The TUI connects to the user-scoped singleton daemon by default. Use
-`--standalone` for an in-process core or `--stdio` for the compatibility
-stdio path. The HTTP server requires `--standalone-core` to construct its
-own core in Phase 1; daemon-proxying server mode is planned for a later
-phase. See [server architecture](architecture/server.md) and
-[client architecture](architecture/client.md).
+Inside the TUI, the command system exposes session/context controls, agent selection, planning and goals, tasks, testing, diffs, search, LSP controls, MCP/plugin management, themes, keybindings, and diagnostics. Use the in-app help/command discovery rather than treating README keybindings as a fixed API; the TUI command registry is the authoritative surface.
 
-## Safety and context
+Human shell commands have an explicit context boundary: `!command` runs locally without promoting its output into model context, while `!!command` deliberately promotes the bounded/redacted result. See [`architecture/human_shell.md`](architecture/human_shell.md).
 
-The permission system, path validation, SSRF protection, Landlock sandboxing,
-security review workflow, command preflight, and conservative plugin policy
-are part of the execution boundary. Mutating LSP operations use preview
-artifacts and hash revalidation before apply. Read
-[security](architecture/security.md), [permission](architecture/permission.md),
-[preflight](architecture/preflight.md), and [LSP](docs/LSP.md) before changing
-those boundaries.
+## Tools and coding workflow
 
-Context compaction, model-aware context policy, shell-output projection, and
-run artifacts are documented in [compaction](architecture/compaction.md),
-[cache-aware context](architecture/cache-aware-context.md),
-[human shell](architecture/human_shell.md), and
-[run storage](architecture/run_store.md).
+The native tool registry includes file reads/edits, glob/grep search, patching, shell and Python execution, Git operations, testing, LSP-backed code intelligence, deterministic tools from `eggsact`, and higher-level review/security workflows.
+
+Git support includes typed status/diff/log/show/blame reads and guarded mutation flows for common repository operations. LSP mutation workflows use preview/revalidation semantics rather than blindly applying stale edits. Process-heavy work submitted through the normal daemon path is admitted by the shared scheduler.
+
+See [`architecture/git.md`](architecture/git.md), [`architecture/lsp.md`](architecture/lsp.md), and [`architecture/testing.md`](architecture/testing.md).
+
+## Agents and skills
+
+codegg ships built-in agents and supports project/global custom agents. Agent definitions can extend or override built-ins while remaining subject to the runtime permission/safety envelope. Examples live in [`examples/agents/`](examples/agents/).
+
+Portable skills use `SKILL.md` packages. Project skill discovery currently understands:
+
+```text
+.codegg/skills/<name>/SKILL.md
+.agents/skills/<name>/SKILL.md
+.opencode/skills/<name>/SKILL.md
+.claude/skills/<name>/SKILL.md
+```
+
+Equivalent global locations are also supported. Skill discovery is bounded and containment-checked; metadata such as `allowed-tools` does not itself grant permissions.
+
+See [`architecture/agent.md`](architecture/agent.md) and [`architecture/skills.md`](architecture/skills.md).
+
+## MCP and ACP
+
+MCP servers can be configured under the `mcp` configuration key and managed from the CLI:
+
+```bash
+codegg mcp --help
+```
+
+The TUI also exposes MCP discovery/management commands. See [`docs/MCP.md`](docs/MCP.md).
+
+For editor or harness integration, codegg exposes an ACP v1 agent over newline-delimited JSON-RPC on stdio:
+
+```bash
+codegg acp
+```
+
+## Plugins
+
+Plugins can contribute commands, hooks, panels, status widgets, and other UI/runtime behavior. Process and built-in plugin paths are part of the normal runtime; WASM execution requires the `plugins` Cargo feature.
+
+Plugin documentation and examples are in [`docs/PLUGINS.md`](docs/PLUGINS.md) and [`examples/plugins/`](examples/plugins/).
+
+## Optional server/remote frontend
+
+Building with the `server` feature exposes `codegg server` and `codegg attach`:
+
+```bash
+cargo build --release --features server
+./target/release/codegg server --standalone-core --host 127.0.0.1 --port 3000
+```
+
+The server frontend remains an optional path separate from the normal local daemon/TUI workflow. Consult [`architecture/server.md`](architecture/server.md) before exposing it beyond localhost, including its authentication and transport constraints.
+
+## Non-interactive use
+
+For a simple one-shot prompt:
+
+```bash
+codegg --run "Summarize the changes in this repository"
+```
+
+For structured automation/CI input, use `exec`:
+
+```bash
+printf '%s\n' '{"prompt":"Review this repository","model":"openai/<model-id>","agent":"build"}' \
+  | codegg exec --json-output --quiet
+```
+
+Other useful CLI entry points include `research`, `doctor`, `validate`, `completions`, `upgrade`, and the session import/export commands. Run the relevant `--help` before scripting against a subcommand.
+
+## Safety model
+
+codegg is an execution-capable coding agent: depending on configuration and permissions, it can read and modify files, run processes, operate Git, contact configured services, and invoke external tools. Treat its permission configuration as part of your security boundary.
+
+The implementation includes path validation, permission checks, command preflight, SSRF protections, bounded/redacted tool output, conservative plugin handling, Linux Landlock integration, and preview/revalidation for mutating LSP operations. These controls reduce risk; they are not a reason to grant the agent access to secrets or destructive environments it does not need.
+
+See [`architecture/security.md`](architecture/security.md), [`architecture/permission.md`](architecture/permission.md), and [`architecture/preflight.md`](architecture/preflight.md).
+
+## Diagnostics and troubleshooting
+
+Validate configuration and inspect runtime integrations with:
+
+```bash
+codegg validate
+codegg doctor
+codegg daemon status
+```
+
+`doctor` can focus on supported diagnostic subsystems; run `codegg doctor --help` for the current choices. Troubleshooting notes are in [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 ## Development
 
-```bash
-scripts/verify.sh quick    # cheap sanity (fmt, static checks, compile)
-scripts/verify.sh full     # broad verification (adds clippy, tests, feature check)
-cargo fmt                  # format
-```
-
-For release-footprint investigations, use isolated targets and record the
-compiler, target, features, and resulting byte counts:
+The repository intentionally keeps routine verification relatively small:
 
 ```bash
-CARGO_TARGET_DIR=/tmp/codegg-release-default cargo build --release --locked --bin codegg
-CARGO_TARGET_DIR=/tmp/codegg-release-production cargo build --release --locked --bin codegg --features server,plugins,lsp-test-support
+scripts/verify.sh quick
+scripts/verify.sh full
+cargo fmt
 ```
 
-These are diagnostic measurements, not a CI size gate.
+For focused tests, prefer the crate or subsystem you changed rather than running unrelated verification by default. Contributor architecture, crate boundaries, generated assets, feature gates, and testing conventions are documented in [`AGENTS.md`](AGENTS.md).
 
-For focused crate tests:
+Useful starting points:
 
-```bash
-cargo test -p codegg-core
-cargo test --test tui
-cargo test --test tui_render
-```
-
-See [AGENTS.md](AGENTS.md) for crate boundaries, feature gates, test
-selection, generated assets, and contribution conventions. The repository
-layout is summarized in [architecture overview](architecture/overview.md).
-
-## Documentation map
-
-- [Architecture index](architecture/overview.md)
-- [Core / daemon / workspaces](architecture/core.md)
-- [Workspace services and storage (Phase 3)](architecture/workspace_services.md)
-- [TUI](architecture/tui.md)
-- [Configuration](architecture/config.md)
-- [Providers](architecture/provider.md)
-- [Search backends](architecture/search_backend.md)
-- [Deterministic tools](architecture/deterministic_tools.md)
-- [LSP](architecture/lsp.md)
-- [Plugins](architecture/plugin.md)
-- [Testing](architecture/testing.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Changelog](CHANGELOG.md)
+- [`architecture/overview.md`](architecture/overview.md) — architecture index.
+- [`architecture/core.md`](architecture/core.md) — core/daemon/workspace model.
+- [`architecture/config.md`](architecture/config.md) — configuration.
+- [`architecture/provider.md`](architecture/provider.md) — providers.
+- [`architecture/tui.md`](architecture/tui.md) — TUI internals and command surface.
+- [`architecture/agent.md`](architecture/agent.md) — agent orchestration.
+- [`architecture/skills.md`](architecture/skills.md) — skills and discovery.
+- [`CHANGELOG.md`](CHANGELOG.md) — project changes.
 
 ## License
 
