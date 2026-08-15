@@ -1633,7 +1633,12 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         app.set_memory_store(mm.clone());
     }
     app.set_models(model_ids.clone());
-    app.agent_state.agents = agents.clone();
+    // Daemon-client mode deliberately does not resolve project agents in the
+    // CLI process. Keep App's compiled-in agents as the rendering and input
+    // fallback until a daemon-owned asset snapshot is available; replacing
+    // them with the empty sentinel makes the header's active-agent lookup
+    // panic on the first frame.
+    app.set_agents(agents.clone());
     app.agent_state.snapshot = snapshot.clone();
     app.notification_manager = Some(notification_mgr);
     app.init_plugin_manager().await;

@@ -11487,6 +11487,34 @@ impl App {
         self.memory_store = Some(store);
     }
 
+    /// Install the effective agent catalog while preserving a usable UI
+    /// fallback when the daemon has not supplied one yet.
+    ///
+    /// The daemon-client startup path intentionally has no local project
+    /// agent snapshot. An empty list there is a "not available" sentinel,
+    /// not a valid catalog: rendering and input handling always require an
+    /// active agent.
+    pub fn set_agents(&mut self, agents: Vec<crate::agent::Agent>) {
+        if agents.is_empty() {
+            tracing::warn!("received empty agent catalog; retaining the current TUI agent catalog");
+            return;
+        }
+
+        let current_name = self
+            .agent_state
+            .agents
+            .get(self.agent_state.current_agent)
+            .map(|agent| agent.name.clone());
+        let current_agent = current_name
+            .as_deref()
+            .and_then(|name| agents.iter().position(|agent| agent.name == name))
+            .or_else(|| agents.iter().position(|agent| agent.name == "build"))
+            .unwrap_or(0);
+
+        self.agent_state.agents = agents;
+        self.agent_state.current_agent = current_agent;
+    }
+
     pub fn set_models(&mut self, models: Vec<String>) {
         self.agent_state.models = models;
         self.dialog_state
@@ -12872,6 +12900,30 @@ mod theme_integration_tests {
         app.handle_theme_command(Some("/theme use nope"));
         // Theme should remain the default.
         assert_eq!(app.ui_state.theme.name, before);
+    }
+
+    #[test]
+    fn empty_agent_catalog_keeps_the_rendering_fallback() {
+        let mut app = App::new_for_testing("/tmp".to_string());
+        let original_agent_names: Vec<_> = app
+            .agent_state
+            .agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect();
+        let original_current_agent = app.agent_state.current_agent;
+
+        app.set_agents(Vec::new());
+
+        let current_agent_names: Vec<_> = app
+            .agent_state
+            .agents
+            .iter()
+            .map(|agent| agent.name.clone())
+            .collect();
+        assert_eq!(current_agent_names, original_agent_names);
+        assert_eq!(app.agent_state.current_agent, original_current_agent);
+        assert!(!app.agent_state.agents.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
