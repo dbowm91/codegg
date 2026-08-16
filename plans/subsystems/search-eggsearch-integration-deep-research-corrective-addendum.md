@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration — Deep-Research Corrective Addendum
 
-Status: active
+Status: closed
 
 Source roadmap:
 
@@ -131,3 +131,12 @@ This corrective addendum returns to `closed` only when:
 - no new external-search ownership path or verification overengineering was introduced.
 
 Until then, M001–M003 remain historical accepted evidence, but the search/eggsearch subsystem's strict current disposition is controlled by M004 rather than the earlier closed roadmap statement.
+
+## 7. Corrective disposition
+
+M004 is strictly closed by `plans/closure/search-eggsearch-integration/004-status.md`.
+The structured deep-research consumer, grouped source-card conversion,
+workflow normalization, structured security collection, truncation regression,
+and `codesearch` structured-value retention criteria are satisfied. M001–M003
+remain historical accepted records without revision. The registry dependency
+audit found no unrelated registered future plan newly unblocked by M004.

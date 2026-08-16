@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration M004 — Deep-Research Structured-Consumption Corrective Pass
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `6a625f73368ceb34c7a89f3287045ae039346126`
 
