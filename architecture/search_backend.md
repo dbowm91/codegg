@@ -290,6 +290,18 @@ older server remains an explicit compatibility projection with `value = None`;
 it is never presented as a complete structured result. `next_actions` are
 metadata only and are not executed automatically by CodeGG.
 
+Deep research is also a structured consumer: `EggsearchSource` converts the
+complete research/security value directly, including current source cards under
+`groups[*].results`, before any display cap is applied. Its workflow mapper
+translates CodeGG's internal `ResearchMode` values to the documented eggsearch
+workflows; internal enum names are never forwarded as upstream workflow strings.
+The bounded trust-framed output remains available for model compatibility only.
+
+The retained `codesearch` compatibility alias follows the same contract through
+`repo_search(profile = "coding")`: its model-facing output stays bounded and
+trust-framed while the upstream structured repository value is retained for
+internal consumers.
+
 `codegg doctor search` reports MCP process availability, required and
 recommended tool coverage, and a bounded provider-status summary. Provider
 credential or routing degradation is reported as provider detail and does not

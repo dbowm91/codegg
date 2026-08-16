@@ -38,14 +38,14 @@ Canonical direction remains in:
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
-| Search and eggsearch integration | active | `plans/subsystems/search-eggsearch-integration-deep-research-corrective-addendum.md` | M004 ready | Post-M003 audit found deep-research structured-consumption/workflow defects; M001–M003 remain historical accepted evidence |
+| Search and eggsearch integration | active | `plans/subsystems/search-eggsearch-integration-deep-research-corrective-addendum.md` | M004 active | Post-M003 audit found deep-research structured-consumption/workflow defects; M001–M003 remain historical accepted evidence |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
-| Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | ready | `plans/implementation/search-eggsearch-integration/004-deep-research-structured-consumption-corrective-pass.md` | M002/M003 interfaces already landed; deterministic current-shaped consumer-path evidence is sufficient for implementation |
+| Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | active | `plans/implementation/search-eggsearch-integration/004-deep-research-structured-consumption-corrective-pass.md` | M002/M003 interfaces already landed; deterministic current-shaped consumer-path evidence is sufficient for implementation |
 
 ## Closure work and dependencies
 

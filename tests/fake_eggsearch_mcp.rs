@@ -538,7 +538,7 @@ async fn codesearch_compatibility_alias_uses_eggsearch_repo_search() {
 }
 
 #[tokio::test]
-async fn research_eggsearch_source_honors_network_budget_and_converts_sources() {
+async fn codesearch_structured_execution_retains_repo_search_value() {
     let (_cp, _g) = lock().await;
     state::reset_for_tests();
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -547,6 +547,38 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     )));
     state::install_mcp_service(svc);
     state::install_search_config(eggsearch_config_all_caps());
+
+    let result = codegg::tool::codesearch::CodeSearchTool
+        .execute_structured(
+            serde_json::json!({"query": "rust async", "tokens_num": 5000}),
+            None,
+        )
+        .await
+        .expect("codesearch structured alias should dispatch");
+    assert_eq!(
+        result.value.expect("structured repo result")["stable_id"],
+        "repo-1"
+    );
+    assert!(result.output.contains("external_repo_evidence"));
+
+    let recorded = calls.lock().await;
+    let (tool, args) = recorded.last().expect("repo_search call");
+    assert_eq!(tool, "repo_search");
+    assert_eq!(args["profile"], "coding");
+}
+
+#[tokio::test]
+async fn research_eggsearch_source_honors_network_budget_and_converts_sources() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    let mut config = eggsearch_config_all_caps();
+    config.max_research_output_chars = Some(40);
+    state::install_search_config(config);
 
     let source = EggsearchSource::new();
     let plan = ResearchPlan {
@@ -589,8 +621,10 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
         .collect(&request(true), &plan)
         .await
         .expect("network-enabled research should use eggsearch");
-    assert_eq!(sources.len(), 1);
-    assert_eq!(sources[0].uri, "https://example.org/paper");
+    assert_eq!(sources.len(), 3);
+    assert_eq!(sources[0].uri, "https://example.org/paper-1");
+    assert_eq!(sources[1].uri, "https://example.org/paper-2");
+    assert_eq!(sources[2].uri, "https://example.org/docs");
     assert!(sources[0]
         .notes
         .iter()
@@ -599,6 +633,70 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, "research_search");
     assert_eq!(recorded[0].1["max_results"], 4);
+    assert_eq!(recorded[0].1["workflow"], "ecosystem_survey");
+}
+
+#[tokio::test]
+async fn security_research_source_uses_structured_security_evidence() {
+    let (_cp, _g) = lock().await;
+    state::reset_for_tests();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let svc = Arc::new(tokio::sync::RwLock::new(build_full_mock_eggsearch(
+        Arc::clone(&calls),
+    )));
+    state::install_mcp_service(svc);
+    state::install_search_config(eggsearch_config_all_caps());
+
+    let source = EggsearchSource::new();
+    let plan = ResearchPlan {
+        scope: "security".to_string(),
+        comparison_axes: vec![],
+        source_classes: vec![],
+        exclusion_criteria: vec![],
+        stopping_conditions: vec![],
+        expected_outputs: vec![],
+    };
+    let mut request = ResearchRequest {
+        id: "security-test".to_string(),
+        question: "CVE-2024-1234".to_string(),
+        mode: ResearchMode::SecurityReview,
+        audience: ResearchAudience::AgentReviewer,
+        depth: ResearchDepth::Medium,
+        output_profiles: vec![],
+        constraints: vec![],
+        sources: vec![],
+        existing_context_refs: vec![],
+        budget: ResearchBudget {
+            max_sources: 4,
+            max_chunks_per_source: 1,
+            max_evidence_spans: 1,
+            max_model_calls: 0,
+            max_output_tokens: None,
+            allow_network: true,
+        },
+        created_at: chrono::Utc::now(),
+    };
+    let sources = source
+        .collect(&request, &plan)
+        .await
+        .expect("security research should convert structured evidence");
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].uri, "https://example.org/advisory");
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "stable_id=advisory-1"));
+
+    request.budget.allow_network = false;
+    let denied = source.collect(&request, &plan).await;
+    assert!(matches!(
+        denied,
+        Err(codegg::research::error::ResearchError::NetworkNotAllowed)
+    ));
+    let recorded = calls.lock().await;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].0, "security_search");
+    assert_eq!(recorded[0].1["workflow"], "security_review");
 }
 
 /// Build a mock with ALL upstream tools registered.
@@ -639,11 +737,11 @@ fn build_full_mock_eggsearch(
                 "web_search" => Ok(r#"{"hits": []}"#.to_string()),
                 "web_fetch" => Ok("page body".to_string()),
                 "provider_status" => Ok(r#"{"ok": true}"#.to_string()),
-                "repo_search" => Ok(r#"{"repo_hits": []}"#.to_string()),
+                "repo_search" => Ok(r#"{"repo_hits": [], "stable_id": "repo-1"}"#.to_string()),
                 "repo_fetch" => Ok("file content".to_string()),
                 "repo_map" => Ok(r#"{"tree": []}"#.to_string()),
-                "security_search" => Ok(r#"{"vulns": []}"#.to_string()),
-                "research_search" => Ok(r#"{"papers": [{"url": "https://example.org/paper", "title": "Mock paper", "abstract": "Mock abstract", "provider": "arxiv", "source_type": "paper"}]}"#.to_string()),
+                "security_search" => Ok(r#"{"groups": [{"classification": "advisory", "results": [{"stable_id": "advisory-1", "url": "https://example.org/advisory", "title": "Mock advisory", "provider": "osv", "source_type": "advisory"}]}]}"#.to_string()),
+                "research_search" => Ok(r#"{"groups": [{"classification": "academic", "results": [{"stable_id": "paper-1", "url": "https://example.org/paper-1", "title": "Mock paper 1", "abstract": "Mock abstract 1", "provider": "arxiv", "source_type": "paper"}, {"stable_id": "paper-2", "url": "https://example.org/paper-2", "title": "Mock paper 2", "abstract": "Mock abstract 2", "provider": "arxiv", "source_type": "paper"}]}, {"classification": "official_docs", "results": [{"stable_id": "docs-1", "url": "https://example.org/docs", "title": "Mock docs", "provider": "official", "source_type": "documentation"}]}]}"#.to_string()),
                 "batch_fetch" => Ok(r#"{"pages": []}"#.to_string()),
                 "build_evidence_bundle" => Ok(r#"{"bundle": {}}"#.to_string()),
                 _ => Err(McpError::Server(format!("unknown tool {tool}"))),

@@ -127,7 +127,7 @@ set varies with configuration and optional features. Use the registry and
 |------|------|-------------|
 | **webfetch** | `webfetch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_fetch`. Default backend is the external `eggsearch` MCP server's `web_fetch` tool; legacy reqwest/html2text implementation is retained as the `builtin` fallback. |
 | **websearch** | `websearch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_search`. Default backend is the external `eggsearch` MCP server's `web_search` tool; the in-tree `SearchProviderRegistry` is the `builtin` fallback. |
-| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused `repo_search` through eggsearch. It does not own a provider client or require an Exa credential; prefer `repo_search` for structured repository queries. |
+| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused `repo_search` through eggsearch. It does not own a provider client or require an Exa credential; prefer `repo_search` for structured repository queries. Its structured execution retains the upstream repo-search value while keeping bounded trust-framed model output. |
 | **research** | `research.rs` | Deep research tool. May invoke `websearch` and `webfetch` internally. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 

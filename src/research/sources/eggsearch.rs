@@ -48,18 +48,21 @@ impl EggsearchSource {
         Self
     }
 
+    fn upstream_workflow(mode: &ResearchMode) -> &'static str {
+        match mode {
+            ResearchMode::Landscape => "ecosystem_survey",
+            ResearchMode::ArchitectureDecision => "architecture_decision",
+            ResearchMode::LibraryEvaluation => "api_evaluation",
+            ResearchMode::ApiInvestigation => "api_evaluation",
+            ResearchMode::DebuggingInvestigation => "general",
+            ResearchMode::SecurityReview => "security_review",
+            ResearchMode::SpecDigest => "general",
+            ResearchMode::NarrowAnswer => "general",
+        }
+    }
+
     fn request_input(request: &ResearchRequest) -> Value {
         let security = request.mode == ResearchMode::SecurityReview;
-        let workflow = match request.mode {
-            ResearchMode::Landscape => "landscape",
-            ResearchMode::ArchitectureDecision => "architecture_decision",
-            ResearchMode::LibraryEvaluation => "library_evaluation",
-            ResearchMode::ApiInvestigation => "api_investigation",
-            ResearchMode::DebuggingInvestigation => "debugging",
-            ResearchMode::SecurityReview => "security",
-            ResearchMode::SpecDigest => "spec_digest",
-            ResearchMode::NarrowAnswer => "narrow_answer",
-        };
         let depth = match request.depth {
             ResearchDepth::Low => "quick",
             ResearchDepth::Medium => "standard",
@@ -68,7 +71,7 @@ impl EggsearchSource {
 
         json!({
             "query": request.question.trim(),
-            "workflow": workflow,
+            "workflow": Self::upstream_workflow(&request.mode),
             "depth": depth,
             "include_primary_sources": true,
             "include_counterpoints": matches!(
@@ -86,22 +89,62 @@ impl EggsearchSource {
         &output[body_start..body_end]
     }
 
-    fn result_items(payload: &Value) -> Vec<&Map<String, Value>> {
+    fn result_items(payload: &Value) -> Vec<(&Map<String, Value>, Option<&Map<String, Value>>)> {
         if let Some(object) = payload.as_object() {
-            for key in ["sources", "papers", "results", "hits", "items", "vulns"] {
+            if let Some(groups) = object.get("groups").and_then(Value::as_array) {
+                let mut grouped = Vec::new();
+                for group in groups {
+                    let Some(group_object) = group.as_object() else {
+                        continue;
+                    };
+                    let Some(results) = group_object.get("results").and_then(Value::as_array)
+                    else {
+                        continue;
+                    };
+                    for result in results {
+                        if let Some(result_object) = result.as_object() {
+                            grouped.push((result_object, Some(group_object)));
+                        }
+                    }
+                }
+                return grouped;
+            }
+            for key in [
+                "sources",
+                "papers",
+                "results",
+                "hits",
+                "items",
+                "vulns",
+                "advisories",
+                "vulnerabilities",
+            ] {
                 if let Some(items) = object.get(key).and_then(Value::as_array) {
-                    return items.iter().filter_map(Value::as_object).collect();
+                    return items
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .map(|item| (item, None))
+                        .collect();
                 }
             }
-            return vec![object];
+            return vec![(object, None)];
         }
         payload
             .as_array()
-            .map(|items| items.iter().filter_map(Value::as_object).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_object)
+                    .map(|item| (item, None))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    fn source_from_result(item: &Map<String, Value>) -> Option<SourceRecord> {
+    fn source_from_result(
+        item: &Map<String, Value>,
+        group: Option<&Map<String, Value>>,
+    ) -> Option<SourceRecord> {
         let uri = ["url", "link", "uri"]
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))?
@@ -123,11 +166,25 @@ impl EggsearchSource {
         let provider = ["provider", "source"]
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str));
-        let kind = ["source_type", "type", "kind"]
+        let provider = provider.or_else(|| {
+            group.and_then(|group| {
+                ["provider", "source"]
+                    .iter()
+                    .find_map(|field| group.get(*field).and_then(Value::as_str))
+            })
+        });
+        let kind = ["source_type", "source_kind", "type", "kind"]
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))
-            .unwrap_or_default()
-            .to_lowercase();
+            .or_else(|| {
+                group.and_then(|group| {
+                    ["classification", "source_type", "source_kind", "kind"]
+                        .iter()
+                        .find_map(|field| group.get(*field).and_then(Value::as_str))
+                })
+            })
+            .unwrap_or_default();
+        let kind = kind.to_lowercase();
 
         let published_at = ["published_at", "publishedAt", "published"]
             .iter()
@@ -149,8 +206,22 @@ impl EggsearchSource {
             "source=eggsearch".to_string(),
             "trust=external_untrusted".to_string(),
         ];
+        if let Some(stable_id) = ["stable_id", "source_id", "id"]
+            .iter()
+            .find_map(|field| item.get(*field).and_then(Value::as_str))
+        {
+            notes.push(format!("stable_id={stable_id}"));
+        }
         if let Some(provider) = provider {
             notes.push(format!("provider={provider}"));
+        }
+        if !kind.is_empty() {
+            notes.push(format!("source_kind={kind}"));
+        }
+        if let Some(group) = group {
+            if let Some(label) = group.get("label").and_then(Value::as_str) {
+                notes.push(format!("group_label={label}"));
+            }
         }
         if let Some(snippet) = snippet {
             notes.push(snippet);
@@ -174,6 +245,13 @@ impl EggsearchSource {
         })
     }
 
+    fn convert_value(payload: &Value) -> Vec<SourceRecord> {
+        Self::result_items(payload)
+            .into_iter()
+            .filter_map(|(item, group)| Self::source_from_result(item, group))
+            .collect()
+    }
+
     fn convert_output(output: &str) -> Result<Vec<SourceRecord>> {
         let payload: Value =
             serde_json::from_str(Self::payload_from_framed(output)).map_err(|e| {
@@ -181,21 +259,33 @@ impl EggsearchSource {
                     "eggsearch returned an unparseable research result: {e}"
                 ))
             })?;
-        Ok(Self::result_items(&payload)
-            .into_iter()
-            .filter_map(Self::source_from_result)
-            .collect())
+        Ok(Self::convert_value(&payload))
+    }
+
+    fn convert_structured(
+        result: search_backend::StructuredSearchResult,
+    ) -> Result<Vec<SourceRecord>> {
+        if let Some(value) = result.value {
+            return Ok(Self::convert_value(&value));
+        }
+        if result.truncated {
+            return Err(ResearchError::SourceCollection(
+                "eggsearch returned truncated display evidence without a structured result"
+                    .to_string(),
+            ));
+        }
+        Self::convert_output(&result.output)
     }
 
     async fn collect_external(&self, request: &ResearchRequest) -> Result<Vec<SourceRecord>> {
         let input = Self::request_input(request);
-        let output = if request.mode == ResearchMode::SecurityReview {
-            search_backend::dispatch_security_search(&input).await
+        let result = if request.mode == ResearchMode::SecurityReview {
+            search_backend::dispatch_security_search_structured(&input).await
         } else {
-            search_backend::dispatch_research_search(&input).await
+            search_backend::dispatch_research_search_structured(&input).await
         }
         .map_err(|error| ResearchError::SourceCollection(error.to_string()))?;
-        Self::convert_output(&output)
+        Self::convert_structured(result)
     }
 }
 
@@ -279,25 +369,127 @@ mod tests {
     }
 
     #[test]
-    fn request_uses_eggsearch_workflow_without_provider_selection() {
+    fn every_research_mode_maps_to_a_supported_eggsearch_workflow() {
+        let cases = [
+            (ResearchMode::Landscape, "ecosystem_survey"),
+            (ResearchMode::ArchitectureDecision, "architecture_decision"),
+            (ResearchMode::LibraryEvaluation, "api_evaluation"),
+            (ResearchMode::ApiInvestigation, "api_evaluation"),
+            (ResearchMode::DebuggingInvestigation, "general"),
+            (ResearchMode::SecurityReview, "security_review"),
+            (ResearchMode::SpecDigest, "general"),
+            (ResearchMode::NarrowAnswer, "general"),
+        ];
+        for (mode, workflow) in cases {
+            let value = EggsearchSource::request_input(&request(mode));
+            assert_eq!(value["workflow"], workflow);
+        }
+    }
+
+    #[test]
+    fn security_review_uses_security_workflow_without_provider_selection() {
         let value = EggsearchSource::request_input(&request(ResearchMode::SecurityReview));
-        assert_eq!(value["workflow"], "security");
+        assert_eq!(value["workflow"], "security_review");
         assert_eq!(value["include_security_considerations"], true);
         assert!(!value.as_object().unwrap().contains_key("providers"));
         assert_eq!(value["max_results"], 15);
     }
 
     #[test]
-    fn converts_current_eggsearch_source_cards_and_preserves_provenance() {
-        let output = "[external_research_evidence trust=external_untrusted source=eggsearch tool=research_search]\n\n{\"papers\":[{\"url\":\"https://example.com/paper\",\"title\":\"Paper\",\"abstract\":\"Summary\",\"provider\":\"arxiv\",\"source_type\":\"paper\"}]}\n[/external_research_evidence]";
-        let sources = EggsearchSource::convert_output(output).unwrap();
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].title.as_deref(), Some("Paper"));
+    fn converts_grouped_source_cards_in_stable_order_and_preserves_provenance() {
+        let value = json!({
+            "groups": [
+                {
+                    "classification": "academic",
+                    "label": "Primary papers",
+                    "results": [
+                        {
+                            "stable_id": "paper-1",
+                            "url": "https://example.com/paper-1",
+                            "title": "Paper 1",
+                            "abstract": "Summary 1",
+                            "provider": "arxiv",
+                            "source_type": "paper"
+                        },
+                        {"url": "file:///not-external", "title": "Rejected"}
+                    ]
+                },
+                {
+                    "classification": "official_docs",
+                    "label": "Documentation",
+                    "results": [
+                        {
+                            "source_id": "docs-1",
+                            "url": "https://example.com/docs",
+                            "title": "Docs",
+                            "snippet": "Reference",
+                            "source_kind": "documentation",
+                            "provider": "official"
+                        },
+                        {
+                            "id": "paper-2",
+                            "url": "https://example.com/paper-2",
+                            "title": "Paper 2",
+                            "source_type": "academic"
+                        }
+                    ]
+                }
+            ],
+            "unknown_future_field": {"preserve": true}
+        });
+        let sources = EggsearchSource::convert_value(&value);
+        assert_eq!(sources.len(), 3);
+        assert_eq!(sources[0].uri, "https://example.com/paper-1");
+        assert_eq!(sources[1].uri, "https://example.com/docs");
+        assert_eq!(sources[2].uri, "https://example.com/paper-2");
         assert_eq!(sources[0].source_quality, SourceQuality::Academic);
-        assert!(sources[0].notes.iter().any(|note| note == "provider=arxiv"));
+        assert!(sources[0]
+            .notes
+            .iter()
+            .any(|note| note == "stable_id=paper-1"));
+        assert!(sources[1]
+            .notes
+            .iter()
+            .any(|note| note == "provider=official"));
+        assert!(sources[1]
+            .notes
+            .iter()
+            .any(|note| note == "group_label=Documentation"));
         assert!(sources[0]
             .notes
             .iter()
             .any(|note| note == "trust=external_untrusted"));
+    }
+
+    #[test]
+    fn structured_value_wins_over_truncated_display_projection() {
+        let value = json!({
+            "groups": [{
+                "results": [{
+                    "stable_id": "structured-1",
+                    "url": "https://example.com/structured",
+                    "title": "Complete result"
+                }]
+            }]
+        });
+        let result = search_backend::StructuredSearchResult {
+            output: "[external_research_evidence]\n{\"groups\":[".to_string(),
+            value: Some(value),
+            truncated: true,
+        };
+        let sources = EggsearchSource::convert_structured(result).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].uri, "https://example.com/structured");
+    }
+
+    #[test]
+    fn truncated_text_only_projection_fails_explicitly() {
+        let result = search_backend::StructuredSearchResult {
+            output: "[external_research_evidence]\n{\"results\":[".to_string(),
+            value: None,
+            truncated: true,
+        };
+        let error = EggsearchSource::convert_structured(result).unwrap_err();
+        assert!(error.to_string().contains("truncated display evidence"));
     }
 }

@@ -20,6 +20,41 @@ fn default_tokens() -> usize {
 
 pub struct CodeSearchTool;
 
+impl CodeSearchTool {
+    fn request_input(input: serde_json::Value) -> Result<serde_json::Value, ToolError> {
+        let parsed: CodeSearchInput = serde_json::from_value(input)
+            .map_err(|e| ToolError::Execution(format!("invalid codesearch input: {e}")))?;
+
+        if parsed.query.len() > MAX_QUERY_LENGTH {
+            return Err(ToolError::Execution(format!(
+                "query exceeds maximum length of {} characters",
+                MAX_QUERY_LENGTH
+            )));
+        }
+
+        let sanitized: String = parsed
+            .query
+            .chars()
+            .filter(|&c| {
+                !c.is_control() && c != '\'' && c != '"' && c != ';' && c != '\\' && c != '\0'
+            })
+            .collect();
+
+        if sanitized.is_empty() {
+            return Err(ToolError::Execution(
+                "query contains no valid characters".to_string(),
+            ));
+        }
+
+        let max_results = (parsed.tokens_num.clamp(1000, 50_000) / 500).clamp(1, 30);
+        Ok(serde_json::json!({
+            "query": sanitized,
+            "profile": "coding",
+            "max_results": max_results,
+        }))
+    }
+}
+
 #[async_trait]
 impl Tool for CodeSearchTool {
     fn name(&self) -> &str {
@@ -52,37 +87,8 @@ impl Tool for CodeSearchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        let parsed: CodeSearchInput = serde_json::from_value(input)
-            .map_err(|e| ToolError::Execution(format!("invalid codesearch input: {e}")))?;
-
-        if parsed.query.len() > MAX_QUERY_LENGTH {
-            return Err(ToolError::Execution(format!(
-                "query exceeds maximum length of {} characters",
-                MAX_QUERY_LENGTH
-            )));
-        }
-
-        let sanitized: String = parsed
-            .query
-            .chars()
-            .filter(|&c| {
-                !c.is_control() && c != '\'' && c != '"' && c != ';' && c != '\\' && c != '\0'
-            })
-            .collect();
-
-        if sanitized.is_empty() {
-            return Err(ToolError::Execution(
-                "query contains no valid characters".to_string(),
-            ));
-        }
-
-        let max_results = (parsed.tokens_num.clamp(1000, 50_000) / 500).clamp(1, 30);
-        search_backend::dispatch_repo_search(&serde_json::json!({
-            "query": sanitized,
-            "profile": "coding",
-            "max_results": max_results,
-        }))
-        .await
+        let request = Self::request_input(input)?;
+        search_backend::dispatch_repo_search(&request).await
     }
 
     async fn execute_structured(
@@ -91,7 +97,8 @@ impl Tool for CodeSearchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = self.execute(input).await?;
+        let request = Self::request_input(input)?;
+        let result = search_backend::dispatch_repo_search_structured(&request).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = search_backend::provenance_for_repo_search().unwrap_or_else(|| {
             use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
@@ -105,8 +112,6 @@ impl Tool for CodeSearchTool {
             }
         });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }
