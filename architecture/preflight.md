@@ -12,7 +12,7 @@ Harness-side eggsact preflight integration for automatic validation before mutat
 - Integrate with the eggsact deterministic tool substrate
 - Operate as harness-internal — never exposed as model-facing tool calls
 
-**Config**: `[preflight]` section in opencode.json (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
+**Config**: `[preflight]` section in codegg.jsonc (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
 
 ## Module Structure
 

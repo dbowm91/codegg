@@ -9,16 +9,31 @@
 | Module | Purpose |
 |--------|---------|
 | `bus` | Event bus (GlobalEventBus), PermissionRegistry, QuestionRegistry |
+| `context` | Context artifact storage, tool-output projection, `context_read` tool |
 | `error` | Central error taxonomy (AppError, ToolError, etc.) |
 | `goal` | Long-horizon goal runtime, budget enforcement |
+| `identity` | Typed domain identity foundation (ProjectId, RepositoryId, etc.) |
+| `jobs` | Durable jobs, attempts, schedules, recovery, idempotency (Phase 4) |
 | `memory` | Persistent memory patterns |
+| `migration` | Legacy project database migration tooling |
 | `model_profile` | Model profile resolution and policy |
+| `project_catalog` | Daemon-owned project catalog service |
+| `project_discovery` | Project discovery and registration |
+| `project_discovery_service` | Discovery service facade |
+| `project_storage` | Logical-project and repository identity authority |
+| `projection_replay` | Durable session projection replay |
 | `protocol_conversions` | Core-safe DTO↔domain conversions |
+| `provider_connections` | Durable provider connection lifecycle |
+| `repository_lineage` | Repository lineage tracking |
 | `resilience` | Circuit breaker re-export |
+| `run_store` | Persistent run index and artifact storage |
 | `session` | Session storage, schema, checkpoint |
 | `snapshot` | File state capture and diff |
-| `storage` | SQLite initialization, preferences |
+| `storage` | SQLite initialization, preferences, catalog |
 | `task_state` | Todo state management |
+| `tool_program` | Tool program domain types and IR |
+| `workspace` | Workspace registry, canonical root tracking, execution context |
+| `workspace_services` | Per-workspace service bundles (RunStore, path policy, lock table, config) |
 | `worktree` | Git worktree operations |
 
 ## Dependencies

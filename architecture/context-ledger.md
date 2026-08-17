@@ -234,7 +234,7 @@ pub struct ContextFrame {
 
 ## Config Options
 
-In `opencode.json`:
+In `codegg.jsonc`:
 
 ```json
 {

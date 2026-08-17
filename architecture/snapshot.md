@@ -4,7 +4,7 @@ The `snapshot` module provides file state capture and restore functionality.
 
 ## Overview
 
-**Location**: `src/snapshot/`
+**Location**: `crates/codegg-core/src/snapshot/` (re-exported via `src/lib.rs`)
 
 **Key Responsibilities**:
 - Capture file state before modifications (full or incremental)

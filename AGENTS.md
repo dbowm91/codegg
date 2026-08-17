@@ -370,7 +370,7 @@ Concurrency is bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feat
 
 ## Architecture Docs
 
-`architecture/` has 73 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+`architecture/` has 81 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 

@@ -394,7 +394,7 @@ A gated, late-context-only compaction policy implemented in `src/context/volatil
 
 ### Configuration
 
-Configured via the `[context_policy]` section in `opencode.json`:
+Configured via the `[context_policy]` section in `codegg.jsonc`:
 
 ```json
 {
@@ -455,7 +455,7 @@ Active mode is disabled for this pass. Requesting it (via config `observe_only: 
 
 ## Configuration
 
-In `opencode.json`:
+In `codegg.jsonc`:
 
 ```json
 {

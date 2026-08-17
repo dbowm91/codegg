@@ -99,7 +99,7 @@ Key points:
 
 ## Configuration
 
-### Schema (`[deterministic_tools]` in opencode.json)
+### Schema (`[deterministic_tools]` in codegg.jsonc)
 
 ```toml
 [deterministic_tools]

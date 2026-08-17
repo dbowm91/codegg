@@ -71,11 +71,11 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 
 ### Tool Layer — Capabilities and Execution
 
-The tool layer defines the ~30 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
+The tool layer defines the ~30 built-in tools (up to ~52 with all conditional tools) the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Tool | Built-in tools (~30 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Tool | Built-in tools (~30 base, up to ~52 with conditional tools), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
 | Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
@@ -207,7 +207,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 
 | Item | Count | Source |
 |------|-------|--------|
-| Tools (default registry) | ~38 | `src/tool/mod.rs:with_options()` |
+| Tools (default registry) | ~30 (base), up to ~52 with conditional tools | `src/tool/mod.rs:with_options()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
@@ -216,7 +216,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
 | DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
 | Integration tests | 163 | `tests/` |
-| Architecture docs | 73 | `architecture/` |
+| Architecture docs | 81 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
@@ -449,7 +449,7 @@ codegg/
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # ~30 built-in tools
+│   ├── tool/                   # ~30 built-in tools (up to ~52 with conditional tools)
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade

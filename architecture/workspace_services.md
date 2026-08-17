@@ -169,7 +169,7 @@ into two entry points:
 | `init_pool_at(db_path)` | arbitrary | Test-friendly escape hatch used by integration tests. |
 | `init(project_dir)` *(deprecated)* | ambiguous | Routes to one of the above based on whether `project_dir` is empty or a real directory. New code MUST NOT use this. |
 
-`STORAGE_LAYOUT_VERSION` is now `25` and is referenced from
+`STORAGE_LAYOUT_VERSION` is now `35` and is referenced from
 `MigrationMarker.storage_layout_version` so the migration tooling can
 report which layout a legacy database was imported under.
 

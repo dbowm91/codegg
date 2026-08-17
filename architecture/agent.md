@@ -1049,7 +1049,7 @@ research agent denies shell, filesystem mutation, terminal, and commit tools.
 
 ---
 
-## 10. Background scheduling
+## 11. Background scheduling
 
 Recurring work is represented by durable `ScheduleRecord` values and is
 claimed and admitted by the scheduler. The former in-memory

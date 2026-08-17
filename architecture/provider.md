@@ -839,25 +839,25 @@ that behavior.
 
 | File | Purpose |
 |------|---------|
-| `crates/codegg-providers/crates/codegg-providers/src/provider_core.rs` | Provider trait, registry, core types, registration |
-| `crates/codegg-providers/crates/codegg-providers/src/anthropic.rs` | Anthropic API implementation |
-| `crates/codegg-providers/crates/codegg-providers/src/openai.rs` | OpenAI API implementation |
-| `crates/codegg-providers/crates/codegg-providers/src/google.rs` | Google Generative AI implementation |
-| `crates/codegg-providers/crates/codegg-providers/src/azure.rs` | Azure OpenAI implementation |
-| `crates/codegg-providers/crates/codegg-providers/src/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
-| `crates/codegg-providers/crates/codegg-providers/src/bedrock.rs` | AWS Bedrock with SigV4 signing |
-| `crates/codegg-providers/crates/codegg-providers/src/openrouter.rs` | OpenRouter aggregator |
-| `crates/codegg-providers/crates/codegg-providers/src/openai_compatible.rs` | Generic OpenAI-compatible provider |
-| `crates/codegg-providers/crates/codegg-providers/src/copilot.rs` | GitHub Copilot |
-| `crates/codegg-providers/crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI |
-| `crates/codegg-providers/crates/codegg-providers/src/gitlab.rs` | GitLab AI |
-| `crates/codegg-providers/crates/codegg-providers/src/opencode_zen.rs` | Codegg Zen service |
-| `crates/codegg-providers/crates/codegg-providers/src/additional.rs` | Additional provider factories |
-| `crates/codegg-providers/crates/codegg-providers/src/fallback.rs` | Fallback provider with circuit breaker |
-| `crates/codegg-providers/crates/codegg-providers/src/catalog.rs` | Model catalog with live fetch |
-| `crates/codegg-providers/crates/codegg-providers/src/discovery.rs` | Model discovery service with DB cache |
-| `crates/codegg-providers/crates/codegg-providers/src/models.rs` | Embedded model definitions |
-| `crates/codegg-providers/crates/codegg-providers/src/sse_parser.rs` | SSE parsing for streaming responses |
+| `crates/codegg-providers/src/provider_core.rs` | Provider trait, registry, core types, registration |
+| `crates/codegg-providers/src/anthropic.rs` | Anthropic API implementation |
+| `crates/codegg-providers/src/openai.rs` | OpenAI API implementation |
+| `crates/codegg-providers/src/google.rs` | Google Generative AI implementation |
+| `crates/codegg-providers/src/azure.rs` | Azure OpenAI implementation |
+| `crates/codegg-providers/src/vertex.rs` | Google Vertex AI (wraps OpenAiCompatible) |
+| `crates/codegg-providers/src/bedrock.rs` | AWS Bedrock with SigV4 signing |
+| `crates/codegg-providers/src/openrouter.rs` | OpenRouter aggregator |
+| `crates/codegg-providers/src/openai_compatible.rs` | Generic OpenAI-compatible provider |
+| `crates/codegg-providers/src/copilot.rs` | GitHub Copilot |
+| `crates/codegg-providers/src/cloudflare.rs` | Cloudflare Workers AI |
+| `crates/codegg-providers/src/gitlab.rs` | GitLab AI |
+| `crates/codegg-providers/src/opencode_zen.rs` | Codegg Zen service |
+| `crates/codegg-providers/src/additional.rs` | Additional provider factories |
+| `crates/codegg-providers/src/fallback.rs` | Fallback provider with circuit breaker |
+| `crates/codegg-providers/src/catalog.rs` | Model catalog with live fetch |
+| `crates/codegg-providers/src/discovery.rs` | Model discovery service with DB cache |
+| `crates/codegg-providers/src/models.rs` | Embedded model definitions |
+| `crates/codegg-providers/src/sse_parser.rs` | SSE parsing for streaming responses |
 | `crates/codegg-providers/src/text_tool_parser.rs` | Explicit, bounded textual tool-call repair |
-| `crates/codegg-providers/crates/codegg-providers/src/cache.rs` | Provider response cache |
+| `crates/codegg-providers/src/cache.rs` | Provider response cache |
 | `crates/codegg-providers/src/circuit.rs` | Circuit breaker implementation |

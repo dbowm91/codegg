@@ -347,7 +347,7 @@ tools = { "custom_tool" = "deny" }
 
 1. **HMAC-signed decisions** - Prevents tampering with cached permissions via `CODEGG_PERM_KEY`
 2. **Per-session isolation** - Decisions scoped to sessions, session-specific checked first
-3. **Path canonicalization** - Resolves symlinks before checking (cached with 1s TTL)
+3. **Path canonicalization** - Resolves symlinks before checking (cached with 300s TTL)
 4. **DoomLoop detection** - Prevents infinite loops via window-based counting
 5. **Glob pattern matching** - Supports `*` for tool names and bash commands
 6. **External directory check** - `check_external_directory()` validates paths stay within project root

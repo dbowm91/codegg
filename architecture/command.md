@@ -8,7 +8,7 @@ The `command` module provides slash command registry loaded from markdown files 
 
 **Key Responsibilities**:
 - Slash command registration from markdown files (`command/` and `commands/` directories)
-- Command resolution from configuration (`opencode.jsonc`)
+- Command resolution from configuration (`codegg.jsonc`)
 - Template variable substitution with deterministic ordering
 - Command name validation
 
@@ -70,7 +70,7 @@ pub struct CommandConfig {
 ### Sources (in priority order)
 
 1. **Built-in commands**: 96 hardcoded commands (highest priority)
-2. **Config commands**: From `opencode.jsonc` `commands` section
+2. **Config commands**: From `codegg.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
 ### File Format (Markdown with YAML Frontmatter)

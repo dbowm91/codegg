@@ -4,7 +4,7 @@ The `bus` module provides inter-component communication via an event-driven arch
 
 ## Overview
 
-**Location**: `src/bus/`
+**Location**: `crates/codegg-core/src/bus/` (re-exported via `src/lib.rs`)
 
 **Key Responsibilities**:
 - Global event publishing and subscribing via broadcast channel
@@ -14,9 +14,9 @@ The `bus` module provides inter-component communication via an event-driven arch
 **Event Count**: 45 event variants in `AppEvent` enum
 
 **Files**:
-- `src/bus/global.rs` - GlobalEventBus singleton using tokio broadcast channel
-- `src/bus/events.rs` - AppEvent enum (45 variants) with `event_type()` method
-- `src/bus/mod.rs` - PermissionRegistry and QuestionRegistry
+- `crates/codegg-core/src/bus/global.rs` - GlobalEventBus singleton using tokio broadcast channel
+- `crates/codegg-core/src/bus/events.rs` - AppEvent enum (45 variants) with `event_type()` method
+- `crates/codegg-core/src/bus/mod.rs` - PermissionRegistry and QuestionRegistry
 
 ## Components
 

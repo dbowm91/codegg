@@ -111,8 +111,8 @@ Each subagent must confirm:
 | Item | Expected | Source |
 |------|----------|--------|
 | Tool count (base) | ~30 | `src/tool/mod.rs:with_options()` |
-| Tool count (all features) | ~44 | includes 8 always-visible + 5 deferred eggsact deterministic tools |
-| LSP servers | 41 | `crates/egglsp/src/server.rs` |
+| Tool count (all features) | ~52 | includes 8 always-visible + 5 deferred eggsact deterministic tools, plus conditional evidence wrappers |
+| LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 108 | `src/tui/command.rs` (assertion at line 525) |
 | Built-in agents | 9 | `assets/agents/*.toml` |

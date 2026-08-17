@@ -171,7 +171,7 @@ The `consolidate_session()` function has the following limitations:
 
 ## Configuration
 
-Enable auto-consolidation via `opencode.jsonc`:
+Enable auto-consolidation via `codegg.jsonc`:
 
 ```json
 {

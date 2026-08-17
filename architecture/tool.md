@@ -8,7 +8,7 @@ The `tool` module provides the built-in tools that the agent can use to interact
 
 **Key Responsibilities**:
 - Tool registry management
-- Built-in tool implementations (40 tools in `with_options()`)
+- Built-in tool implementations (~30 base tools in `with_options()`, up to ~52 with all conditional tools enabled)
 - Tool execution with permission checking
 - Parameter validation
 - On-demand tool discovery via ToolCatalog
@@ -258,7 +258,7 @@ appear as model-facing tool calls.
 
 **Module**: `src/preflight/` (types in `mod.rs`, implementation in `service.rs`)
 
-**Config**: `[preflight]` in opencode.json (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
+**Config**: `[preflight]` in codegg.jsonc (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
 
 **Key types**:
 - `PreflightService` — wraps `EggsactRuntime` with a `PreflightPolicy`
