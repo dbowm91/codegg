@@ -182,7 +182,17 @@ Users and projects can add custom agents via TOML and Markdown files:
 
 ## CI Pipeline
 
-CI runs on pull requests and pushes to `main`. One bounded `verify` job checks generated agent assets, the codegg-core boundary, sandbox and execution-ownership invariants, formatting, default-feature workspace compilation/type checking through Clippy, and workspace tests. Build and test concurrency are bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI and remain available locally. Guard self-tests are manual maintenance commands, not routine CI steps. See `architecture/testing.md` for the full test taxonomy and local commands.
+CI runs on PRs and pushes to `main` as one bounded `verify` job on Ubuntu:
+
+1. `python3 scripts/generate_builtin_agents.py --check` — agent TOML freshness + schema
+2. `scripts/check-core-boundary.sh` — codegg-core import/deps guard
+3. `python3 scripts/check_sandbox_contract.py` — sandbox contract guard
+4. `python3 scripts/check_execution_ownership.py` — spawn-site manifest guard
+5. `cargo fmt --check --all`
+6. `cargo clippy --workspace --all-targets --locked -- -D warnings`
+7. `cargo test --workspace --locked -- --test-threads=1`
+
+Concurrency is bounded (`CARGO_BUILD_JOBS=1`, `--test-threads=1`). Optional features, plugins, LSP real-server, and cross-platform checks are local-only. Guard self-tests are manual maintenance, not routine CI. See `architecture/testing.md`.
 
 ## Critical Gotchas
 
@@ -276,10 +286,10 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
 - **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** -- not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
 - **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
-- **Tool Programs (M006-M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
+- **Tool Programs (M006-M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter` (`src/scheduler/tool_program_executor.rs`). `ToolProgramTool` is DirectOnly — only the agent loop can submit programs. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools. `FixtureBroker` is test-only.
   - **M007** child-job composition (`submit_job()`, `BrokerCallback::submit_child_job`, scheduler submission via `JobSubmissionService`).
   - **M008** background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection.
-  - **M011/M012** authority, broker, notification, lineage, recovery, result, and hosted correctness closure (current active milestone; see `plans/subsystems/tool-programs-correctness-closure-addendum.md` and `architecture/tool_broker.md`).
+  - **M011/M012** authority, broker, notification, lineage, recovery, result, and hosted correctness closure (current active milestone; see `plans/subsystems/tool-programs-correctness-closure-addendum.md` and `architecture/tool_broker.md`). Test suites: `tests/tool_program_m011_correctness.rs`, `tests/tool_program_m012_*.rs`, `hosted_tool_program_*.rs`. Re-run targeted M012 tests after touching any tool-program paths.
 
 ### Agent Runtime
 
@@ -357,13 +367,6 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 - Context policy is **disabled by default** (`observe` mode). Config via `[context_policy]`.
 - Volatile-tail compaction is **disabled by default** (`observe` mode).
-
-### Tool Programs (M006)
-
-- **BrokerAdapter bridges interpreter to real broker**: `FixtureBroker` is test-only. Production uses `BrokerAdapter` in `src/scheduler/tool_program_executor.rs`.
-- **Manifest resolution gates submission**: Tools without `DirectOrProgrammatic` policy or output schemas are rejected before job creation.
-- **ToolProgramTool is DirectOnly**: Only the agent loop can submit programs. Programs themselves can only call `DirectOrProgrammatic` tools.
-- **M012 active milestone**: Corrective closure is the current focus. Major subsystems live in `crates/codegg-core/src/tool_program/` (interpreter, IR, language), `src/scheduler/tool_program_*`, and `src/tool/tool_program_*`. Test suites are `tests/tool_program_m011_correctness.rs`, `tests/tool_program_m012_*.rs`, `hosted_tool_program_*.rs`. Re-run targeted M012 tests after touching any of these paths.
 
 ## Architecture Docs
 
