@@ -108,9 +108,9 @@ Used by:
   The default `eggsearch` backend delegates SSRF protection to
   the eggsearch subprocess; these calls are only exercised when
   `backend = "builtin"` or `fallback_to_builtin = true`.
-- `codesearch` - `validate_host_ip` and `revalidate_dns` at
-  `src/tool/codesearch.rs` (line numbers drift; search for the
-  call sites).
+- `codesearch` is an eggsearch-backed `repo_search` compatibility alias;
+  its external request validation and provider credentials are owned by
+  eggsearch rather than CodeGG.
 - `mcp/remote` - `validate_url_host` and `validate_host_ip` at
   `src/mcp/remote.rs` (line numbers drift; search for the call
   sites).

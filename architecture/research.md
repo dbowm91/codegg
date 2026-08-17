@@ -60,7 +60,16 @@ Each adapter implements `ResearchSourceAdapter` with a `collect()` method:
 | `GitHubSource` | `github.rs` | GitHub files and issues |
 | `DocsRsSource` | `docs_rs.rs` | docs.rs documentation |
 | `AdvisorySource` | `advisory.rs` | Security advisory databases |
-| `SearchProviderSource` | `search_provider.rs` | External search API results |
+| `EggsearchSource` | `eggsearch.rs` | External search evidence through the shared eggsearch backend; provider routing and credentials remain outside CodeGG |
+
+`EggsearchSource` consumes the complete structured value from the shared
+`dispatch_research_search_structured()` / `dispatch_security_search_structured()`
+boundary. The bounded `external_untrusted` string is a model/display projection,
+not the authoritative input for internal source conversion. Current grouped
+eggsearch responses are flattened from `groups[*].results` in response order;
+all CodeGG research modes are explicitly translated to supported eggsearch
+workflow values. Structured advisory and research content remains evidence only,
+and upstream `next_actions` are never executed by the coordinator.
 
 Network-only adapters skip gracefully when `allow_network: false`.
 

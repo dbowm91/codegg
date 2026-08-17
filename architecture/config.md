@@ -407,6 +407,16 @@ boundary (it exists for compatibility, not for defense in depth),
 so leave this off in production unless you have a specific reason
 to fall back.
 
+Run `codegg doctor search` after installing or upgrading eggsearch. The report
+distinguishes process/MCP initialization failure, missing required tools,
+missing recommended specialized tools, and provider-specific degraded
+routing. It also shows the current server version when the provider-status
+contract supplies one. Provider-status output is summarized to bounded
+provider names and states; credentials and raw diagnostic JSON are not
+printed. For an intentional baseline upgrade, use the opt-in local smoke
+documented in `tests/eggsearch_real_compat.rs` rather than adding a network CI
+job.
+
 ### Adding new search providers
 
 New providers belong in eggsearch, not in Codegg's built-in

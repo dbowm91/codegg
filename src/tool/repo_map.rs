@@ -26,16 +26,24 @@ impl Tool for RepoMapTool {
             "properties": {
                 "repo": {
                     "type": "string",
-                    "description": "Repository locator (e.g. 'owner/repo')"
+                    "description": "Repository name; use with owner, or pass a legacy combined owner/repo locator"
                 },
-                "path": {
+                "owner": {
                     "type": "string",
-                    "description": "Subdirectory path to map (default: root)"
+                    "description": "Repository owner; preferred with an explicit repo name"
                 },
-                "depth": {
+                "host": { "type": "string", "description": "Code host" },
+                "ref_name": { "type": "string", "description": "Branch, tag, or commit ref" },
+                "commit_sha": { "type": "string", "description": "Full commit SHA" },
+                "max_entries": { "type": "number", "description": "Maximum root entries" },
+                "max_depth": {
                     "type": "number",
                     "description": "Maximum directory depth (default: 2, max: 3)"
-                }
+                },
+                "include_files": { "type": "boolean", "description": "Include file entries" },
+                "include_directories": { "type": "boolean", "description": "Include directory entries" },
+                "include_ci": { "type": "boolean", "description": "Include CI configuration details" },
+                "include_security": { "type": "boolean", "description": "Include security policy details" }
             },
             "required": ["repo"]
         })
@@ -55,7 +63,7 @@ impl Tool for RepoMapTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_repo_map(&input).await?;
+        let result = search_backend::dispatch_repo_map_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = search_backend::provenance_for_repo_map().unwrap_or_else(|| {
             use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
@@ -69,8 +77,6 @@ impl Tool for RepoMapTool {
             }
         });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

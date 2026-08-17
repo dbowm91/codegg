@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -261,6 +261,10 @@ Deferred work:
 
 ### Milestone 003 — Structured contract consumption and compatibility closure
 
+Status: closed — `plans/closure/search-eggsearch-integration/003-status.md`
+
+Implementation: `89dbac7`
+
 Class: infrastructure / compatibility closure
 
 Objective:
@@ -424,6 +428,8 @@ This roadmap is closed only when all three milestones have accepted closure reco
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| 001 — current eggsearch request-contract repair | ready | `plans/implementation/search-eggsearch-integration/001-current-eggsearch-contract-repair.md` | — | — |
-| 002 — external search ownership consolidation | blocked | `plans/implementation/search-eggsearch-integration/002-external-search-ownership-consolidation.md` | — | M001 hard dependency |
-| 003 — structured contract consumption and compatibility closure | blocked | `plans/implementation/search-eggsearch-integration/003-structured-contract-and-compatibility-closure.md` | — | M002 hard dependency; current eggsearch binary operational evidence for closure |
+| 001 — current eggsearch request-contract repair | closed | `plans/implementation/search-eggsearch-integration/001-current-eggsearch-contract-repair.md` | `plans/closure/search-eggsearch-integration/001-status.md` | — |
+| 002 — external search ownership consolidation | closed | `plans/implementation/search-eggsearch-integration/002-external-search-ownership-consolidation.md` | `plans/closure/search-eggsearch-integration/002-status.md` | — |
+| 003 — structured contract consumption and compatibility closure | closed — historical accepted evidence; current strict disposition superseded by M004 | `plans/implementation/search-eggsearch-integration/003-structured-contract-and-compatibility-closure.md` | `plans/closure/search-eggsearch-integration/003-status.md` | Later deep-research consumer defect is owned by M004 |
+| 004 — deep-research structured-consumption corrective pass | closed | `plans/implementation/search-eggsearch-integration/004-deep-research-structured-consumption-corrective-pass.md` | `plans/closure/search-eggsearch-integration/004-status.md` | — |
+| 005 — hosted closure and SourceCard fidelity corrective pass | closed | `plans/implementation/search-eggsearch-integration/005-hosted-closure-sourcecard-fidelity-corrective-pass.md` | `plans/closure/search-eggsearch-integration/005-status.md` | — |

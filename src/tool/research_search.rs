@@ -28,11 +28,18 @@ impl Tool for ResearchSearchTool {
                     "type": "string",
                     "description": "Search query for research content"
                 },
-                "domains": {
+                "research_domain": {
+                    "type": "string",
+                    "description": "Research domain hint"
+                },
+                "desired_source_types": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Provider or domain hints (e.g. ['arxiv', 'pubmed'])"
+                    "description": "Desired source types"
                 },
+                "workflow": { "type": "string", "description": "Research workflow" },
+                "depth": { "type": "string", "enum": ["quick", "standard", "deep"], "description": "Research depth" },
+                "providers": { "type": "array", "items": { "type": "string" }, "description": "Explicit provider IDs" },
                 "max_results": {
                     "type": "number",
                     "description": "Maximum results to return (default: 10, max: 15)"
@@ -56,7 +63,7 @@ impl Tool for ResearchSearchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_research_search(&input).await?;
+        let result = search_backend::dispatch_research_search_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance =
             search_backend::provenance_for_research_search().unwrap_or_else(|| {
@@ -71,8 +78,6 @@ impl Tool for ResearchSearchTool {
                 }
             });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

@@ -30,6 +30,13 @@ pub enum McpClientType {
 
 Note: `Local` and `Remote` variants wrap Arc<RwLock> to allow shared access across the application.
 
+`McpService::call_tool_structured()` is an additive lossless call surface for
+CodeGG-managed integrations. It returns the existing text projection plus an
+optional JSON value from MCP `structuredContent` or JSON content parts.
+`call_tool()` remains the compatibility string API. This separation lets the
+eggsearch adapter retain machine-readable evidence before search-specific
+display caps without changing unrelated MCP callers.
+
 ## Key Components
 
 ### mod.rs - McpService

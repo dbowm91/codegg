@@ -29,21 +29,35 @@ impl Tool for EvidenceBundleTool {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "type": { "type": "string", "enum": ["search", "fetch", "repo"] },
-                            "query": { "type": "string" },
+                            "id": { "type": "string" },
                             "url": { "type": "string" },
-                            "repo": { "type": "string" },
-                            "path": { "type": "string" }
+                            "title": { "type": "string" },
+                            "snippet": { "type": "string" },
+                            "providers": { "type": "array", "items": { "type": "string" } },
+                            "score": { "type": "number" },
+                            "trust": { "type": "string" },
+                            "trust_markers": { "type": "object" },
+                            "metadata": { "type": "object" },
+                            "quality": { "type": "object" }
                         }
                     },
-                    "description": "List of sources to bundle"
+                    "description": "Source-card inputs from search responses"
                 },
+                "fetches": {
+                    "type": "array",
+                    "items": { "type": "object" },
+                    "description": "Fetch inputs linked to source cards"
+                },
+                "goal": { "type": "string", "description": "Optional bundle goal" },
+                "include_unfetched_sources": { "type": "boolean" },
+                "max_sources": { "type": "number" },
+                "max_fetched_items": { "type": "number" },
                 "max_total_chars": {
                     "type": "number",
                     "description": "Maximum total characters for the bundle (default: 50000, max: 100000)"
                 }
             },
-            "required": ["sources"]
+            "required": []
         })
     }
 
@@ -61,7 +75,7 @@ impl Tool for EvidenceBundleTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_evidence_bundle(&input).await?;
+        let result = search_backend::dispatch_evidence_bundle_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance =
             search_backend::provenance_for_evidence_bundle().unwrap_or_else(|| {
@@ -76,8 +90,6 @@ impl Tool for EvidenceBundleTool {
                 }
             });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

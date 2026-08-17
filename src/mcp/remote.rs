@@ -12,7 +12,7 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::McpError;
-use crate::mcp::{McpPrompt, McpResource, McpResourceContent, PromptArgument};
+use crate::mcp::{McpPrompt, McpResource, McpResourceContent, McpToolCallResult, PromptArgument};
 use crate::provider::ToolDefinition;
 use crate::security::ssrf::{revalidate_dns, validate_host_ip, validate_url_host};
 
@@ -260,13 +260,25 @@ impl McpConnectionManager {
         self.client.discover_tools().await
     }
 
+    pub fn server_version(&self) -> Option<&str> {
+        self.client.server_version()
+    }
+
     pub async fn call_tool(
         &mut self,
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<String, McpError> {
+        Ok(self.call_tool_structured(tool, arguments).await?.text)
+    }
+
+    pub async fn call_tool_structured(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallResult, McpError> {
         self.ensure_connected().await?;
-        self.client.call_tool(tool, arguments).await
+        self.client.call_tool_structured(tool, arguments).await
     }
 
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {
@@ -342,6 +354,7 @@ pub struct RemoteClient {
     shutdown: Arc<Mutex<bool>>,
     sse_shutdown: Arc<Notify>,
     validated_ips: Arc<Mutex<Option<Vec<IpAddr>>>>,
+    server_version: Option<String>,
 }
 
 impl Clone for RemoteClient {
@@ -358,6 +371,7 @@ impl Clone for RemoteClient {
             shutdown: Arc::clone(&self.shutdown),
             sse_shutdown: Arc::clone(&self.sse_shutdown),
             validated_ips: Arc::clone(&self.validated_ips),
+            server_version: self.server_version.clone(),
         }
     }
 }
@@ -429,6 +443,7 @@ impl RemoteClient {
             shutdown: Arc::new(Mutex::new(false)),
             sse_shutdown: Arc::new(Notify::default()),
             validated_ips: Arc::new(Mutex::new(Some(validated_ips))),
+            server_version: None,
         })
     }
 
@@ -464,6 +479,10 @@ impl RemoteClient {
         });
 
         let result = self.send_request("initialize", init_params).await?;
+        self.server_version = result
+            .pointer("/serverInfo/version")
+            .and_then(|version| version.as_str())
+            .map(str::to_owned);
 
         if let Some(session_id) = result.get("sessionId").and_then(|s| s.as_str()) {
             *self.session_id.lock().await = Some(session_id.to_string());
@@ -479,6 +498,10 @@ impl RemoteClient {
             .await?;
 
         Ok(())
+    }
+
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 
     pub async fn discover_tools(&mut self) -> Result<Vec<ToolDefinition>, McpError> {
@@ -516,6 +539,14 @@ impl RemoteClient {
         tool: &str,
         arguments: serde_json::Value,
     ) -> Result<String, McpError> {
+        Ok(self.call_tool_structured(tool, arguments).await?.text)
+    }
+
+    pub async fn call_tool_structured(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> Result<McpToolCallResult, McpError> {
         let params = json!({
             "name": tool,
             "arguments": arguments
@@ -538,7 +569,24 @@ impl RemoteClient {
             })
             .collect();
 
-        Ok(text_parts.join("\n"))
+        let structured = result.get("structuredContent").cloned().or_else(|| {
+            content.iter().find_map(|c| {
+                (c.get("type").and_then(|t| t.as_str()) == Some("json"))
+                    .then(|| c.get("json").cloned())
+                    .flatten()
+            })
+        });
+        let text = text_parts.join("\n");
+        let text = if text.is_empty() {
+            structured
+                .as_ref()
+                .map(serde_json::Value::to_string)
+                .unwrap_or_default()
+        } else {
+            text
+        };
+
+        Ok(McpToolCallResult { text, structured })
     }
 
     pub async fn list_prompts(&mut self) -> Result<Vec<McpPrompt>, McpError> {

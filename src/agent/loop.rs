@@ -3638,9 +3638,8 @@ impl AgentLoop {
 /// For regular mode:
 /// - apply_patch is restricted to models matching the current `is_gpt && is_non_oss` gate
 /// - edit and write are allowed
-/// - codesearch and websearch require a configured search provider
-///   (any of `EXA_API_KEY`/`TAVILY_API_KEY`/`BRAVE_API_KEY`/`KAGI_API_KEY`/`SERPAPI_API_KEY`,
-///   or the no-key DuckDuckGo/Mojeek fallbacks which are always present)
+/// - codesearch and websearch require an enabled search backend; provider
+///   credentials and provider selection belong to eggsearch
 /// - lsp requires lsp_enabled flag
 /// - batch is always disabled
 fn filter_tools_for_model<'a>(
@@ -3692,14 +3691,13 @@ fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     let is_non_oss =
         model_id.contains("gpt") || model_id.contains("claude") || model_id.contains("gemini");
     // The new no-key websearch tool always has DuckDuckGo + Mojeek as
-    // fallbacks, so `search_provider_available` is true unless the
-    // operator has explicitly disabled the registry by removing both
-    // fallbacks. We treat the registry's "has_any" check as the
-    // source of truth: as long as the process has network access and
-    // the registry can resolve at least one provider, we let the
-    // tool through. The registry itself reports Empty / NotConfigured
-    // errors at execution time.
-    let search_provider_available = crate::search::SearchProviderRegistry::from_env().has_any();
+    // The backend owns provider availability and credentials. Keep the
+    // model catalog independent of provider-specific environment variables;
+    // execution reports an actionable eggsearch/bootstrap error instead.
+    let search_provider_available = !matches!(
+        crate::search_backend::state::search_config().backend(),
+        crate::config::schema::SearchBackendConfig::Disabled
+    );
     ModelFlags {
         is_gpt,
         is_non_oss,

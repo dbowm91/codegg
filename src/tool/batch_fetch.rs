@@ -27,23 +27,39 @@ impl Tool for BatchFetchTool {
                 "urls": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "List of HTTP(S) URLs to fetch"
+                    "description": "Legacy alias: converted to tagged web items"
                 },
                 "items": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
+                            "type": { "type": "string", "enum": ["web", "repo"] },
+                            "url": { "type": "string" },
+                            "host": { "type": "string" },
+                            "owner": { "type": "string" },
                             "repo": { "type": "string" },
-                            "path": { "type": "string" }
+                            "path": { "type": "string" },
+                            "ref_name": { "type": "string" },
+                            "commit_sha": { "type": "string" },
+                            "line_start": { "type": "number" },
+                            "line_end": { "type": "number" },
+                            "context_before": { "type": "number" },
+                            "context_after": { "type": "number" },
+                            "max_chars": { "type": "number" },
+                            "extract_mode": { "type": "string" },
+                            "include_links": { "type": "boolean" }
                         }
                     },
-                    "description": "List of repo/file locators to fetch"
+                    "description": "Tagged web or repository fetch items; must be non-empty"
                 },
+                "max_items": { "type": "number", "description": "Maximum items" },
                 "max_chars_per_item": {
                     "type": "number",
                     "description": "Maximum characters per item (default: 10000, max: 50000)"
-                }
+                },
+                "max_total_chars": { "type": "number", "description": "Aggregate character budget" },
+                "continue_on_error": { "type": "boolean", "description": "Continue after an item failure" }
             }
         })
     }
@@ -62,7 +78,7 @@ impl Tool for BatchFetchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let output = search_backend::dispatch_batch_fetch(&input).await?;
+        let result = search_backend::dispatch_batch_fetch_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let mut provenance = search_backend::provenance_for_batch_fetch().unwrap_or_else(|| {
             use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
@@ -76,8 +92,6 @@ impl Tool for BatchFetchTool {
             }
         });
         provenance.elapsed_ms = Some(elapsed_ms);
-        Ok(StructuredToolResult::with_provenance(
-            output, true, provenance,
-        ))
+        Ok(search_backend::into_tool_result(result, provenance))
     }
 }

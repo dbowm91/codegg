@@ -40,6 +40,40 @@ fn eggsearch_timeout_ms(cfg: &SearchConfig, kind: ToolTimeoutKind) -> u64 {
         .unwrap_or(60_000)
 }
 
+/// Structured result crossing the search-backend boundary. The output is the
+/// bounded/framed model projection; `value` is the complete upstream value
+/// when the backend supplied a structured response.
+#[derive(Debug, Clone)]
+pub struct StructuredSearchResult {
+    pub output: String,
+    pub value: Option<Value>,
+    pub truncated: bool,
+}
+
+fn legacy_structured(output: String) -> StructuredSearchResult {
+    StructuredSearchResult {
+        output,
+        value: None,
+        truncated: false,
+    }
+}
+
+pub fn into_tool_result(
+    result: StructuredSearchResult,
+    mut provenance: crate::tool::ToolProvenance,
+) -> crate::tool::StructuredToolResult {
+    provenance.truncated = result.truncated;
+    match result.value {
+        Some(value) => crate::tool::StructuredToolResult::with_value(
+            result.output,
+            value,
+            true,
+            Some(provenance),
+        ),
+        None => crate::tool::StructuredToolResult::with_provenance(result.output, true, provenance),
+    }
+}
+
 /// Run a native `websearch` call against the configured backend.
 ///
 /// Returns the framed, capped output. The caller is responsible for
@@ -300,6 +334,219 @@ pub async fn dispatch_evidence_bundle(input: &Value) -> Result<String, ToolError
                 eggsearch::call_build_evidence_bundle(&server, input, max_chars, timeout).await
             }
         },
+    }
+}
+
+/// Structured variants used by CodeGG's native wrappers. These intentionally
+/// mirror the legacy dispatch policy so structured retention cannot introduce
+/// a second backend or fallback authority.
+pub async fn dispatch_web_search_structured(
+    input: &Value,
+) -> Result<StructuredSearchResult, ToolError> {
+    let cfg = state::search_config();
+    let max_chars = cfg.max_search_output_chars();
+    let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "web search is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Ok(legacy_structured(
+            legacy::call_web_search_legacy(legacy::legacy_registry(), input, max_chars, 60).await?,
+        )),
+        SearchBackendConfig::Eggsearch => {
+            if state::mcp_service().is_none() {
+                return Err(eggsearch::eggsearch_unavailable(
+                    "McpService is not initialized",
+                ));
+            }
+            let server = effective_server_name(&cfg);
+            eggsearch::ensure_tool_available(&server, "websearch", "web_search")?;
+            match eggsearch::call_web_search_structured(&server, input, max_chars, timeout).await {
+                Ok(result) => Ok(StructuredSearchResult {
+                    output: result.output,
+                    value: result.value,
+                    truncated: result.truncated,
+                }),
+                Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
+                    legacy::call_web_search_legacy(legacy::legacy_registry(), input, max_chars, 60)
+                        .await
+                        .map_err(|fallback| {
+                            ToolError::Execution(format!(
+                                "eggsearch failed ({e}); fallback failed: {fallback}"
+                            ))
+                        })?,
+                )),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+pub async fn dispatch_web_fetch_structured(
+    input: &Value,
+) -> Result<StructuredSearchResult, ToolError> {
+    let cfg = state::search_config();
+    let max_chars = cfg.max_fetch_output_chars();
+    let timeout = eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default);
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "web fetch is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Ok(legacy_structured(
+            crate::tool::webfetch::execute_builtin(input, max_chars).await?,
+        )),
+        SearchBackendConfig::Eggsearch => {
+            if state::mcp_service().is_none() {
+                return Err(eggsearch::eggsearch_unavailable(
+                    "McpService is not initialized",
+                ));
+            }
+            let server = effective_server_name(&cfg);
+            eggsearch::ensure_tool_available(&server, "webfetch", "web_fetch")?;
+            match eggsearch::call_web_fetch_structured(&server, input, max_chars, timeout).await {
+                Ok(result) => Ok(StructuredSearchResult {
+                    output: result.output,
+                    value: result.value,
+                    truncated: result.truncated,
+                }),
+                Err(e) if cfg.fallback_to_builtin() => Ok(legacy_structured(
+                    crate::tool::webfetch::execute_builtin(input, max_chars)
+                        .await
+                        .map_err(|fallback| {
+                            ToolError::Execution(format!(
+                                "eggsearch failed ({e}); fallback failed: {fallback}"
+                            ))
+                        })?,
+                )),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+macro_rules! structured_eggsearch_dispatch {
+    ($name:ident, $input:ident, $tool:literal, $max:ident, $timeout_kind:expr, $call:ident) => {
+        pub async fn $name($input: &Value) -> Result<StructuredSearchResult, ToolError> {
+            let cfg = state::search_config();
+            match cfg.backend() {
+                SearchBackendConfig::Disabled => Err(ToolError::Execution(
+                    concat!($tool, " is disabled ([search].backend = \"disabled\")").to_string(),
+                )),
+                SearchBackendConfig::Builtin => Err(ToolError::Execution(
+                    concat!(
+                        $tool,
+                        " requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                    )
+                    .to_string(),
+                )),
+                SearchBackendConfig::Eggsearch => {
+                    if state::mcp_service().is_none() {
+                        return Err(eggsearch::eggsearch_unavailable(
+                            "McpService is not initialized",
+                        ));
+                    }
+                    let server = effective_server_name(&cfg);
+                    eggsearch::ensure_tool_available(&server, $tool, $tool)?;
+                    let result = eggsearch::$call(
+                        &server,
+                        $input,
+                        cfg.$max(),
+                        eggsearch_timeout_ms(&cfg, $timeout_kind),
+                    )
+                    .await?;
+                    Ok(StructuredSearchResult {
+                        output: result.output,
+                        value: result.value,
+                        truncated: result.truncated,
+                    })
+                }
+            }
+        }
+    };
+}
+
+structured_eggsearch_dispatch!(
+    dispatch_repo_search_structured,
+    input,
+    "repo_search",
+    max_repo_search_output_chars,
+    ToolTimeoutKind::Default,
+    call_repo_search_structured
+);
+structured_eggsearch_dispatch!(
+    dispatch_repo_fetch_structured,
+    input,
+    "repo_fetch",
+    max_repo_fetch_output_chars,
+    ToolTimeoutKind::Default,
+    call_repo_fetch_structured
+);
+structured_eggsearch_dispatch!(
+    dispatch_repo_map_structured,
+    input,
+    "repo_map",
+    max_repo_map_output_chars,
+    ToolTimeoutKind::Default,
+    call_repo_map_structured
+);
+structured_eggsearch_dispatch!(
+    dispatch_security_search_structured,
+    input,
+    "security_search",
+    max_security_output_chars,
+    ToolTimeoutKind::Security,
+    call_security_search_structured
+);
+structured_eggsearch_dispatch!(
+    dispatch_research_search_structured,
+    input,
+    "research_search",
+    max_research_output_chars,
+    ToolTimeoutKind::Research,
+    call_research_search_structured
+);
+structured_eggsearch_dispatch!(
+    dispatch_batch_fetch_structured,
+    input,
+    "batch_fetch",
+    max_batch_output_chars,
+    ToolTimeoutKind::BatchFetch,
+    call_batch_fetch_structured
+);
+
+pub async fn dispatch_evidence_bundle_structured(
+    input: &Value,
+) -> Result<StructuredSearchResult, ToolError> {
+    let cfg = state::search_config();
+    match cfg.backend() {
+        SearchBackendConfig::Disabled => Err(ToolError::Execution(
+            "evidence_bundle is disabled ([search].backend = \"disabled\")".to_string(),
+        )),
+        SearchBackendConfig::Builtin => Err(ToolError::Execution(
+            "evidence_bundle requires the eggsearch backend ([search].backend = \"eggsearch\")"
+                .to_string(),
+        )),
+        SearchBackendConfig::Eggsearch => {
+            if state::mcp_service().is_none() {
+                return Err(eggsearch::eggsearch_unavailable(
+                    "McpService is not initialized",
+                ));
+            }
+            let server = effective_server_name(&cfg);
+            eggsearch::ensure_tool_available(&server, "evidence_bundle", "build_evidence_bundle")?;
+            let result = eggsearch::call_build_evidence_bundle_structured(
+                &server,
+                input,
+                cfg.max_evidence_output_chars(),
+                eggsearch_timeout_ms(&cfg, ToolTimeoutKind::Default),
+            )
+            .await?;
+            Ok(StructuredSearchResult {
+                output: result.output,
+                value: result.value,
+                truncated: result.truncated,
+            })
+        }
     }
 }
 

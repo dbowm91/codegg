@@ -83,6 +83,13 @@ codegg --run "Explain this project"   # run one prompt and exit
 
 Use `codegg --help` for the complete CLI surface.
 
+CodeGG uses the external `eggsearch` MCP server for web, repository, security,
+research, batch-fetch, and evidence-bundle tools by default. Install
+eggsearch separately, then run `codegg doctor search` to verify the executable,
+MCP tool coverage, and provider degradation. Raw eggsearch MCP tools remain
+hidden by default; CodeGG wrappers keep model output bounded and
+trust-framed.
+
 ## Daemon model
 
 Normal `codegg` startup uses a single daemon for the current OS user. The TUI connects to an existing daemon when one is available and, by default, starts it automatically when it is not. The daemon owns durable runtime state and coordinates process-consuming work across registered workspaces.

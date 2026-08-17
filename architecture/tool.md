@@ -127,7 +127,7 @@ set varies with configuration and optional features. Use the registry and
 |------|------|-------------|
 | **webfetch** | `webfetch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_fetch`. Default backend is the external `eggsearch` MCP server's `web_fetch` tool; legacy reqwest/html2text implementation is retained as the `builtin` fallback. |
 | **websearch** | `websearch.rs` | Native wrapper. Dispatches to the configured backend via `search_backend::dispatch_web_search`. Default backend is the external `eggsearch` MCP server's `web_search` tool; the in-tree `SearchProviderRegistry` is the `builtin` fallback. |
-| **codesearch** | `codesearch.rs` | Search for code examples, library docs, SDK patterns using Exa Code API. Uses EXA_API_KEY or EXA_CODE_API_KEY. |
+| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused `repo_search` through eggsearch. It does not own a provider client or require an Exa credential; prefer `repo_search` for structured repository queries. Its structured execution retains the upstream repo-search value while keeping bounded trust-framed model output. |
 | **research** | `research.rs` | Deep research tool. May invoke `websearch` and `webfetch` internally. |
 | **image** | `image.rs` | Generate images using OpenAI's DALL-E model. Supports dall-e-3, size, quality parameters. Requires OPENAI_API_KEY. |
 
@@ -140,12 +140,12 @@ fallback). Raw `mcp__eggsearch__*` equivalents are hidden by default.
 | Tool | File | Description |
 |------|------|-------------|
 | **repo_search** | `repo_search.rs` | Search repositories via eggsearch. Wraps `repo_search` MCP tool. |
-| **repo_fetch** | `repo_fetch.rs` | Fetch repository file content via eggsearch. Wraps `repo_fetch` MCP tool. |
-| **repo_map** | `repo_map.rs` | Get repository directory structure via eggsearch. Wraps `repo_map` MCP tool. |
-| **security_search** | `security_search.rs` | Search security advisories via eggsearch. Wraps `security_search` MCP tool. |
-| **research_search** | `research_search.rs` | Search academic/research sources via eggsearch. Wraps `research_search` MCP tool. |
-| **batch_fetch** | `batch_fetch.rs` | Fetch multiple URLs in parallel via eggsearch. Wraps `batch_fetch` MCP tool. |
-| **evidence_bundle** | `evidence_bundle.rs` | Build evidence bundles from multiple sources via eggsearch. Wraps `build_evidence_bundle` MCP tool. |
+| **repo_fetch** | repo_fetch.rs | Fetch repository file content via eggsearch using explicit owner, repo, path, and current line-range fields; accepts an unambiguous combined locator as a compatibility alias. |
+| **repo_map** | repo_map.rs | Get repository directory structure via eggsearch using explicit owner, repo, and max_depth; path-scoped maps are rejected because the upstream contract has no path field. |
+| **security_search** | security_search.rs | Search security advisories via eggsearch, including current CVE/GHSA/OSV/RustSec identifier fields. |
+| **research_search** | research_search.rs | Search academic/research sources via eggsearch using current research-domain, source-type, workflow, and depth fields. |
+| **batch_fetch** | batch_fetch.rs | Fetch tagged web or repository items via eggsearch; legacy URL arrays are normalized to current tagged items. |
+| **evidence_bundle** | evidence_bundle.rs | Build bundles from current eggsearch source-card and linked fetch inputs; historical pseudo-source descriptors are rejected. |
 
 `websearch` and `webfetch` always present the stable native tool
 names to the model. The raw `mcp__eggsearch__*` tools are hidden
@@ -416,6 +416,14 @@ to `AgentLoop::resolve_native_backend(name)`: most tools resolve to
 dispatcher emits a `tracing::debug!` line summarising the
 `ToolProvenance` (backend, implementation, elapsed_ms, trust) so the
 structured metadata stays internal and never reaches the model.
+
+Eggsearch-backed wrappers additionally preserve the complete parsed upstream
+JSON in `StructuredToolResult::value`. Their model-facing `output` is still
+the bounded external-content frame, and its truncation flag describes only
+that display projection. The retained value is evidence metadata, not
+instructions: CodeGG preserves trust markers and warnings, but never executes
+upstream `next_actions` automatically. Text-only responses from older
+eggsearch servers remain explicit legacy results with no structured value.
 
 Raw MCP tool definitions are cached using a SHA-256 digest over sorted,
 provider-visible names, descriptions, parameter schemas, and defer-loading
@@ -711,7 +719,7 @@ src/tool/
 ├── research_search.rs  # Academic/research search (dispatches to search_backend)
 ├── batch_fetch.rs  # Batch URL fetch (dispatches to search_backend)
 ├── evidence_bundle.rs  # Evidence bundle builder (dispatches to search_backend)
-├── codesearch.rs   # Code search via Exa
+├── codesearch.rs   # Coding-focused repo_search compatibility alias
 ├── question.rs     # User question asking
 ├── skill.rs        # Skill loading
 ├── review.rs       # LLM-based code review (uses egggit::diff_summary)
