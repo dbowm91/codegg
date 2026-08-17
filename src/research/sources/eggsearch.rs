@@ -43,6 +43,8 @@ impl SearchProvider {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EggsearchSource;
 
+type ResultItem<'a> = (&'a Map<String, Value>, Option<&'a Map<String, Value>>);
+
 impl EggsearchSource {
     pub fn new() -> Self {
         Self
@@ -52,7 +54,7 @@ impl EggsearchSource {
         match mode {
             ResearchMode::Landscape => "ecosystem_survey",
             ResearchMode::ArchitectureDecision => "architecture_decision",
-            ResearchMode::LibraryEvaluation => "api_evaluation",
+            ResearchMode::LibraryEvaluation => "library_comparison",
             ResearchMode::ApiInvestigation => "api_evaluation",
             ResearchMode::DebuggingInvestigation => "general",
             ResearchMode::SecurityReview => "security_review",
@@ -89,7 +91,7 @@ impl EggsearchSource {
         &output[body_start..body_end]
     }
 
-    fn result_items(payload: &Value) -> Vec<(&Map<String, Value>, Option<&Map<String, Value>>)> {
+    fn result_items(payload: &Value) -> Vec<ResultItem<'_>> {
         if let Some(object) = payload.as_object() {
             if let Some(groups) = object.get("groups").and_then(Value::as_array) {
                 let mut grouped = Vec::new();
@@ -141,6 +143,56 @@ impl EggsearchSource {
             .unwrap_or_default()
     }
 
+    fn string_field<'a>(object: &'a Map<String, Value>, fields: &[&str]) -> Option<&'a str> {
+        fields
+            .iter()
+            .find_map(|field| object.get(*field).and_then(Value::as_str))
+    }
+
+    fn providers(item: &Map<String, Value>, group: Option<&Map<String, Value>>) -> Vec<String> {
+        let mut providers = Vec::new();
+        if let Some(values) = item.get("providers").and_then(Value::as_array) {
+            for provider in values.iter().filter_map(Value::as_str) {
+                let provider = provider.trim();
+                if !provider.is_empty() && !providers.iter().any(|value| value == provider) {
+                    providers.push(provider.to_string());
+                }
+            }
+        }
+
+        if providers.is_empty() {
+            for object in [Some(item), group].into_iter().flatten() {
+                if let Some(provider) = Self::string_field(object, &["provider", "source"]) {
+                    let provider = provider.trim();
+                    if !provider.is_empty() && !providers.iter().any(|value| value == provider) {
+                        providers.push(provider.to_string());
+                    }
+                }
+            }
+        }
+
+        providers
+    }
+
+    fn source_kind(item: &Map<String, Value>, group: Option<&Map<String, Value>>) -> String {
+        item.get("metadata")
+            .and_then(Value::as_object)
+            .and_then(|metadata| Self::string_field(metadata, &["source_kind"]))
+            .or_else(|| Self::string_field(item, &["source_kind", "source_type", "type", "kind"]))
+            .or_else(|| {
+                group.and_then(|group| {
+                    Self::string_field(
+                        group,
+                        &["kind", "classification", "source_kind", "source_type"],
+                    )
+                })
+            })
+            .map(str::trim)
+            .filter(|kind| !kind.is_empty())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default()
+    }
+
     fn source_from_result(
         item: &Map<String, Value>,
         group: Option<&Map<String, Value>>,
@@ -163,28 +215,8 @@ impl EggsearchSource {
             .iter()
             .find_map(|field| item.get(*field).and_then(Value::as_str))
             .map(str::to_owned);
-        let provider = ["provider", "source"]
-            .iter()
-            .find_map(|field| item.get(*field).and_then(Value::as_str));
-        let provider = provider.or_else(|| {
-            group.and_then(|group| {
-                ["provider", "source"]
-                    .iter()
-                    .find_map(|field| group.get(*field).and_then(Value::as_str))
-            })
-        });
-        let kind = ["source_type", "source_kind", "type", "kind"]
-            .iter()
-            .find_map(|field| item.get(*field).and_then(Value::as_str))
-            .or_else(|| {
-                group.and_then(|group| {
-                    ["classification", "source_type", "source_kind", "kind"]
-                        .iter()
-                        .find_map(|field| group.get(*field).and_then(Value::as_str))
-                })
-            })
-            .unwrap_or_default();
-        let kind = kind.to_lowercase();
+        let providers = Self::providers(item, group);
+        let kind = Self::source_kind(item, group);
 
         let published_at = ["published_at", "publishedAt", "published"]
             .iter()
@@ -212,7 +244,7 @@ impl EggsearchSource {
         {
             notes.push(format!("stable_id={stable_id}"));
         }
-        if let Some(provider) = provider {
+        for provider in providers {
             notes.push(format!("provider={provider}"));
         }
         if !kind.is_empty() {
@@ -373,7 +405,7 @@ mod tests {
         let cases = [
             (ResearchMode::Landscape, "ecosystem_survey"),
             (ResearchMode::ArchitectureDecision, "architecture_decision"),
-            (ResearchMode::LibraryEvaluation, "api_evaluation"),
+            (ResearchMode::LibraryEvaluation, "library_comparison"),
             (ResearchMode::ApiInvestigation, "api_evaluation"),
             (ResearchMode::DebuggingInvestigation, "general"),
             (ResearchMode::SecurityReview, "security_review"),
@@ -404,12 +436,18 @@ mod tests {
                     "label": "Primary papers",
                     "results": [
                         {
+                            "id": "src_paper_1",
                             "stable_id": "paper-1",
                             "url": "https://example.com/paper-1",
                             "title": "Paper 1",
-                            "abstract": "Summary 1",
-                            "provider": "arxiv",
-                            "source_type": "paper"
+                            "snippet": "Summary 1",
+                            "providers": ["arxiv", "openalex", "arxiv"],
+                            "score": 0.81,
+                            "trust": "external_untrusted",
+                            "fetched": false,
+                            "trust_markers": {},
+                            "metadata": {"source_kind": "reference"},
+                            "future_field": {"ignored": true}
                         },
                         {"url": "file:///not-external", "title": "Rejected"}
                     ]
@@ -419,18 +457,24 @@ mod tests {
                     "label": "Documentation",
                     "results": [
                         {
-                            "source_id": "docs-1",
+                            "id": "src_docs_1",
+                            "stable_id": "docs-1",
                             "url": "https://example.com/docs",
                             "title": "Docs",
                             "snippet": "Reference",
-                            "source_kind": "documentation",
-                            "provider": "official"
+                            "providers": ["official", "mojeek"],
+                            "score": 0.75,
+                            "trust": "external_untrusted",
+                            "fetched": false,
+                            "trust_markers": {},
+                            "metadata": {"source_kind": "official_docs"}
                         },
                         {
                             "id": "paper-2",
                             "url": "https://example.com/paper-2",
                             "title": "Paper 2",
-                            "source_type": "academic"
+                            "source_type": "academic",
+                            "provider": "legacy"
                         }
                     ]
                 }
@@ -442,7 +486,7 @@ mod tests {
         assert_eq!(sources[0].uri, "https://example.com/paper-1");
         assert_eq!(sources[1].uri, "https://example.com/docs");
         assert_eq!(sources[2].uri, "https://example.com/paper-2");
-        assert_eq!(sources[0].source_quality, SourceQuality::Academic);
+        assert_eq!(sources[0].source_quality, SourceQuality::Secondary);
         assert!(sources[0]
             .notes
             .iter()
@@ -451,6 +495,15 @@ mod tests {
             .notes
             .iter()
             .any(|note| note == "provider=official"));
+        assert!(sources[1]
+            .notes
+            .iter()
+            .any(|note| note == "provider=mojeek"));
+        assert!(!sources[1]
+            .notes
+            .iter()
+            .any(|note| note == "provider=legacy"));
+        assert_eq!(sources[1].source_quality, SourceQuality::OfficialDocs);
         assert!(sources[1]
             .notes
             .iter()

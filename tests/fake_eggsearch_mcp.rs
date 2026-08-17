@@ -629,6 +629,15 @@ async fn research_eggsearch_source_honors_network_budget_and_converts_sources() 
         .notes
         .iter()
         .any(|note| note == "trust=external_untrusted"));
+    assert!(sources[0].notes.iter().any(|note| note == "provider=arxiv"));
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "provider=openalex"));
+    assert_eq!(
+        sources[2].source_quality,
+        codegg::research::types::SourceQuality::OfficialDocs
+    );
     let recorded = calls.lock().await;
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].0, "research_search");
@@ -686,6 +695,19 @@ async fn security_research_source_uses_structured_security_evidence() {
         .notes
         .iter()
         .any(|note| note == "stable_id=advisory-1"));
+    assert!(sources[0].notes.iter().any(|note| note == "provider=osv"));
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "provider=rustsec"));
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "source_kind=security_advisory"));
+    assert!(sources[0]
+        .notes
+        .iter()
+        .any(|note| note == "trust=external_untrusted"));
 
     request.budget.allow_network = false;
     let denied = source.collect(&request, &plan).await;
@@ -740,8 +762,8 @@ fn build_full_mock_eggsearch(
                 "repo_search" => Ok(r#"{"repo_hits": [], "stable_id": "repo-1"}"#.to_string()),
                 "repo_fetch" => Ok("file content".to_string()),
                 "repo_map" => Ok(r#"{"tree": []}"#.to_string()),
-                "security_search" => Ok(r#"{"groups": [{"classification": "advisory", "results": [{"stable_id": "advisory-1", "url": "https://example.org/advisory", "title": "Mock advisory", "provider": "osv", "source_type": "advisory"}]}]}"#.to_string()),
-                "research_search" => Ok(r#"{"groups": [{"classification": "academic", "results": [{"stable_id": "paper-1", "url": "https://example.org/paper-1", "title": "Mock paper 1", "abstract": "Mock abstract 1", "provider": "arxiv", "source_type": "paper"}, {"stable_id": "paper-2", "url": "https://example.org/paper-2", "title": "Mock paper 2", "abstract": "Mock abstract 2", "provider": "arxiv", "source_type": "paper"}]}, {"classification": "official_docs", "results": [{"stable_id": "docs-1", "url": "https://example.org/docs", "title": "Mock docs", "provider": "official", "source_type": "documentation"}]}]}"#.to_string()),
+                "security_search" => Ok(r#"{"groups": [{"kind": "security_advisory", "label": "Advisories", "results": [{"id": "src_advisory_1", "stable_id": "advisory-1", "url": "https://example.org/advisory", "title": "Mock advisory", "snippet": "Mock advisory details", "providers": ["osv", "rustsec"], "score": 0.92, "trust": "external_untrusted", "fetched": false, "trust_markers": {}, "metadata": {"source_kind": "security_advisory"}, "unknown_future_field": true}]}]}"#.to_string()),
+                "research_search" => Ok(r#"{"groups": [{"kind": "reference", "label": "Primary sources", "results": [{"id": "src_paper_1", "stable_id": "paper-1", "url": "https://example.org/paper-1", "title": "Mock paper 1", "snippet": "Mock abstract 1", "providers": ["arxiv", "openalex"], "score": 0.81, "trust": "external_untrusted", "fetched": false, "trust_markers": {}, "metadata": {"source_kind": "reference"}, "unknown_future_field": {"ignored": true}}, {"id": "src_paper_2", "stable_id": "paper-2", "url": "https://example.org/paper-2", "title": "Mock paper 2", "snippet": "Mock abstract 2", "providers": ["arxiv"], "score": 0.74, "trust": "external_untrusted", "fetched": false, "trust_markers": {}, "metadata": {"source_kind": "reference"}}]}, {"kind": "official_docs", "label": "Documentation", "results": [{"id": "src_docs_1", "stable_id": "docs-1", "url": "https://example.org/docs", "title": "Mock docs", "snippet": "Reference", "providers": ["official"], "score": 0.76, "trust": "external_untrusted", "fetched": false, "trust_markers": {}, "metadata": {"source_kind": "official_docs"}}]}]}"#.to_string()),
                 "batch_fetch" => Ok(r#"{"pages": []}"#.to_string()),
                 "build_evidence_bundle" => Ok(r#"{"bundle": {}}"#.to_string()),
                 _ => Err(McpError::Server(format!("unknown tool {tool}"))),
