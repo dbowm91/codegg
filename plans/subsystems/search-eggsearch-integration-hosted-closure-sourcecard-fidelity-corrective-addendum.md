@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration — Hosted Closure and SourceCard Fidelity Corrective Addendum
 
-Status: active
+Status: closed
 
 Source roadmap:
 
@@ -153,7 +153,7 @@ The M003 real eggsearch 0.3.6 process smoke remains accepted wrapper-level evide
 
 ## 8. Completion definition
 
-This corrective addendum may return to `closed` only when all of the following are true:
+This corrective addendum is `closed`: all of the following conditions were satisfied by M005:
 
 - the exact final candidate no longer triggers the M004 `type_complexity` lint failure;
 - current-shaped research fixtures use canonical `SourceCard.providers` and nested `metadata.source_kind`;
@@ -167,4 +167,5 @@ This corrective addendum may return to `closed` only when all of the following a
 - registry state records M005 closed and removes it from dependency-ready work;
 - no new search/provider ownership path or verification overengineering was introduced.
 
-Until then, M001-M004 remain historical evidence, but the search/eggsearch subsystem's current strict disposition is controlled by M005.
+M001-M004 remain historical evidence, and M005 is the current strict closure
+record for the search/eggsearch subsystem.

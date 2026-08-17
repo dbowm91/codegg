@@ -1,6 +1,6 @@
 # Search and Eggsearch Integration M005 — Hosted Closure and SourceCard Fidelity Corrective Pass
 
-Status: active
+Status: implemented
 
 Repository baseline reviewed: `77c10b98342777381f295aa1b16bb3d44999ae12`
 
