@@ -38,13 +38,14 @@ Canonical direction remains in:
 | Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
-| Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-deep-research-corrective-addendum.md` | M004 closed | `plans/closure/search-eggsearch-integration/004-status.md`; M001–M003 remain historical accepted evidence |
+| Search and eggsearch integration | active | `plans/subsystems/search-eggsearch-integration-hosted-closure-sourcecard-fidelity-corrective-addendum.md` | M005 ready | M004 implementation is retained; exact-head CI `31930352527` failed on M004 Clippy, and current SourceCard/workflow fidelity needs the bounded M005 correction |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Status | Implementation plan | Dependencies |
 |---|---|---|---|---|
 | Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
+| Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity corrective pass | ready | `plans/implementation/search-eggsearch-integration/005-hosted-closure-sourcecard-fidelity-corrective-pass.md` | M004 implementation landed; current eggsearch 0.3.6 contract is known; exact failed hosted evidence is available |
 
 ## Closure work and dependencies
 
@@ -89,17 +90,18 @@ C003 closure requires a real ordinary-startup smoke path, multi-process lifecycl
 
 ### Search and eggsearch integration
 
-The 2026-08-15 audit found that CodeGG still selects eggsearch correctly by default, but specialized wrapper schemas had drifted from eggsearch 0.3.6 and direct Exa/research-provider clients bypassed the intended ownership boundary. M001–M003 corrected those issues and recorded wrapper-level current-process compatibility. A 2026-08-16 post-closure review then found a narrower deep-research consumer defect that the earlier verification did not exercise.
+The 2026-08-15 audit found that CodeGG still selects eggsearch correctly by default, but specialized wrapper schemas had drifted from eggsearch 0.3.6 and direct Exa/research-provider clients bypassed the intended ownership boundary. M001–M003 corrected those issues and recorded wrapper-level current-process compatibility. A 2026-08-16 post-closure review then found a narrower deep-research consumer defect that M004 corrected. A later exact-head review found that M004's strict closure disposition was premature: hosted run `31930352527` / job `95124064959` failed directly on the M004 `result_items()` type shape, current-shaped fixtures still used noncanonical singular provider/source-kind fields, and `LibraryEvaluation` was mapped to `api_evaluation` rather than the supported `library_comparison` workflow.
 
 Current controlling execution order:
 
 1. Preserve M001 request-contract repair and its accepted `plans/closure/search-eggsearch-integration/001-status.md` evidence.
 2. Preserve M002 provider-ownership consolidation and its accepted `plans/closure/search-eggsearch-integration/002-status.md` evidence; do not reintroduce direct Exa/Tavily/Brave/SerpAPI/Kagi paths.
-3. Preserve M003's structured MCP/search-backend implementation and real eggsearch 0.3.6 wrapper smoke as historical accepted evidence. Do not rewrite `plans/closure/search-eggsearch-integration/003-status.md` to conceal the later finding.
-4. M004 is strictly closed by `plans/closure/search-eggsearch-integration/004-status.md`; it made `EggsearchSource` consume `dispatch_*_structured`, flatten current `research_search` `groups[*].results` into `SourceRecord`s, map every CodeGG `ResearchMode` to a supported upstream workflow disposition, use structured security evidence, and retain structured repo-search metadata through the `codesearch` compatibility alias.
-5. M004 closure evidence includes focused current-shaped conversion/workflow tests, a fake-MCP consumer path through the research source boundary, truncation-vs-structured-value evidence, the focused `codesearch` assertion, and green `scripts/verify.sh quick`.
-6. The corrective addendum and search/eggsearch subsystem are returned to closed; M001–M004 closure records remain authoritative without rewriting M003 history.
-7. Verification remains deliberately light: no network CI lane, scheduled compatibility job, version matrix, source scanner, or release gate is added. The M003 real-process wrapper smoke remains valid and need not be repeated unless implementation evidence makes it necessary.
+3. Preserve M003's structured MCP/search-backend implementation and real eggsearch 0.3.6 wrapper smoke as historical accepted evidence. Do not rewrite `plans/closure/search-eggsearch-integration/003-status.md` to conceal later findings.
+4. Preserve M004's functional implementation and `plans/closure/search-eggsearch-integration/004-status.md` as historical evidence. Its current strict disposition is superseded by M005 because exact hosted evidence later failed and the SourceCard/workflow fidelity review found remaining defects.
+5. M005 is the sole ready corrective handoff. It must clear the exact M004 Clippy failure without weakening lint policy, consume canonical `SourceCard.providers` and nested `metadata.source_kind`, map `LibraryEvaluation -> library_comparison`, preserve all M004 structured/truncation/security/codesearch invariants, and reconcile PR #78 metadata.
+6. M005 strict closure requires focused current-shaped tests, `scripts/verify.sh quick`, and one green ordinary existing PR `CI / verify` run on the exact accepted candidate through Workspace Clippy and Workspace tests.
+7. After accepted `plans/closure/search-eggsearch-integration/005-status.md`, move M005 out of dependency-ready work and return the M005 corrective addendum/search subsystem to closed.
+8. Verification remains deliberately light: no new network CI lane, scheduled compatibility job, version matrix, source scanner, or release gate is added. The M003 real-process smoke remains accepted unless M005 uncovers a specific ambiguity that deterministic fixtures cannot resolve.
 
 ### Other active closure dependencies
 
@@ -163,8 +165,8 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Programmatic tool execution and Tool Programs | M018 | provisional/conditional implementation evidence | `plans/closure/tool-programs/018-status.md`; strict review owned by M019 |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
 | Search and eggsearch integration | M002 — external search ownership consolidation | closed | `plans/closure/search-eggsearch-integration/002-status.md`; implementation `e46f97d2`; M003 moved to ready |
-| Search and eggsearch integration | M003 — structured contract and compatibility closure | historical closed evidence; current strict disposition superseded by M004 | `plans/closure/search-eggsearch-integration/003-status.md`; implementation `89dbac7`; later audit found the deep-research consumer/workflow gap now owned by M004 |
-| Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | closed | `plans/closure/search-eggsearch-integration/004-status.md`; implementation `6f1fa20a`; no unrelated registered future plan was unblocked |
+| Search and eggsearch integration | M003 — structured contract and compatibility closure | historical closed evidence; current strict disposition superseded by later corrective milestones | `plans/closure/search-eggsearch-integration/003-status.md`; implementation `89dbac7`; M004 corrected the deep-research consumer gap |
+| Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | historical closed implementation evidence; current strict disposition superseded by M005 | `plans/closure/search-eggsearch-integration/004-status.md`; implementation `6f1fa20a`; exact hosted run `31930352527` / job `95124064959` later failed on M004 Clippy and M005 owns remaining SourceCard/workflow fidelity |
 
 Detailed predecessor history is intentionally not duplicated here. Use the source subsystem roadmaps and `plans/closure/` records for older milestones.
 
