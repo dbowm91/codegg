@@ -560,63 +560,77 @@ fn effective_server_name(cfg: &SearchConfig) -> String {
 /// Build a `ToolProvenance` describing the current `websearch`
 /// backend. Returns `None` only if the resolved `SearchConfig` cannot
 /// be read (which should not happen in production).
-pub fn provenance_for_search() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("websearch", None))
+pub fn provenance_for_search(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("websearch", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `webfetch`
 /// backend.
-pub fn provenance_for_fetch() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("webfetch", None))
+pub fn provenance_for_fetch(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("webfetch", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `repo_search`
 /// backend.
-pub fn provenance_for_repo_search() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("repo_search", None))
+pub fn provenance_for_repo_search(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_search", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `repo_fetch`
 /// backend.
-pub fn provenance_for_repo_fetch() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("repo_fetch", None))
+pub fn provenance_for_repo_fetch(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_fetch", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `repo_map`
 /// backend.
-pub fn provenance_for_repo_map() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("repo_map", None))
+pub fn provenance_for_repo_map(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("repo_map", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `security_search`
 /// backend.
-pub fn provenance_for_security_search() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("security_search", None))
+pub fn provenance_for_security_search(
+    truncated: Option<bool>,
+) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("security_search", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `research_search`
 /// backend.
-pub fn provenance_for_research_search() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("research_search", None))
+pub fn provenance_for_research_search(
+    truncated: Option<bool>,
+) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("research_search", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current `batch_fetch`
 /// backend.
-pub fn provenance_for_batch_fetch() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("batch_fetch", None))
+pub fn provenance_for_batch_fetch(truncated: Option<bool>) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend("batch_fetch", None, truncated))
 }
 
 /// Build a `ToolProvenance` describing the current
 /// `build_evidence_bundle` backend.
-pub fn provenance_for_evidence_bundle() -> Option<crate::tool::ToolProvenance> {
-    Some(provenance_for_backend("build_evidence_bundle", None))
+pub fn provenance_for_evidence_bundle(
+    truncated: Option<bool>,
+) -> Option<crate::tool::ToolProvenance> {
+    Some(provenance_for_backend(
+        "build_evidence_bundle",
+        None,
+        truncated,
+    ))
 }
 
-fn provenance_for_backend(_tool: &str, elapsed_ms: Option<u64>) -> crate::tool::ToolProvenance {
+fn provenance_for_backend(
+    _tool: &str,
+    elapsed_ms: Option<u64>,
+    truncated: Option<bool>,
+) -> crate::tool::ToolProvenance {
     use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
     let cfg = state::search_config();
     let server = effective_server_name(&cfg);
-    let truncated = state::last_truncated();
+    let truncated = truncated.unwrap_or(false);
     let (backend, implementation, trust) = match cfg.backend() {
         SearchBackendConfig::Disabled => (
             ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
@@ -727,7 +741,7 @@ mod tests {
             ..Default::default()
         };
         state::install_search_config(cfg);
-        let p = provenance_for_search().unwrap();
+        let p = provenance_for_search(None).unwrap();
         assert_eq!(p.implementation, "disabled");
 
         // Builtin backend.
@@ -737,7 +751,7 @@ mod tests {
             ..Default::default()
         };
         state::install_search_config(cfg);
-        let p = provenance_for_search().unwrap();
+        let p = provenance_for_search(None).unwrap();
         assert_eq!(p.implementation, "codegg/legacy");
         assert_eq!(p.backend, "builtinlegacy");
 
@@ -745,7 +759,7 @@ mod tests {
         state::reset_for_tests();
         let cfg = SearchConfig::default();
         state::install_search_config(cfg);
-        let p = provenance_for_search().unwrap();
+        let p = provenance_for_search(None).unwrap();
         assert_eq!(p.backend, "mcp");
         assert!(p.implementation.starts_with("eggsearch"));
     }

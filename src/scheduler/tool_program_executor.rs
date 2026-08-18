@@ -1207,9 +1207,10 @@ impl JobExecutor for ToolProgramExecutor {
             &source_digest,
         );
         if expected_authority != authority_digest {
-            eprintln!(
-                "[M012 DEBUG] authority mismatch: expected={}, got={}, context={:?}",
-                expected_authority, authority_digest, execution_context
+            tracing::warn!(
+                expected = %expected_authority,
+                got = %authority_digest,
+                "tool-program authority digest mismatch (context redacted)"
             );
             return ExecutorCompletion {
                 status: ExecutorStatus::Failed,

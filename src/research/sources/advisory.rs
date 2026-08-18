@@ -10,12 +10,12 @@ pub struct AdvisorySource {
 }
 
 impl AdvisorySource {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+        Ok(Self { client })
     }
 
     async fn fetch_crate_versions(&self, crate_name: &str) -> Result<SourceRecord> {
@@ -92,7 +92,7 @@ impl AdvisorySource {
 
 impl Default for AdvisorySource {
     fn default() -> Self {
-        Self::new()
+        Self::try_new().unwrap()
     }
 }
 
@@ -147,10 +147,7 @@ impl ResearchSourceAdapter for AdvisorySource {
                 match self.fetch_crate_versions(name).await {
                     Ok(source) => sources.push(source),
                     Err(e) => {
-                        eprintln!(
-                            "Warning: advisory source failed for crate '{}': {}",
-                            name, e
-                        );
+                        tracing::warn!(crate_name = %name, error = %e, "advisory source fetch failed");
                     }
                 }
             }
@@ -166,7 +163,7 @@ mod tests {
 
     #[test]
     fn name_returns_correct_value() {
-        let source = AdvisorySource::new();
+        let source = AdvisorySource::try_new().unwrap();
         assert_eq!(source.name(), "advisory");
     }
 

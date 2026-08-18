@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use url::Url;
 
 use super::client::{DiagnosticCacheEntry, LspClient, LspClientOptions};
@@ -480,7 +480,7 @@ async fn terminate_runtime(
                     runtime.request_force_kill();
                     break;
                 }
-                Err(_) => {}
+                Err(_) => trace!("graceful-shutdown timeout for LSP runtime"),
             }
         }
     }
@@ -660,6 +660,10 @@ enum InitTaskExit {
     Panicked(String),
     Cancelled,
 }
+
+/// Sentinel for when a deadline expires before an init task completes.
+#[derive(Debug, Clone, Copy)]
+struct InitTaskTimeout;
 
 type InitTaskExitRx = tokio::sync::oneshot::Receiver<InitTaskExit>;
 type InitTaskExitTx = tokio::sync::oneshot::Sender<InitTaskExit>;
@@ -3889,8 +3893,9 @@ async fn await_init_task_completions(
     let mut unordered: futures_util::stream::FuturesUnordered<
         std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = (InitTaskControl, Result<InitTaskExit, ()>)>
-                    + Send,
+                dyn std::future::Future<
+                        Output = (InitTaskControl, Result<InitTaskExit, InitTaskTimeout>),
+                    > + Send,
             >,
         >,
     > = futures_util::stream::FuturesUnordered::new();
@@ -3915,7 +3920,7 @@ async fn await_init_task_completions(
                     Ok(exit) => exit,
                     Err(_recv) => InitTaskExit::Cancelled,
                 },
-                _ = tokio::time::sleep_until(deadline.into()) => return (ctrl, Err(())),
+                _ = tokio::time::sleep_until(deadline.into()) => return (ctrl, Err(InitTaskTimeout)),
             };
             (ctrl, Ok(res))
         }));
@@ -3924,10 +3929,10 @@ async fn await_init_task_completions(
     use futures_util::StreamExt;
     let mut pending: Vec<InitTaskControl> = Vec::new();
     while let Some((ctrl, res)) = unordered.next().await {
-        // `res` is `Result<InitTaskExit, ()>`:
+        // `res` is `Result<InitTaskExit, InitTaskTimeout>`:
         // - Ok(exit) means the wrapper sent a terminal exit
         //   (normal completion, panic, or cancelled).
-        // - Err(()) means the deadline fired before the
+        // - Err(InitTaskTimeout) means the deadline fired before the
         //   receiver resolved; return the control for a
         //   second pass.
         match res {
@@ -3949,7 +3954,7 @@ async fn await_init_task_completions(
                 );
                 completed += 1;
             }
-            Err(()) => {
+            Err(InitTaskTimeout) => {
                 // Deadline expired before the receiver
                 // resolved. Return the control with the
                 // real receiver intact for the second pass.

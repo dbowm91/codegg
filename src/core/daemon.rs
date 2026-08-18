@@ -267,11 +267,11 @@ impl CoreDaemon {
             if let Err(error) = scheduler_arc
                 .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone())
             {
-                tracing::error!(
+                tracing::warn!(
                     ?error,
-                    "fatal scheduler startup error: default executor registration failed"
+                    "scheduler degraded: default executor registration failed; \
+                     durable jobs and subagent dispatch will be unavailable"
                 );
-                panic!("failed to register default scheduler executors: {error}");
             }
             // SchedulerEvent has no corresponding CoreEvent protocol variant.
             // Leave the optional sink unset rather than attaching a sender whose

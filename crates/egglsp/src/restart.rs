@@ -106,7 +106,7 @@ use std::time::Duration;
 use futures_util::future::BoxFuture;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::client::{DiagnosticCacheEntry, LspClient};
 use crate::compatibility::{LspReadinessPolicy, LspRestartMode, LspRestartPolicy};
@@ -1728,7 +1728,7 @@ async fn terminate_unpublished_runtime(
         match tokio::time::timeout(step, exit_rx.changed()).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => break,
-            Err(_) => {}
+            Err(_) => trace!("shutdown graceful-step timeout (retrying)"),
         }
     }
     if event.is_none() {
@@ -1747,7 +1747,7 @@ async fn terminate_unpublished_runtime(
             match tokio::time::timeout(step, exit_rx.changed()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) => break,
-                Err(_) => {}
+                Err(_) => trace!("shutdown force-kill-step timeout (retrying)"),
             }
         }
     }

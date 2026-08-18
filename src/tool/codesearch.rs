@@ -100,17 +100,18 @@ impl Tool for CodeSearchTool {
         let request = Self::request_input(input)?;
         let result = search_backend::dispatch_repo_search_structured(&request).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let mut provenance = search_backend::provenance_for_repo_search().unwrap_or_else(|| {
-            use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
-            ToolProvenance {
-                backend: ToolBackendKind::Mcp.label().to_lowercase(),
-                implementation: "repo_search (codesearch compatibility alias)".to_string(),
-                version: None,
-                elapsed_ms: Some(elapsed_ms),
-                truncated: false,
-                trust: ToolTrust::ExternalUntrusted,
-            }
-        });
+        let mut provenance = search_backend::provenance_for_repo_search(Some(result.truncated))
+            .unwrap_or_else(|| {
+                use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
+                ToolProvenance {
+                    backend: ToolBackendKind::Mcp.label().to_lowercase(),
+                    implementation: "repo_search (codesearch compatibility alias)".to_string(),
+                    version: None,
+                    elapsed_ms: Some(elapsed_ms),
+                    truncated: false,
+                    trust: ToolTrust::ExternalUntrusted,
+                }
+            });
         provenance.elapsed_ms = Some(elapsed_ms);
         Ok(search_backend::into_tool_result(result, provenance))
     }

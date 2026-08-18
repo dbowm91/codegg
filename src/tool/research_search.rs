@@ -65,8 +65,8 @@ impl Tool for ResearchSearchTool {
         let start = Instant::now();
         let result = search_backend::dispatch_research_search_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let mut provenance =
-            search_backend::provenance_for_research_search().unwrap_or_else(|| {
+        let mut provenance = search_backend::provenance_for_research_search(Some(result.truncated))
+            .unwrap_or_else(|| {
                 use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
                 ToolProvenance {
                     backend: ToolBackendKind::Mcp.label().to_lowercase(),

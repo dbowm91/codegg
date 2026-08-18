@@ -1767,7 +1767,9 @@ impl MeteredInterpreter {
                     }
                     items
                 } else {
-                    unreachable!()
+                    return Err(InterpreterError::TypeError(
+                        "expected range with int start/stop/step".into(),
+                    ));
                 }
             } else {
                 let iterable = self.pop()?;

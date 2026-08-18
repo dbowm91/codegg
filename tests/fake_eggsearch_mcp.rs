@@ -555,10 +555,11 @@ async fn codesearch_structured_execution_retains_repo_search_value() {
         )
         .await
         .expect("codesearch structured alias should dispatch");
-    assert_eq!(
-        result.value.expect("structured repo result")["stable_id"],
-        "repo-1"
-    );
+    let value = result.value.expect("structured repo result");
+    let stable_id = value["groups"][0]["results"][0]["stable_id"]
+        .as_str()
+        .expect("nested stable_id from grouped repo_search response");
+    assert_eq!(stable_id, "repo-1");
     assert!(result.output.contains("external_repo_evidence"));
 
     let recorded = calls.lock().await;
@@ -759,7 +760,7 @@ fn build_full_mock_eggsearch(
                 "web_search" => Ok(r#"{"hits": []}"#.to_string()),
                 "web_fetch" => Ok("page body".to_string()),
                 "provider_status" => Ok(r#"{"ok": true}"#.to_string()),
-                "repo_search" => Ok(r#"{"repo_hits": [], "stable_id": "repo-1"}"#.to_string()),
+                "repo_search" => Ok(r#"{"groups": [{"kind": "repo", "label": "Repositories", "results": [{"stable_id": "repo-1", "url": "https://example.org/repo-1", "title": "Mock repo", "snippet": ""}]}]}"#.to_string()),
                 "repo_fetch" => Ok("file content".to_string()),
                 "repo_map" => Ok(r#"{"tree": []}"#.to_string()),
                 "security_search" => Ok(r#"{"groups": [{"kind": "security_advisory", "label": "Advisories", "results": [{"id": "src_advisory_1", "stable_id": "advisory-1", "url": "https://example.org/advisory", "title": "Mock advisory", "snippet": "Mock advisory details", "providers": ["osv", "rustsec"], "score": 0.92, "trust": "external_untrusted", "fetched": false, "trust_markers": {}, "metadata": {"source_kind": "security_advisory"}, "unknown_future_field": true}]}]}"#.to_string()),

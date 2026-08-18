@@ -247,6 +247,13 @@ fn is_known_provider(value: &str) -> bool {
     )
 }
 
+/// Normalize a single batch-fetch item into a tagged `web` or `repo` form.
+///
+/// Precedence: the `web` branch is checked first. Any item with
+/// `type=web` (or `type` absent + a `url` key) routes to web fetch.
+/// Only when the web branch does not match does the repo branch
+/// attempt to parse `repo`/`path`. This ordering is intentional and
+/// must not be flipped without updating the batch_fetch tool contract.
 fn normalize_batch_item(item: &Value, index: usize) -> Result<Value, ToolError> {
     let item_type = item.get("type").and_then(Value::as_str);
     if item_type == Some("web") || (item_type.is_none() && item.get("url").is_some()) {
@@ -415,7 +422,6 @@ where
         .structured
         .or_else(|| serde_json::from_str::<Value>(&result.text).ok());
     let (capped, truncated) = clamp_output(&result.text, max_output_chars, cap_label);
-    super::state::set_last_truncated(truncated);
     Ok(EggsearchCallResult {
         output: frame(&capped, "eggsearch"),
         value,
@@ -1011,11 +1017,19 @@ pub fn ensure_tool_available(
         None => return Ok(()), // will be caught by the call itself
     };
     // Read the tool list synchronously (RwLock read is cheap).
-    let guard = svc.try_read().map_err(|_| {
-        ToolError::Execution(format!(
-            "eggsearch: could not check tool availability for {upstream_tool}"
-        ))
-    })?;
+    // When a writer holds the lock (e.g. during bootstrap), try_read
+    // returns WouldBlock; defer to the actual call which will surface
+    // the real error if the tool is truly missing.
+    let guard = match svc.try_read() {
+        Ok(g) => g,
+        Err(_) => {
+            tracing::debug!(
+                upstream_tool,
+                "eggsearch: deferring tool-availability check (service lock held by writer)"
+            );
+            return Ok(());
+        }
+    };
     let tools = guard.server_tools();
     let discovered: Vec<String> = tools
         .get(mcp_server)
@@ -1289,5 +1303,48 @@ mod tests {
         assert!(msg.contains("eggsearch"));
         assert!(msg.contains("test detail"));
         assert!(msg.contains("builtin") || msg.contains("disabled"));
+    }
+
+    #[test]
+    fn normalize_batch_item_url_and_repo_no_type_routes_to_web() {
+        let item = json!({
+            "url": "https://example.com/page",
+            "repo": "owner/name",
+            "path": "src/lib.rs"
+        });
+        let normalized = super::normalize_batch_item(&item, 0).unwrap();
+        assert_eq!(normalized["type"], "web");
+        assert_eq!(normalized["url"], "https://example.com/page");
+        assert!(
+            normalized.get("repo").is_none(),
+            "repo field should not be copied into web-type item"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_tool_available_returns_ok_during_bootstrap_wouldblock() {
+        use crate::search_backend::state;
+
+        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
+        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
+            .lock()
+            .await;
+        state::reset_for_tests();
+
+        // Install an McpService so ensure_tool_available takes the WouldBlock path.
+        let svc = std::sync::Arc::new(tokio::sync::RwLock::new(crate::mcp::McpService::new()));
+        state::install_mcp_service(svc.clone());
+
+        // Hold a write lock to simulate bootstrap in progress (WouldBlock).
+        let _writer = svc.write().await;
+
+        // ensure_tool_available must return Ok(()) when the lock is held,
+        // not a WouldBlock error or a "tool missing" error.
+        let result = super::ensure_tool_available("eggsearch", "websearch", "web_search");
+        assert!(
+            result.is_ok(),
+            "ensure_tool_available should return Ok(()) during bootstrap lock hold, got: {:?}",
+            result
+        );
     }
 }

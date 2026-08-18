@@ -34,14 +34,22 @@ pub struct ResearchCoordinator {
 impl ResearchCoordinator {
     pub fn new(project_root: PathBuf, artifact_root: PathBuf) -> Self {
         let store = ResearchStore::new(artifact_root);
-        let source_adapters: Vec<Box<dyn ResearchSourceAdapter>> = vec![
+        let mut source_adapters: Vec<Box<dyn ResearchSourceAdapter>> = vec![
             Box::new(LocalRepoSource::new(project_root.clone())),
             Box::new(UrlSource::new()),
-            Box::new(CratesIoSource::new()),
-            Box::new(GitHubSource::new()),
-            Box::new(DocsRsSource::new()),
-            Box::new(EggsearchSource::new()),
         ];
+        // Sources that require TLS; gracefully skip if the platform
+        // TLS stack is unavailable.
+        if let Ok(s) = CratesIoSource::try_new() {
+            source_adapters.push(Box::new(s));
+        }
+        if let Ok(s) = GitHubSource::try_new() {
+            source_adapters.push(Box::new(s));
+        }
+        if let Ok(s) = DocsRsSource::try_new() {
+            source_adapters.push(Box::new(s));
+        }
+        source_adapters.push(Box::new(EggsearchSource::new()));
         Self {
             store,
             source_adapters,
@@ -375,7 +383,11 @@ impl ResearchCoordinator {
                     // Skip network adapters when network not allowed
                 }
                 Err(e) => {
-                    eprintln!("Warning: source adapter '{}' failed: {}", adapter.name(), e);
+                    tracing::warn!(
+                        source = adapter.name(),
+                        error = %e,
+                        "source adapter failed"
+                    );
                 }
             }
         }
@@ -400,7 +412,7 @@ impl ResearchCoordinator {
                     match tokio::fs::read_to_string(path).await {
                         Ok(c) => c,
                         Err(e) => {
-                            eprintln!("Warning: failed to read {}: {}", source.uri, e);
+                            tracing::warn!(uri = %source.uri, error = %e, "failed to read source file");
                             continue;
                         }
                     }
@@ -409,10 +421,7 @@ impl ResearchCoordinator {
                     // For URL sources, we already fetched the content during collection.
                     // Re-fetch would be wasteful; store content in notes or skip.
                     // For MVP, skip re-fetching URLs.
-                    eprintln!(
-                        "Note: URL source {} content not available for extraction (MVP limitation)",
-                        source.uri
-                    );
+                    tracing::warn!(uri = %source.uri, "URL source content not available for extraction (MVP limitation)");
                     continue;
                 }
                 _ => continue,
@@ -597,10 +606,13 @@ impl ResearchCoordinator {
 
 fn truncate_short(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
+        return s.to_string();
     }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 /// Compute a diff between old and new claim sets based on claim text.
@@ -632,5 +644,59 @@ fn compute_claim_diff(old_claims: &[ClaimRecord], new_claims: &[ClaimRecord]) ->
         added,
         removed,
         unchanged,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_short_ascii_within_limit() {
+        assert_eq!(truncate_short("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_short_ascii_at_limit() {
+        assert_eq!(truncate_short("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_short_ascii_over_limit() {
+        assert_eq!(truncate_short("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_short_multibyte_at_boundary() {
+        let s = format!("{}{}", "a".repeat(79), "ñ");
+        let result = truncate_short(&s, 80);
+        assert!(result.ends_with("..."));
+        assert!(
+            !result.contains("ñ"),
+            "truncated string must not split mid-codepoint"
+        );
+    }
+
+    #[test]
+    fn truncate_short_emoji() {
+        let s = format!("{}{}", "a".repeat(78), "🦀");
+        let result = truncate_short(&s, 80);
+        assert!(result.ends_with("..."));
+        assert!(
+            !result.contains("🦀"),
+            "emoji should be dropped at truncation boundary"
+        );
+    }
+
+    #[test]
+    fn truncate_short_cjk() {
+        let s = format!("{}{}", "a".repeat(78), "語");
+        let result = truncate_short(&s, 80);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_short_empty() {
+        assert_eq!(truncate_short("", 10), "");
     }
 }

@@ -50,6 +50,9 @@ pub enum ResearchError {
 
     #[error("Provider error: {0}")]
     Provider(String),
+
+    #[error("HTTP client init failed: {0}")]
+    HttpClient(String),
 }
 
 pub type Result<T> = std::result::Result<T, ResearchError>;

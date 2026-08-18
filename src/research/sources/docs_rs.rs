@@ -14,13 +14,13 @@ pub struct DocsRsSource {
 }
 
 impl DocsRsSource {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(API_TIMEOUT)
             .user_agent("codegg-research")
             .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+        Ok(Self { client })
     }
 
     fn extract_crate_info(question: &str, plan: &ResearchPlan) -> Option<(String, Option<String>)> {
@@ -177,7 +177,7 @@ impl DocsRsSource {
 
 impl Default for DocsRsSource {
     fn default() -> Self {
-        Self::new()
+        Self::try_new().unwrap()
     }
 }
 
@@ -217,7 +217,7 @@ impl ResearchSourceAdapter for DocsRsSource {
                             match self.fetch_docs(&crate_name, item_path.as_deref()).await {
                                 Ok(source) => sources.push(source),
                                 Err(e) => {
-                                    eprintln!("Warning: docs.rs fetch failed: {}", e);
+                                    tracing::warn!(error = %e, "docs.rs fetch failed");
                                 }
                             }
                         }
@@ -233,7 +233,7 @@ impl ResearchSourceAdapter for DocsRsSource {
                     match self.fetch_docs(&crate_name, item_path.as_deref()).await {
                         Ok(source) => sources.push(source),
                         Err(e) => {
-                            eprintln!("Warning: docs.rs fetch failed for '{}': {}", crate_name, e);
+                            tracing::warn!(crate_name = %crate_name, error = %e, "docs.rs fetch failed");
                         }
                     }
                 }
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_name() {
-        let source = DocsRsSource::new();
+        let source = DocsRsSource::try_new().unwrap();
         assert_eq!(source.name(), "docs_rs");
     }
 

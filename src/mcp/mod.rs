@@ -323,7 +323,11 @@ impl McpService {
                     .await
             }
             McpClientType::Mock(handler) => {
-                let text = (handler.lock().expect("mock lock"))(tool, arguments)?;
+                let text = (handler
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()))(
+                    tool, arguments
+                )?;
                 Ok(McpToolCallResult {
                     structured: serde_json::from_str(&text).ok(),
                     text,

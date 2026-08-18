@@ -90,13 +90,13 @@ pub struct GitHubSource {
 }
 
 impl GitHubSource {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(API_TIMEOUT)
             .user_agent("codegg-research")
             .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+        Ok(Self { client })
     }
 
     fn parse_github_url(url: &str) -> Option<GitHubParsedUrl> {
@@ -443,7 +443,11 @@ impl GitHubSource {
         }
         if let Some(ref body) = issue.body {
             let truncated = if body.len() > 500 {
-                format!("{}...", &body[..500])
+                let mut end = 500;
+                while end > 0 && !body.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &body[..end])
             } else {
                 body.clone()
             };
@@ -477,7 +481,7 @@ impl GitHubSource {
 
 impl Default for GitHubSource {
     fn default() -> Self {
-        Self::new()
+        Self::try_new().unwrap()
     }
 }
 
@@ -499,7 +503,7 @@ impl ResearchSourceAdapter for GitHubSource {
             // Check rate limit first
             let remaining = self.check_rate_limit().await.unwrap_or(0);
             if remaining == 0 {
-                eprintln!("Warning: GitHub API rate limit exhausted, skipping GitHub sources");
+                tracing::warn!("GitHub API rate limit exhausted, skipping GitHub sources");
                 return Ok(Vec::new());
             }
 
@@ -532,7 +536,7 @@ impl ResearchSourceAdapter for GitHubSource {
                         {
                             Ok(source) => sources.push(source),
                             Err(e) => {
-                                eprintln!("Warning: failed to fetch issue: {}", e);
+                                tracing::warn!(error = %e, "failed to fetch GitHub issue");
                             }
                         }
                     } else if let Some(ref path) = parsed.path {
@@ -542,14 +546,14 @@ impl ResearchSourceAdapter for GitHubSource {
                         {
                             Ok(source) => sources.push(source),
                             Err(e) => {
-                                eprintln!("Warning: failed to fetch file: {}", e);
+                                tracing::warn!(error = %e, "failed to fetch GitHub file");
                             }
                         }
                     } else {
                         match self.fetch_repo_metadata(&parsed.owner, &parsed.repo).await {
                             Ok(source) => sources.push(source),
                             Err(e) => {
-                                eprintln!("Warning: failed to fetch repo metadata: {}", e);
+                                tracing::warn!(error = %e, "failed to fetch GitHub repo metadata");
                             }
                         }
                     }
@@ -564,7 +568,7 @@ impl ResearchSourceAdapter for GitHubSource {
                         match self.fetch_repo_metadata(&owner, &repo).await {
                             Ok(source) => sources.push(source),
                             Err(e) => {
-                                eprintln!("Warning: failed to fetch repo metadata: {}", e);
+                                tracing::warn!(error = %e, "failed to fetch GitHub repo metadata");
                             }
                         }
                     }
@@ -580,9 +584,21 @@ impl ResearchSourceAdapter for GitHubSource {
 mod tests {
     use super::*;
 
+    fn truncate_issue_body(body: &str, max: usize) -> String {
+        if body.len() > max {
+            let mut end = max;
+            while end > 0 && !body.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}...", &body[..end])
+        } else {
+            body.to_string()
+        }
+    }
+
     #[test]
     fn test_name() {
-        let source = GitHubSource::new();
+        let source = GitHubSource::try_new().unwrap();
         assert_eq!(source.name(), "github");
     }
 
@@ -659,5 +675,37 @@ mod tests {
         );
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0], "https://github.com/tokio/tokio");
+    }
+
+    #[test]
+    fn issue_body_truncation_does_not_panic_on_multi_byte_chars() {
+        // 499 ASCII chars + 2-byte UTF-8 char ('ñ') at byte 499-500.
+        // With max=500, byte 500 would split the 'ñ' (which occupies bytes 499-500).
+        let mut body = "a".repeat(499);
+        body.push('ñ');
+        body.push_str(" extra content");
+        let result = truncate_issue_body(&body, 500);
+        assert!(result.ends_with("..."));
+        assert!(
+            !result.contains('ñ'),
+            "multi-byte char at boundary must be dropped, not split"
+        );
+    }
+
+    #[test]
+    fn issue_body_truncation_safe_with_emoji_at_boundary() {
+        let mut body = "a".repeat(499);
+        body.push('🦀');
+        body.push_str(" extra");
+        let result = truncate_issue_body(&body, 500);
+        assert!(result.ends_with("..."));
+        assert!(!result.contains('🦀'));
+    }
+
+    #[test]
+    fn issue_body_short_enough_is_not_truncated() {
+        let body = "a".repeat(500);
+        let result = truncate_issue_body(&body, 500);
+        assert_eq!(result, body);
     }
 }

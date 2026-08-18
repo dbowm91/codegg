@@ -558,7 +558,13 @@ fn convert_expr(
                             "str" => BuiltinFunc::Str,
                             "int" => BuiltinFunc::Int,
                             "bool" => BuiltinFunc::Bool,
-                            _ => unreachable!(),
+                            other => {
+                                return Err(ToolProgramError::Parse(Diagnostic::new(
+                                    DiagnosticCode::UnsupportedSyntax,
+                                    format!("unknown builtin: {other}"),
+                                    SourceSpan::new(0, 0),
+                                )));
+                            }
                         };
                         let arg = convert_expr(&c.args[0], source, node_count, depth)?;
                         return Ok(Expr::CallBuiltin {

@@ -117,7 +117,10 @@ impl ProgramStore {
         manifest_hash: &str,
         limits_hash: &str,
     ) -> Option<IrProgram> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let source_hash = Self::digest_source(source);
 
         if let Some(key) = inner.compilation_keys.get(&source_hash) {
@@ -156,7 +159,10 @@ impl ProgramStore {
             ));
         }
 
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         // Store the source
         inner
@@ -185,14 +191,20 @@ impl ProgramStore {
     /// Persist compile diagnostics for a source.
     pub fn store_diagnostics(&self, source: &str, diagnostics: Vec<Diagnostic>) {
         let source_hash = Self::digest_source(source);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.diagnostics.insert(source_hash, diagnostics);
     }
 
     /// Retrieve stored diagnostics for a source.
     pub fn get_diagnostics(&self, source: &str) -> Vec<Diagnostic> {
         let source_hash = Self::digest_source(source);
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner
             .diagnostics
             .get(&source_hash)
@@ -203,27 +215,39 @@ impl ProgramStore {
     /// Retrieve stored IR by source digest.
     pub fn get_ir(&self, source: &str) -> Option<IrProgram> {
         let source_hash = Self::digest_source(source);
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.ir_store.get(&source_hash).cloned()
     }
 
     /// Retrieve stored source by digest.
     pub fn get_source(&self, source_hash: &str) -> Option<String> {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.source_store.get(source_hash).cloned()
     }
 
     /// Check if IR exists for a given source.
     pub fn contains_ir(&self, source: &str) -> bool {
         let source_hash = Self::digest_source(source);
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.ir_store.contains_key(&source_hash)
     }
 
     /// Remove IR and associated data for a source.
     pub fn remove(&self, source: &str) -> bool {
         let source_hash = Self::digest_source(source);
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let removed = inner.ir_store.remove(&source_hash).is_some();
         inner.source_store.remove(&source_hash);
         inner.compilation_keys.remove(&source_hash);
@@ -233,7 +257,10 @@ impl ProgramStore {
 
     /// Number of stored IR entries.
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inner.ir_store.len()
     }
 

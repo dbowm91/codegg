@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::debug;
 
 static TOOL_CALL_FALLBACK_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -331,20 +332,9 @@ impl SseParser {
                         }
                     }
                     if finish_reason == "tool_calls" && self.pending_tool_calls.is_empty() {
-                        debug_log!(
-                            "[API-DEBUG] tool-calls-miss: finish_reason=tool_calls but no tool call parsed; has_delta_tool_calls={}, has_choice_tool_calls={}, has_message_tool_calls={}, has_delta_function_call={}, has_message_function_call={}, choice={}",
-                            delta.get("tool_calls").is_some(),
-                            choice.get("tool_calls").is_some(),
-                            choice
-                                .get("message")
-                                .and_then(|m| m.get("tool_calls"))
-                                .is_some(),
-                            delta.get("function_call").is_some(),
-                            choice
-                                .get("message")
-                                .and_then(|m| m.get("function_call"))
-                                .is_some(),
-                            choice
+                        debug!(
+                            finish_reason = "tool_calls",
+                            "no tool call parsed from SSE chunk"
                         );
                     }
                     let mut usage = TokenUsage::default();

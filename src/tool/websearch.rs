@@ -80,8 +80,8 @@ impl Tool for WebSearchTool {
         let start = Instant::now();
         let result = search_backend::dispatch_web_search_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let provenance =
-            search_backend::provenance_for_search().unwrap_or_else(|| ToolProvenance {
+        let provenance = search_backend::provenance_for_search(Some(result.truncated))
+            .unwrap_or_else(|| ToolProvenance {
                 backend: ToolBackendKind::BuiltinLegacy.label().to_lowercase(),
                 implementation: "websearch".to_string(),
                 version: None,

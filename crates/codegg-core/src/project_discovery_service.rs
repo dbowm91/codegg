@@ -572,7 +572,13 @@ impl DiscoveryCoordinator {
                                 workspace_id: Some(binding.workspace_id.clone()),
                             }
                         }
-                        _ => unreachable!(),
+                        other => {
+                            tracing::error!(
+                                ?other,
+                                "unexpected ReconciliationOutcome in discovery plan"
+                            );
+                            other
+                        }
                     };
                     (
                         outcome,

@@ -129,7 +129,7 @@ impl ResearchSourceAdapter for UrlSource {
                     match self.fetch_url(&source_spec.value).await {
                         Ok(source) => sources.push(source),
                         Err(e) => {
-                            eprintln!("Warning: failed to fetch {}: {}", source_spec.value, e);
+                            tracing::warn!(url = %source_spec.value, error = %e, "failed to fetch URL source");
                         }
                     }
                 }

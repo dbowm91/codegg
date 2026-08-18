@@ -65,17 +65,18 @@ impl Tool for RepoMapTool {
         let start = Instant::now();
         let result = search_backend::dispatch_repo_map_structured(&input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let mut provenance = search_backend::provenance_for_repo_map().unwrap_or_else(|| {
-            use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
-            ToolProvenance {
-                backend: ToolBackendKind::Mcp.label().to_lowercase(),
-                implementation: "repo_map".to_string(),
-                version: None,
-                elapsed_ms: Some(elapsed_ms),
-                truncated: false,
-                trust: ToolTrust::ExternalUntrusted,
-            }
-        });
+        let mut provenance = search_backend::provenance_for_repo_map(Some(result.truncated))
+            .unwrap_or_else(|| {
+                use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
+                ToolProvenance {
+                    backend: ToolBackendKind::Mcp.label().to_lowercase(),
+                    implementation: "repo_map".to_string(),
+                    version: None,
+                    elapsed_ms: Some(elapsed_ms),
+                    truncated: false,
+                    trust: ToolTrust::ExternalUntrusted,
+                }
+            });
         provenance.elapsed_ms = Some(elapsed_ms);
         Ok(search_backend::into_tool_result(result, provenance))
     }

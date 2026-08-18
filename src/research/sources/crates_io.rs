@@ -32,13 +32,13 @@ pub struct CratesIoSource {
 }
 
 impl CratesIoSource {
-    pub fn new() -> Self {
+    pub fn try_new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(API_TIMEOUT)
             .user_agent("codegg-research")
             .build()
-            .expect("failed to build HTTP client");
-        Self { client }
+            .map_err(|e| ResearchError::HttpClient(e.to_string()))?;
+        Ok(Self { client })
     }
 
     fn extract_crate_name(question: &str, plan: &ResearchPlan) -> Option<String> {
@@ -163,7 +163,7 @@ impl CratesIoSource {
 
 impl Default for CratesIoSource {
     fn default() -> Self {
-        Self::new()
+        Self::try_new().unwrap()
     }
 }
 
@@ -189,7 +189,7 @@ impl ResearchSourceAdapter for CratesIoSource {
                 match self.fetch_crate(&name).await {
                     Ok(source) => sources.push(source),
                     Err(e) => {
-                        eprintln!("Warning: crates.io fetch failed for '{}': {}", name, e);
+                        tracing::warn!(crate_name = %name, error = %e, "crates.io fetch failed");
                     }
                 }
             }
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_name() {
-        let source = CratesIoSource::new();
+        let source = CratesIoSource::try_new().unwrap();
         assert_eq!(source.name(), "crates_io");
     }
 
