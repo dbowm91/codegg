@@ -24,7 +24,7 @@ The ordinary `codegg` frontend is not the daemon's lifetime owner. If it autosta
 **Solutions:**
 1. A new daemon start automatically removes stale sockets when the lock is free — try starting again.
 2. If the lock is still held by a dead process, check `codegg daemon status` for the PID and verify the process is alive (`ps -p <pid>`).
-3. Manually remove the lock file only if you are sure no daemon is running: `rm ~/.config/codegg/daemon.lock` (or the equivalent path for your OS).
+3. Manually remove the lock file only if you are sure no daemon is running: `rm ~/Library/Application Support/codegg/daemon.lock` (macOS) or `rm ${XDG_RUNTIME_DIR:-/tmp}/codegg/daemon.lock` (Linux).
 
 ### Daemon not reachable
 

@@ -109,17 +109,16 @@ The reconnection:
 
 ### Exponential Backoff
 
-For connection failures, the agent loop implements retry with exponential backoff:
+The `McpConnectionManager` (`remote.rs`) implements reconnection retry with exponential backoff:
 
 ```rust
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-let max_retries = 3;
-let mut delay = Duration::from_secs(1);
-
-// Retry logic
-tokio::time::sleep(delay).await;
-delay = delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+// McpConnectionManager defaults:
+max_retries: 5,
+base_delay: Duration::from_secs(1),
+max_delay: Duration::from_secs(60),
 ```
+
+The agent loop's provider-level stream retry uses different values (3 retries, 30s max delay) and should not be confused with MCP reconnection.
 
 ## DNS Rebinding Protection
 

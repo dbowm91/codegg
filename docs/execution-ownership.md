@@ -37,14 +37,17 @@ runtime authority matrix in `tests/scheduler_authority_matrix.rs`.
 
 ## How the static guard works
 
-`scripts/check_execution_ownership.py` greps every production Rust
-file under `src/` and `crates/` for canonical spawn patterns:
+`scripts/check_execution_ownership.py` greps production Rust
+files under `src/` and `crates/` for canonical spawn patterns:
 
 - `tokio::process::Command::new(...)`
 - `std::process::Command::new(...)`
+- `StdCommand::new(...)`
 - `JobStore::create_job(...)`
 - `.spawner().send(...)` / `.spawner().send_and_wait(...)`
+- `BackgroundScheduler::spawn_loop(...)`
 - `test_runner::runner::resolve_and_run_test`
+- `executor_kind_for_job(...)`
 - `dispatch_to_test_runner`
 - `hardened_git_command`
 

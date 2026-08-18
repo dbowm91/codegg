@@ -1,5 +1,8 @@
 # Git Cross-Platform Behavior
 
+> **Historical closure record.** Line numbers reference the codebase at the
+> time of the cited SHAs and may have shifted since.
+
 Cross-platform behavior of the Git agent integration after the Phase F closure and the polish / maintainability / verification pass (`8d686c7`).
 
 ## Supported Platforms

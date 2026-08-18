@@ -1,5 +1,8 @@
 # Git Security Review
 
+> **Historical closure record.** Line numbers reference the codebase at the
+> time of the cited SHAs and may have shifted since.
+
 Two-pass security review of the Git agent integration:
 
 1. **Phase F closure review (2026-07-14)** — 14 threat classes from
@@ -184,8 +187,7 @@ before being persisted.
 
 **Evidence:**
 - `src/git_mutations.rs:476-513` — `GitMutationExecutor::execute()` snapshots before, runs the operation, then snapshots after. The window between snapshot and mutation is inherent (no file-level locking).
-- `src/git_recovery.rs:220-255` — `assert_action_matches()` re-validates the operation state before the recovery action runs. The doc comment at line 222 explicitly states: "Defends against TOCTOU between detection and execution by re-reading state immediately before the action runs."
-- However, there is actually no re-read in `assert_action_matches()` — it only checks `state.action_available(action)` against the state detected earlier. The re-read comment is aspirational.
+- `src/git_recovery.rs:227-270` — `assert_action_matches()` re-reads state from disk via `detect_operation_state_for_root(repo_root)` and compares against the expected state, closing the TOCTOU window between detection and execution. If the re-read state disagrees, a `GitMutationError::StateMismatch` is returned.
 
 **Finding (minor):** The `run_recovery()` function at line 257 does NOT re-detect state before executing — it uses the `state` parameter passed from `continue_in_progress`/`abort_in_progress_typed`/`skip_in_progress` which detected state earlier. Between detection and execution, another process could change the git state. This is an accepted limitation: git's own `--continue`/`--abort`/`--skip` commands will fail with clear error messages if the state has changed.
 
@@ -200,7 +202,7 @@ before being persisted.
 **Evidence:**
 - `crates/codegg-git/src/operation.rs` — `ManagedGitArgv` carries a caller-supplied `RiskSet`. `RawShellRequired` is classified with `WorktreeMutation + HistoryIntegration`.
 - `src/git_mutations_ops.rs::run_raw_mutation()` — runs raw argv through the same snapshot/timeout/policy pipeline. Does NOT skip env hardening or snapshot capture.
-- `src/tool/git.rs::run_raw_subcommand()` — now routes through `GitEnvPolicy::default().apply(...)` (same canonical policy as the typed mutation path). The polish pass resolved the prior design limitation: the raw fallback previously used `env_clear()` + only `PATH`, missing command-bearer stripping, `GIT_EDITOR=true` pinning, and `GPG_TTY` clearing. Every Codegg-owned `git` subprocess now flows through the canonical policy.
+- `src/tool/git.rs` raw fallback in `execute()` — routes through `GitEnvPolicy::default().apply(...)` (same canonical policy as the typed mutation path). The polish pass resolved the prior design limitation: the raw fallback previously used `env_clear()` + only `PATH`, missing command-bearer stripping, `GIT_EDITOR=true` pinning, and `GPG_TTY` clearing. Every Codegg-owned `git` subprocess now flows through the canonical policy.
 - `scripts/check_git_forbidden_patterns.py` (check #1) — statically guards against `Command::new("git")` outside approved modules.
 
 **Impact:** The raw fallback previously had reduced env hardening but was only reached for edge cases. The polish pass closed the gap: typed, raw-tool, service-level, daemon snapshot, TUI dialog probes, and `codegg-core` worktree helpers all share the canonical `process_policy` lists. Drift is caught by `policy_drift_tests` in `src/git_mutations.rs` and `worktree_uses_canonical_policy` in `crates/codegg-core/src/worktree.rs`.

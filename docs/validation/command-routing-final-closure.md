@@ -1,5 +1,8 @@
 # Command Routing Final Closure Pass — Validation Evidence
 
+> **Historical closure record.** Line numbers reference the codebase at the
+> time of the cited SHA and may have shifted since.
+
 ## Commit
 
 - **SHA**: `1e4eb56bb168ef13e91912e0cbd84c2c2c148da6`

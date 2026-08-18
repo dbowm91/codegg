@@ -1,5 +1,8 @@
 # Git Rerun Descriptor Secret Lifecycle
 
+> **Historical closure record.** Line numbers reference the codebase at the
+> time of implementation and may have shifted since.
+>
 > Workstream A of the Git Polish Maintainability Verification (plan pruned post-completion).
 >
 > Status: **implemented (option: redacted-persisted + ephemeral raw for replay handoff)**.
@@ -103,10 +106,10 @@ credentials via the credential helper.
 
 ### Code changes (Workstream A3)
 
-- `codegg_git::process_policy` (already created in Workstream B) gains
+- `codegg_git::sensitive` gains
   a `AuditSafeArgv(Vec<String>)` newtype with `Debug`/`Display`/
-  `Serialize` that returns the redacted form. `from_url_tokens()`
-  runs the URL through `redact_url_credentials()`.
+  `Serialize` that returns the redacted form. `from_argv()`
+  runs each URL token through `redact_url_credentials()`.
 - `crates/codegg-core/src/run_store.rs::RerunDescriptor.argv` changes
   type from `Option<Vec<String>>` to `Option<AuditSafeArgv>`.
 - `src/git_run_store.rs::persist_mutation` no longer calls

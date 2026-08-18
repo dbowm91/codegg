@@ -1,5 +1,8 @@
 # Command Routing Actual Execution Ownership — Validation Evidence
 
+> **Historical closure record.** Line numbers reference the codebase at the
+> time of the cited SHAs and may have shifted since.
+
 This document validates the corrective passes for command-routing persistence
 and provenance defects.
 

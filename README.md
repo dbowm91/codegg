@@ -188,6 +188,8 @@ Git support includes typed status/diff/log/show/blame reads and guarded mutation
 
 See [`architecture/git.md`](architecture/git.md), [`architecture/lsp.md`](architecture/lsp.md), and [`architecture/testing.md`](architecture/testing.md).
 
+Detailed LSP integration notes are in [`docs/LSP.md`](docs/LSP.md).
+
 ## Agents and skills
 
 codegg ships built-in agents and supports project/global custom agents. Agent definitions can extend or override built-ins while remaining subject to the runtime permission/safety envelope. Examples live in [`examples/agents/`](examples/agents/).
@@ -263,6 +265,8 @@ The implementation includes path validation, permission checks, command prefligh
 
 See [`architecture/security.md`](architecture/security.md), [`architecture/permission.md`](architecture/permission.md), and [`architecture/preflight.md`](architecture/preflight.md).
 
+The security signal pipeline (command classification, escalation modes, security tool actions) is documented in [`docs/security-semantics.md`](docs/security-semantics.md).
+
 ## Diagnostics and troubleshooting
 
 Validate configuration and inspect runtime integrations with:
@@ -286,6 +290,8 @@ cargo fmt
 ```
 
 For focused tests, prefer the crate or subsystem you changed rather than running unrelated verification by default. Contributor architecture, crate boundaries, generated assets, feature gates, and testing conventions are documented in [`AGENTS.md`](AGENTS.md).
+
+Dependency policy, execution ownership inventory, and cross-platform notes are in [`docs/dependency-maintenance.md`](docs/dependency-maintenance.md) and [`docs/execution-ownership.md`](docs/execution-ownership.md).
 
 Useful starting points:
 

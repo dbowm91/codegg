@@ -126,9 +126,7 @@ Plugins are executed in a WASM sandbox using Wasmtime:
 Each plugin has a fuel budget to prevent infinite loops:
 
 ```rust
-const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;  // 10M fuel units
-const WASM_FUEL_PER_HOOK: u64 = 1_000_000;       // 1M per hook call
-const FUEL_RESET_INTERVAL_SECS: u64 = 60;         // Reset every 60s
+const MAX_PLUGIN_FUEL_BUDGET: u64 = 10_000_000;  // 10M fuel units (wasm_cache.rs)
 ```
 
 Fuel is:
@@ -145,8 +143,8 @@ invocations do not burn fuel.
 WASM modules are cached with mtime-based invalidation:
 
 ```rust
-pub struct ModuleCache {
-    modules: DashMap<String, (Module, u64)>,  // path -> (module, mtime)
+pub struct WasmModuleCache {
+    modules: DashMap<String, CachedModule>,  // path -> cached module with mtime
     hits: AtomicU64,
     misses: AtomicU64,
     fuel_budgets: DashMap<String, AtomicU64>,
@@ -178,8 +176,10 @@ The `PluginService` dispatches hooks to registered plugins:
 
 ```rust
 pub struct PluginService {
-    registry: PluginRegistry,
-    api_version: ApiVersion,
+    registry: Arc<PluginRegistry>,
+    hook_timeout: Duration,
+    builtin_runtime: Option<Arc<BuiltinRuntime>>,
+    policy: Option<Arc<PluginPolicy>>,
 }
 ```
 
@@ -214,8 +214,8 @@ Plugins can register custom TUI components:
 ```rust
 pub struct TuiComponent {
     pub name: String,
-    pub route: TuiRoute,
-    pub render_fn: Box<dyn Fn(&mut Frame, &AppState) + Send + Sync>,
+    pub plugin_id: String,
+    pub config: serde_json::Value,
 }
 ```
 
@@ -287,9 +287,10 @@ Phase 15 makes plugin UI, management, lifecycle effects, and durable plugin surf
 
 Clients declare their capabilities via `ClientCapabilities` (in `crates/codegg-protocol/src/frames.rs`). The protocol defines:
 
-- `plugin_ui_dialogs`, `plugin_ui_panels`, `plugin_ui_status_items` — surface types
-- `plugin_ui_tables`, `plugin_ui_markdown`, `plugin_ui_code`, `plugin_ui_progress` — node types
+- `plugin_ui_dialog`, `plugin_ui_panel`, `plugin_ui_status_item` — surface types
+- `plugin_ui_table`, `plugin_ui_markdown`, `plugin_ui_code`, `plugin_ui_progress` — node types
 - `visual_notifications`, `desktop_notifications`, `audio`, `tts`, `multi_session_view` — general
+- `workspace_registration`, `project_catalog`, `session_projection` — transport capabilities
 
 All fields default to `false`. `ClientCapabilities::plugin_ui_capabilities()` converts the `plugin_ui_*` fields into a `PluginUiCapabilities` struct for capability-aware degradation.
 
@@ -319,16 +320,16 @@ pub struct UiEffectEnvelope {
 
 | Limit | Default (balanced) | text_only | Purpose |
 |-------|-------------------|-----------|---------|
-| `max_effects_per_response` | 32 | 8 | Prevents effect flooding |
-| `max_effect_bytes` | 64 KiB | 16 KiB | Per-effect serialization cap |
+| `max_effects_per_response` | 64 | 16 | Prevents effect flooding |
+| `max_effect_bytes` | 256 KiB | 32 KiB | Per-effect serialization cap |
 | `max_node_depth` | 16 | 4 | Recursive node depth |
-| `max_table_rows` | 256 | 16 | Table size cap |
+| `max_table_rows` | 512 | 32 | Table size cap |
 | `max_table_columns` | 32 | 8 | Table width cap |
-| `max_string_len` | 8192 | 1024 | Per-string truncation |
-| `max_panels_per_plugin` | 8 | 0 | Durable panel count |
-| `max_status_items_per_plugin` | 8 | 0 | Status item count |
-| `max_open_dialogs_global` | 4 | 0 | Global dialog cap |
-| `max_snapshot_body_bytes` | 16 KiB | 4 KiB | Snapshot body serialization cap |
+| `max_string_len` | 16 KiB | 2 KiB | Per-string truncation |
+| `max_panels_per_plugin` | 32 | 0 | Durable panel count |
+| `max_status_items_per_plugin` | 64 | 0 | Status item count |
+| `max_open_dialogs_global` | 8 | 0 | Global dialog cap |
+| `max_snapshot_body_bytes` | 16 KiB | 0 | Snapshot body serialization cap |
 
 Effects exceeding limits are rejected with `UiValidationError`. Policy never panics — it denies or truncates with diagnostics.
 

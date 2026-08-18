@@ -48,7 +48,7 @@ Provides code navigation and analysis:
 - `find_references()` - Find all references to a symbol
 - `hover()` - Get type/info hover for cursor position
 - `document_symbols()` - List all symbols in a document
-- `code_actions()` - Get available code actions/quick fixes
+- `code_actions_unchecked()` - Get available code actions/quick fixes
 - `completion()` - Trigger completion at cursor
 - `signature_help()` - Show function signature hints
 - `code_lens()` - Get CodeLens data
