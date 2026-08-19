@@ -279,7 +279,13 @@ impl EventLog {
 
         rows.into_iter()
             .filter_map(|row| {
-                let payload: CoreEvent = serde_json::from_str(&row.payload_json).ok()?;
+                let payload: CoreEvent = match serde_json::from_str(&row.payload_json) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to parse event payload; skipping");
+                        return None;
+                    }
+                };
                 let timestamp_ms = chrono::DateTime::parse_from_rfc3339(&row.created_at)
                     .map(|dt| dt.timestamp_millis())
                     .unwrap_or(0);
@@ -390,11 +396,16 @@ impl EventLog {
             return false;
         };
         let row: Option<(Option<i64>, Option<i64>)> =
-            sqlx::query_as("SELECT MIN(event_seq), MAX(event_seq) FROM core_event_log")
+            match sqlx::query_as("SELECT MIN(event_seq), MAX(event_seq) FROM core_event_log")
                 .fetch_optional(pool)
                 .await
-                .ok()
-                .flatten();
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!(error = %e, "failed to query event_log seq range");
+                    None
+                }
+            };
         if let Some((min_seq, max_seq)) = row {
             let need = (from_event_seq as i64).saturating_add(1);
             match (min_seq, max_seq) {

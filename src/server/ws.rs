@@ -6,7 +6,7 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::{JoinError, JoinHandle};
@@ -2504,19 +2504,33 @@ async fn handle_tui_message_with_observer(
             };
             let id = id.clone();
             tokio::spawn(async move {
-                let _ = crate::bus::PermissionRegistry::respond(id, perm_choice);
+                let result = std::panic::AssertUnwindSafe(async move {
+                    let _ = crate::bus::PermissionRegistry::respond(id, perm_choice);
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "permission response task panicked");
+                }
             });
         }
         TuiMessage::QuestionResponse { id, answers } => {
             let id = id.clone();
             let answers_value = answers.clone();
             tokio::spawn(async move {
-                // Normalize answers to consistent JSON string format
-                let answers_json = match serde_json::to_string(&answers_value) {
-                    Ok(json) => json,
-                    Err(_) => return,
-                };
-                let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json);
+                let result = std::panic::AssertUnwindSafe(async move {
+                    // Normalize answers to consistent JSON string format
+                    let answers_json = match serde_json::to_string(&answers_value) {
+                        Ok(json) => json,
+                        Err(_) => return,
+                    };
+                    let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json);
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "question response task panicked");
+                }
             });
         }
         TuiMessage::SessionInfo { id, model } => {

@@ -46,7 +46,9 @@ pub struct AgentLoopTerminalOutput {
 }
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::ToolRegistry;
+use futures_util::FutureExt;
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -1187,7 +1189,14 @@ impl AgentLoop {
                 }),
             };
             tokio::spawn(async move {
-                hooks.emit_event(event_input).await;
+                let result = AssertUnwindSafe(async move {
+                    hooks.emit_event(event_input).await;
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "hook emission task panicked");
+                }
             });
         }
     }
@@ -2112,7 +2121,14 @@ impl AgentLoop {
                 event: serde_json::json!({"session_id": self.session_id}),
             };
             tokio::spawn(async move {
-                hooks.emit_event(event_input).await;
+                let result = AssertUnwindSafe(async move {
+                    hooks.emit_event(event_input).await;
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "hook emission task panicked");
+                }
             });
         }
 
@@ -2410,7 +2426,10 @@ impl AgentLoop {
                             let transformed =
                                 crate::protocol_conversions::dtos_to_provider_messages(
                                     output.messages,
-                                );
+                                ).unwrap_or_else(|e| {
+                                    tracing::error!(error = %e, "dtos_to_provider_messages conversion failed");
+                                    Default::default()
+                                });
                             if !transformed.is_empty() {
                                 request.messages = transformed;
                             }
@@ -2620,6 +2639,10 @@ impl AgentLoop {
             }
 
             if tool_calls.is_empty() {
+                // NOTE: Narration-based recovery (detecting "let me", "I'll", etc.
+                // without structured tool calls) was removed in ea4136ff because
+                // modern models produce structured tool calls reliably. The
+                // recovery system now relies on tool execution outcomes only.
                 if just_executed_tools
                     && is_soft_stop_reason(processor.stop_reason())
                     && autonomy.continuation_allowed()
@@ -2745,7 +2768,13 @@ impl AgentLoop {
                                 "Recovery correction: the available palette was restored to the authorized base surface. Choose one available structured tool and continue.".to_string()
                             }
                             RecoveryAction::Replan => "Recovery replan: provide a short plan grounded only in the latest tool result, then execute the next concrete structured action.".to_string(),
-                            RecoveryAction::Stall => unreachable!(),
+                            RecoveryAction::Stall => {
+                                tracing::error!(
+                                    "RecoveryAction::Stall reached dispatch; upstream short-circuit missing"
+                                );
+                                "Recovery stalled: re-evaluate the next step with available tools."
+                                    .to_string()
+                            }
                         };
                         push_control_instruction(
                             &mut request.messages,
@@ -3068,7 +3097,14 @@ impl AgentLoop {
                 event: serde_json::json!({"session_id": self.session_id}),
             };
             tokio::spawn(async move {
-                hooks.emit_event(event_input).await;
+                let result = AssertUnwindSafe(async move {
+                    hooks.emit_event(event_input).await;
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "hook emission task panicked");
+                }
             });
         }
 
@@ -4050,7 +4086,7 @@ mod tests {
         ));
         assert!(!is_workspace_file_mutation(
             "write",
-            Some(outside_file.to_str().unwrap()),
+            Some(&outside_file.to_string_lossy()),
             workspace.path()
         ));
     }

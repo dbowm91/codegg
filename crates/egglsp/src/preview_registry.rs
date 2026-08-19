@@ -823,10 +823,13 @@ mod tests {
 
         let mut reg = PreviewArtifactRegistry::new();
         let mut hashes = HashMap::new();
-        hashes.insert(file_path.to_str().unwrap().to_string(), actual_hash.clone());
+        hashes.insert(
+            file_path.to_string_lossy().into_owned(),
+            actual_hash.clone(),
+        );
         let id = reg.register(
             make_artifact(),
-            vec![file_path.to_str().unwrap().to_string()],
+            vec![file_path.to_string_lossy().into_owned()],
             hashes,
             "server".to_string(),
         );
@@ -863,12 +866,12 @@ mod tests {
         let mut reg = PreviewArtifactRegistry::new();
         let mut hashes = HashMap::new();
         hashes.insert(
-            file_path.to_str().unwrap().to_string(),
+            file_path.to_string_lossy().into_owned(),
             expected_hash.clone(),
         );
         let id = reg.register(
             make_artifact(),
-            vec![file_path.to_str().unwrap().to_string()],
+            vec![file_path.to_string_lossy().into_owned()],
             hashes,
             "server".to_string(),
         );
@@ -898,12 +901,12 @@ mod tests {
         let mut reg = PreviewArtifactRegistry::new();
         let mut hashes = HashMap::new();
         hashes.insert(
-            file_path.to_str().unwrap().to_string(),
+            file_path.to_string_lossy().into_owned(),
             expected_hash.clone(),
         );
         let id = reg.register(
             make_artifact(),
-            vec![file_path.to_str().unwrap().to_string()],
+            vec![file_path.to_string_lossy().into_owned()],
             hashes,
             "server".to_string(),
         );

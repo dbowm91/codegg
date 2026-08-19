@@ -565,7 +565,9 @@ impl WorkspaceRegistry {
         let id_str = record.id.as_str().to_string();
         let canon = record.canonical_root.clone();
         let owned: WorkspaceRecord = (*record).clone();
-        let _ = self.store.upsert(&owned).await;
+        if let Err(e) = self.store.upsert(&owned).await {
+            tracing::warn!(error = %e, "failed to upsert test workspace record");
+        }
         self.by_id.insert(id_str, record);
         self.by_root.insert(canon, owned.id);
     }

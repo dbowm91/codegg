@@ -548,7 +548,11 @@ impl TurnRuntime for DefaultTurnRuntime {
 
         // ── Chat request ─────────────────────────────────────────────
         let request = ChatRequest {
-            messages: crate::protocol_conversions::dtos_to_provider_messages(messages_dto),
+            messages: crate::protocol_conversions::dtos_to_provider_messages(messages_dto)
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "dtos_to_provider_messages conversion failed");
+                    Default::default()
+                }),
             model: model_name,
             tools: None,
             system: Some(system),

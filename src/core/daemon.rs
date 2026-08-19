@@ -267,10 +267,11 @@ impl CoreDaemon {
             if let Err(error) = scheduler_arc
                 .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone())
             {
-                tracing::warn!(
+                tracing::error!(
                     ?error,
-                    "scheduler degraded: default executor registration failed; \
-                     durable jobs and subagent dispatch will be unavailable"
+                    "USER ACTION REQUIRED: scheduler degraded - default executor registration \
+                     failed. Durable jobs and subagent dispatch will be unavailable. \
+                     Check provider connectivity and restart the daemon."
                 );
             }
             // SchedulerEvent has no corresponding CoreEvent protocol variant.
@@ -1040,7 +1041,10 @@ impl CoreDaemon {
         session: crate::session::Session,
         context: Option<&ProjectContext>,
     ) -> crate::protocol::dto::Session {
-        let mut dto = crate::protocol_conversions::session_to_dto(session);
+        let mut dto = crate::protocol_conversions::session_to_dto(session).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "session_to_dto conversion failed");
+            Default::default()
+        });
         if let Some(context) = context {
             dto.binding = Some(crate::protocol::dto::SessionBindingDto {
                 project_id: context.project_id.as_str().to_string(),
@@ -2484,7 +2488,11 @@ impl CoreDaemon {
                 match store.list(&session_id).await {
                     Ok(messages) => Ok(CoreResponse::SessionMessages {
                         session_id,
-                        messages: crate::protocol_conversions::messages_to_dtos(messages),
+                        messages: crate::protocol_conversions::messages_to_dtos(messages)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "messages_to_dtos conversion failed");
+                                Default::default()
+                            }),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_messages_load_failed".to_string(),
@@ -2847,7 +2855,11 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.restore(&session_id).await {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: crate::protocol_conversions::session_to_dto(session)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "session_to_dto conversion failed");
+                                Default::default()
+                            }),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_restore_failed".to_string(),
@@ -2865,7 +2877,11 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.share_session(&session_id).await {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: crate::protocol_conversions::session_to_dto(session)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "session_to_dto conversion failed");
+                                Default::default()
+                            }),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_share_failed".to_string(),
@@ -2883,7 +2899,11 @@ impl CoreDaemon {
                 let store = crate::session::SessionStore::new(pool);
                 match store.unshare_session(&session_id).await {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: crate::protocol_conversions::session_to_dto(session)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "session_to_dto conversion failed");
+                                Default::default()
+                            }),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_unshare_failed".to_string(),
@@ -2926,7 +2946,11 @@ impl CoreDaemon {
                     .await
                 {
                     Ok(session) => Ok(CoreResponse::Session {
-                        session: crate::protocol_conversions::session_to_dto(session),
+                        session: crate::protocol_conversions::session_to_dto(session)
+                            .unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "session_to_dto conversion failed");
+                                Default::default()
+                            }),
                     }),
                     Err(e) => Ok(CoreResponse::Error {
                         code: "session_rename_failed".to_string(),
@@ -3045,7 +3069,17 @@ impl CoreDaemon {
                     }
                 };
                 let store = crate::session::SessionStore::new(pool.clone());
-                let template = crate::protocol_conversions::dto_to_session_template(template);
+                let template = match crate::protocol_conversions::dto_to_session_template(template)
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(error = %e, "dto_to_session_template conversion failed");
+                        return Ok(CoreResponse::Error {
+                            code: "template_conversion_failed".to_string(),
+                            message: e.to_string(),
+                        });
+                    }
+                };
                 match store
                     .create_with_binding(
                         crate::session::CreateSession {
@@ -3302,13 +3336,13 @@ impl CoreDaemon {
                 match submission.submit(submission_key, new_job).await {
                     Ok(submitted) => {
                         let job_id = submitted.job_id.as_str().to_string();
-                        let record = self
-                            .deps
-                            .job_store
-                            .get_job(&submitted.job_id)
-                            .await
-                            .ok()
-                            .flatten();
+                        let record = match self.deps.job_store.get_job(&submitted.job_id).await {
+                            Ok(r) => r,
+                            Err(e) => {
+                                tracing::warn!(error = %e, job_id = %submitted.job_id, "failed to load job after submission");
+                                None
+                            }
+                        };
                         self.event_log
                             .publish(
                                 record.as_ref().and_then(|r| r.session_id.clone()),
@@ -4003,7 +4037,14 @@ impl CoreDaemon {
                                 });
                             }
                         }
-                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        let updated = match goal_store.get(&goal.id).await {
+                            Ok(Some(g)) => Some(g),
+                            Ok(None) => None,
+                            Err(e) => {
+                                tracing::warn!(error = %e, id = %goal.id, "failed to load goal after creation");
+                                None
+                            }
+                        };
                         super::publish_goal_updated(&session_id, updated);
                         Ok(CoreResponse::Json {
                             data: serde_json::json!({
@@ -4117,7 +4158,14 @@ impl CoreDaemon {
                                 });
                             }
                         }
-                        let updated = goal_store.get(&goal.id).await.ok().flatten();
+                        let updated = match goal_store.get(&goal.id).await {
+                            Ok(Some(g)) => Some(g),
+                            Ok(None) => None,
+                            Err(e) => {
+                                tracing::warn!(error = %e, id = %goal.id, "failed to load goal after creation");
+                                None
+                            }
+                        };
                         super::publish_goal_updated(&session_id, updated);
                         Ok(CoreResponse::Json {
                             data: serde_json::json!({
@@ -4766,8 +4814,17 @@ impl CoreDaemon {
 
                 Ok(CoreResponse::SnapshotSession {
                     event_seq,
-                    session: crate::protocol_conversions::session_to_dto(session),
-                    messages: crate::protocol_conversions::messages_to_dtos(messages),
+                    session: crate::protocol_conversions::session_to_dto(session).unwrap_or_else(
+                        |e| {
+                            tracing::error!(error = %e, "session_to_dto conversion failed");
+                            Default::default()
+                        },
+                    ),
+                    messages: crate::protocol_conversions::messages_to_dtos(messages)
+                        .unwrap_or_else(|e| {
+                            tracing::error!(error = %e, "messages_to_dtos conversion failed");
+                            Default::default()
+                        }),
                     status,
                     selected_model,
                     selected_agent,
@@ -4876,7 +4933,13 @@ impl CoreDaemon {
                     }
                 }
                 let scheduler_snapshot = match self.deps.scheduler.as_ref() {
-                    Some(scheduler) => serde_json::to_value(scheduler.snapshot().await).ok(),
+                    Some(scheduler) => match serde_json::to_value(scheduler.snapshot().await) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            tracing::debug!(error = %e, "failed to serialize scheduler snapshot");
+                            None
+                        }
+                    },
                     None => None,
                 };
                 Ok(CoreResponse::SnapshotDaemon {
@@ -4909,14 +4972,20 @@ impl CoreDaemon {
                             vec!["git".into(), "status".into(), "--porcelain".into()];
                         let mut cmd =
                             crate::git_mutations::GitEnvPolicy::default().apply(&argv, root);
-                        cmd.output().await.ok().map(|output| {
-                            let stdout = String::from_utf8_lossy(&output.stdout);
-                            let changed_files = stdout.lines().count();
-                            serde_json::json!({
-                                "git_root": root.to_string_lossy(),
-                                "changed_files": changed_files,
-                            })
-                        })
+                        match cmd.output().await {
+                            Ok(output) => {
+                                let stdout = String::from_utf8_lossy(&output.stdout);
+                                let changed_files = stdout.lines().count();
+                                Some(serde_json::json!({
+                                    "git_root": root.to_string_lossy(),
+                                    "changed_files": changed_files,
+                                }))
+                            }
+                            Err(e) => {
+                                tracing::debug!(error = %e, "git status failed in snapshot");
+                                None
+                            }
+                        }
                     }
                     None => None,
                 };

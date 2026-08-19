@@ -39,7 +39,13 @@ impl From<SessionRow> for Session {
     fn from(r: SessionRow) -> Self {
         let tags: Vec<String> = r
             .tags
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| match serde_json::from_str(&s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::debug!(error = %e, "failed to parse session tags; using default");
+                    None
+                }
+            })
             .unwrap_or_default();
         Self {
             id: r.id,
@@ -54,9 +60,29 @@ impl From<SessionRow> for Session {
             summary_additions: r.summary_additions,
             summary_deletions: r.summary_deletions,
             summary_files: r.summary_files,
-            summary_diffs: r.summary_diffs.and_then(|s| serde_json::from_str(&s).ok()),
-            revert: r.revert.and_then(|s| serde_json::from_str(&s).ok()),
-            permission: r.permission.and_then(|s| serde_json::from_str(&s).ok()),
+            summary_diffs: r
+                .summary_diffs
+                .and_then(|s| match serde_json::from_str(&s) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to parse summary_diffs; skipping");
+                        None
+                    }
+                }),
+            revert: r.revert.and_then(|s| match serde_json::from_str(&s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::debug!(error = %e, "failed to parse revert; skipping");
+                    None
+                }
+            }),
+            permission: r.permission.and_then(|s| match serde_json::from_str(&s) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::debug!(error = %e, "failed to parse permission; skipping");
+                    None
+                }
+            }),
             tags,
             provider_connection_id: r.provider_connection_id,
             provider_connection_revision: r.provider_connection_revision.map(|v| v as u64),

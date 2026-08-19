@@ -145,7 +145,7 @@ fn default_project_registration_source() -> String {
 
 /// Simplified session DTO for protocol messages.
 /// Matches the wire format of `session::models::Session`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     /// Legacy string projection of the internal `ProjectId` relation.
@@ -270,7 +270,7 @@ mod tests {
 
 /// Simplified message DTO for protocol messages.
 /// Matches the wire format of `session::message::Message`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub session_id: String,
@@ -279,7 +279,7 @@ pub struct Message {
     pub data: MessageData,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MessageData {
     #[serde(default)]
     pub id: String,
@@ -405,6 +405,14 @@ pub enum ProviderMessage {
         tool_call_id: String,
         content: String,
     },
+}
+
+impl Default for ProviderMessage {
+    fn default() -> Self {
+        ProviderMessage::User {
+            content: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

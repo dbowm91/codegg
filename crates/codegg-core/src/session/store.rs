@@ -1006,7 +1006,13 @@ impl SessionStore {
             input
                 .tags
                 .as_ref()
-                .and_then(|v| serde_json::to_string(v).ok()),
+                .and_then(|v| match serde_json::to_string(v) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        tracing::debug!(error = %e, "failed to serialize session tags; binding NULL");
+                        None
+                    }
+                }),
         )
         .bind(input.time_compacting)
         .bind(input.time_archived)
@@ -1620,10 +1626,16 @@ impl SessionStore {
 
     pub async fn share_session(&self, session_id: &str) -> Result<Session, StorageError> {
         const DEFAULT_SHARE_DURATION_DAYS: i64 = 7;
-        let share_duration_days = std::env::var("CODEGG_SHARE_DURATION_DAYS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_SHARE_DURATION_DAYS);
+        let share_duration_days = match std::env::var("CODEGG_SHARE_DURATION_DAYS") {
+            Ok(s) => match s.parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::debug!(error = %e, "invalid CODEGG_SHARE_DURATION_DAYS; using default");
+                    DEFAULT_SHARE_DURATION_DAYS
+                }
+            },
+            Err(_) => DEFAULT_SHARE_DURATION_DAYS,
+        };
 
         let now = Utc::now().timestamp_millis();
         let share_expires_at = now + (share_duration_days * 24 * 60 * 60 * 1000);

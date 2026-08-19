@@ -32,6 +32,7 @@ use codegg_core::jobs::{
 };
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -315,13 +316,20 @@ impl JobScheduler {
             let event_tx = self.event_tx.clone();
             let reason_clone = reason;
             tokio::spawn(async move {
-                let g = event_tx.lock().await;
-                if let Some(tx) = g.as_ref() {
-                    let _ = tx
-                        .send(SchedulerEvent::SchedulerWoke {
-                            reason: reason_clone,
-                        })
-                        .await;
+                let result = std::panic::AssertUnwindSafe(async move {
+                    let g = event_tx.lock().await;
+                    if let Some(tx) = g.as_ref() {
+                        let _ = tx
+                            .send(SchedulerEvent::SchedulerWoke {
+                                reason: reason_clone,
+                            })
+                            .await;
+                    }
+                })
+                .catch_unwind()
+                .await;
+                if let Err(e) = result {
+                    tracing::error!(panic = ?e, "scheduler wake event task panicked");
                 }
             })
         };

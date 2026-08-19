@@ -58,17 +58,6 @@ impl ResearchCoordinator {
         }
     }
 
-    #[deprecated(note = "research provider selection is now owned by eggsearch")]
-    #[allow(deprecated)]
-    pub fn with_search_provider(
-        project_root: PathBuf,
-        artifact_root: PathBuf,
-        _provider: crate::research::sources::eggsearch::SearchProvider,
-        _api_key: Option<String>,
-    ) -> Self {
-        Self::new(project_root, artifact_root)
-    }
-
     /// Set an LLM provider for model-backed evidence extraction and claim construction.
     pub fn with_provider(mut self, provider: Arc<dyn Provider>, model: String) -> Self {
         self.provider = Some(provider);

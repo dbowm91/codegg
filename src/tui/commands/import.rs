@@ -37,7 +37,10 @@ pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
                         let msg_count = counts.get(&id).copied().unwrap_or(0);
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
                             import.set_preview(
-                                crate::protocol_conversions::dto_to_session(session),
+                                crate::protocol_conversions::dto_to_session(session).unwrap_or_else(|e| {
+                                    tracing::error!(error = %e, "dto_to_session conversion failed");
+                                    Default::default()
+                                }),
                                 msg_count,
                             );
                         }
@@ -84,7 +87,10 @@ pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
                                 };
                                 if let Some(ref mut import) = app.dialog_state.import_dialog {
                                     import.set_preview(
-                                        crate::protocol_conversions::dto_to_session(session),
+                                        crate::protocol_conversions::dto_to_session(session).unwrap_or_else(|e| {
+                                            tracing::error!(error = %e, "dto_to_session conversion failed");
+                                            Default::default()
+                                        }),
                                         msg_count,
                                     );
                                 }
@@ -139,7 +145,10 @@ pub(crate) async fn handle_confirm_import(app: &mut App, source: ImportSource) {
                 match core_client.request(request).await {
                     Ok(CoreResponse::Session { session }) => {
                         if let Some(ref mut import) = app.dialog_state.import_dialog {
-                            import.set_done(crate::protocol_conversions::dto_to_session(session));
+                            import.set_done(crate::protocol_conversions::dto_to_session(session).unwrap_or_else(|e| {
+                                tracing::error!(error = %e, "dto_to_session conversion failed");
+                                Default::default()
+                            }));
                         }
                     }
                     Ok(CoreResponse::Error { message, .. }) => {
@@ -223,7 +232,9 @@ pub(crate) fn start_preview_import(app: &mut App, source: ImportSource) {
                             let msg_count = counts.get(&id).copied().unwrap_or(0);
                             Some(TuiCommand::ImportPreviewLoaded {
                                 request_id,
-                                session: Some(crate::protocol_conversions::dto_to_session(session)),
+                                session: crate::protocol_conversions::dto_to_session(session)
+                                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
+                                    .ok(),
                                 msg_count,
                                 error: None,
                             })
@@ -279,11 +290,11 @@ pub(crate) fn start_preview_import(app: &mut App, source: ImportSource) {
                                             };
                                         Some(TuiCommand::ImportPreviewLoaded {
                                             request_id,
-                                            session: Some(
-                                                crate::protocol_conversions::dto_to_session(
-                                                    session,
-                                                ),
-                                            ),
+                                            session: crate::protocol_conversions::dto_to_session(
+                                                session,
+                                            )
+                                            .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
+                                            .ok(),
                                             msg_count,
                                             error: None,
                                         })
@@ -393,7 +404,9 @@ pub(crate) fn start_confirm_import(app: &mut App, source: ImportSource) {
                         Ok(CoreResponse::Session { session }) => {
                             Some(TuiCommand::ImportConfirmed {
                                 request_id,
-                                session: Some(crate::protocol_conversions::dto_to_session(session)),
+                                session: crate::protocol_conversions::dto_to_session(session)
+                                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
+                                    .ok(),
                                 error: None,
                             })
                         }

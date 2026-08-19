@@ -270,7 +270,10 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                                 );
                                 match client.request(request).await {
                                     Ok(CoreResponse::SessionMessages { messages, .. }) => {
-                                        crate::protocol_conversions::dtos_to_messages(messages)
+                                        crate::protocol_conversions::dtos_to_messages(messages).unwrap_or_else(|e| {
+                                            tracing::error!(error = %e, "dtos_to_messages conversion failed");
+                                            Default::default()
+                                        })
                                     }
                                     _ => Vec::new(),
                                 }

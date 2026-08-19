@@ -175,6 +175,7 @@ impl DaemonPaths {
     /// Open the append-only daemon log with user-only permissions.
     pub fn open_log_file(&self) -> Result<std::fs::File, AppError> {
         self.ensure_root()?;
+        rotate_daemon_log(&self.log_path);
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
         let mut options = std::fs::OpenOptions::new();
@@ -190,6 +191,26 @@ impl DaemonPaths {
         })?;
         set_user_only_permissions(&self.log_path);
         Ok(file)
+    }
+}
+
+/// Rotate `daemon.log` when it exceeds 10 MB. The previous file is
+/// renamed to `daemon.log.1` (any existing `.1` is overwritten).
+fn rotate_daemon_log(path: &Path) {
+    const MAX_BYTES: u64 = 10 * 1024 * 1024; // 10 MB
+    if let Ok(metadata) = std::fs::metadata(path) {
+        if metadata.len() > MAX_BYTES {
+            let backup = path.with_extension("log.1");
+            if let Err(e) = std::fs::rename(path, &backup) {
+                tracing::warn!(error = %e, "failed to rotate daemon log");
+            } else {
+                tracing::warn!(
+                    old_size = metadata.len(),
+                    backup = %backup.display(),
+                    "rotated daemon.log (>10 MB)"
+                );
+            }
+        }
     }
 }
 
@@ -492,7 +513,13 @@ pub async fn connect_or_start_daemon(
     let socket_arg = options.paths.socket_path_str();
     let mut command = tokio::process::Command::new(exe);
     command
-        .args(["daemon", "start", "--endpoint", socket_arg.as_str()])
+        .args([
+            "daemon",
+            "start",
+            "--endpoint",
+            socket_arg.as_str(),
+            "--force-take-lock",
+        ])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log))
         .stderr(std::process::Stdio::from(log_for_stderr));

@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use regex::Regex;
@@ -210,8 +211,9 @@ fn summarize(text: &str, max_chars: usize) -> String {
 }
 
 fn extract_rust_errors(text: &str, failures: &mut Vec<ShellFailure>) {
-    let re = Regex::new(r"(?m)^error\[(E\d+)\]:?\s*(.+)$").unwrap();
-    for cap in re.captures_iter(text) {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^error\[(E\d+)\]:?\s*(.+)$").unwrap());
+    for cap in RE.captures_iter(text) {
         let code = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let msg = cap.get(2).map(|m| m.as_str()).unwrap_or("").trim();
         let location = extract_location_after(text, cap.get(0).unwrap().end());
@@ -224,8 +226,8 @@ fn extract_rust_errors(text: &str, failures: &mut Vec<ShellFailure>) {
 }
 
 fn extract_rust_warnings(text: &str, failures: &mut Vec<ShellFailure>) {
-    let re = Regex::new(r"(?m)^warning:\s*(.+)$").unwrap();
-    for cap in re.captures_iter(text) {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^warning:\s*(.+)$").unwrap());
+    for cap in RE.captures_iter(text) {
         let msg = cap.get(1).map(|m| m.as_str()).unwrap_or("").trim();
         let location = extract_location_after(text, cap.get(0).unwrap().end());
         failures.push(ShellFailure {
@@ -237,8 +239,9 @@ fn extract_rust_warnings(text: &str, failures: &mut Vec<ShellFailure>) {
 }
 
 fn extract_test_failures(text: &str, failures: &mut Vec<ShellFailure>) {
-    let re = Regex::new(r"(?m)test result: FAILED[^;]*;\s*(\d+)\s+failed").unwrap();
-    for cap in re.captures_iter(text) {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)test result: FAILED[^;]*;\s*(\d+)\s+failed").unwrap());
+    for cap in RE.captures_iter(text) {
         let failed = cap.get(1).map(|m| m.as_str()).unwrap_or("0");
         failures.push(ShellFailure {
             kind: ShellFailureKind::RustTestFailure,
@@ -247,8 +250,8 @@ fn extract_test_failures(text: &str, failures: &mut Vec<ShellFailure>) {
         });
     }
 
-    let re2 = Regex::new(r"(?m)^\s*failures:\s*$").unwrap();
-    for mat in re2.find_iter(text) {
+    static RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*failures:\s*$").unwrap());
+    for mat in RE2.find_iter(text) {
         let after = &text[mat.end()..];
         let failure_block: String = after.lines().take(10).collect::<Vec<_>>().join("\n");
         if !failure_block.trim().is_empty() {
@@ -262,8 +265,10 @@ fn extract_test_failures(text: &str, failures: &mut Vec<ShellFailure>) {
 }
 
 fn extract_panics(text: &str, failures: &mut Vec<ShellFailure>) {
-    let re = Regex::new(r"(?m)^thread\s+'[^']+'\s+panicked\s+at\s+'(.+)',\s+(.+):\d+").unwrap();
-    for cap in re.captures_iter(text) {
+    static RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^thread\s+'[^']+'\s+panicked\s+at\s+'(.+)',\s+(.+):\d+").unwrap()
+    });
+    for cap in RE.captures_iter(text) {
         let msg = cap.get(1).map(|m| m.as_str()).unwrap_or("");
         let loc = cap.get(2).map(|m| m.as_str()).unwrap_or("");
         failures.push(ShellFailure {
@@ -275,9 +280,10 @@ fn extract_panics(text: &str, failures: &mut Vec<ShellFailure>) {
 }
 
 fn extract_location_after(text: &str, offset: usize) -> Option<String> {
+    static RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?m)^\s*-->\s+(.+):\d+:\d+").unwrap());
     let after = &text[offset..];
-    let re = Regex::new(r"(?m)^\s*-->\s+(.+):\d+:\d+").unwrap();
-    re.captures(after)
+    RE.captures(after)
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str().trim().to_string())
 }

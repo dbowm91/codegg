@@ -317,7 +317,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "inspect_file",
-                "path": file.to_str().unwrap()
+                "path": &file.to_string_lossy()
             }))
             .await
             .unwrap();
@@ -353,7 +353,7 @@ mod tests {
             .execute(json!({
                 "action": "run_profile",
                 "profile": "ambient",
-                "paths": [file.to_str().unwrap()]
+                "paths": [&file.to_string_lossy()]
             }))
             .await
             .unwrap();
@@ -374,7 +374,7 @@ mod tests {
             .execute(json!({
                 "action": "run_profile",
                 "profile": "dependency_delta",
-                "paths": [cargo.to_str().unwrap()]
+                "paths": [&cargo.to_string_lossy()]
             }))
             .await
             .unwrap();
@@ -400,7 +400,7 @@ mod tests {
             .execute(json!({
                 "action": "run_profile",
                 "profile": "pre_commit",
-                "paths": [file.to_str().unwrap()]
+                "paths": [&file.to_string_lossy()]
             }))
             .await
             .unwrap();
@@ -420,7 +420,7 @@ mod tests {
             .execute(json!({
                 "action": "run_profile",
                 "profile": "security_review",
-                "paths": [file.to_str().unwrap()]
+                "paths": [&file.to_string_lossy()]
             }))
             .await
             .unwrap();

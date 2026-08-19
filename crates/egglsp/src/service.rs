@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+use futures_util::FutureExt;
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -3301,16 +3302,23 @@ impl LspService {
                 let monitor_exit_tx = exit_tx.clone();
                 let monitor_runtime_map = runtime_map.clone();
                 tokio::spawn(async move {
-                    spawn_process_monitor(
-                        monitor_client,
-                        monitor_key,
-                        monitor_server_id,
-                        monitor_root,
-                        generation,
-                        monitor_exit_tx,
-                        monitor_runtime_map,
-                    )
+                    let result = std::panic::AssertUnwindSafe(async move {
+                        spawn_process_monitor(
+                            monitor_client,
+                            monitor_key,
+                            monitor_server_id,
+                            monitor_root,
+                            generation,
+                            monitor_exit_tx,
+                            monitor_runtime_map,
+                        )
+                        .await;
+                    })
+                    .catch_unwind()
                     .await;
+                    if let Err(e) = result {
+                        tracing::error!(panic = ?e, "LSP process monitor task panicked");
+                    }
                 });
 
                 Ok(super::restart::UnpublishedReplacement { client, generation })

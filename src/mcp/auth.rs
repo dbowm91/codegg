@@ -514,7 +514,9 @@ impl OAuthManager {
         let state = expected_state.to_string();
 
         tokio::spawn(async move {
-            let _ = handle_callback(listener, &state, tx).await;
+            if let Err(e) = handle_callback(listener, &state, tx).await {
+                tracing::error!(error = %e, "OAuth callback handler failed; oneshot dropped");
+            }
         });
 
         Ok((port, rx))

@@ -354,6 +354,9 @@ enum DaemonCommand {
         /// Socket endpoint path
         #[arg(long)]
         endpoint: Option<String>,
+        /// Forcefully take the lock if the previous daemon is dead
+        #[arg(long)]
+        force_take_lock: bool,
     },
     /// Stop the running daemon
     Stop {
@@ -549,8 +552,11 @@ async fn main() -> Result<(), AppError> {
                 .await?;
             }
             Commands::Daemon { command } => match command {
-                DaemonCommand::Start { endpoint } => {
-                    run_daemon(endpoint.clone()).await;
+                DaemonCommand::Start {
+                    endpoint,
+                    force_take_lock,
+                } => {
+                    run_daemon(endpoint.clone(), *force_take_lock).await;
                 }
                 DaemonCommand::Stop { endpoint } => {
                     use codegg::core::instance::DaemonPaths;
@@ -2068,7 +2074,7 @@ async fn cmd_research(
     Ok(())
 }
 
-async fn run_daemon(endpoint: Option<String>) {
+async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     use codegg::core::instance::{current_process_metadata, DaemonInstanceGuard, DaemonPaths};
     use tokio_util::sync::CancellationToken;
 
@@ -2098,31 +2104,63 @@ async fn run_daemon(endpoint: Option<String>) {
         eprintln!("Failed to prepare daemon home: {}", e);
         std::process::exit(1);
     });
-    let mut guard = match DaemonInstanceGuard::try_acquire(&paths) {
-        Ok(Some(g)) => g,
-        Ok(None) => {
-            // A healthy daemon is already running. Connect to it and exit 0.
-            match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
-                Ok(_client) => {
-                    eprintln!(
-                        "Daemon already running (lock held at {}); not starting a second instance.",
-                        paths.lock_path.display()
-                    );
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Daemon lock is held but socket is unreachable: {}. \
-                         Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
-                        e
-                    );
-                    std::process::exit(1);
+    let mut guard = loop {
+        match DaemonInstanceGuard::try_acquire(&paths) {
+            Ok(Some(g)) => break g,
+            Ok(None) => {
+                // A healthy daemon is already running. Connect to it and exit 0.
+                match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri())
+                    .await
+                {
+                    Ok(_client) => {
+                        eprintln!(
+                            "Daemon already running (lock held at {}); not starting a second instance.",
+                            paths.lock_path.display()
+                        );
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        if force_take_lock {
+                            tracing::warn!(
+                                "Daemon lock is held but socket is unreachable: {}; --force-take-lock is set, attempting recovery",
+                                e
+                            );
+                            if let Some(metadata) =
+                                DaemonInstanceGuard::read_metadata(&paths.metadata_path)
+                            {
+                                if pid_is_alive(metadata.pid) {
+                                    eprintln!(
+                                        "Daemon PID {} is still alive; refusing to take the lock.",
+                                        metadata.pid
+                                    );
+                                    std::process::exit(1);
+                                }
+                                tracing::warn!(
+                                    "Daemon PID {} is dead; unlinking stale lock and socket",
+                                    metadata.pid
+                                );
+                            } else {
+                                tracing::warn!(
+                                    "No daemon metadata found; unlinking stale lock and socket"
+                                );
+                            }
+                            let _ = std::fs::remove_file(&paths.lock_path);
+                            let _ = std::fs::remove_file(&paths.socket_path);
+                            continue;
+                        }
+                        eprintln!(
+                            "Daemon lock is held but socket is unreachable: {}. \
+                             Refusing to remove the lock. Use 'codegg daemon status' for diagnostics.",
+                            e
+                        );
+                        std::process::exit(1);
+                    }
                 }
             }
-        }
-        Err(e) => {
-            eprintln!("Failed to acquire daemon lock: {}", e);
-            std::process::exit(1);
+            Err(e) => {
+                eprintln!("Failed to acquire daemon lock: {}", e);
+                std::process::exit(1);
+            }
         }
     };
 
@@ -2452,4 +2490,19 @@ async fn cmd_attach(url: &str, token: Option<&str>) -> Result<(), AppError> {
     codegg::client::run_attach(url, token)
         .await
         .map_err(|e| AppError::Other(anyhow::anyhow!("Client error: {}", e)))
+}
+
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    let pid_i32 = match i32::try_from(pid) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // Signal 0 checks liveness without sending a signal.
+    unsafe { libc::kill(pid_i32, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    false
 }

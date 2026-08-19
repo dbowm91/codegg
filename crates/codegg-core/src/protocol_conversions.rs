@@ -17,97 +17,97 @@
 /// `From`/`TryFrom` implementations that avoid the intermediate JSON
 /// serialization and provide better compile-time error messages.
 // ── Domain → DTO (for constructing protocol responses / requests) ───────
-pub fn session_to_dto(s: crate::session::Session) -> codegg_protocol::dto::Session {
-    let json = serde_json::to_value(&s).expect("session::Session is always serializable");
+pub fn session_to_dto(
+    s: crate::session::Session,
+) -> Result<codegg_protocol::dto::Session, serde_json::Error> {
+    let json = serde_json::to_value(&s)?;
     serde_json::from_value(json)
-        .expect("dto::Session is always deserializable from session::Session")
 }
 
-pub fn message_to_dto(m: crate::session::message::Message) -> codegg_protocol::dto::Message {
-    let json = serde_json::to_value(&m).expect("message::Message is always serializable");
+pub fn message_to_dto(
+    m: crate::session::message::Message,
+) -> Result<codegg_protocol::dto::Message, serde_json::Error> {
+    let json = serde_json::to_value(&m)?;
     serde_json::from_value(json)
-        .expect("dto::Message is always deserializable from message::Message")
 }
 
 pub fn provider_message_to_dto(
     m: codegg_providers::Message,
-) -> codegg_protocol::dto::ProviderMessage {
-    let json = serde_json::to_value(&m).expect("provider::Message is always serializable");
+) -> Result<codegg_protocol::dto::ProviderMessage, serde_json::Error> {
+    let json = serde_json::to_value(&m)?;
     serde_json::from_value(json)
-        .expect("dto::ProviderMessage is always deserializable from provider::Message")
 }
 
 pub fn session_template_to_dto(
     t: codegg_config::schema::SessionTemplate,
-) -> codegg_protocol::dto::SessionTemplate {
-    let json = serde_json::to_value(&t).expect("SessionTemplate is always serializable");
+) -> Result<codegg_protocol::dto::SessionTemplate, serde_json::Error> {
+    let json = serde_json::to_value(&t)?;
     serde_json::from_value(json)
-        .expect("dto::SessionTemplate is always deserializable from SessionTemplate")
 }
 
 pub fn sessions_to_dtos(
     sessions: Vec<crate::session::Session>,
-) -> Vec<codegg_protocol::dto::Session> {
+) -> Result<Vec<codegg_protocol::dto::Session>, serde_json::Error> {
     sessions.into_iter().map(session_to_dto).collect()
 }
 
 pub fn messages_to_dtos(
     messages: Vec<crate::session::message::Message>,
-) -> Vec<codegg_protocol::dto::Message> {
+) -> Result<Vec<codegg_protocol::dto::Message>, serde_json::Error> {
     messages.into_iter().map(message_to_dto).collect()
 }
 
 pub fn provider_messages_to_dtos(
     messages: Vec<codegg_providers::Message>,
-) -> Vec<codegg_protocol::dto::ProviderMessage> {
+) -> Result<Vec<codegg_protocol::dto::ProviderMessage>, serde_json::Error> {
     messages.into_iter().map(provider_message_to_dto).collect()
 }
 
 // ── DTO → Domain (for consuming protocol responses in the application) ─
 
-pub fn dto_to_session(s: codegg_protocol::dto::Session) -> crate::session::Session {
-    let json = serde_json::to_value(&s).expect("dto::Session is always serializable");
+pub fn dto_to_session(
+    s: codegg_protocol::dto::Session,
+) -> Result<crate::session::Session, serde_json::Error> {
+    let json = serde_json::to_value(&s)?;
     serde_json::from_value(json)
-        .expect("session::Session is always deserializable from dto::Session")
 }
 
-pub fn dto_to_message(m: codegg_protocol::dto::Message) -> crate::session::message::Message {
-    let json = serde_json::to_value(&m).expect("dto::Message is always serializable");
+pub fn dto_to_message(
+    m: codegg_protocol::dto::Message,
+) -> Result<crate::session::message::Message, serde_json::Error> {
+    let json = serde_json::to_value(&m)?;
     serde_json::from_value(json)
-        .expect("message::Message is always deserializable from dto::Message")
 }
 
 pub fn dto_to_provider_message(
     m: codegg_protocol::dto::ProviderMessage,
-) -> codegg_providers::Message {
-    let json = serde_json::to_value(&m).expect("dto::ProviderMessage is always serializable");
+) -> Result<codegg_providers::Message, serde_json::Error> {
+    let json = serde_json::to_value(&m)?;
     serde_json::from_value(json)
-        .expect("provider::Message is always deserializable from dto::ProviderMessage")
 }
 
 pub fn dto_to_session_template(
     t: codegg_protocol::dto::SessionTemplate,
-) -> codegg_config::schema::SessionTemplate {
-    let json = serde_json::to_value(&t).expect("dto::SessionTemplate is always serializable");
+) -> Result<codegg_config::schema::SessionTemplate, serde_json::Error> {
+    let json = serde_json::to_value(&t)?;
     serde_json::from_value(json)
-        .expect("SessionTemplate is always deserializable from dto::SessionTemplate")
 }
 
 pub fn dtos_to_sessions(
     sessions: Vec<codegg_protocol::dto::Session>,
-) -> Vec<crate::session::Session> {
+) -> Result<Vec<crate::session::Session>, serde_json::Error> {
     sessions.into_iter().map(dto_to_session).collect()
 }
 
 pub fn dtos_to_messages(
     messages: Vec<codegg_protocol::dto::Message>,
-) -> Vec<crate::session::message::Message> {
+) -> Result<Vec<crate::session::message::Message>, serde_json::Error> {
     messages.into_iter().map(dto_to_message).collect()
 }
 
 pub fn dtos_to_provider_messages(
     messages: Vec<codegg_protocol::dto::ProviderMessage>,
-) -> Vec<codegg_providers::Message> {
+) -> Result<Vec<codegg_providers::Message>, serde_json::Error> {
     messages.into_iter().map(dto_to_provider_message).collect()
 }
 
@@ -531,27 +531,45 @@ pub fn cancel_outcome_to_str(o: crate::jobs::CancelOutcome) -> &'static str {
 }
 
 pub fn missed_run_policy_to_str(p: &crate::jobs::MissedRunPolicy) -> serde_json::Value {
-    serde_json::to_value(p).expect("MissedRunPolicy is always serializable")
+    serde_json::to_value(p).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: MissedRunPolicy serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn schedule_kind_to_value(k: &crate::jobs::ScheduleKind) -> serde_json::Value {
-    serde_json::to_value(k).expect("ScheduleKind is always serializable")
+    serde_json::to_value(k).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: ScheduleKind serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn job_source_to_value(s: &crate::jobs::JobSource) -> serde_json::Value {
-    serde_json::to_value(s).expect("JobSource is always serializable")
+    serde_json::to_value(s).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: JobSource serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn job_payload_to_value(p: &crate::jobs::JobPayload) -> serde_json::Value {
-    serde_json::to_value(p).expect("JobPayload is always serializable")
+    serde_json::to_value(p).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: JobPayload serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn retry_policy_to_value(p: &crate::jobs::RetryPolicy) -> serde_json::Value {
-    serde_json::to_value(p).expect("RetryPolicy is always serializable")
+    serde_json::to_value(p).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: RetryPolicy serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn job_template_to_value(t: &crate::jobs::schedule::JobTemplate) -> serde_json::Value {
-    serde_json::to_value(t).expect("JobTemplate is always serializable")
+    serde_json::to_value(t).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "protocol_conversion: JobTemplate serialization failed");
+        serde_json::Value::Null
+    })
 }
 
 pub fn missed_run_policy_from_value(

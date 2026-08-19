@@ -160,7 +160,11 @@ impl Tool for GoalUpdateProgressTool {
             .ok_or_else(|| ToolError::Execution("Goal not found after update".to_string()))?;
 
         if let Some(ref cp_path) = updated_goal.checkpoint_path {
-            let _ = crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
+            if let Err(e) =
+                crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await
+            {
+                tracing::warn!(error = %e, goal_id = %goal.id, "failed to append checkpoint update");
+            }
         }
 
         crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {

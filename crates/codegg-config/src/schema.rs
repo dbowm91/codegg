@@ -1019,7 +1019,6 @@ pub struct CommandConfig {
     pub description: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
-    pub subtask: Option<bool>,
     /// Execution runtime. `None` or `Template` uses the template path.
     pub runtime: Option<CommandRuntimeKind>,
     /// Process command executable (required when runtime = "process").
@@ -2798,11 +2797,30 @@ impl Default for CommandIntentConfig {
 
 impl CommandIntentConfig {
     pub fn validate(&self) -> Result<(), Vec<String>> {
-        let errors = Vec::new();
-        // TODO(Workstream M): Add validation rules:
-        // - If any family has Active level, global mode should also be Active
-        // - Warn if route_safe_commands is false but families have Active level
-        // - All levels should be valid
+        let mut errors = Vec::new();
+
+        let family_active = [
+            self.route_tests.as_ref(),
+            self.route_git_read.as_ref(),
+            self.route_search.as_ref(),
+            self.route_python.as_ref(),
+            self.route_build.as_ref(),
+            self.route_lint.as_ref(),
+            self.route_format.as_ref(),
+            self.route_git_local_mutation.as_ref(),
+            self.route_git_network.as_ref(),
+            self.route_git_destructive.as_ref(),
+        ]
+        .iter()
+        .any(|lvl| matches!(lvl, Some(RouteLevel::Active)));
+
+        if family_active && !self.is_active_mode() {
+            errors.push(
+                "command_intent: one or more families have Active level but global mode is not Active"
+                    .to_string(),
+            );
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {

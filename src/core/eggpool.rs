@@ -2113,7 +2113,8 @@ mod tests {
                 .await
         });
         let mut running_seen = false;
-        for _ in 0..100 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
             if provisioner
                 .refresh_status("refresh-a")
                 .is_some_and(|status| status.state == "running")
@@ -2121,7 +2122,7 @@ mod tests {
                 running_seen = true;
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
             running_seen,

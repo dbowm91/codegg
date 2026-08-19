@@ -1085,7 +1085,13 @@ impl LspTool {
         {
             return None;
         }
-        let (key, _) = self.service.get_or_create_client(file).await.ok()?;
+        let (key, _) = match self.service.get_or_create_client(file).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to get or create LSP client for capabilities");
+                return None;
+            }
+        };
         // Prefer the stored override-aware snapshot.
         if let Some(snap) = self.service.normalized_capabilities_for_key(&key).await {
             return Some(snap);
@@ -1111,7 +1117,13 @@ impl LspTool {
     /// field.
     async fn operational_state_note_for_file(&self, file_path_str: &str) -> Option<String> {
         let p = std::path::Path::new(file_path_str);
-        let key_result = self.service.get_or_create_client(p).await.ok()?;
+        let key_result = match self.service.get_or_create_client(p).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to get or create LSP client for operational state");
+                return None;
+            }
+        };
         let key = key_result.0;
         let state = self.service.operational_state_for_key(&key).await?;
         state.context_note()
@@ -5317,7 +5329,7 @@ diff --git a/src/lib.rs b/src/lib.rs
         .with_allowed_root(_dir.path().to_path_buf());
         let _ = tool.execute(json!({
             "operation": "semanticContext",
-            "file_path": path.to_str().unwrap(),
+            "file_path": &path.to_string_lossy(),
             "line": 1,
             "column": 1,
             "patch": "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    println!(\"old\");\n+    println!(\"new\");\n }\n"

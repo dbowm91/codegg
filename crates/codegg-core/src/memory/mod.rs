@@ -114,7 +114,9 @@ impl MemoryStore {
             auto_save: Mutex::new(auto_save),
         };
 
-        let _ = store.load_all();
+        if let Err(e) = store.load_all() {
+            tracing::warn!(error = %e, "failed to load memories");
+        }
 
         Ok(store)
     }
@@ -178,7 +180,9 @@ impl MemoryStore {
     pub fn add(&self, memory: Memory) -> Option<Memory> {
         let result = self.memories.lock().insert(memory.id.clone(), memory);
         if *self.auto_save.lock() {
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                tracing::warn!(error = %e, "failed to auto-save memories after add");
+            }
         }
         result
     }
@@ -265,7 +269,9 @@ impl MemoryStore {
     pub fn delete(&self, id: &str) -> Option<Memory> {
         let result = self.memories.lock().remove(id);
         if *self.auto_save.lock() {
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                tracing::warn!(error = %e, "failed to auto-save memories after delete");
+            }
         }
         result
     }
@@ -338,7 +344,9 @@ impl MemoryStore {
         }
 
         if *self.auto_save.lock() {
-            let _ = self.save();
+            if let Err(e) = self.save() {
+                tracing::warn!(error = %e, "failed to auto-save memories after consolidate");
+            }
         }
 
         new_memories

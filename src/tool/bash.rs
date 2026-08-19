@@ -342,6 +342,7 @@ pub struct BashTool {
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    routing_disabled_override: Option<bool>,
 }
 
 impl BashTool {
@@ -394,6 +395,7 @@ impl BashTool {
             run_store: None,
             submission: None,
             asset_pin: None,
+            routing_disabled_override: None,
         }
     }
 
@@ -469,6 +471,11 @@ impl BashTool {
         self
     }
 
+    pub fn with_routing_disabled_env(mut self, disabled: bool) -> Self {
+        self.routing_disabled_override = Some(disabled);
+        self
+    }
+
     pub fn with_sandbox_mode(mut self, mode: crate::security::sandbox::SandboxMode) -> Self {
         if let Some(ref mut config) = self.landlock_sandbox {
             config.mode = mode;
@@ -485,8 +492,11 @@ impl BashTool {
 
     /// Check if active routing is disabled by any kill switch.
     fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
-        // 1. Check env var emergency disable
-        if std::env::var("CODEGG_ROUTING_DISABLE").unwrap_or_default() == "1" {
+        // 1. Check env var emergency disable (or test override)
+        let env_disabled = self
+            .routing_disabled_override
+            .unwrap_or_else(|| std::env::var("CODEGG_ROUTING_DISABLE").unwrap_or_default() == "1");
+        if env_disabled {
             return true;
         }
 
@@ -2027,7 +2037,7 @@ impl Tool for BashTool {
                 // The `if let Ok(handle)` already swallows persistence errors.
                 if let Ok(handle) = store.begin_run(draft).await {
                     if !output.stdout.is_empty() {
-                        let _ = store
+                        if let Err(e) = store
                             .write_artifact(
                                 &handle,
                                 ArtifactInput {
@@ -2038,11 +2048,14 @@ impl Tool for BashTool {
                                     safe_for_model: false,
                                 },
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to write stdout artifact to RunStore");
+                        }
                     }
 
                     if !output.stderr.is_empty() {
-                        let _ = store
+                        if let Err(e) = store
                             .write_artifact(
                                 &handle,
                                 ArtifactInput {
@@ -2053,10 +2066,13 @@ impl Tool for BashTool {
                                     safe_for_model: false,
                                 },
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(error = %e, "failed to write stderr artifact to RunStore");
+                        }
                     }
 
-                    let _ = store
+                    if let Err(e) = store
                         .complete_run(
                             handle,
                             RunCompletion {
@@ -2073,7 +2089,10 @@ impl Tool for BashTool {
                                 fallback: execution_outcome.fallback_record(),
                             },
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(error = %e, "failed to complete run in RunStore");
+                    }
                 }
             }
         }
@@ -2838,18 +2857,18 @@ mod tests {
 
     #[tokio::test]
     async fn env_kill_switch_disables_active_routing() {
-        std::env::set_var("CODEGG_ROUTING_DISABLE", "1");
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Active);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = BashTool::new()
+            .with_routing_disabled_env(true)
+            .with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
         // Env kill switch forces raw shell
         assert!(result.contains("[exit code:"));
-        std::env::remove_var("CODEGG_ROUTING_DISABLE");
     }
 
     #[tokio::test]
@@ -2931,15 +2950,8 @@ mod tests {
 
     #[test]
     fn kill_switch_checks_env_var() {
-        // Clear the env var first to ensure a clean state
-        std::env::remove_var("CODEGG_ROUTING_DISABLE");
-
-        let tool = BashTool::new();
-        std::env::set_var("CODEGG_ROUTING_DISABLE", "1");
+        let tool = BashTool::new().with_routing_disabled_env(true);
         assert!(tool.check_kill_switches(CommandIntentFamily::Tests));
-
-        // Clean up immediately to avoid polluting other tests
-        std::env::remove_var("CODEGG_ROUTING_DISABLE");
     }
 
     #[test]
@@ -2954,14 +2966,13 @@ mod tests {
 
     #[test]
     fn kill_switch_allows_active_level() {
-        // Clear env var to ensure clean state
-        std::env::remove_var("CODEGG_ROUTING_DISABLE");
-
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Active);
 
-        let tool = BashTool::new().with_command_intent_config(cic);
+        let tool = BashTool::new()
+            .with_routing_disabled_env(false)
+            .with_command_intent_config(cic);
         assert!(!tool.check_kill_switches(CommandIntentFamily::Tests));
     }
 

@@ -28,7 +28,7 @@ impl LocalRepoSource {
             self.project_root.join(path)
         };
 
-        let metadata = std::fs::metadata(&resolved).map_err(|e| {
+        let metadata = tokio::fs::metadata(&resolved).await.map_err(|e| {
             ResearchError::SourceCollection(format!(
                 "failed to read metadata for {}: {}",
                 resolved.display(),
@@ -45,7 +45,9 @@ impl LocalRepoSource {
             });
         }
 
-        let content = std::fs::read(&resolved).map_err(ResearchError::Io)?;
+        let content = tokio::fs::read(&resolved)
+            .await
+            .map_err(ResearchError::Io)?;
         let content_hash = format!("{:x}", Sha256::digest(&content));
 
         let source_type = SourceType::LocalFile;
@@ -116,7 +118,7 @@ impl LocalRepoSource {
             }
 
             let path = entry.path();
-            let metadata = match std::fs::metadata(path) {
+            let metadata = match tokio::fs::metadata(path).await {
                 Ok(m) => m,
                 Err(_) => continue,
             };
@@ -126,7 +128,7 @@ impl LocalRepoSource {
                 continue;
             }
 
-            let content = match std::fs::read(path) {
+            let content = match tokio::fs::read(path).await {
                 Ok(c) => c,
                 Err(_) => continue,
             };

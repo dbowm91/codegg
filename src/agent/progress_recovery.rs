@@ -398,7 +398,13 @@ impl RecoveryController {
             1 => RecoveryAction::Correct,
             2 => RecoveryAction::RestoreBasePalette,
             3 => RecoveryAction::Replan,
-            _ => RecoveryAction::Stall,
+            _ => {
+                tracing::warn!(
+                    recoveries = self.recoveries,
+                    "unmapped recovery count; defaulting to Stall"
+                );
+                RecoveryAction::Stall
+            }
         };
         let evidence = bounded_evidence(kind, &self.history);
         let current = RecoveryIncident {

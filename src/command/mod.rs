@@ -42,8 +42,6 @@ pub struct Command {
     pub template: String,
     pub agent: Option<String>,
     pub model: Option<String>,
-    #[deprecated(since = "0.1.0", note = "subtask field is not yet implemented")]
-    pub subtask: Option<bool>,
     pub source: String,
     /// Process execution spec (only when `runtime: process`).
     pub process: Option<ProcessCommandSpec>,
@@ -56,6 +54,8 @@ pub async fn find_command_files(base: &Path) -> Vec<Command> {
         .collect()
 }
 
+// MSRV 1.81 is the project floor; this lint is noisy on stable when
+// the edition-2021 MSRV check fires on iterator trait methods.
 #[allow(clippy::incompatible_msrv)]
 pub fn find_command_files_sync(base: &Path) -> Vec<Result<Command, String>> {
     let mut commands = Vec::new();
@@ -164,14 +164,12 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
                 cfg.template
             };
 
-            #[allow(deprecated)]
             return Ok(Command {
                 name,
                 description: cfg.description,
                 template,
                 agent: cfg.agent,
                 model: cfg.model,
-                subtask: cfg.subtask,
                 source: path.to_string_lossy().to_string(),
                 process,
             });
@@ -267,7 +265,6 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
                 }
             });
 
-        #[allow(deprecated)]
         return Ok(Command {
             name,
             description: cfg
@@ -277,7 +274,6 @@ fn parse_command_content(path: &Path, content: &str) -> Result<Command, String> 
             template,
             agent: cfg.get("agent").and_then(|v| v.as_str()).map(String::from),
             model: cfg.get("model").and_then(|v| v.as_str()).map(String::from),
-            subtask: cfg.get("subtask").and_then(|v| v.as_bool()),
             source: path.to_string_lossy().to_string(),
             process,
         });
@@ -307,14 +303,12 @@ pub fn resolve_commands_from_config(
             } else {
                 None
             };
-            #[allow(deprecated)]
             Command {
                 name: name.clone(),
                 description: cfg.description.clone(),
                 template: cfg.template.clone(),
                 agent: cfg.agent.clone(),
                 model: cfg.model.clone(),
-                subtask: cfg.subtask,
                 source: "config".to_string(),
                 process,
             }

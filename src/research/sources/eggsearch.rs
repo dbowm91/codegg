@@ -14,31 +14,6 @@ use serde_json::{json, Map, Value};
 use std::future::Future;
 use std::pin::Pin;
 
-/// Compatibility names retained for callers that used the old research
-/// configuration. They are not provider-routing inputs anymore.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[deprecated(note = "research provider selection is owned by eggsearch")]
-pub enum SearchProvider {
-    Tavily,
-    Brave,
-    SerpApi,
-    Kagi,
-}
-
-#[allow(clippy::should_implement_trait)]
-#[allow(deprecated)]
-impl SearchProvider {
-    pub fn from_str(value: &str) -> Option<Self> {
-        match value.to_lowercase().as_str() {
-            "tavily" => Some(Self::Tavily),
-            "brave" => Some(Self::Brave),
-            "serpapi" | "serp_api" => Some(Self::SerpApi),
-            "kagi" => Some(Self::Kagi),
-            _ => None,
-        }
-    }
-}
-
 /// The sole external search source adapter used by deep research.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct EggsearchSource;
@@ -340,36 +315,6 @@ impl ResearchSourceAdapter for EggsearchSource {
             sources.truncate(request.budget.max_sources);
             Ok(sources)
         })
-    }
-}
-
-/// Compatibility wrapper for code that constructed the old source directly.
-/// The provider and API key are intentionally ignored: eggsearch owns both.
-#[allow(deprecated)]
-pub struct SearchProviderSource {
-    inner: EggsearchSource,
-}
-
-#[allow(deprecated)]
-impl SearchProviderSource {
-    pub fn new(_provider: SearchProvider, _api_key: Option<String>) -> Self {
-        Self {
-            inner: EggsearchSource::new(),
-        }
-    }
-}
-
-impl ResearchSourceAdapter for SearchProviderSource {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn collect<'a>(
-        &'a self,
-        request: &'a ResearchRequest,
-        plan: &'a ResearchPlan,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<SourceRecord>>> + Send + 'a>> {
-        self.inner.collect(request, plan)
     }
 }
 

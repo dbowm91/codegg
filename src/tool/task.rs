@@ -262,7 +262,9 @@ impl TaskStore {
             }
         };
         if let Some((status, result)) = db_update {
-            let _ = self.update_status_in_db(id, &status, Some(&result)).await;
+            if let Err(e) = self.update_status_in_db(id, &status, Some(&result)).await {
+                tracing::warn!(error = %e, id = %id, "failed to update task status");
+            }
         }
     }
 
@@ -278,7 +280,9 @@ impl TaskStore {
             }
         };
         if let Some((status, error)) = db_update {
-            let _ = self.update_status_in_db(id, &status, Some(&error)).await;
+            if let Err(e) = self.update_status_in_db(id, &status, Some(&error)).await {
+                tracing::warn!(error = %e, id = %id, "failed to update task status");
+            }
         }
     }
 
@@ -296,7 +300,9 @@ impl TaskStore {
             }
         };
         if let Some((status, msg)) = db_update {
-            let _ = self.update_status_in_db(id, &status, Some(&msg)).await;
+            if let Err(e) = self.update_status_in_db(id, &status, Some(&msg)).await {
+                tracing::warn!(error = %e, id = %id, "failed to update task status");
+            }
         }
     }
 
@@ -317,7 +323,9 @@ impl TaskStore {
             }
         };
         if let Some((status, error)) = db_update {
-            let _ = self.update_status_in_db(id, &status, Some(&error)).await;
+            if let Err(e) = self.update_status_in_db(id, &status, Some(&error)).await {
+                tracing::warn!(error = %e, id = %id, "failed to update task status");
+            }
             true
         } else {
             false

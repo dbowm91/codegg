@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -6,6 +8,42 @@ pub enum HumanShellPolicyDecision {
     Warn { reason: String },
     Block { reason: String },
 }
+
+static BLOCK_RM_RF_ROOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+/").unwrap());
+static BLOCK_RM_FR_ROOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+/").unwrap());
+static BLOCK_MKFS_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"mkfs\.").unwrap());
+static BLOCK_MKFS_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"mkfs\s").unwrap());
+static BLOCK_DD_ZERO: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"dd\s+if=/dev/zero\s+of=/dev/").unwrap());
+static BLOCK_DD_DEV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"dd\s+if=/dev/").unwrap());
+static BLOCK_FORK_BOMB: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r":\(\)\s*\{.*\|.*&\s*\}").unwrap());
+static BLOCK_SHUTDOWN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"shutdown\s").unwrap());
+static BLOCK_REBOOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"reboot\s?").unwrap());
+static BLOCK_POWEROFF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"poweroff\s?").unwrap());
+static BLOCK_HALT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"halt\s?").unwrap());
+
+static WARN_RM_RF_DOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+\.").unwrap());
+static WARN_RM_FR_DOT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+\.").unwrap());
+static WARN_GIT_CLEAN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d?[a-zA-Z]*").unwrap());
+static WARN_SUDO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sudo\s").unwrap());
+static WARN_CURL_SH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"curl\s.*\|\s*sh").unwrap());
+static WARN_CURL_BASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"curl\s.*\|\s*bash").unwrap());
+static WARN_WGET_SH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wget\s.*\|\s*sh").unwrap());
+static WARN_WGET_BASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"wget\s.*\|\s*bash").unwrap());
+static WARN_CHMOD_777: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"chmod\s+-[a-zA-Z]*r\s+777\b").unwrap());
+static WARN_CHMOD_A: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"chmod\s+-[a-zA-Z]*r\s+a\+rwx").unwrap());
+static WARN_CHOWN_R: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"chown\s+-[a-zA-Z]*r\b").unwrap());
 
 pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
     let normalized = command.trim().to_lowercase();
@@ -22,76 +60,63 @@ pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
 }
 
 fn check_block_patterns(cmd: &str) -> Option<String> {
-    let block_patterns: &[(&str, &str)] = &[
-        (
-            r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+/",
-            "rm -rf / is catastrophic",
-        ),
-        (
-            r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+/",
-            "rm -rf / is catastrophic",
-        ),
-        (r"mkfs\.", "mkfs destroys filesystems"),
-        (r"mkfs\s", "mkfs destroys filesystems"),
-        (
-            r"dd\s+if=/dev/zero\s+of=/dev/",
-            "dd overwriting device nodes",
-        ),
-        (r"dd\s+if=/dev/", "dd reading/writing device nodes"),
-        (r":\(\)\s*\{.*\|.*&\s*\}", "fork bomb"),
-        (r"shutdown\s", "shutdown halts the system"),
-        (r"reboot\s?", "reboot restarts the system"),
-        (r"poweroff\s?", "poweroff halts the system"),
-        (r"halt\s?", "halt halts the system"),
-    ];
-
-    for (pattern, reason) in block_patterns {
-        let re = Regex::new(pattern).unwrap();
-        if re.is_match(cmd) {
-            return Some(reason.to_string());
-        }
+    if BLOCK_RM_RF_ROOT.is_match(cmd) || BLOCK_RM_FR_ROOT.is_match(cmd) {
+        return Some("rm -rf / is catastrophic".to_string());
+    }
+    if BLOCK_MKFS_DOT.is_match(cmd) || BLOCK_MKFS_SPACE.is_match(cmd) {
+        return Some("mkfs destroys filesystems".to_string());
+    }
+    if BLOCK_DD_ZERO.is_match(cmd) || BLOCK_DD_DEV.is_match(cmd) {
+        return Some("dd reading/writing device nodes".to_string());
+    }
+    if BLOCK_FORK_BOMB.is_match(cmd) {
+        return Some("fork bomb".to_string());
+    }
+    if BLOCK_SHUTDOWN.is_match(cmd) {
+        return Some("shutdown halts the system".to_string());
+    }
+    if BLOCK_REBOOT.is_match(cmd) {
+        return Some("reboot restarts the system".to_string());
+    }
+    if BLOCK_POWEROFF.is_match(cmd) {
+        return Some("poweroff halts the system".to_string());
+    }
+    if BLOCK_HALT.is_match(cmd) {
+        return Some("halt halts the system".to_string());
     }
     None
 }
 
 fn check_warn_patterns(cmd: &str) -> Option<String> {
-    let warn_patterns: &[(&str, &str)] = &[
-        (
-            r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+\.",
-            "rm -rf in current directory",
-        ),
-        (
-            r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+\.",
-            "rm -rf in current directory",
-        ),
-        (
-            r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d?[a-zA-Z]*",
-            "git clean removes untracked files",
-        ),
-        (r"sudo\s", "sudo runs with elevated privileges"),
-        (r"curl\s.*\|\s*sh", "piping curl to shell"),
-        (r"curl\s.*\|\s*bash", "piping curl to bash"),
-        (r"wget\s.*\|\s*sh", "piping wget to shell"),
-        (r"wget\s.*\|\s*bash", "piping wget to bash"),
-        (
-            r"chmod\s+-[a-zA-Z]*r\s+777\b",
-            "chmod -R 777 is overly permissive",
-        ),
-        (
-            r"chmod\s+-[a-zA-Z]*r\s+a\+rwx",
-            "chmod -R a+rwx is overly permissive",
-        ),
-        (
-            r"chown\s+-[a-zA-Z]*r\b",
-            "recursive chown changes ownership widely",
-        ),
-    ];
-
-    for (pattern, reason) in warn_patterns {
-        let re = Regex::new(pattern).unwrap();
-        if re.is_match(cmd) {
-            return Some(reason.to_string());
-        }
+    if WARN_RM_RF_DOT.is_match(cmd) || WARN_RM_FR_DOT.is_match(cmd) {
+        return Some("rm -rf in current directory".to_string());
+    }
+    if WARN_GIT_CLEAN.is_match(cmd) {
+        return Some("git clean removes untracked files".to_string());
+    }
+    if WARN_SUDO.is_match(cmd) {
+        return Some("sudo runs with elevated privileges".to_string());
+    }
+    if WARN_CURL_SH.is_match(cmd) {
+        return Some("piping curl to shell".to_string());
+    }
+    if WARN_CURL_BASH.is_match(cmd) {
+        return Some("piping curl to bash".to_string());
+    }
+    if WARN_WGET_SH.is_match(cmd) {
+        return Some("piping wget to shell".to_string());
+    }
+    if WARN_WGET_BASH.is_match(cmd) {
+        return Some("piping wget to bash".to_string());
+    }
+    if WARN_CHMOD_777.is_match(cmd) {
+        return Some("chmod -R 777 is overly permissive".to_string());
+    }
+    if WARN_CHMOD_A.is_match(cmd) {
+        return Some("chmod -R a+rwx is overly permissive".to_string());
+    }
+    if WARN_CHOWN_R.is_match(cmd) {
+        return Some("recursive chown changes ownership widely".to_string());
     }
     None
 }

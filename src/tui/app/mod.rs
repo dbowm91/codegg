@@ -2072,7 +2072,11 @@ impl App {
                 model: self.agent_state.current_model.clone(),
                 agents,
                 current_agent_idx: self.agent_state.current_agent,
-                messages: crate::protocol_conversions::provider_messages_to_dtos(messages),
+                messages: crate::protocol_conversions::provider_messages_to_dtos(messages)
+                    .unwrap_or_else(|e| {
+                        tracing::error!(error = %e, "provider_messages_to_dtos conversion failed");
+                        Default::default()
+                    }),
             },
         );
         tokio::spawn(async move {
@@ -4000,19 +4004,22 @@ impl App {
                     action,
                     ConnectionLifecycleAction::Delete | ConnectionLifecycleAction::Purge
                 ) {
-                    let title = match action {
-                        ConnectionLifecycleAction::Delete => "Delete Provider Connection",
-                        ConnectionLifecycleAction::Purge => "Purge Provider Connection",
-                        _ => unreachable!(),
-                    };
-                    let message = match action {
-                        ConnectionLifecycleAction::Delete => {
-                            "Tombstone this connection? It will stop being selectable."
+                    let (title, message) = match action {
+                        ConnectionLifecycleAction::Delete => (
+                            "Delete Provider Connection",
+                            "Tombstone this connection? It will stop being selectable.",
+                        ),
+                        ConnectionLifecycleAction::Purge => (
+                            "Purge Provider Connection",
+                            "Permanently purge this tombstoned connection and its history?",
+                        ),
+                        other => {
+                            tracing::warn!(
+                                ?other,
+                                "unexpected ConnectionLifecycleAction in match arm"
+                            );
+                            return;
                         }
-                        ConnectionLifecycleAction::Purge => {
-                            "Permanently purge this tombstoned connection and its history?"
-                        }
-                        _ => unreachable!(),
                     };
                     self.dialog_state.pending_connection_lifecycle =
                         Some((action, connection_id, expected_revision));
@@ -10247,7 +10254,10 @@ impl App {
                                     Ok(crate::protocol::core::CoreResponse::SessionMessages {
                                         messages,
                                         ..
-                                    }) => crate::protocol_conversions::dtos_to_messages(messages),
+                                    }) => crate::protocol_conversions::dtos_to_messages(messages).unwrap_or_else(|e| {
+                                        tracing::error!(error = %e, "dtos_to_messages conversion failed");
+                                        Default::default()
+                                    }),
                                     _ => Vec::new(),
                                 }
                             } else if let (Some(sid), Some(store)) =
@@ -11207,7 +11217,10 @@ impl App {
         );
         match core_client.request(request).await {
             Ok(crate::protocol::core::CoreResponse::SessionList { sessions }) => {
-                Ok(crate::protocol_conversions::dtos_to_sessions(sessions))
+                crate::protocol_conversions::dtos_to_sessions(sessions).map_err(|e| {
+                    tracing::error!(error = %e, "dtos_to_sessions conversion failed");
+                    AppError::Tui(format!("session list conversion failed: {}", e))
+                })
             }
             Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
                 format!("core session list failed ({}): {}", code, message),
@@ -11239,7 +11252,10 @@ impl App {
         );
         match core_client.request(request).await {
             Ok(crate::protocol::core::CoreResponse::SessionMessages { messages, .. }) => {
-                Ok(crate::protocol_conversions::dtos_to_messages(messages))
+                crate::protocol_conversions::dtos_to_messages(messages).map_err(|e| {
+                    tracing::error!(error = %e, "dtos_to_messages conversion failed");
+                    AppError::Tui(format!("session messages conversion failed: {}", e))
+                })
             }
             Ok(crate::protocol::core::CoreResponse::Error { code, message }) => Err(AppError::Tui(
                 format!("core session messages load failed ({}): {}", code, message),
@@ -11305,7 +11321,13 @@ impl App {
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
-                        self.set_session(crate::protocol_conversions::dto_to_session(session));
+                        match crate::protocol_conversions::dto_to_session(session) {
+                            Ok(s) => self.set_session(s),
+                            Err(e) => tracing::warn!(
+                                "load_initial_session_via_core(Attach): dto_to_session failed: {}",
+                                e
+                            ),
+                        }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
                         tracing::warn!(
@@ -11340,7 +11362,13 @@ impl App {
                 match core_client.request(req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            self.set_session(crate::protocol_conversions::dto_to_session(sess));
+                            match crate::protocol_conversions::dto_to_session(sess) {
+                                Ok(s) => self.set_session(s),
+                                Err(e) => tracing::warn!(
+                                    "load_initial_session_via_core(Continue): dto_to_session failed: {}",
+                                    e
+                                ),
+                            }
                         }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
@@ -11376,7 +11404,13 @@ impl App {
                 );
                 match core_client.request(req).await {
                     Ok(CoreResponse::Session { session }) => {
-                        self.set_session(crate::protocol_conversions::dto_to_session(session));
+                        match crate::protocol_conversions::dto_to_session(session) {
+                            Ok(s) => self.set_session(s),
+                            Err(e) => tracing::warn!(
+                                "load_initial_session_via_core(New): dto_to_session failed: {}",
+                                e
+                            ),
+                        }
                     }
                     Ok(CoreResponse::Error { code, message }) => {
                         tracing::warn!(
@@ -11420,7 +11454,13 @@ impl App {
                 match core_client.request(list_req).await {
                     Ok(CoreResponse::SessionList { mut sessions }) => {
                         if let Some(sess) = sessions.pop() {
-                            self.set_session(crate::protocol_conversions::dto_to_session(sess));
+                            match crate::protocol_conversions::dto_to_session(sess) {
+                                Ok(s) => self.set_session(s),
+                                Err(e) => tracing::warn!(
+                                    "load_initial_session_via_core(Fork): dto_to_session failed: {}",
+                                    e
+                                ),
+                            }
                         } else {
                             tracing::warn!(
                                 "load_initial_session_via_core(Fork): SessionList returned no sessions"

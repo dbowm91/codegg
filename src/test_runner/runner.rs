@@ -231,7 +231,6 @@ pub async fn run_resolved_test(
     // RunStore is the authoritative persistence layer for test runs.
     // The legacy .codegg/test-runs/index.json is retained for backward compatibility
     // with TestScope::PreviousFailures and TUI commands that read the index directly.
-    // TODO: Migrate PreviousFailures to read from RunStore and remove the legacy index.
     //
     // Append to the previous-failures index (best-effort; index write failure
     // must not fail the test run).

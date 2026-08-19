@@ -321,7 +321,7 @@ impl Tool for CommitTool {
         let repo_root = crate::git_mutations::resolve_repo_root(&self.workdir)
             .map(|r| r.as_path().to_path_buf())
             .unwrap_or_else(|_| self.workdir.clone());
-        let _ = crate::git_run_store::persist_mutation(
+        let result_opt = crate::git_run_store::persist_mutation(
             &self.run_store,
             &outcome.mutation,
             &self.workdir,
@@ -330,6 +330,9 @@ impl Tool for CommitTool {
             Some(selection_kind.label().to_string()),
         )
         .await;
+        if result_opt.is_none() {
+            tracing::warn!("failed to persist commit mutation to RunStore");
+        }
         if let Some(oid) = &outcome.created_oid {
             response.push_str(&format!("\ncreated_oid: {oid}"));
         }

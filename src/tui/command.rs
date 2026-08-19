@@ -33,7 +33,6 @@ pub struct Command {
     pub template: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
-    pub subtask: Option<bool>,
     pub source: Option<String>,
     /// Process execution spec for `runtime: process` commands.
     pub process: Option<crate::command::ProcessCommandSpec>,
@@ -50,7 +49,6 @@ impl Command {
             template: None,
             agent: None,
             model: None,
-            subtask: None,
             source: None,
             process: None,
         }
@@ -397,8 +395,6 @@ impl CommandRegistry {
             },
             agent: cmd.agent,
             model: cmd.model,
-            #[allow(deprecated)]
-            subtask: cmd.subtask,
             source: Some(cmd.source),
             process: cmd.process,
         }
@@ -455,7 +451,6 @@ impl CommandRegistry {
             template: None,
             agent: None,
             model: None,
-            subtask: None,
             source: Some(format!("plugin:{}", reg.plugin_id)),
             process: None,
         }
@@ -546,8 +541,6 @@ mod tests {
             template: "Release {args}".to_string(),
             agent: Some("build".to_string()),
             model: Some("model-a".to_string()),
-            #[allow(deprecated)]
-            subtask: None,
             source: "test".to_string(),
             process: None,
         };
@@ -574,8 +567,6 @@ mod tests {
             template: String::new(),
             agent: None,
             model: None,
-            #[allow(deprecated)]
-            subtask: None,
             source: "test".to_string(),
             process: Some(ProcessCommandSpec {
                 command: "python3".to_string(),
@@ -610,8 +601,6 @@ mod tests {
             template: String::new(),
             agent: None,
             model: None,
-            #[allow(deprecated)]
-            subtask: None,
             source: "test".to_string(),
             process: Some(crate::command::ProcessCommandSpec {
                 command: "echo".to_string(),

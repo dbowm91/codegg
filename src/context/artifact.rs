@@ -123,12 +123,12 @@ impl ContextArtifactStore for FileArtifactStore {
         if bytes.len() > MAX_ARTIFACT_BYTES {
             anyhow::bail!("context artifact exceeds bounded storage size");
         }
-        std::fs::create_dir_all(&self.base_dir)?;
+        tokio::fs::create_dir_all(&self.base_dir).await?;
         let target = self.path_for(&artifact.handle);
         let temporary = self.base_dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-        std::fs::write(&temporary, bytes)?;
-        if let Err(error) = std::fs::rename(&temporary, &target) {
-            let _ = std::fs::remove_file(&temporary);
+        tokio::fs::write(&temporary, bytes).await?;
+        if let Err(error) = tokio::fs::rename(&temporary, &target).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
             return Err(error.into());
         }
         Ok(())
@@ -143,7 +143,7 @@ impl ContextArtifactStore for FileArtifactStore {
         if metadata.file_type().is_symlink() || metadata.len() > 10 * 1024 * 1024 {
             anyhow::bail!("context artifact path is invalid or oversized");
         }
-        let artifact: ContextArtifact = serde_json::from_slice(&std::fs::read(path)?)?;
+        let artifact: ContextArtifact = serde_json::from_slice(&tokio::fs::read(path).await?)?;
         if artifact.handle != handle {
             anyhow::bail!("context artifact handle mismatch");
         }
@@ -156,18 +156,18 @@ impl ContextArtifactStore for FileArtifactStore {
         limit: usize,
     ) -> anyhow::Result<Vec<ContextArtifact>> {
         let limit = limit.min(256);
-        let Ok(entries) = std::fs::read_dir(&self.base_dir) else {
+        let Ok(mut entries) = tokio::fs::read_dir(&self.base_dir).await else {
             return Ok(Vec::new());
         };
         let mut artifacts = Vec::new();
-        for entry in entries.take(512) {
-            let entry = entry?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let metadata = path.symlink_metadata()?;
             if metadata.file_type().is_symlink() || metadata.len() > 10 * 1024 * 1024 {
                 continue;
             }
-            let Ok(artifact) = serde_json::from_slice::<ContextArtifact>(&std::fs::read(path)?)
+            let Ok(artifact) =
+                serde_json::from_slice::<ContextArtifact>(&tokio::fs::read(&path).await?)
             else {
                 continue;
             };

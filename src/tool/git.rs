@@ -726,7 +726,7 @@ impl GitTool {
         let repo_root = crate::git_mutations::resolve_repo_root(workdir)
             .map(|r| r.as_path().to_path_buf())
             .unwrap_or_else(|_| workdir.to_path_buf());
-        let _ = crate::git_run_store::persist_mutation(
+        let result_opt = crate::git_run_store::persist_mutation(
             &self.run_store,
             &result,
             workdir,
@@ -735,6 +735,9 @@ impl GitTool {
             Some(mutation.to_string()),
         )
         .await;
+        if result_opt.is_none() {
+            tracing::warn!("failed to persist git mutation to RunStore");
+        }
         Ok(project_mutation(&result))
     }
 
