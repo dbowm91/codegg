@@ -899,8 +899,8 @@ pub struct App {
     pub context_hint: String,
     pub event_rx: Option<mpsc::Receiver<ChatEvent>>,
     pub tui_cmd_tx: Option<mpsc::Sender<TuiCommand>>,
-    pub remote_event_rx: Option<mpsc::UnboundedReceiver<serde_json::Value>>,
-    pub remote_send_tx: Option<mpsc::UnboundedSender<RemoteTuiMessage>>,
+    pub remote_event_rx: Option<mpsc::Receiver<serde_json::Value>>,
+    pub remote_send_tx: Option<mpsc::Sender<RemoteTuiMessage>>,
     pub core_client: Option<Arc<dyn CoreClient>>,
     pub config_watcher: Option<crate::config::ConfigWatcher>,
     pub theme_registry: Arc<crate::theme::ThemeRegistry>,
@@ -1825,11 +1825,11 @@ impl App {
         self.plugin_manager.as_ref()
     }
 
-    pub fn set_remote_event_rx(&mut self, rx: mpsc::UnboundedReceiver<serde_json::Value>) {
+    pub fn set_remote_event_rx(&mut self, rx: mpsc::Receiver<serde_json::Value>) {
         self.remote_event_rx = Some(rx);
     }
 
-    pub fn set_remote_send_tx(&mut self, tx: mpsc::UnboundedSender<RemoteTuiMessage>) {
+    pub fn set_remote_send_tx(&mut self, tx: mpsc::Sender<RemoteTuiMessage>) {
         self.remote_send_tx = Some(tx);
     }
 
@@ -2043,7 +2043,9 @@ impl App {
 
     fn send_remote_message(&self, msg: RemoteTuiMessage) {
         if let Some(ref tx) = self.remote_send_tx {
-            let _ = tx.send(msg);
+            if let Err(error) = tx.try_send(msg) {
+                tracing::warn!(?error, "remote TUI outbound queue is full or closed");
+            }
         }
     }
 
@@ -14166,7 +14168,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn render_frame_sends_error_response() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
 
@@ -14190,7 +14192,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn request_snapshot_returns_state_snapshot() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
 
@@ -14231,7 +14233,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn request_snapshot_via_remote_event_advances_sequence() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
 
@@ -14253,7 +14255,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn resume_from_seq_zero_requests_resync() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
 
@@ -14275,7 +14277,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn resume_from_seq_ahead_requests_resync() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
         app.remote_sequence = 5;
@@ -14298,7 +14300,7 @@ mod remote_protocol_tests {
 
     #[test]
     fn resume_from_seq_behind_sends_fresh_snapshot() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
         let mut app = App::new_for_testing("/tmp".into());
         app.remote_send_tx = Some(tx);
         app.remote_sequence = 10;

@@ -129,8 +129,8 @@ impl CoreClient for FakeProjectCatalogClient {
         }
     }
 
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>> {
-        let (_tx, rx) = mpsc::unbounded_channel();
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (_tx, rx) = mpsc::channel(256);
         rx
     }
 }

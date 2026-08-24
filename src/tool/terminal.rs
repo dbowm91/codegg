@@ -350,8 +350,9 @@ impl Tool for TerminalTool {
 fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
     let lines: Vec<&str> = output.lines().collect();
     let truncated = if lines.len() > max_lines {
-        let head = &lines[..max_lines / 2];
-        let tail = &lines[lines.len() - max_lines / 2..];
+        let head = &lines[..max_lines.div_ceil(2)];
+        let tail_count = max_lines / 2;
+        let tail = &lines[lines.len() - tail_count..];
         let mut result = head.join("\n");
         result.push_str(&format!(
             "\n\n... [{} lines truncated] ...\n\n",

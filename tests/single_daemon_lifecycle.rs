@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use codegg::core::instance::{
@@ -61,6 +62,41 @@ fn codegg_binary() -> PathBuf {
     PathBuf::from("./target/debug/codegg")
 }
 
+struct DaemonEnvGuard {
+    _lock: MutexGuard<'static, ()>,
+    old_runtime: Option<std::ffi::OsString>,
+    old_data: Option<std::ffi::OsString>,
+}
+
+impl DaemonEnvGuard {
+    fn new(runtime: &PathBuf, data: &PathBuf) -> Self {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let old_runtime = std::env::var_os("CODEGG_DAEMON_HOME");
+        let old_data = std::env::var_os("CODEGG_DATA_HOME");
+        std::env::set_var("CODEGG_DAEMON_HOME", runtime);
+        std::env::set_var("CODEGG_DATA_HOME", data);
+        Self {
+            _lock: lock,
+            old_runtime,
+            old_data,
+        }
+    }
+}
+
+impl Drop for DaemonEnvGuard {
+    fn drop(&mut self) {
+        match self.old_runtime.take() {
+            Some(value) => std::env::set_var("CODEGG_DAEMON_HOME", value),
+            None => std::env::remove_var("CODEGG_DAEMON_HOME"),
+        }
+        match self.old_data.take() {
+            Some(value) => std::env::set_var("CODEGG_DATA_HOME", value),
+            None => std::env::remove_var("CODEGG_DATA_HOME"),
+        }
+    }
+}
+
 async fn wait_for_daemon_ready(paths: &DaemonPaths, timeout: Duration) -> bool {
     let endpoint = paths.endpoint_uri();
     let deadline = std::time::Instant::now() + timeout;
@@ -86,10 +122,7 @@ async fn connect_or_start_keeps_autostarted_daemon_alive_after_return() {
         return;
     }
 
-    let old_runtime = std::env::var_os("CODEGG_DAEMON_HOME");
-    let old_data = std::env::var_os("CODEGG_DATA_HOME");
-    std::env::set_var("CODEGG_DAEMON_HOME", &root);
-    std::env::set_var("CODEGG_DATA_HOME", &data_root);
+    let _env = DaemonEnvGuard::new(&root, &data_root);
     let result = connect_or_start_daemon(ConnectOrStartOptions {
         paths: DaemonPaths::with_root(root.clone()),
         autostart: true,
@@ -130,14 +163,6 @@ async fn connect_or_start_keeps_autostarted_daemon_alive_after_return() {
         String::from_utf8_lossy(&stop.stderr)
     );
 
-    match old_runtime {
-        Some(value) => std::env::set_var("CODEGG_DAEMON_HOME", value),
-        None => std::env::remove_var("CODEGG_DAEMON_HOME"),
-    }
-    match old_data {
-        Some(value) => std::env::set_var("CODEGG_DATA_HOME", value),
-        None => std::env::remove_var("CODEGG_DATA_HOME"),
-    }
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -154,10 +179,7 @@ async fn concurrent_connect_or_start_calls_converge_on_one_daemon() {
         return;
     }
 
-    let old_runtime = std::env::var_os("CODEGG_DAEMON_HOME");
-    let old_data = std::env::var_os("CODEGG_DATA_HOME");
-    std::env::set_var("CODEGG_DAEMON_HOME", &root);
-    std::env::set_var("CODEGG_DATA_HOME", &data_root);
+    let _env = DaemonEnvGuard::new(&root, &data_root);
     let options = || ConnectOrStartOptions {
         paths: DaemonPaths::with_root(root.clone()),
         autostart: true,
@@ -197,14 +219,6 @@ async fn concurrent_connect_or_start_calls_converge_on_one_daemon() {
         .expect("stop raced daemon");
     assert!(stop.status.success(), "race daemon stop failed");
 
-    match old_runtime {
-        Some(value) => std::env::set_var("CODEGG_DAEMON_HOME", value),
-        None => std::env::remove_var("CODEGG_DAEMON_HOME"),
-    }
-    match old_data {
-        Some(value) => std::env::set_var("CODEGG_DATA_HOME", value),
-        None => std::env::remove_var("CODEGG_DATA_HOME"),
-    }
     std::fs::remove_dir_all(&root).ok();
 }
 

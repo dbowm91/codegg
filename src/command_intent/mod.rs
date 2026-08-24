@@ -386,17 +386,14 @@ fn classify_python(command: &str, argv: &[String]) -> CommandIntent {
 }
 
 fn looks_like_test_command(first: &str, argv: &[String]) -> bool {
-    matches!(
-        first,
-        "cargo" | "pytest" | "go" | "npm" | "pnpm" | "yarn" | "bun" | "make"
-    ) && (first == "cargo" && argv.len() >= 2 && (argv[1] == "test" || argv[1] == "nextest"))
-        || (first == "pytest")
-        || (first == "make" && argv.len() >= 2 && (argv[1] == "test" || argv[1] == "check"))
-        || (first == "go" && argv.len() >= 2 && argv[1] == "test")
-        || (matches!(first, "npm" | "pnpm" | "yarn" | "bun")
-            && argv.len() >= 2
-            && argv[1] == "test")
-        || has_subcommand(argv, "uv", "run", "pytest")
+    match first {
+        "cargo" => argv.len() >= 2 && (argv[1] == "test" || argv[1] == "nextest"),
+        "pytest" => true,
+        "make" => argv.len() >= 2 && (argv[1] == "test" || argv[1] == "check"),
+        "go" => argv.len() >= 2 && argv[1] == "test",
+        "npm" | "pnpm" | "yarn" | "bun" => argv.len() >= 2 && argv[1] == "test",
+        _ => has_subcommand(argv, "uv", "run", "pytest"),
+    }
 }
 
 fn classify_test(command: &str, argv: &[String]) -> CommandIntent {

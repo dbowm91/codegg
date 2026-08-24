@@ -11,6 +11,9 @@ use crate::error::ClientError;
 use crate::protocol::tui::TuiMessage;
 use crate::tui;
 
+const REMOTE_EVENT_CHANNEL_CAPACITY: usize = 256;
+const REMOTE_OUTBOUND_CHANNEL_CAPACITY: usize = 256;
+
 pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientError> {
     let ws_url = build_tui_ws_url(url);
     let http_url = build_http_url(url);
@@ -89,8 +92,10 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
 
     let mut app = tui::App::new_remote(url.to_string());
 
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<TuiMessage>();
+    let (event_tx, event_rx) =
+        tokio::sync::mpsc::channel::<serde_json::Value>(REMOTE_EVENT_CHANNEL_CAPACITY);
+    let (out_tx, mut out_rx) =
+        tokio::sync::mpsc::channel::<TuiMessage>(REMOTE_OUTBOUND_CHANNEL_CAPACITY);
 
     app.set_remote_event_rx(event_rx);
     app.set_remote_send_tx(out_tx);
@@ -100,7 +105,7 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
             match msg {
                 Ok(Message::Text(text)) => match serde_json::from_str::<serde_json::Value>(&text) {
                     Ok(event) => {
-                        if event_tx.send(event).is_err() {
+                        if event_tx.send(event).await.is_err() {
                             tracing::debug!("event_tx closed, stopping event_task");
                             break;
                         }

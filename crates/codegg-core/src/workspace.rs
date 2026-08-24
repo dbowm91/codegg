@@ -726,7 +726,10 @@ impl ExecutionContext {
         // Canonicalize when possible. For paths that don't exist yet,
         // canonicalize the nearest existing ancestor and append the
         // missing suffix. This avoids rejecting newly-introduced files.
-        let canonical = canonicalize_existing(&candidate)?;
+        // Resolve twice so a component replaced by a symlink between the
+        // nearest-ancestor lookup and the policy check is re-evaluated before
+        // the final containment decision.
+        let canonical = canonicalize_existing(&canonicalize_existing(&candidate)?)?;
         if path_within_any(&canonical, allowed_roots) {
             Ok(canonical)
         } else if requested.is_absolute() {
@@ -779,7 +782,11 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, PathPolicyError> {
             for seg in suffix_segments.iter().rev() {
                 joined.push(seg);
             }
-            return Ok(joined);
+            // The missing suffix may have become present (or changed) while
+            // it was being reconstructed. Prefer a full canonicalization
+            // when it now succeeds so newly-created symlinks cannot bypass
+            // the caller's containment check.
+            return Ok(std::fs::canonicalize(&joined).unwrap_or(joined));
         }
         match current.file_name() {
             Some(name) => {

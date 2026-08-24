@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::protocol::core::{CoreEvent, EventEnvelope, PROTOCOL_VERSION};
 
@@ -58,7 +58,7 @@ pub struct EventLog {
     tx: broadcast::Sender<EventEnvelope<CoreEvent>>,
     capacity: usize,
     pool: Option<sqlx::SqlitePool>,
-    projection_sink: Option<Arc<dyn ProjectionSink>>,
+    projection_sink: Option<mpsc::Sender<EventEnvelope<CoreEvent>>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -96,7 +96,14 @@ impl EventLog {
     /// Install a projection replay sink. The sink receives every envelope
     /// published through this log, exactly once per envelope.
     pub fn install_projection_sink(&mut self, sink: Arc<dyn ProjectionSink>) {
-        self.projection_sink = Some(sink);
+        const PROJECTION_QUEUE_CAPACITY: usize = 1024;
+        let (tx, mut rx) = mpsc::channel(PROJECTION_QUEUE_CAPACITY);
+        tokio::spawn(async move {
+            while let Some(envelope) = rx.recv().await {
+                sink.publish(envelope).await;
+            }
+        });
+        self.projection_sink = Some(tx);
     }
 
     /// Publish an event. Returns the assigned sequence number.
@@ -130,24 +137,28 @@ impl EventLog {
                 let event_type = super::core_event_type(&envelope.payload).to_string();
                 match serde_json::to_string(&envelope.payload) {
                     Ok(payload_json) => {
-                        if let Err(error) = sqlx::query(
-                            "INSERT OR IGNORE INTO core_event_log \
-                             (event_seq, session_id, turn_id, event_type, payload_json) \
-                             VALUES (?, ?, ?, ?, ?)",
-                        )
-                        .bind(seq as i64)
-                        .bind(&session_id)
-                        .bind(&turn_id)
-                        .bind(&event_type)
-                        .bind(&payload_json)
-                        .execute(pool)
-                        .await
-                        {
-                            tracing::error!(
-                                event_seq = seq,
-                                ?error,
-                                "failed to persist core event"
-                            );
+                        if let Ok(db_seq) = i64::try_from(seq) {
+                            if let Err(error) = sqlx::query(
+                                "INSERT OR IGNORE INTO core_event_log \
+                                 (event_seq, session_id, turn_id, event_type, payload_json) \
+                                 VALUES (?, ?, ?, ?, ?)",
+                            )
+                            .bind(db_seq)
+                            .bind(&session_id)
+                            .bind(&turn_id)
+                            .bind(&event_type)
+                            .bind(&payload_json)
+                            .execute(pool)
+                            .await
+                            {
+                                tracing::error!(
+                                    event_seq = seq,
+                                    ?error,
+                                    "failed to persist core event"
+                                );
+                            }
+                        } else {
+                            tracing::error!(event_seq = seq, "event sequence exceeds SQLite range");
                         }
                     }
                     Err(error) => {
@@ -162,11 +173,9 @@ impl EventLog {
         // into `projection_event` storage. `ProjectionStreamEvent` itself is
         // classified `Internal` by the safe-publication gate and never recurses.
         if let Some(ref sink) = self.projection_sink {
-            let sink_env = envelope.clone();
-            let sink = Arc::clone(sink);
-            tokio::spawn(async move {
-                sink.publish(sink_env).await;
-            });
+            if sink.send(envelope.clone()).await.is_err() {
+                tracing::warn!(event_seq = seq, "projection sink worker is unavailable");
+            }
         }
 
         let _ = self.tx.send(envelope);
@@ -244,7 +253,9 @@ impl EventLog {
             return Vec::new();
         };
 
-        let bind_seq: i64 = from_event_seq as i64;
+        let Ok(bind_seq) = i64::try_from(from_event_seq) else {
+            return Vec::new();
+        };
         let rows: Vec<CoreEventRow> = match (&filter.session_id, filter.include_global) {
             (Some(sid), true) => sqlx::query_as::<_, CoreEventRow>(
                 "SELECT event_seq, session_id, turn_id, event_type, payload_json, created_at \
@@ -289,9 +300,10 @@ impl EventLog {
                 let timestamp_ms = chrono::DateTime::parse_from_rfc3339(&row.created_at)
                     .map(|dt| dt.timestamp_millis())
                     .unwrap_or(0);
+                let event_seq = u64::try_from(row.event_seq).ok()?;
                 Some(EventEnvelope {
                     protocol_version: PROTOCOL_VERSION,
-                    event_seq: row.event_seq as u64,
+                    event_seq,
                     timestamp_ms,
                     session_id: row.session_id,
                     turn_id: row.turn_id,
@@ -337,8 +349,11 @@ impl EventLog {
         let Some(ref pool) = self.pool else {
             return false;
         };
+        let Ok(bind_seq) = i64::try_from(from_event_seq) else {
+            return false;
+        };
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM core_event_log WHERE event_seq > ?")
-            .bind(from_event_seq as i64)
+            .bind(bind_seq)
             .fetch_one(pool)
             .await
             .map(|count| count > 0)
@@ -407,7 +422,9 @@ impl EventLog {
                 }
             };
         if let Some((min_seq, max_seq)) = row {
-            let need = (from_event_seq as i64).saturating_add(1);
+            let Ok(need) = i64::try_from(from_event_seq).map(|seq| seq.saturating_add(1)) else {
+                return false;
+            };
             match (min_seq, max_seq) {
                 (Some(lo), Some(hi)) => lo <= need && hi >= need,
                 _ => false,

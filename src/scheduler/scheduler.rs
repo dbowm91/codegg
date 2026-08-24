@@ -464,8 +464,8 @@ impl JobScheduler {
 
         // 2. Remove queue entries whose durable state is no longer
         // Queued (cancelled, completed, etc).
-        let q = self.queue.lock().await;
         let to_remove: Vec<JobId> = {
+            let q = self.queue.lock().await;
             // Walk every entry and check durable state. For a small
             // queue this is fine; for a large queue a watermark
             // index would be preferable.
@@ -481,11 +481,12 @@ impl JobScheduler {
             }
             v
         };
-        drop(q);
-        for id in to_remove {
+        {
             let mut q = self.queue.lock().await;
-            if q.remove(&id, QueueRemovalReason::Dropped).is_some() {
-                removed += 1;
+            for id in to_remove {
+                if q.remove(&id, QueueRemovalReason::Dropped).is_some() {
+                    removed += 1;
+                }
             }
         }
 
@@ -971,13 +972,28 @@ impl JobScheduler {
     /// Snapshot of externally visible state. Composed from the
     /// queue, admission, running, and executor registry.
     pub async fn snapshot(&self) -> SchedulerSnapshot {
-        let q = self.queue.lock().await;
+        let (queued_per_workspace, ready_window_count) = {
+            let q = self.queue.lock().await;
+            (q.per_workspace().clone(), q.total())
+        };
         let admission = self.admission.snapshot();
-        let running = self.running.lock().await;
-        let rpw = self.running_per_workspace.lock().await;
-        let ready_counts = self.ready_counts.lock().await;
-        let executors = self.executors.lock().await;
-        let oldest = self.oldest_queued_age_secs.lock().await;
+        let running_attempts = { self.running.lock().await.len() };
+        let rpw = { self.running_per_workspace.lock().await.clone() };
+        let ready_counts = { self.ready_counts.lock().await.clone() };
+        let executors_snap: Vec<ExecutorHealthSnapshot> = {
+            let executors = self.executors.lock().await;
+            executors
+                .health_snapshot()
+                .into_iter()
+                .map(|(k, h)| ExecutorHealthSnapshot {
+                    executor: k.as_str().to_string(),
+                    health: h,
+                    total_invocations: 0,
+                    total_failures: 0,
+                })
+                .collect()
+        };
+        let oldest = { *self.oldest_queued_age_secs.lock().await };
 
         let mut by_priority = BTreeMap::new();
         for (label, count) in ready_counts.iter() {
@@ -988,36 +1004,16 @@ impl JobScheduler {
             .map(
                 |(ws, running)| crate::scheduler::snapshot::PerWorkspaceSummary {
                     workspace_id: ws.clone(),
-                    queued: q.per_workspace().get(ws).copied().unwrap_or(0),
+                    queued: queued_per_workspace.get(ws).copied().unwrap_or(0),
                     running: *running,
-                    ready_window: q.per_workspace().get(ws).copied().unwrap_or(0),
+                    ready_window: queued_per_workspace.get(ws).copied().unwrap_or(0),
                 },
             )
             .collect();
 
-        let ready_window_count = q.total();
-        let durable_queued_count = q.total();
-
-        let executors_snap: Vec<ExecutorHealthSnapshot> = executors
-            .health_snapshot()
-            .into_iter()
-            .map(|(k, h)| ExecutorHealthSnapshot {
-                executor: k.as_str().to_string(),
-                health: h,
-                total_invocations: 0,
-                total_failures: 0,
-            })
-            .collect();
+        let durable_queued_count = ready_window_count;
 
         let by_kind_local = BTreeMap::<String, usize>::new();
-        for ra in running.values() {
-            // attempt kind is on the job; we don't have the job
-            // here, so leave by_kind empty in the snapshot. The
-            // ready-window counts use job kinds via queue entries;
-            // the scheduler does not currently persist kind in the
-            // queue entry.
-            let _ = ra;
-        }
 
         let resources = crate::scheduler::snapshot::ResourceSummary::from_admission(
             &admission,
@@ -1033,7 +1029,7 @@ impl JobScheduler {
         SchedulerSnapshot {
             ready_window_count,
             durable_queued_count,
-            running_attempts: running.len(),
+            running_attempts,
             per_priority: SnapshotCounts {
                 by_priority,
                 by_kind: by_kind_local,
@@ -1050,7 +1046,7 @@ impl JobScheduler {
                 total: self.admission_blocks.load(Ordering::SeqCst),
                 by_reason: BTreeMap::new(),
             },
-            oldest_queued_age_secs: *oldest,
+            oldest_queued_age_secs: oldest,
             rollout_mode: format!("{:?}", self.config.rollout),
             enabled: self.config.enabled,
         }

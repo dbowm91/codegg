@@ -78,7 +78,7 @@ struct SessionBinding {
 
 pub async fn run() -> Result<(), crate::error::AppError> {
     let mut client: Option<Arc<SocketCoreClient>> = None;
-    let (_event_sink, mut events) = mpsc::unbounded_channel::<EventEnvelope<CoreEvent>>();
+    let (_event_sink, mut events) = mpsc::channel::<EventEnvelope<CoreEvent>>(256);
     let stdin = BufReader::new(tokio::io::stdin());
     let mut lines = stdin.lines();
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
@@ -257,7 +257,7 @@ pub async fn run() -> Result<(), crate::error::AppError> {
     Ok(())
 }
 
-fn drain_event_floor(events: &mut mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>>) -> u64 {
+fn drain_event_floor(events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>) -> u64 {
     let mut floor = 0;
     while let Ok(event) = events.try_recv() {
         floor = floor.max(event.event_seq);
@@ -287,7 +287,7 @@ async fn cancel_if_ready(client: Option<&Arc<SocketCoreClient>>, prompt: &mut Ac
 
 async fn ensure_client(
     client: &mut Option<Arc<SocketCoreClient>>,
-    events: &mut mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>>,
+    events: &mut mpsc::Receiver<EventEnvelope<CoreEvent>>,
 ) -> Result<Arc<SocketCoreClient>, crate::error::AppError> {
     if let Some(client) = client {
         return Ok(Arc::clone(client));

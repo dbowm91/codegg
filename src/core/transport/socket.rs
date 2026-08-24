@@ -375,14 +375,14 @@ impl CoreClient for SocketCoreClient {
         })??)
     }
 
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (tx, rx) = mpsc::channel(crate::core::CORE_EVENT_CHANNEL_CAPACITY);
         let mut broadcast_rx = self.event_bus.subscribe();
         tokio::spawn(async move {
             loop {
                 match broadcast_rx.recv().await {
                     Ok(event) => {
-                        if tx.send(event).is_err() {
+                        if tx.send(event).await.is_err() {
                             break;
                         }
                     }

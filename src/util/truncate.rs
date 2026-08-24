@@ -3,13 +3,16 @@ pub fn truncate_lines(text: &str, max_lines: usize) -> String {
     if lines.len() <= max_lines {
         return text.to_string();
     }
-    let half = max_lines / 2;
-    let mut result = lines[..half].join("\n");
+    let head_count = max_lines.div_ceil(2);
+    let tail_count = max_lines / 2;
+    let mut result = lines[..head_count].join("\n");
     result.push_str(&format!(
         "\n\n... [{} lines truncated] ...\n\n",
         lines.len() - max_lines
     ));
-    result.push_str(&lines[lines.len() - half..].join("\n"));
+    if tail_count > 0 {
+        result.push_str(&lines[lines.len() - tail_count..].join("\n"));
+    }
     result
 }
 
@@ -91,6 +94,20 @@ mod tests {
         assert!(result.contains("line2"));
         assert!(result.contains("line9"));
         assert!(result.contains("line10"));
+    }
+
+    #[test]
+    fn test_truncate_lines_honors_odd_limit() {
+        let text = (1..=10)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let result = truncate_lines(&text, 9);
+        assert!(result.contains("line1"));
+        assert!(result.contains("line5"));
+        assert!(result.contains("line7"));
+        assert!(result.contains("line10"));
+        assert!(!result.contains("line6"));
     }
 
     #[test]

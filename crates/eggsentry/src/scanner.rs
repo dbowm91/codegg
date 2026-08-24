@@ -9,8 +9,20 @@ use std::sync::LazyLock;
 static AWS_KEY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").unwrap());
 
 static GITHUB_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(ghp_[A-Za-z0-9]{36,}|gho_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82,})").unwrap()
+    Regex::new(r"(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82,})").unwrap()
 });
+
+static SLACK_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"xox[baprs]-[A-Za-z0-9-]{10,}").unwrap());
+
+static NPM_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"npm_[A-Za-z0-9]{20,}").unwrap());
+
+static PYPI_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"pypi-[A-Za-z0-9_-]{20,}").unwrap());
+
+static GCP_SERVICE_ACCOUNT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)"type"\s*:\s*"service_account""#).unwrap());
 
 static OPENAI_KEY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"sk-[A-Za-z0-9]{20,}").unwrap());
@@ -80,6 +92,34 @@ static SECRET_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             severity: Severity::Critical,
             confidence: Confidence::High,
             recommendation: "Remove GitHub token and revoke it in GitHub settings".into(),
+        },
+        Rule {
+            re: SLACK_TOKEN_RE.clone(),
+            category: SecurityCategory::SecretExposure,
+            severity: Severity::Critical,
+            confidence: Confidence::High,
+            recommendation: "Remove Slack token and revoke it in Slack settings".into(),
+        },
+        Rule {
+            re: NPM_TOKEN_RE.clone(),
+            category: SecurityCategory::SecretExposure,
+            severity: Severity::Critical,
+            confidence: Confidence::High,
+            recommendation: "Remove npm token and revoke it in npm settings".into(),
+        },
+        Rule {
+            re: PYPI_TOKEN_RE.clone(),
+            category: SecurityCategory::SecretExposure,
+            severity: Severity::Critical,
+            confidence: Confidence::High,
+            recommendation: "Remove PyPI token and revoke it in PyPI settings".into(),
+        },
+        Rule {
+            re: GCP_SERVICE_ACCOUNT_RE.clone(),
+            category: SecurityCategory::SecretExposure,
+            severity: Severity::Critical,
+            confidence: Confidence::High,
+            recommendation: "Remove GCP service-account credentials and rotate the key".into(),
         },
         Rule {
             re: OPENAI_KEY_RE.clone(),
@@ -360,6 +400,25 @@ fn main() {
             .collect();
         assert!(!secret_findings.is_empty());
         assert!(secret_findings[0].evidence.contains("github_pat_"));
+    }
+
+    #[test]
+    fn detect_common_provider_tokens() {
+        let text = "xoxb-1234567890 npm_12345678901234567890 pypi-12345678901234567890 ghu_123456789012345678901234567890123456";
+        let findings = inspect_text(None, text);
+        let secret_findings: Vec<_> = findings
+            .iter()
+            .filter(|f| f.category == SecurityCategory::SecretExposure)
+            .collect();
+        assert!(secret_findings.len() >= 4);
+    }
+
+    #[test]
+    fn detect_gcp_service_account_envelope() {
+        let findings = inspect_text(None, r#"{"type":"service_account","private_key":"..."}"#);
+        assert!(findings
+            .iter()
+            .any(|finding| finding.category == SecurityCategory::SecretExposure));
     }
 
     #[test]

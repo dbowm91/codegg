@@ -18,8 +18,9 @@ static BLOCK_MKFS_SPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"mkfs\s"
 static BLOCK_DD_ZERO: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"dd\s+if=/dev/zero\s+of=/dev/").unwrap());
 static BLOCK_DD_DEV: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"dd\s+if=/dev/").unwrap());
-static BLOCK_FORK_BOMB: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r":\(\)\s*\{.*\|.*&\s*\}").unwrap());
+static BLOCK_FORK_BOMB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-zA-Z_:][a-zA-Z0-9_]*\s*\(\)\s*\{[^}]*\|[^}]*&[^}]*\}").unwrap()
+});
 static BLOCK_SHUTDOWN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"shutdown\s").unwrap());
 static BLOCK_REBOOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"reboot\s?").unwrap());
 static BLOCK_POWEROFF: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"poweroff\s?").unwrap());
@@ -46,7 +47,7 @@ static WARN_CHOWN_R: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"chown\s+-[a-zA-Z]*r\b").unwrap());
 
 pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
-    let normalized = command.trim().to_lowercase();
+    let normalized = normalize_command(command);
 
     if let Some(reason) = check_block_patterns(&normalized) {
         return HumanShellPolicyDecision::Block { reason };
@@ -57,6 +58,15 @@ pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
     }
 
     HumanShellPolicyDecision::Allow
+}
+
+fn normalize_command(command: &str) -> String {
+    command
+        .trim()
+        .to_lowercase()
+        .replace("--recursive", "-r")
+        .replace("--force", "-f")
+        .replace(['\'', '"'], "")
 }
 
 fn check_block_patterns(cmd: &str) -> Option<String> {
@@ -156,13 +166,27 @@ mod tests {
 
     #[test]
     fn rm_rf_root_variants_blocked() {
-        let blocked = ["rm -rf /", "rm -r -f /", "rm -f -r /"];
+        let blocked = [
+            "rm -rf /",
+            "rm -r -f /",
+            "rm -f -r /",
+            "rm --recursive --force /",
+            "rm -rf '/'",
+        ];
         for cmd in &blocked {
             match evaluate_command(cmd) {
                 HumanShellPolicyDecision::Block { .. } => {}
                 _ => panic!("expected block for: {}", cmd),
             }
         }
+    }
+
+    #[test]
+    fn named_fork_bomb_is_blocked() {
+        assert!(matches!(
+            evaluate_command("a(){ a|a& };a"),
+            HumanShellPolicyDecision::Block { .. }
+        ));
     }
 
     #[test]

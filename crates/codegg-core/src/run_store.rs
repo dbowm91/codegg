@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -1068,6 +1068,23 @@ fn validate_id_str(s: &str) -> Result<(), RunStoreError> {
     Ok(())
 }
 
+async fn directory_size(path: &Path) -> Result<u64, std::io::Error> {
+    let mut total = 0u64;
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if file_type.is_file() {
+                total = total.saturating_add(entry.metadata().await?.len());
+            }
+        }
+    }
+    Ok(total)
+}
+
 // ── FsRunStore ──────────────────────────────────────────────────────────
 
 pub struct FsRunStore {
@@ -1262,6 +1279,96 @@ impl FsRunStore {
             pinned_runs_skipped: pinned,
         })
     }
+
+    async fn cleanup(&self, config: &RetentionConfig) -> Result<CleanupPlan, RunStoreError> {
+        let _lock = self.lock.lock().await;
+        let entries = self.load_index().await?;
+        let now = Utc::now();
+        let max_age = chrono::Duration::days(config.max_age_days as i64);
+        let failed_age =
+            chrono::Duration::days((config.max_age_days + config.failed_extra_days) as i64);
+
+        let mut total_bytes = 0u64;
+        let mut candidates = Vec::new();
+        for entry in &entries {
+            let run_dir = self.run_dir(&entry.date_dir, entry.run_id.as_str())?;
+            let size = directory_size(&run_dir).await.unwrap_or(0);
+            total_bytes = total_bytes.saturating_add(size);
+            if !entry.pinned && entry.status != RunStatus::Running {
+                let is_failed = matches!(
+                    entry.status,
+                    RunStatus::Failed | RunStatus::TimedOut | RunStatus::Incomplete
+                );
+                candidates.push((entry.clone(), size, is_failed));
+            }
+        }
+        candidates.sort_by_key(|(entry, _, _)| entry.started_at);
+
+        let non_pinned_count = candidates.len();
+        let mut selected = HashSet::new();
+        let mut bytes_to_free = 0u64;
+        for (entry, size, is_failed) in &candidates {
+            let age = now.signed_duration_since(entry.started_at);
+            let limit = if config.preserve_failed_longer && *is_failed {
+                failed_age
+            } else {
+                max_age
+            };
+            if age > limit {
+                selected.insert(entry.run_id.clone());
+                bytes_to_free = bytes_to_free.saturating_add(*size);
+            }
+        }
+
+        let mut next = 0;
+        while non_pinned_count.saturating_sub(selected.len()) > config.max_run_count
+            || total_bytes.saturating_sub(bytes_to_free) > config.max_total_bytes
+        {
+            let Some((entry, size, _)) = candidates.get(next) else {
+                break;
+            };
+            next += 1;
+            if selected.insert(entry.run_id.clone()) {
+                bytes_to_free = bytes_to_free.saturating_add(*size);
+            }
+        }
+
+        let pinned_runs_skipped = entries
+            .iter()
+            .filter(|entry| entry.pinned)
+            .map(|entry| entry.run_id.clone())
+            .collect();
+        let runs_to_delete: Vec<RunId> = selected.iter().cloned().collect();
+        if selected.is_empty() {
+            *self.index_cache.write() = entries;
+            return Ok(CleanupPlan {
+                runs_to_delete,
+                bytes_to_free,
+                pinned_runs_skipped,
+            });
+        }
+
+        let mut retained = Vec::with_capacity(entries.len() - selected.len());
+        for entry in entries {
+            if selected.contains(&entry.run_id) {
+                let run_dir = self.run_dir(&entry.date_dir, entry.run_id.as_str())?;
+                match fs::remove_dir_all(run_dir).await {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(RunStoreError::Io(error)),
+                }
+            } else {
+                retained.push(entry);
+            }
+        }
+        self.rewrite_index_locked(&retained).await?;
+
+        Ok(CleanupPlan {
+            runs_to_delete,
+            bytes_to_free,
+            pinned_runs_skipped,
+        })
+    }
 }
 
 #[async_trait::async_trait]
@@ -1448,6 +1555,11 @@ impl RunStore for FsRunStore {
             entry.completed_at = manifest.completed_at;
         }
         self.rewrite_index_locked(&entries).await?;
+        drop(_lock);
+
+        if let Err(error) = self.cleanup(&RetentionConfig::default()).await {
+            tracing::warn!(?error, "run-store retention cleanup failed");
+        }
 
         Ok(manifest)
     }

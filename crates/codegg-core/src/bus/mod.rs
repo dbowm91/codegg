@@ -3,7 +3,8 @@ pub mod global;
 
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// User-facing permission decision, owned by the bus layer so that the
 /// low-level bus module does not depend on the `permission` domain module.
@@ -86,12 +87,14 @@ static PERMISSION_REGISTRY: Lazy<PermissionRegistry> = Lazy::new(PermissionRegis
 
 pub struct PermissionRegistry {
     senders: DashMap<String, PendingPermission>,
+    last_cleanup_secs: AtomicU64,
 }
 
 impl PermissionRegistry {
     pub fn new() -> Self {
         Self {
             senders: DashMap::new(),
+            last_cleanup_secs: AtomicU64::new(0),
         }
     }
 
@@ -113,7 +116,7 @@ impl PermissionRegistry {
         perm_id: String,
         tx: tokio::sync::oneshot::Sender<PermissionDecision>,
     ) {
-        Self::cleanup();
+        Self::cleanup_if_due();
         let pending = PendingPermission {
             session_id,
             turn_id,
@@ -186,7 +189,7 @@ impl PermissionRegistry {
     }
 
     pub fn pending_permission_ids() -> Vec<String> {
-        Self::cleanup();
+        Self::cleanup_if_due();
         PERMISSION_REGISTRY
             .senders
             .iter()
@@ -197,7 +200,7 @@ impl PermissionRegistry {
     /// Return all pending permissions for the given `session_id`, with
     /// full metadata (perm_id, session_id, turn_id, created_at).
     pub fn get_pending_for_session(session_id: &str) -> Vec<PendingPermissionInfo> {
-        Self::cleanup();
+        Self::cleanup_if_due();
         PERMISSION_REGISTRY
             .senders
             .iter()
@@ -211,15 +214,32 @@ impl PermissionRegistry {
             .collect()
     }
 
-    fn cleanup() {
+    fn cleanup_if_due() {
         let ttl = Duration::from_secs(310);
+        let now = unix_seconds();
+        let last = PERMISSION_REGISTRY
+            .last_cleanup_secs
+            .load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 30
+            || PERMISSION_REGISTRY
+                .last_cleanup_secs
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
         PERMISSION_REGISTRY
             .senders
             .retain(|_, pending| pending.created_at.elapsed() < ttl);
     }
 
     pub fn cleanup_now() {
-        Self::cleanup();
+        PERMISSION_REGISTRY
+            .last_cleanup_secs
+            .store(unix_seconds(), Ordering::Release);
+        PERMISSION_REGISTRY
+            .senders
+            .retain(|_, pending| pending.created_at.elapsed() < Duration::from_secs(310));
     }
 }
 
@@ -233,12 +253,14 @@ static QUESTION_REGISTRY: Lazy<QuestionRegistry> = Lazy::new(QuestionRegistry::n
 
 pub struct QuestionRegistry {
     senders: DashMap<String, PendingQuestion>,
+    last_cleanup_secs: AtomicU64,
 }
 
 impl QuestionRegistry {
     pub fn new() -> Self {
         Self {
             senders: DashMap::new(),
+            last_cleanup_secs: AtomicU64::new(0),
         }
     }
 
@@ -260,7 +282,7 @@ impl QuestionRegistry {
         question_id: String,
         tx: tokio::sync::oneshot::Sender<String>,
     ) {
-        Self::cleanup();
+        Self::cleanup_if_due();
         let pending = PendingQuestion {
             session_id,
             turn_id,
@@ -331,7 +353,7 @@ impl QuestionRegistry {
     }
 
     pub fn pending_question_ids() -> Vec<String> {
-        Self::cleanup();
+        Self::cleanup_if_due();
         QUESTION_REGISTRY
             .senders
             .iter()
@@ -342,7 +364,7 @@ impl QuestionRegistry {
     /// Return all pending questions for the given `session_id`, with full
     /// metadata (question_id, session_id, turn_id, created_at).
     pub fn get_pending_for_session(session_id: &str) -> Vec<PendingQuestionInfo> {
-        Self::cleanup();
+        Self::cleanup_if_due();
         QUESTION_REGISTRY
             .senders
             .iter()
@@ -356,16 +378,38 @@ impl QuestionRegistry {
             .collect()
     }
 
-    fn cleanup() {
+    fn cleanup_if_due() {
         let ttl = Duration::from_secs(310);
+        let now = unix_seconds();
+        let last = QUESTION_REGISTRY.last_cleanup_secs.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 30
+            || QUESTION_REGISTRY
+                .last_cleanup_secs
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
         QUESTION_REGISTRY
             .senders
             .retain(|_, pending| pending.created_at.elapsed() < ttl);
     }
 
     pub fn cleanup_now() {
-        Self::cleanup();
+        QUESTION_REGISTRY
+            .last_cleanup_secs
+            .store(unix_seconds(), Ordering::Release);
+        QUESTION_REGISTRY
+            .senders
+            .retain(|_, pending| pending.created_at.elapsed() < Duration::from_secs(310));
     }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 impl Default for QuestionRegistry {

@@ -2,6 +2,7 @@ use axum::response::sse::{Event, Sse};
 use futures_util::stream::Stream;
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -16,7 +17,12 @@ pub async fn sse_handler() -> Sse<impl Stream<Item = Result<Event, Infallible>>>
                 None
             }
         }
-        Err(_) => None,
+        Err(BroadcastStreamRecvError::Lagged(n)) => {
+            tracing::warn!(dropped = n, "SSE event subscriber lagged");
+            Some(Ok(Event::default()
+                .event("resync_required")
+                .data(format!("{{\"dropped\":{n}}}"))))
+        }
     });
 
     let heartbeat =

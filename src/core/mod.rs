@@ -20,13 +20,15 @@ pub mod session_runtime;
 pub mod session_selection;
 pub mod transport;
 
+const CORE_EVENT_CHANNEL_CAPACITY: usize = 256;
+
 #[async_trait]
 pub trait CoreClient: Send + Sync {
     async fn request(
         &self,
         request: RequestEnvelope<CoreRequest>,
     ) -> Result<CoreResponse, AppError>;
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>>;
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>>;
 }
 
 /// In-process core client. Now delegates to CoreDaemon.
@@ -113,14 +115,14 @@ impl CoreClient for InprocCoreClient {
         }
     }
 
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>> {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (tx, rx) = mpsc::channel(CORE_EVENT_CHANNEL_CAPACITY);
 
         if let Some(ref daemon) = self.daemon {
             let mut event_rx = daemon.event_log.subscribe();
             tokio::spawn(async move {
                 while let Ok(event) = event_rx.recv().await {
-                    if tx.send(event).is_err() {
+                    if tx.send(event).await.is_err() {
                         break;
                     }
                 }
@@ -190,7 +192,7 @@ impl CoreClient for InprocCoreClient {
                                     payload: core_event,
                                 };
                                 seq = seq.saturating_add(1);
-                                if tx.send(envelope).is_err() {
+                                if tx.send(envelope).await.is_err() {
                                     break;
                                 }
                             }

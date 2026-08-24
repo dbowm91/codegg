@@ -632,7 +632,12 @@ fn validate_test_command(command: &str) -> Option<String> {
         "make check",
     ];
     for prefix in &test_prefixes {
-        if trimmed.starts_with(prefix) {
+        if trimmed == *prefix
+            || trimmed
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(char::is_whitespace)
+        {
             return Some(trimmed.to_string());
         }
     }
@@ -924,6 +929,15 @@ mod tests {
         let intent = classify_command("pytest tests/");
         let plan = plan_execution(&intent);
         assert!(matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
+    }
+
+    #[test]
+    fn test_command_validation_is_token_bounded() {
+        assert!(validate_test_command("cargo test --lib").is_some());
+        assert!(validate_test_command("pytest tests/").is_some());
+        assert!(validate_test_command("cargo testify").is_none());
+        assert!(validate_test_command("pytestevil tests/").is_none());
+        assert!(validate_test_command("make testcase").is_none());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock as TokioRwLock;
@@ -32,6 +33,7 @@ struct CircuitBreakerInner {
     success_count: TokioRwLock<usize>,
     last_failure_time: TokioRwLock<Option<Instant>>,
     half_open_start_time: TokioRwLock<Option<Instant>>,
+    half_open_probe: AtomicBool,
     failure_threshold: usize,
     timeout_secs: u64,
     success_threshold: usize,
@@ -58,6 +60,7 @@ impl CircuitBreaker {
                 success_count: TokioRwLock::new(0),
                 last_failure_time: TokioRwLock::new(None),
                 half_open_start_time: TokioRwLock::new(None),
+                half_open_probe: AtomicBool::new(false),
                 failure_threshold,
                 timeout_secs,
                 success_threshold,
@@ -83,6 +86,7 @@ impl CircuitBreaker {
                     let timeout = Duration::from_secs(self.inner.timeout_secs);
                     if last_failure.elapsed() >= timeout {
                         *state = CircuitState::HalfOpen;
+                        self.inner.half_open_probe.store(false, Ordering::Release);
                         *self.inner.half_open_start_time.write().await = Some(Instant::now());
                         tracing::info!(
                             "circuit breaker {} transitioned to HalfOpen",
@@ -103,18 +107,25 @@ impl CircuitBreaker {
         E: From<CircuitError>,
     {
         if !self.is_available().await {
-            let state = *self.inner.state.read().await;
-            if state == CircuitState::Open {
-                return Err(CircuitError::Open(self.inner.name.clone()).into());
-            }
+            return Err(CircuitError::Open(self.inner.name.clone()).into());
         }
 
-        if let CircuitState::HalfOpen = *self.inner.state.read().await {
+        let state = *self.inner.state.read().await;
+        if state == CircuitState::HalfOpen {
+            if self
+                .inner
+                .half_open_probe
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(CircuitError::Open(self.inner.name.clone()).into());
+            }
             if let Some(start_time) = *self.inner.half_open_start_time.read().await {
                 if start_time.elapsed() >= self.inner.max_half_open_duration {
                     *self.inner.state.write().await = CircuitState::Open;
                     *self.inner.half_open_start_time.write().await = None;
                     *self.inner.last_failure_time.write().await = None;
+                    self.inner.half_open_probe.store(false, Ordering::Release);
                     tracing::warn!(
                         "circuit breaker {} transitioned to Open after HalfOpen timeout",
                         self.inner.name
@@ -141,15 +152,19 @@ impl CircuitBreaker {
                 *self.inner.failure_count.write().await = 0;
             }
             CircuitState::HalfOpen => {
-                let mut count = self.inner.success_count.write().await;
-                *count += 1;
-                if *count >= self.inner.success_threshold {
+                let reached_threshold = {
+                    let mut count = self.inner.success_count.write().await;
+                    *count += 1;
+                    *count >= self.inner.success_threshold
+                };
+                if reached_threshold {
                     *state = CircuitState::Closed;
                     *self.inner.failure_count.write().await = 0;
                     *self.inner.success_count.write().await = 0;
                     *self.inner.last_failure_time.write().await = None;
                     tracing::info!("circuit breaker {} transitioned to Closed", self.inner.name);
                 }
+                self.inner.half_open_probe.store(false, Ordering::Release);
             }
             CircuitState::Open => {}
         }
@@ -174,6 +189,7 @@ impl CircuitBreaker {
             CircuitState::HalfOpen => {
                 *state = CircuitState::Open;
                 *self.inner.success_count.write().await = 0;
+                self.inner.half_open_probe.store(false, Ordering::Release);
                 tracing::warn!(
                     "circuit breaker {} transitioned to Open after HalfOpen failure",
                     self.inner.name
@@ -181,5 +197,47 @@ impl CircuitBreaker {
             }
             CircuitState::Open => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn half_open_allows_only_one_probe() {
+        let breaker = CircuitBreaker::new("test", 1, 60, 1);
+        {
+            let mut state = breaker.inner.state.write().await;
+            *state = CircuitState::HalfOpen;
+            *breaker.inner.half_open_start_time.write().await = Some(Instant::now());
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_calls = Arc::clone(&calls);
+        let first_breaker = breaker.clone();
+        let first = tokio::spawn(async move {
+            first_breaker
+                .call(async move {
+                    first_calls.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Ok::<_, CircuitError>(())
+                })
+                .await
+        });
+
+        for _ in 0..10 {
+            if calls.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        let second = breaker.call(async { Ok::<_, CircuitError>(()) }).await;
+        assert!(matches!(second, Err(CircuitError::Open(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        assert!(first.await.unwrap().is_ok());
     }
 }

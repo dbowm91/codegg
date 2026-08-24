@@ -85,8 +85,8 @@ impl CoreClient for StdioCoreClient {
         serde_json::from_str::<CoreResponse>(line.trim()).map_err(AppError::Json)
     }
 
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<EventEnvelope<CoreEvent>> {
-        let (_tx, rx) = mpsc::unbounded_channel();
+    fn subscribe(&self) -> mpsc::Receiver<EventEnvelope<CoreEvent>> {
+        let (_tx, rx) = mpsc::channel(crate::core::CORE_EVENT_CHANNEL_CAPACITY);
         rx
     }
 }

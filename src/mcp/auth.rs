@@ -47,12 +47,29 @@ fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, McpError> {
 }
 
 fn decrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, McpError> {
+    if data.len() < 12 {
+        return Err(McpError::Encryption(
+            "encrypted payload is shorter than its nonce".to_string(),
+        ));
+    }
     let cipher = Aes256Gcm::new(key.into());
     let nonce = Nonce::from_slice(&data[..12]);
     let ciphertext = &data[12..];
     cipher
         .decrypt(nonce, ciphertext)
         .map_err(|e| McpError::Encryption(e.to_string()))
+}
+
+#[cfg(test)]
+mod crypto_tests {
+    use super::*;
+
+    #[test]
+    fn decrypt_rejects_truncated_nonce() {
+        let key = [7u8; 32];
+        let error = decrypt_data(&[0u8; 11], &key).unwrap_err();
+        assert!(matches!(error, McpError::Encryption(message) if message.contains("nonce")));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

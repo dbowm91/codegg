@@ -95,7 +95,8 @@ impl PluginRuntime for ProcessRuntime {
             .args(&invocation.args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
 
         if let Some(ref cwd) = self.spec.cwd {
             cmd.current_dir(cwd);
@@ -126,31 +127,33 @@ impl PluginRuntime for ProcessRuntime {
             RuntimeError::Spawn(format!("failed to spawn '{}': {}", self.spec.command, e))
         })?;
 
-        // Write stdin if needed
-        if self.spec.stdin == CommandStdinMode::Json {
-            if let Some(ref mut stdin) = child.stdin {
-                let json = serde_json::to_string(&invocation).map_err(|e| {
-                    RuntimeError::InvalidJson(format!("failed to serialize invocation: {e}"))
-                })?;
-                use tokio::io::AsyncWriteExt;
-                stdin
-                    .write_all(json.as_bytes())
-                    .await
-                    .map_err(|e| RuntimeError::Io(format!("failed to write stdin: {e}")))?;
-            }
-        }
-        // Drop stdin to signal EOF
-        drop(child.stdin.take());
-
-        let output = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
-        )
-        .await
-        .map_err(|_| RuntimeError::Timeout { timeout_ms })?
-        .map_err(|e| {
-            RuntimeError::Io(format!("failed to wait for '{}': {}", self.spec.command, e))
-        })?;
+        let output =
+            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async move {
+                // Keep stdin writes under the same deadline as process
+                // execution. A plugin that never reads a full pipe must not
+                // hold the invocation open indefinitely.
+                if self.spec.stdin == CommandStdinMode::Json {
+                    if let Some(ref mut stdin) = child.stdin {
+                        let json = serde_json::to_string(&invocation).map_err(|e| {
+                            RuntimeError::InvalidJson(format!(
+                                "failed to serialize invocation: {e}"
+                            ))
+                        })?;
+                        use tokio::io::AsyncWriteExt;
+                        stdin
+                            .write_all(json.as_bytes())
+                            .await
+                            .map_err(|e| RuntimeError::Io(format!("failed to write stdin: {e}")))?;
+                    }
+                }
+                // Drop stdin to signal EOF.
+                drop(child.stdin.take());
+                child.wait_with_output().await.map_err(|e| {
+                    RuntimeError::Io(format!("failed to wait for '{}': {}", self.spec.command, e))
+                })
+            })
+            .await
+            .map_err(|_| RuntimeError::Timeout { timeout_ms })??;
 
         let stdout_raw = truncate_bytes(&output.stdout, self.limits.max_stdout_bytes);
         let stderr_raw = truncate_bytes(&output.stderr, self.limits.max_stderr_bytes);

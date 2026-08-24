@@ -62,11 +62,10 @@ fn validate_relative_install_path(rel: &Path) -> Result<(), String> {
 /// Validate that a user-supplied local install source path is safe to use.
 ///
 /// Unlike `validate_relative_install_path`, this helper accepts absolute paths
-/// and `..` components as long as the canonicalized target exists, is a
-/// directory, and contains a `manifest.toml`. This is appropriate for a local
-/// install command where the user explicitly chose the path; it is NOT
-/// appropriate for archive entries or copy-relative paths, which must remain
-/// strictly relative.
+/// as long as the lexical path contains no `..`, the canonicalized target
+/// exists, is a directory, and contains a `manifest.toml`. This is appropriate
+/// for a local install command; archive entries and copy-relative paths must
+/// remain strictly relative.
 ///
 /// Returns the canonicalized path on success.
 pub fn validate_local_install_source(
@@ -80,10 +79,18 @@ pub fn validate_local_install_source(
             .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")));
     }
 
-    // Canonicalize first so we can validate existence and directory-ness
-    // without surprising the user with extra traversal rejection at this layer.
-    // The user-supplied path is a deliberate choice; traversal here is benign
-    // as long as the canonical target is a real directory with a manifest.
+    // Reject lexical parent traversal before touching the filesystem. This
+    // keeps validation order explicit and avoids a symlink race between
+    // path inspection and canonicalization. Absolute paths remain allowed.
+    if source
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(InstallError::InvalidPath(
+            "path traversal is not allowed in install source".to_string(),
+        ));
+    }
+
     let canonical = std::fs::canonicalize(source)
         .map_err(|e| InstallError::InvalidPath(format!("cannot resolve source path: {e}")))?;
 
@@ -143,7 +150,10 @@ pub async fn install_from_path_into(
         return Err(InstallError::AlreadyInstalled(plugin_name));
     }
 
-    copy_dir_all(&path, &dest)?;
+    if let Err(error) = copy_dir_all(&path, &dest) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(error.into());
+    }
     Ok(dest)
 }
 
@@ -177,31 +187,51 @@ pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
         .trim_end_matches(".wasm")
         .trim_end_matches(".tar.gz");
 
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+        return Err(InstallError::InvalidPath(format!(
+            "invalid plugin name from URL: {name}"
+        )));
+    }
+
     let dest = plugins_dir.join(name);
     if dest.exists() {
         return Err(InstallError::AlreadyInstalled(name.to_string()));
     }
 
-    tokio::fs::create_dir_all(&dest).await?;
+    let staging = plugins_dir.join(format!(".{name}.tmp-{}", uuid::Uuid::new_v4()));
+    tokio::fs::create_dir_all(&staging).await?;
 
-    let wasm_path = if url.ends_with(".wasm") {
-        let wp = dest.join("plugin.wasm");
-        tokio::fs::write(&wp, &bytes).await?;
-        wp
-    } else {
-        let tmp = dest.join("download.tar.gz");
-        tokio::fs::write(&tmp, &bytes).await?;
-        extract_plugin_archive(&tmp, &dest)?;
-        let _ = tokio::fs::remove_file(&tmp).await;
-        dest.join("plugin.wasm")
-    };
+    let result = async {
+        let wasm_path = if url.ends_with(".wasm") {
+            let wp = staging.join("plugin.wasm");
+            tokio::fs::write(&wp, &bytes).await?;
+            wp
+        } else {
+            let tmp = staging.join("download.tar.gz");
+            tokio::fs::write(&tmp, &bytes).await?;
+            extract_plugin_archive(&tmp, &staging)?;
+            tokio::fs::remove_file(&tmp).await?;
+            staging.join("plugin.wasm")
+        };
 
-    if !wasm_path.exists() {
-        return Err(InstallError::Manifest(
-            "no .wasm file found in downloaded archive".into(),
-        ));
+        if !wasm_path.exists() {
+            return Err(InstallError::Manifest(
+                "no .wasm file found in downloaded archive".into(),
+            ));
+        }
+        Ok::<(), InstallError>(())
+    }
+    .await;
+
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return Err(error);
     }
 
+    if let Err(error) = tokio::fs::rename(&staging, &dest).await {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return Err(error.into());
+    }
     Ok(dest)
 }
 
@@ -901,24 +931,22 @@ api_version = 1
     }
 
     #[test]
-    fn validate_local_install_source_accepts_dotdot_when_canonical_resolves() {
-        // Create a nested structure where a `..` traversal resolves to a
-        // real directory containing a manifest.
+    fn validate_local_install_source_rejects_dotdot_before_canonicalize() {
+        // A `..` traversal is rejected even when it would resolve to a real
+        // directory containing a manifest.
         let parent = make_temp_dir("localsrc_dotdot_parent");
         let child = parent.join("child");
         fs::create_dir_all(&child).unwrap();
         write_minimal_manifest(&child);
         let policy = PluginInstallPolicy::default();
 
-        // Build a sibling+dotdot path: from `parent/sibling/..` we can reach `parent`,
-        // then descend into `child`. The canonical resolution must succeed.
+        // Build a sibling+dotdot path that would otherwise resolve to child.
         let sibling = parent.join("sibling");
         fs::create_dir_all(&sibling).unwrap();
         let via_dotdot = sibling.join("..").join("child");
         let result = validate_local_install_source(&via_dotdot, &policy);
         assert!(
-            result.is_ok(),
-            "dotdot local source that canonicalizes should validate: {result:?}"
+            matches!(result, Err(InstallError::InvalidPath(message)) if message.contains("traversal"))
         );
         let _ = fs::remove_dir_all(&parent);
     }
