@@ -1369,7 +1369,10 @@ where
     }
 }
 
-fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
+fn validate_ws_auth(
+    auth: &WebSocketAuth,
+    config: &crate::config::schema::Config,
+) -> Result<(), StatusCode> {
     let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
 
     if !auth_required {
@@ -1381,7 +1384,12 @@ fn validate_ws_auth(auth: &WebSocketAuth) -> Result<(), StatusCode> {
         .as_ref()
         .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
 
-    let expected = std::env::var("CODEGG_SERVER_TOKEN").ok();
+    // Same resolution order as the HTTP auth middleware: env var first,
+    // then config-file token. Without this fallback a config-only token
+    // protects HTTP routes while the WS endpoints stay open.
+    let expected = std::env::var("CODEGG_SERVER_TOKEN")
+        .ok()
+        .or_else(|| config.server.as_ref().and_then(|s| s.token.clone()));
 
     if let Some(expected_token) = expected {
         let valid = client_token
@@ -1403,7 +1411,7 @@ pub async fn handle_ws(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth) {
+    if let Err(res) = validate_ws_auth(&auth, &state.config) {
         return res.into_response();
     }
 
@@ -1811,7 +1819,7 @@ pub async fn handle_tui(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth) {
+    if let Err(res) = validate_ws_auth(&auth, &state.config) {
         return res.into_response();
     }
 
@@ -3824,7 +3832,7 @@ pub async fn handle_core_ws(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth) {
+    if let Err(res) = validate_ws_auth(&auth, &state.config) {
         return res.into_response();
     }
 

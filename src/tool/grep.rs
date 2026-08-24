@@ -241,24 +241,30 @@ impl Tool for GrepTool {
             output_truncated = true;
         }
 
+        let files_skipped = metrics.files_skipped.load(Ordering::Relaxed);
         tracing::debug!(
             worker_count = metrics.worker_count,
             blocking_tasks = metrics.blocking_tasks_created.load(Ordering::Relaxed),
             max_active_workers = metrics.max_active_workers.load(Ordering::Relaxed),
             context_reads = metrics.context_reads.load(Ordering::Relaxed),
+            files_skipped,
             "grep search completed"
         );
 
         if results.is_empty() {
             result.push_str("No matches found.");
-            Ok(result)
         } else {
             result.push_str(&results.join("\n"));
-            if output_truncated {
-                result.push_str("\n\n[results truncated by grep limits]");
-            }
-            Ok(result)
         }
+        if output_truncated {
+            result.push_str("\n\n[results truncated by grep limits]");
+        }
+        if files_skipped > 0 {
+            result.push_str(&format!(
+                "\n\n[{files_skipped} file(s) skipped: unreadable]"
+            ));
+        }
+        Ok(result)
     }
 }
 
@@ -373,6 +379,7 @@ struct SearchMetrics {
     active_workers: AtomicUsize,
     max_active_workers: AtomicUsize,
     context_reads: AtomicUsize,
+    files_skipped: AtomicUsize,
 }
 
 impl SearchMetrics {
@@ -383,6 +390,7 @@ impl SearchMetrics {
             active_workers: AtomicUsize::new(0),
             max_active_workers: AtomicUsize::new(0),
             context_reads: AtomicUsize::new(0),
+            files_skipped: AtomicUsize::new(0),
         }
     }
 
@@ -520,7 +528,10 @@ fn search_file(
 ) -> Option<FileSearchResult> {
     let mut searcher = Searcher::new();
     let mut sink = GrepSink::new(Arc::clone(&control));
-    let _ = searcher.search_path(matcher, path, &mut sink);
+    if let Err(error) = searcher.search_path(matcher, path, &mut sink) {
+        metrics.files_skipped.fetch_add(1, Ordering::Relaxed);
+        tracing::debug!(path = %path.display(), %error, "grep skipped unreadable file");
+    }
     if sink.matches.is_empty() {
         return None;
     }

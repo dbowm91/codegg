@@ -623,9 +623,22 @@ impl JobExecutor for PythonJobExecutor {
             }
         };
 
-        let exec_cwd = cwd
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        // Workspace-bound default: never fall back to process CWD,
+        // which is wherever the daemon was launched rather than the
+        // job's workspace.
+        let exec_cwd = match cwd.map(PathBuf::from) {
+            Some(cwd) => cwd,
+            None => {
+                if ctx.workspace_root.as_os_str().is_empty() {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "python job has neither cwd nor a resolvable workspace root".into(),
+                    );
+                }
+                ctx.workspace_root.clone()
+            }
+        };
 
         let request = crate::python_script::types::PythonScriptRequest {
             code: resolved_source,

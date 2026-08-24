@@ -221,21 +221,12 @@ impl ProjectPickerState {
     }
 }
 
-/// Truncate a tab label to `MAX_TAB_LABEL_LEN`, respecting Unicode
-/// character boundaries.
+/// Truncate a tab label to `MAX_TAB_LABEL_LEN` characters.
 pub fn truncate_tab_label(label: &str) -> String {
     if label.len() <= MAX_TAB_LABEL_LEN {
         return label.to_string();
     }
-    // Find a safe char boundary at or before MAX_TAB_LABEL_LEN bytes.
-    let mut end = MAX_TAB_LABEL_LEN;
-    while !label.is_char_boundary(end) {
-        end -= 1;
-    }
-    let truncated: String = label.chars().take(MAX_TAB_LABEL_LEN).collect();
-    // If the truncation cut in the middle of a grapheme cluster, we may
-    // end up with fewer bytes; that's fine — we're still within bounds.
-    truncated
+    label.chars().take(MAX_TAB_LABEL_LEN).collect()
 }
 
 /// Disambiguate duplicate labels by appending a short stable suffix.

@@ -41,7 +41,11 @@ async fn retention_prunes_old_events() {
 
     assert!(report.events_pruned > 0);
     let events = store.events_after(sid, 0, 100, u64::MAX).await.unwrap();
-    assert!(events.len() <= 10);
+    assert_eq!(
+        events.len(),
+        10,
+        "retention must keep exactly session_max_events after pruning"
+    );
 }
 
 #[tokio::test]

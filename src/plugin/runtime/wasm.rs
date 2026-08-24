@@ -244,11 +244,19 @@ fn invoke_modern(
         ));
     }
     let invocation_len = invocation_json.len() as i32;
-    let fuel = cache.reserve_fuel(plugin_id, fuel_per_call).unwrap_or(0);
+    // Fail closed: an exhausted/failed fuel reservation denies the call
+    // rather than running with a zero (or un-metered) budget.
+    let Some(fuel) = cache.reserve_fuel(plugin_id, fuel_per_call) else {
+        return Err(RuntimeError::Spawn(format!(
+            "plugin '{plugin_id}' fuel reservation denied"
+        )));
+    };
 
     let result = (|| -> Result<PluginResponse, RuntimeError> {
         let mut store = Store::new(engine, ());
-        store.set_fuel(fuel).ok();
+        store
+            .set_fuel(fuel)
+            .map_err(|e| RuntimeError::Spawn(format!("fuel metering unavailable: {e}")))?;
 
         let mut linker = Linker::new(engine);
         linker.allow_shadowing(true);
@@ -391,11 +399,19 @@ fn invoke_legacy(
 ) -> Result<PluginResponse, RuntimeError> {
     use wasmtime::{Linker, Store};
 
-    let fuel = cache.reserve_fuel(plugin_id, fuel_per_call).unwrap_or(0);
+    // Fail closed: an exhausted/failed fuel reservation denies the call
+    // rather than running with a zero (or un-metered) budget.
+    let Some(fuel) = cache.reserve_fuel(plugin_id, fuel_per_call) else {
+        return Err(RuntimeError::Spawn(format!(
+            "plugin '{plugin_id}' fuel reservation denied"
+        )));
+    };
 
     let result = (|| -> Result<PluginResponse, RuntimeError> {
         let mut store = Store::new(engine, ());
-        store.set_fuel(fuel).ok();
+        store
+            .set_fuel(fuel)
+            .map_err(|e| RuntimeError::Spawn(format!("fuel metering unavailable: {e}")))?;
 
         let mut linker = Linker::new(engine);
         linker.allow_shadowing(true);

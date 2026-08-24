@@ -83,7 +83,7 @@ impl RetentionPolicy {
                 let new_floor = high_water
                     .saturating_sub(max_events as u64)
                     .saturating_add(1);
-                let _ = new_floor.max(retention_floor + excess as u64);
+                let new_floor = new_floor.max(retention_floor + excess as u64);
                 let pruned = store
                     .prune_before(desc.stream_id.as_str(), new_floor)
                     .await?;

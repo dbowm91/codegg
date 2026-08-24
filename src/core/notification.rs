@@ -228,7 +228,9 @@ impl NotificationRouter {
         let mut best_priority = NotificationPriority::Low;
 
         for (i, event) in queue.iter().enumerate() {
-            if self.policy.speak_kinds.contains(&event.kind) && event.priority >= best_priority {
+            // Strict `>` keeps the earliest event at the highest priority
+            // so single-item speech order matches next_speech_batch's FIFO drain.
+            if self.policy.speak_kinds.contains(&event.kind) && event.priority > best_priority {
                 best_idx = Some(i);
                 best_priority = event.priority.clone();
             }
@@ -739,6 +741,42 @@ mod tests {
         let speech = router.next_speech().await;
         assert!(speech.is_some());
         assert_eq!(speech.unwrap().kind, NotificationKind::PermissionRequired);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn next_speech_prefers_earliest_at_equal_priority() {
+        let mut policy = NotificationPolicy::default();
+        policy.speak_kinds.insert(NotificationKind::TurnCompleted);
+        policy.speak_kinds.insert(NotificationKind::TurnFailed);
+        let router = Arc::new(NotificationRouter::new(policy));
+
+        // Distinct kinds (and sessions) so emit() cannot coalesce them.
+        router
+            .emit(make_event(
+                "first",
+                NotificationKind::TurnCompleted,
+                NotificationPriority::Normal,
+                Some("alpha-session"),
+                "one",
+                None,
+            ))
+            .await;
+        router
+            .emit(make_event(
+                "second",
+                NotificationKind::TurnFailed,
+                NotificationPriority::Normal,
+                Some("beta-session"),
+                "two",
+                None,
+            ))
+            .await;
+
+        let speech = router.next_speech().await.expect("speech event");
+        assert_eq!(
+            speech.id, "first",
+            "the earliest event at the highest priority must win"
+        );
     }
 
     #[test]

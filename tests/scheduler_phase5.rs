@@ -503,3 +503,59 @@ fn rollout_mode_default_is_mandatory() {
     let cfg = ResolvedSchedulerConfig::default();
     assert_eq!(cfg.rollout, SchedulerRolloutMode::Mandatory);
 }
+
+// ── Reconcile pagination + snapshot counts ────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_keeps_queued_jobs_beyond_claim_batch() {
+    let store: Arc<dyn codegg_core::jobs::JobStore> = Arc::new(InMemoryJobStore::new());
+    let workspaces = codegg_core::workspace::WorkspaceRegistry::new_for_tests(Arc::new(
+        codegg_core::workspace::InMemoryWorkspaceStore::new(),
+    ));
+    let services = codegg_core::workspace_services::WorkspaceServiceRegistry::new(
+        workspaces,
+        Arc::new(codegg_core::workspace_services::ProductionWorkspaceServicesFactory),
+        codegg_core::workspace_services::WorkspaceServicePolicy::default(),
+    );
+    let mut config = ResolvedSchedulerConfig::default();
+    config.queue.claim_batch = 4;
+    let scheduler = codegg::scheduler::JobScheduler::new(
+        store,
+        services,
+        config,
+        DaemonGeneration::new_unchecked("reconcile-page-generation"),
+    );
+
+    let workspace_id = ws("reconcile-page-ws");
+
+    // First wave fits within one claim_batch page.
+    for _ in 0..4 {
+        scheduler
+            .submit(build_spec(workspace_id.clone()))
+            .await
+            .expect("submit first wave");
+    }
+    scheduler.reconcile().await.expect("first reconcile");
+    assert_eq!(scheduler.snapshot().await.ready_window_count, 4);
+
+    // Second wave pushes the durable Queued set past claim_batch. The
+    // first-wave entries fall outside the fetched page but are still
+    // durably Queued and must not be evicted from the in-memory queue.
+    for _ in 0..4 {
+        scheduler
+            .submit(build_spec(workspace_id.clone()))
+            .await
+            .expect("submit second wave");
+    }
+    scheduler.reconcile().await.expect("second reconcile");
+    let snap = scheduler.snapshot().await;
+    assert_eq!(
+        snap.ready_window_count, 8,
+        "queued jobs beyond the claim_batch page must not be evicted"
+    );
+    assert_eq!(
+        snap.per_priority.by_kind.get("build"),
+        Some(&8),
+        "snapshot must report job-kind counts"
+    );
+}

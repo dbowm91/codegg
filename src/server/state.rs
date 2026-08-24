@@ -142,6 +142,10 @@ pub struct WsRateLimiter {
     window: Duration,
 }
 
+/// Hard cap on distinct tracked keys so a long-running server cannot
+/// accumulate unbounded map entries from rotating session ids.
+const MAX_WS_RATE_LIMITER_KEYS: usize = 10_000;
+
 impl WsRateLimiter {
     pub fn new(max_requests: usize, window_secs: u64) -> Self {
         Self {
@@ -155,8 +159,22 @@ impl WsRateLimiter {
         let now = Instant::now();
         let mut cache = self.cache.lock().await;
 
-        let requests = cache.entry(key.to_string()).or_insert_with(Vec::new);
-        requests.retain(|&t| now.duration_since(t) < self.window);
+        // Window-prune every key and drop keys whose windows emptied
+        // so the map stays bounded by currently-active clients.
+        cache.retain(|_, requests| {
+            requests.retain(|&t| now.duration_since(t) < self.window);
+            !requests.is_empty()
+        });
+
+        // Evict an arbitrary entry when still at capacity; lenient but
+        // bounded under sustained key churn.
+        if cache.len() >= MAX_WS_RATE_LIMITER_KEYS && !cache.contains_key(key) {
+            if let Some(first) = cache.keys().next().cloned() {
+                cache.remove(&first);
+            }
+        }
+
+        let requests = cache.entry(key.to_string()).or_default();
 
         if requests.len() >= self.max_requests {
             return false;
@@ -182,5 +200,24 @@ impl FromRef<ServerState> for Arc<RwLock<McpService>> {
 impl FromRef<ServerState> for Config {
     fn from_ref(state: &ServerState) -> Config {
         state.config.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ws_rate_limiter_map_stays_bounded_under_key_churn() {
+        let limiter = WsRateLimiter::new(100, 60);
+        for i in 0..(MAX_WS_RATE_LIMITER_KEYS + 500) {
+            assert!(limiter.check_rate_limit(&format!("session-{i}")).await);
+        }
+        let cache = limiter.cache.lock().await;
+        assert!(
+            cache.len() <= MAX_WS_RATE_LIMITER_KEYS,
+            "ws rate limiter key map grew unbounded: {} keys",
+            cache.len()
+        );
     }
 }

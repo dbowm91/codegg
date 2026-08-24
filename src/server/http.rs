@@ -45,6 +45,10 @@ struct RateLimiter {
     window: Duration,
 }
 
+/// Hard cap on distinct tracked keys so a long-running server cannot
+/// accumulate unbounded map entries from spoofed/rotating clients.
+const MAX_RATE_LIMITER_KEYS: usize = 10_000;
+
 impl RateLimiter {
     fn new(max_requests: usize, window_secs: u64) -> Self {
         Self {
@@ -57,9 +61,23 @@ impl RateLimiter {
     async fn check_rate_limit(&self, key: &str) -> (bool, usize) {
         let now = Instant::now();
         let mut cache = self.cache.lock().await;
-        let requests = cache.entry(key.to_string()).or_insert_with(Vec::new);
 
-        requests.retain(|&t| now.duration_since(t) < self.window);
+        // Window-prune every key and drop keys whose windows emptied
+        // so the map stays bounded by currently-active clients.
+        cache.retain(|_, requests| {
+            requests.retain(|&t| now.duration_since(t) < self.window);
+            !requests.is_empty()
+        });
+
+        // Evict an arbitrary entry when still at capacity; lenient but
+        // bounded under sustained key churn.
+        if cache.len() >= MAX_RATE_LIMITER_KEYS && !cache.contains_key(key) {
+            if let Some(first) = cache.keys().next().cloned() {
+                cache.remove(&first);
+            }
+        }
+
+        let requests = cache.entry(key.to_string()).or_default();
 
         let allowed = requests.len() < self.max_requests;
 
@@ -327,5 +345,19 @@ mod tests {
         assert_eq!(limiter.check_rate_limit("client").await, (true, 1));
         assert_eq!(limiter.check_rate_limit("client").await, (true, 0));
         assert_eq!(limiter.check_rate_limit("client").await, (false, 0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rate_limiter_map_stays_bounded_under_key_churn() {
+        let limiter = RateLimiter::new(100, 60);
+        for i in 0..(MAX_RATE_LIMITER_KEYS + 500) {
+            let _ = limiter.check_rate_limit(&format!("client-{i}")).await;
+        }
+        let cache = limiter.cache.lock().await;
+        assert!(
+            cache.len() <= MAX_RATE_LIMITER_KEYS,
+            "rate limiter key map grew unbounded: {} keys",
+            cache.len()
+        );
     }
 }

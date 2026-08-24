@@ -1122,9 +1122,14 @@ impl App {
                     biased;
                     _ = rx.recv() => break,
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {
-                        let files = index_files_sync(&dir_clone);
-                        let mut guard = files_clone.write().await;
-                        *guard = files;
+                        // Recursive directory I/O must not stall a runtime
+                        // worker thread; run it on the blocking pool.
+                        let dir = dir_clone.clone();
+                        let files = tokio::task::spawn_blocking(move || index_files_sync(&dir)).await;
+                        if let Ok(files) = files {
+                            let mut guard = files_clone.write().await;
+                            *guard = files;
+                        }
                     }
                 }
             }
@@ -12527,10 +12532,12 @@ fn index_files_recursive(
 
     if let Ok(entries) = std::fs::read_dir(current_dir) {
         for entry in entries.flatten() {
+            // Check symlink-ness on the raw entry: canonicalize resolves
+            // symlinks, so testing the resolved path would never detect one.
+            if entry.path().is_symlink() {
+                continue;
+            }
             if let Ok(path) = entry.path().canonicalize() {
-                if path.is_symlink() {
-                    continue;
-                }
                 if path.is_dir() {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         if !skip_dirs.contains(&name) {

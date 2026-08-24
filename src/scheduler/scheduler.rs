@@ -116,6 +116,8 @@ pub struct JobScheduler {
     running_total: Arc<AtomicU64>,
     /// Total admit blocks recorded.
     admission_blocks: Arc<AtomicU64>,
+    /// Admit-block counters by reason label.
+    admission_block_reasons: Arc<AsyncMutex<BTreeMap<String, u64>>>,
     /// Total admit impossible.
     admission_impossible: Arc<AtomicU64>,
     /// Total queue overflows recorded.
@@ -163,6 +165,7 @@ impl JobScheduler {
             ready_counts,
             running_total: Arc::new(AtomicU64::new(0)),
             admission_blocks: Arc::new(AtomicU64::new(0)),
+            admission_block_reasons: Arc::new(AsyncMutex::new(BTreeMap::new())),
             admission_impossible: Arc::new(AtomicU64::new(0)),
             queue_overflows: Arc::new(AtomicU64::new(0)),
             oldest_queued_age_secs,
@@ -463,12 +466,11 @@ impl JobScheduler {
         }
 
         // 2. Remove queue entries whose durable state is no longer
-        // Queued (cancelled, completed, etc).
-        let to_remove: Vec<JobId> = {
+        // Queued (cancelled, completed, etc). Entries missing from the
+        // bounded page above are confirmed via a direct store read so
+        // valid queued jobs beyond `claim_batch` are never evicted.
+        let candidates: Vec<JobId> = {
             let q = self.queue.lock().await;
-            // Walk every entry and check durable state. For a small
-            // queue this is fine; for a large queue a watermark
-            // index would be preferable.
             let mut v = Vec::new();
             for queue in q.lanes().values() {
                 for lane in queue.lanes.values() {
@@ -477,6 +479,16 @@ impl JobScheduler {
                             v.push(e.job_id.clone());
                         }
                     }
+                }
+            }
+            v
+        };
+        let to_remove: Vec<JobId> = {
+            let mut v = Vec::new();
+            for job_id in candidates {
+                match self.store.get_job(&job_id).await {
+                    Ok(Some(job)) if matches!(job.state, JobState::Queued) => {}
+                    _ => v.push(job_id),
                 }
             }
             v
@@ -683,6 +695,11 @@ impl JobScheduler {
             AdmissionDecision::Admitted(p) => p,
             AdmissionDecision::TemporarilyBlocked(reason) => {
                 self.admission_blocks.fetch_add(1, Ordering::SeqCst);
+                {
+                    let label = format!("{:?}", reason);
+                    let mut reasons = self.admission_block_reasons.lock().await;
+                    *reasons.entry(label).or_insert(0) += 1;
+                }
                 self.emit_event(SchedulerEvent::AdmissionBlocked {
                     job_id: job.job_id.to_string(),
                     reason,
@@ -1013,7 +1030,27 @@ impl JobScheduler {
 
         let durable_queued_count = ready_window_count;
 
-        let by_kind_local = BTreeMap::<String, usize>::new();
+        // Job-kind distribution over queued + running records.
+        let mut by_kind_local = BTreeMap::<String, usize>::new();
+        let kind_query = codegg_core::jobs::store::JobStoreQuery {
+            states: vec![JobState::Queued, JobState::Running],
+            workspace_id: None,
+            kinds: vec![],
+            limit: Some(10_000),
+            session_id: None,
+        };
+        match self.store.list_jobs(kind_query).await {
+            Ok(summaries) => {
+                for summary in &summaries {
+                    *by_kind_local
+                        .entry(summary.kind.as_str().to_string())
+                        .or_insert(0) += 1;
+                }
+            }
+            Err(e) => {
+                tracing::debug!("snapshot: job-kind listing failed: {e}");
+            }
+        }
 
         let resources = crate::scheduler::snapshot::ResourceSummary::from_admission(
             &admission,
@@ -1044,7 +1081,7 @@ impl JobScheduler {
             },
             admission_blocks: crate::scheduler::snapshot::AdmissionBlockSummary {
                 total: self.admission_blocks.load(Ordering::SeqCst),
-                by_reason: BTreeMap::new(),
+                by_reason: self.admission_block_reasons.lock().await.clone(),
             },
             oldest_queued_age_secs: oldest,
             rollout_mode: format!("{:?}", self.config.rollout),
@@ -1142,13 +1179,30 @@ impl JobScheduler {
     ) -> Result<(), JobSchedulerError> {
         // The job remains in JobStore; mark the attempt as failed.
         // We use begin_attempt to create the attempt if needed.
-        let attempt = self
+        let attempt = match self
             .store
             .begin_attempt(&job.job_id, &self.daemon_generation)
             .await
-            .ok();
+        {
+            Ok(a) => Some(a),
+            Err(e) => {
+                tracing::warn!(
+                    job_id = %job.job_id,
+                    %e,
+                    "mark_unschedulable: begin_attempt failed"
+                );
+                None
+            }
+        };
         if let Some(a) = attempt {
-            let _ = self.store.mark_attempt_running(&a.attempt_id).await;
+            if let Err(e) = self.store.mark_attempt_running(&a.attempt_id).await {
+                tracing::warn!(
+                    job_id = %job.job_id,
+                    attempt_id = %a.attempt_id,
+                    %e,
+                    "mark_unschedulable: mark_attempt_running failed"
+                );
+            }
             let completion = AttemptCompletion {
                 attempt_id: a.attempt_id.clone(),
                 state: AttemptState::Failed,
@@ -1159,7 +1213,7 @@ impl JobScheduler {
                 }),
                 run_id: None,
             };
-            let _ = self.store.finish_attempt(completion).await;
+            self.store.finish_attempt(completion).await?;
         }
         Ok(())
     }
