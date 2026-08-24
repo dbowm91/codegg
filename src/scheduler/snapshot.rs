@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use codegg_core::jobs::JobPriority;
 use codegg_core::workspace::WorkspaceId;
@@ -32,21 +32,22 @@ impl ExclusivityKeyLabel {
 /// Per-workspace queue + running summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerWorkspaceSummary {
+    #[serde(deserialize_with = "deserialize_workspace_id")]
     pub workspace_id: WorkspaceId,
     pub queued: usize,
     pub running: usize,
     pub ready_window: usize,
 }
 
-impl Default for PerWorkspaceSummary {
-    fn default() -> Self {
-        Self {
-            workspace_id: WorkspaceId::new_unchecked(""),
-            queued: 0,
-            running: 0,
-            ready_window: 0,
-        }
+fn deserialize_workspace_id<'de, D>(deserializer: D) -> Result<WorkspaceId, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    if value.is_empty() {
+        return Err(serde::de::Error::custom("workspace_id must not be empty"));
     }
+    Ok(WorkspaceId::new_unchecked(value))
 }
 
 /// Per-priority counts of queued jobs.
@@ -151,5 +152,22 @@ pub struct SchedulerSnapshot {
 impl SchedulerSnapshot {
     pub fn priority_label(p: JobPriority) -> &'static str {
         p.as_str()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_workspace_id_is_rejected_during_deserialization() {
+        let value = serde_json::json!({
+            "workspace_id": "",
+            "queued": 0,
+            "running": 0,
+            "ready_window": 0
+        });
+
+        assert!(serde_json::from_value::<PerWorkspaceSummary>(value).is_err());
     }
 }

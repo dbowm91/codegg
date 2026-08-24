@@ -101,8 +101,19 @@ fn status_to_string(s: &GoalStatus) -> String {
     }
 }
 
-fn status_from_string(s: &str) -> GoalStatus {
-    serde_json::from_str(&format!("\"{}\"", s)).unwrap_or(GoalStatus::Active)
+fn status_from_string(s: &str) -> Result<GoalStatus, StorageError> {
+    match s {
+        "active" => Ok(GoalStatus::Active),
+        "paused" => Ok(GoalStatus::Paused),
+        "awaiting_user" => Ok(GoalStatus::AwaitingUser),
+        "budget_limited" => Ok(GoalStatus::BudgetLimited),
+        "complete" => Ok(GoalStatus::Complete),
+        "failed" => Ok(GoalStatus::Failed),
+        "cancelled" => Ok(GoalStatus::Cancelled),
+        other => Err(StorageError::Database(format!(
+            "invalid goal status: {other}"
+        ))),
+    }
 }
 
 fn row_to_goal(row: GoalRow) -> Result<Goal, StorageError> {
@@ -121,7 +132,7 @@ fn row_to_goal(row: GoalRow) -> Result<Goal, StorageError> {
         project_id: row.project_id,
         title: row.title,
         objective: row.objective,
-        status: status_from_string(&row.status),
+        status: status_from_string(&row.status)?,
         plan_path: row.plan_path,
         checkpoint_path: row.checkpoint_path,
         current_phase: row.current_phase,
@@ -547,6 +558,28 @@ mod tests {
         assert_eq!(goal.objective, "Do something");
         assert_eq!(goal.status, GoalStatus::Active);
         assert!(goal.completed_at.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_status_is_not_resurrected_as_active() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "sess1", "proj1").await;
+        let store = GoalStore::new(pool.clone());
+        let goal = store
+            .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE goal SET status = 'corrupted' WHERE id = ?")
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let error = store.get(&goal.id).await.unwrap_err();
+        assert!(
+            matches!(error, StorageError::Database(message) if message.contains("invalid goal status"))
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

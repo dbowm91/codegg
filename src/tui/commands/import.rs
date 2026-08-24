@@ -10,6 +10,7 @@ use crate::tui::components::dialogs::import::ImportSource;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
     if let Some(core_client) = app.core_client.clone() {
         match source {
@@ -134,6 +135,7 @@ pub(crate) async fn handle_preview_import(app: &mut App, source: ImportSource) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_confirm_import(app: &mut App, source: ImportSource) {
     if let Some(core_client) = app.core_client.clone() {
         match source {

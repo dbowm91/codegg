@@ -663,7 +663,8 @@ impl OAuthManager {
             .used_codes_store
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| McpError::OAuth(format!("failed to create token directory: {e}")))?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -685,10 +686,11 @@ impl OAuthManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
+            std::fs::set_permissions(
                 &self.used_codes_store,
                 std::fs::Permissions::from_mode(0o600),
-            );
+            )
+            .map_err(|e| McpError::OAuth(format!("failed to secure used codes store: {e}")))?;
         }
 
         Ok(())
@@ -699,7 +701,9 @@ impl OAuthManager {
             .used_codes_store
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let _ = tokio::fs::create_dir_all(parent).await;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| McpError::OAuth(format!("failed to create token directory: {e}")))?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -722,14 +726,12 @@ impl OAuthManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let used_codes_store = self.used_codes_store.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = std::fs::set_permissions(
-                    &used_codes_store,
-                    std::fs::Permissions::from_mode(0o600),
-                );
-            })
-            .await;
+            tokio::fs::set_permissions(
+                &self.used_codes_store,
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .await
+            .map_err(|e| McpError::OAuth(format!("failed to secure used codes store: {e}")))?;
         }
 
         Ok(())
@@ -740,7 +742,9 @@ impl OAuthManager {
             .token_store
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let _ = tokio::fs::create_dir_all(parent).await;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| McpError::OAuth(format!("failed to create token directory: {e}")))?;
 
         let tokens: Vec<&ServerTokens> = self.servers.values().collect();
         let content = serde_json::to_string_pretty(&tokens)
@@ -762,8 +766,8 @@ impl OAuthManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&self.token_store, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&self.token_store, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| McpError::OAuth(format!("failed to secure token store: {e}")))?;
         }
 
         Ok(())
@@ -775,7 +779,8 @@ impl OAuthManager {
             .token_store
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)
+            .map_err(|e| McpError::OAuth(format!("failed to create token directory: {e}")))?;
 
         let tokens: Vec<&ServerTokens> = self.servers.values().collect();
         let content = serde_json::to_string_pretty(&tokens)
@@ -796,8 +801,8 @@ impl OAuthManager {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&self.token_store, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&self.token_store, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| McpError::OAuth(format!("failed to secure token store: {e}")))?;
         }
 
         Ok(())

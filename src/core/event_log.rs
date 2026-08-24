@@ -173,8 +173,17 @@ impl EventLog {
         // into `projection_event` storage. `ProjectionStreamEvent` itself is
         // classified `Internal` by the safe-publication gate and never recurses.
         if let Some(ref sink) = self.projection_sink {
-            if sink.send(envelope.clone()).await.is_err() {
-                tracing::warn!(event_seq = seq, "projection sink worker is unavailable");
+            match sink.try_send(envelope.clone()) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    tracing::warn!(
+                        event_seq = seq,
+                        "projection sink queue is full; dropping envelope"
+                    );
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::warn!(event_seq = seq, "projection sink worker is unavailable");
+                }
             }
         }
 

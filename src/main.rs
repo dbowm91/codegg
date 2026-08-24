@@ -1426,8 +1426,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let ctx = codegg::agent::asset_context::AssetContextBuilder::new()
         .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
         .with_workspace_root(std::path::Path::new(&project_dir))
-        .build()
-        .expect("project_dir is a valid workspace root");
+        .build()?;
     let mut runtime_blocks = Vec::new();
     let instruction_resolution =
         codegg::agent::instructions::ProjectInstructionResolver::with_defaults().resolve(&ctx);
@@ -1610,8 +1609,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
             let asset_ctx = codegg::agent::asset_context::AssetContextBuilder::new()
                 .with_synthetic_project_id(codegg::agent::asset_context::ProjectId::new())
                 .with_workspace_root(PathBuf::from(&project_dir))
-                .build()
-                .expect("project_dir is a valid workspace root");
+                .build()?;
             let snapshot = codegg::agent::asset_snapshot_builder::ProjectAssetSnapshotBuilder::with_default_config_doc(
                 Arc::new(config.clone()),
             )

@@ -1028,6 +1028,7 @@ pub(crate) fn apply_export_session_finished(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_open_tree_dialog(app: &mut App) {
     use crate::tui::components::dialogs::tree::TreeNode;
     use std::collections::HashMap;
@@ -1334,6 +1335,7 @@ pub(crate) fn apply_tree_dialog_loaded(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_load_session_messages(app: &mut App, session_id: String) {
     use crate::tui::components::messages::{MessageRole, MsgPart, UIMessage};
 
@@ -1813,6 +1815,7 @@ pub(crate) fn apply_template_session_created(
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_create_from_template(
     app: &mut App,
     _key: String,

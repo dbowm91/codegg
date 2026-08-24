@@ -673,6 +673,7 @@ pub(crate) fn apply_notification_sent(_app: &mut App, error: Option<String>) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_send_notification(
     app: &mut App,
     notification_type: crate::tui::components::notification::NotificationType,

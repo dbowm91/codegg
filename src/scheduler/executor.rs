@@ -153,6 +153,11 @@ impl JobExecutionContext {
                 "missing daemon generation".into(),
             ));
         }
+        if self.workspace_id.as_str().is_empty() {
+            return Err(ExecutorValidationError::InvalidPayload(
+                "missing workspace id".into(),
+            ));
+        }
         if !self.resources.is_controller_bound() {
             return Err(ExecutorValidationError::InvalidPayload(
                 "execution does not own a live admission permit".into(),
@@ -353,6 +358,34 @@ mod tests {
         r.register(Arc::new(AlwaysAvailable)).unwrap();
         let err = r.register(Arc::new(AlwaysAvailable)).unwrap_err();
         assert!(matches!(err, ExecutorRegistryError::Duplicate(_)));
+    }
+
+    #[test]
+    fn runtime_validation_rejects_empty_workspace_id() {
+        let context = JobExecutionContext {
+            job: sample_job(
+                JobKind::Build,
+                JobPayload::ManagedArgv {
+                    argv: vec!["cargo".into(), "check".into()],
+                    cwd: None,
+                },
+            ),
+            attempt_id: codegg_core::jobs::AttemptId::new_unchecked("attempt"),
+            daemon_generation: codegg_core::jobs::DaemonGeneration::new_unchecked("generation"),
+            workspace_id: WorkspaceId::new_unchecked(""),
+            workspace_root: std::path::PathBuf::from("/tmp"),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+            progress: Arc::new(NoopProgressSink),
+            resources: crate::scheduler::permit::ResourcePermitGuard::new_orphan(
+                crate::scheduler::permit::PermitDimensions::default(),
+            ),
+        };
+
+        assert!(matches!(
+            context.validate_runtime(),
+            Err(ExecutorValidationError::InvalidPayload(message))
+                if message == "missing workspace id"
+        ));
     }
 
     #[test]

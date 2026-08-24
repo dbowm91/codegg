@@ -98,7 +98,10 @@ impl SearchProvider for ExaProvider {
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| SearchError::Transport(e.to_string()))?;
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,
@@ -183,7 +186,10 @@ impl SearchProvider for TavilyProvider {
             return Err(SearchError::RateLimited);
         }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| SearchError::Transport(e.to_string()))?;
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,
@@ -264,7 +270,10 @@ impl SearchProvider for BraveProvider {
             return Err(SearchError::RateLimited);
         }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| SearchError::Transport(e.to_string()))?;
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,
@@ -350,7 +359,10 @@ impl SearchProvider for SerpApiProvider {
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| SearchError::Transport(e.to_string()))?;
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,
@@ -428,7 +440,10 @@ impl SearchProvider for KagiProvider {
             .await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| SearchError::Transport(e.to_string()))?;
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,

@@ -6,6 +6,7 @@ use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_research_list_runs(app: &mut App) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -33,6 +34,7 @@ pub(crate) async fn handle_research_list_runs(app: &mut App) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_research_load_run(app: &mut App, run_id: String) {
     let project_dir = app.session_state.project_dir.clone();
     let service =
@@ -60,6 +62,7 @@ pub(crate) async fn handle_research_load_run(app: &mut App, run_id: String) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_research_load_section(app: &mut App, run_id: String, section: String) {
     let project_dir = app.session_state.project_dir.clone();
     let service =

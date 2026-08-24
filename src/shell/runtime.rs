@@ -117,8 +117,8 @@ impl ShellRuntime {
             }
         };
 
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let stdout = child.stdout.take().expect("stdout piped at spawn");
+        let stderr = child.stderr.take().expect("stderr piped at spawn");
 
         let tx_stdout = tx.clone();
         let tx_stderr = tx.clone();

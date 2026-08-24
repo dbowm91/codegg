@@ -1456,7 +1456,11 @@ fn catalog_record_from_row(
 ) -> Result<ProjectCatalogRecord, CatalogError> {
     let tags_json: Option<String> = row.get("tags");
     let tags: Vec<String> = tags_json
-        .map(|json| serde_json::from_str(&json).unwrap_or_default())
+        .map(|json| {
+            serde_json::from_str::<Vec<String>>(&json)
+                .map_err(|e| CatalogError::InvalidValue(format!("invalid tags: {e}")))
+        })
+        .transpose()?
         .unwrap_or_default();
 
     Ok(ProjectCatalogRecord {
@@ -1677,6 +1681,28 @@ mod tests {
         assert_eq!(record.project_id, decoded.project_id);
         assert_eq!(record.display_name, decoded.display_name);
         assert_eq!(record.tags, decoded.tags);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_tags_are_reported_in_catalog_rows() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let row = sqlx::query(
+            "SELECT 'project-1' AS id, 'Project' AS display_name, 'active' AS lifecycle, \
+             CAST(NULL AS TEXT) AS description, 'not-json' AS tags, \
+             CAST(NULL AS INTEGER) AS time_last_opened, 'test' AS registration_source, \
+             CAST(NULL AS INTEGER) AS archived_at, 1 AS time_created, 1 AS time_updated",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let error = catalog_record_from_row(row).unwrap_err();
+        assert!(
+            matches!(error, CatalogError::InvalidValue(message) if message.contains("invalid tags"))
+        );
     }
 
     #[test]

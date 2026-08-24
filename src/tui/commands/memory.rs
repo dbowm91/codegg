@@ -7,6 +7,7 @@ use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_memory_summary(app: &mut App) {
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
@@ -114,6 +115,7 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_memory_search(app: &mut App, query: String) {
     if query.is_empty() {
         app.messages_state
@@ -187,6 +189,7 @@ pub(crate) async fn handle_memory_search(app: &mut App, query: String) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_memory_remember(app: &mut App, text: String) {
     if text.is_empty() {
         app.messages_state
@@ -227,6 +230,7 @@ pub(crate) async fn handle_memory_remember(app: &mut App, text: String) {
 }
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
     if id.is_empty() {
         app.messages_state

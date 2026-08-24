@@ -70,4 +70,18 @@ mod tests {
         let result = codegg::server::routes::file::sanitize_path(&root, requested);
         assert!(result.is_ok());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_sanitize_path_rejects_intermediate_symlink_on_missing_suffix() {
+        use std::os::unix::fs::symlink;
+
+        let root_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+        symlink(outside_dir.path(), root_dir.path().join("linked")).unwrap();
+
+        let root = root_dir.path().to_str().unwrap();
+        let result = codegg::server::routes::file::sanitize_path(root, "linked/missing.txt");
+        assert!(result.is_err());
+    }
 }

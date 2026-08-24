@@ -45,6 +45,13 @@ pub fn sanitize_path_from_root(root: &StdPath, requested: &str) -> Result<PathBu
                 } else if component != "." && !component.is_empty() {
                     test_path.push(component);
                 }
+
+                check_path_for_symlinks(&test_path).map_err(|e| {
+                    AppError::Storage(StorageError::NotFound(format!(
+                        "path validation failed: {}",
+                        e
+                    )))
+                })?;
             }
 
             if !test_path.starts_with(&root_canonicalized) {

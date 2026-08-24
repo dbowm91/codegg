@@ -6,6 +6,7 @@ use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
 #[allow(dead_code)]
+#[cfg(test)]
 pub(crate) async fn handle_run_doctor(app: &mut App) {
     use crate::search_backend::bootstrap;
     let config = match crate::config::schema::Config::load() {

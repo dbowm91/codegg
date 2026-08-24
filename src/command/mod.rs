@@ -318,10 +318,9 @@ pub fn resolve_commands_from_config(
 
 pub fn execute_command_template(template: &str, variables: &HashMap<String, String>) -> String {
     let mut result = template.to_string();
-    let mut sorted_keys: Vec<_> = variables.keys().collect();
-    sorted_keys.sort();
-    for key in sorted_keys {
-        let value = variables.get(key).unwrap();
+    let mut sorted_variables: Vec<_> = variables.iter().collect();
+    sorted_variables.sort_by_key(|(key, _)| *key);
+    for (key, value) in sorted_variables {
         result = result.replace(&format!("{{{{{key}}}}}",), value);
         result = result.replace(&format!("{{{key}}}"), value);
     }
