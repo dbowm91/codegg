@@ -318,9 +318,7 @@ impl SnapshotManager {
                         ensure_contained_parent(parent, &canonical_project_root)?;
                     }
                     let temp_path = full_path.with_extension("tmp");
-                    if let Err(e) = std::fs::write(&temp_path, &file_snapshot.content) {
-                        return Err(format!("failed to write {}: {}", temp_path.display(), e));
-                    }
+                    write_durable(&temp_path, &file_snapshot.content)?;
                     if let Err(e) = std::fs::rename(&temp_path, &full_path) {
                         return Err(format!("failed to rename {}: {}", temp_path.display(), e));
                     }
@@ -375,8 +373,7 @@ impl SnapshotManager {
                         ensure_contained_parent(parent, &canonical_target)?;
                     }
                     let temp_path = full_path.with_extension("tmp");
-                    std::fs::write(&temp_path, &file_snapshot.content)
-                        .map_err(|e| format!("failed to write {}: {}", temp_path.display(), e))?;
+                    write_durable(&temp_path, &file_snapshot.content)?;
                     std::fs::rename(&temp_path, &full_path)
                         .map_err(|e| format!("failed to rename {}: {}", temp_path.display(), e))?;
                 }
@@ -406,6 +403,19 @@ impl SnapshotManager {
             .map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Write file contents durably: create, write, and fsync before any
+/// rename so the rename cannot land while data blocks are not on
+/// stable storage (mirrors `run_store::write_file_durable`).
+fn write_durable(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)
+        .map_err(|e| format!("failed to create {}: {}", path.display(), e))?;
+    file.write_all(data.as_ref())
+        .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
+    file.sync_all()
+        .map_err(|e| format!("failed to sync {}: {}", path.display(), e))
 }
 
 /// Reject paths whose components include `..`, Windows drive

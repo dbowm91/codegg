@@ -717,6 +717,9 @@ impl RtkProjector {
     /// Maximum bytes to pass to RTK for compression (1 MiB).
     const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
+    /// Grace period after kill for the helper thread to reap the child.
+    const KILL_GRACE: Duration = Duration::from_millis(250);
+
     fn project_post_process(
         &self,
         request: ProjectionRequest<'_>,
@@ -866,6 +869,21 @@ impl RtkProjector {
                     let _ = std::process::Command::new("kill")
                         .arg(pid.to_string())
                         .output();
+                }
+                // Bounded grace period so the detached helper thread can
+                // reap the killed child and exit; escalate to SIGKILL if
+                // it does not. Without this the thread blocked on
+                // `child.wait()` leaks whenever the child lingers.
+                let reaped = rx.recv_timeout(Self::KILL_GRACE).is_ok();
+                #[cfg(unix)]
+                {
+                    if !reaped {
+                        let _ = std::process::Command::new("kill")
+                            .arg("-9")
+                            .arg(pid.to_string())
+                            .output();
+                        let _ = rx.recv_timeout(Self::KILL_GRACE);
+                    }
                 }
                 Err(ProjectionError::BackendUnavailable {
                     backend: "rtk",
@@ -1034,6 +1052,21 @@ impl RtkProjector {
                     let _ = std::process::Command::new("kill")
                         .arg(pid.to_string())
                         .output();
+                }
+                // Bounded grace period so the detached helper thread can
+                // reap the killed child and exit; escalate to SIGKILL if
+                // it does not. Without this the thread blocked on
+                // `child.wait()` leaks whenever the child lingers.
+                let reaped = rx.recv_timeout(Self::KILL_GRACE).is_ok();
+                #[cfg(unix)]
+                {
+                    if !reaped {
+                        let _ = std::process::Command::new("kill")
+                            .arg("-9")
+                            .arg(pid.to_string())
+                            .output();
+                        let _ = rx.recv_timeout(Self::KILL_GRACE);
+                    }
                 }
                 Err(ProjectionError::BackendUnavailable {
                     backend: "rtk",

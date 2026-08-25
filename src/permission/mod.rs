@@ -444,10 +444,30 @@ impl PermissionStore {
     fn save(&self) {
         if let Some(ref path) = self.store_path {
             if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    tracing::warn!("failed to create permission store directory: {}", e);
+                    return;
+                }
             }
-            if let Ok(json) = serde_json::to_string_pretty(&self.decisions) {
-                let _ = std::fs::write(path, json);
+            let json = match serde_json::to_string_pretty(&self.decisions) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::warn!("failed to serialize permission decisions: {}", e);
+                    return;
+                }
+            };
+            // Atomic temp+rename so a crash mid-write cannot truncate
+            // the persisted decisions.
+            let tmp_path = path.with_extension("json.tmp");
+            if let Err(e) =
+                std::fs::write(&tmp_path, json).and_then(|_| std::fs::rename(&tmp_path, path))
+            {
+                tracing::warn!(
+                    "failed to persist permission decisions to {}: {}",
+                    path.display(),
+                    e
+                );
+                let _ = std::fs::remove_file(&tmp_path);
             }
         }
     }

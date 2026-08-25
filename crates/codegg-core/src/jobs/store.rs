@@ -1508,12 +1508,16 @@ impl JobStore for SqliteJobStore {
                         e
                     },
                 )?;
-                sqlx::query(
+                let mut tx =
+                    self.pool.begin().await.map_err(|e| {
+                        JobStoreError::Storage(StorageError::Database(e.to_string()))
+                    })?;
+                let result = sqlx::query(
                     r#"
                     UPDATE job SET state = 'cancelled', cancel_requested_at = ?,
                                    cancel_reason = ?, time_updated = ?,
                                    time_terminal = ?
-                    WHERE id = ?
+                    WHERE id = ? AND state IN ('scheduled', 'queued', 'blocked')
                     "#,
                 )
                 .bind(now.timestamp_millis())
@@ -1521,9 +1525,18 @@ impl JobStore for SqliteJobStore {
                 .bind(now.timestamp_millis())
                 .bind(now.timestamp_millis())
                 .bind(id.as_str())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+                if result.rows_affected() == 0 {
+                    // A concurrent transition moved the job out of the
+                    // cancellable set between the read above and this
+                    // update; refuse to overwrite it.
+                    return Err(JobStoreError::Conflict(id.to_string()));
+                }
+                tx.commit()
+                    .await
+                    .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
                 Ok(CancelResult {
                     job_id: id.clone(),
                     state: CancelOutcome::Cancelled,
@@ -1618,10 +1631,29 @@ impl JobStore for SqliteJobStore {
             e
         })?;
         let now = Utc::now();
-        sqlx::query("UPDATE job SET state = 'blocked', time_updated = ? WHERE id = ?")
-            .bind(now.timestamp_millis())
-            .bind(id.as_str())
-            .execute(&self.pool)
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let result = sqlx::query(
+            "UPDATE job SET state = 'blocked', time_updated = ? WHERE id = ? AND state = 'queued'",
+        )
+        .bind(now.timestamp_millis())
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            // A concurrent transition moved the job out of `queued`
+            // between the read above and this update.
+            return Err(JobStoreError::InvalidTransition {
+                job: id.to_string(),
+                from: existing.state,
+                to: JobState::Blocked,
+            });
+        }
+        tx.commit()
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         self.get_job(id)

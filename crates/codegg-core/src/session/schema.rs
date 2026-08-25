@@ -241,6 +241,27 @@ async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Apply an additive `ALTER TABLE ... ADD COLUMN`, tolerating the
+/// benign duplicate-column error left by a prior migration while
+/// propagating genuine failures (disk full, corruption, ...) so the
+/// schema is never marked complete with a missing column.
+async fn add_column_ignore_duplicate(
+    pool: &SqlitePool,
+    statement: String,
+) -> Result<(), StorageError> {
+    match sqlx::query(&statement).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(sqlx::Error::Database(db_err)) => {
+            if db_err.message().contains("duplicate column name") {
+                Ok(())
+            } else {
+                Err(StorageError::Migration(db_err.message().to_string()))
+            }
+        }
+        Err(e) => Err(StorageError::Migration(e.to_string())),
+    }
+}
+
 /// Tool Programs M003: durable program domain, source/IR references,
 /// capability manifests, checkpoints, call ledger, and results.
 async fn migrate_v33(pool: &SqlitePool) -> Result<(), StorageError> {
@@ -1029,9 +1050,8 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
 
     // M012-F04/F06: Add parent lineage columns to existing databases.
     for col in &["parent_job_id", "parent_attempt_id", "parent_call_id"] {
-        let _ = sqlx::query(&format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
-            .execute(pool)
-            .await;
+        add_column_ignore_duplicate(pool, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+            .await?;
     }
 
     // M013-F04: Add indexes for lineage queries (parent job, parent attempt,
@@ -1728,9 +1748,8 @@ async fn migrate_v35(pool: &SqlitePool) -> Result<(), StorageError> {
         "parent_instruction_sequence",
         "relation_kind",
     ] {
-        let _ = sqlx::query(&format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
-            .execute(pool)
-            .await;
+        add_column_ignore_duplicate(pool, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+            .await?;
     }
     let _ =
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_parent_program ON job(parent_program_id)")

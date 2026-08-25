@@ -29,6 +29,10 @@ fn run_command_with_timeout(program: &str, args: &[&str]) -> Result<(), String> 
             }
             Ok(None) => {
                 if Instant::now() >= deadline {
+                    // Kill and reap so a hung child does not linger as
+                    // an orphan past the timeout.
+                    let _ = child.kill();
+                    let _ = child.wait();
                     return Err(format!(
                         "{} timed out after {:?}",
                         program, IDE_COMMAND_TIMEOUT

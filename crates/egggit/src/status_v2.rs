@@ -199,85 +199,66 @@ fn classify_entry(xy: &str) -> &'static str {
     "clean"
 }
 
-fn parse_entry_tokens(tokens: &[&str], prefix: &str) -> Option<StatusEntry> {
-    match prefix {
+/// Split a porcelain v2 entry into its fixed-width leading fields and
+/// the verbatim path remainder. Paths are separated from the fixed
+/// fields by a single space and may themselves contain spaces.
+fn split_entry_fields(entry: &str, fixed_fields: usize) -> Option<(Vec<&str>, &str)> {
+    let mut fields = Vec::with_capacity(fixed_fields);
+    let mut rest = entry;
+    for _ in 0..fixed_fields {
+        let idx = rest.find(' ')?;
+        let (field, tail) = rest.split_at(idx);
+        fields.push(field);
+        rest = &tail[1..];
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    Some((fields, rest))
+}
+
+/// Parse a single porcelain v2 entry record. `orig_path` carries the
+/// renamed/copied source path, which git emits as the NUL-separated
+/// record following a type-2/type-3 entry in `-z` mode.
+fn parse_entry(entry: &str, orig_path: Option<&str>) -> Option<StatusEntry> {
+    match entry.split(' ').next()? {
         "1" => {
-            if tokens.len() < 2 {
-                return None;
-            }
-            let xy = tokens[1];
-            let path = tokens.last()?.to_string();
+            // 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+            let (fields, path) = split_entry_fields(entry, 8)?;
             Some(StatusEntry {
-                xy_status: xy.to_string(),
-                path,
+                xy_status: fields[1].to_string(),
+                path: path.to_string(),
                 old_path: None,
-                submodule_status: tokens.get(2).map(|s| s.to_string()),
+                submodule_status: fields.get(2).map(|s| s.to_string()),
                 conflict_stages: None,
             })
         }
-        "2" => {
-            if tokens.len() < 2 {
-                return None;
-            }
-            // Type 2 (rename): token[1] is "XYnnn" where XY is 2 chars and nnn is score
-            let xy_full = tokens[1];
+        "2" | "3" => {
+            // 2|3 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>
+            let (fields, path) = split_entry_fields(entry, 9)?;
+            let xy_full = fields[1];
             let xy = if xy_full.len() >= 2 {
                 &xy_full[..2]
             } else {
                 xy_full
             };
-            let path = tokens.last()?.to_string();
-            let old_path = if tokens.len() >= 3 {
-                Some(tokens[tokens.len() - 2].to_string())
-            } else {
-                None
-            };
             Some(StatusEntry {
                 xy_status: xy.to_string(),
-                path,
-                old_path,
-                submodule_status: None,
-                conflict_stages: None,
-            })
-        }
-        "3" => {
-            if tokens.len() < 2 {
-                return None;
-            }
-            // Type 3 (copy): token[1] is "XYnnn" where XY is 2 chars and nnn is score
-            let xy_full = tokens[1];
-            let xy = if xy_full.len() >= 2 {
-                &xy_full[..2]
-            } else {
-                xy_full
-            };
-            let path = tokens.last()?.to_string();
-            let old_path = if tokens.len() >= 3 {
-                Some(tokens[tokens.len() - 2].to_string())
-            } else {
-                None
-            };
-            Some(StatusEntry {
-                xy_status: xy.to_string(),
-                path,
-                old_path,
+                path: path.to_string(),
+                old_path: orig_path.map(|p| p.to_string()),
                 submodule_status: None,
                 conflict_stages: None,
             })
         }
         "u" => {
-            if tokens.len() < 2 {
-                return None;
-            }
-            let xy = format!("u{}", tokens.get(1).unwrap_or(&" "));
-            let path = tokens.last()?.to_string();
-            let conflict_stages = tokens.get(2).map(|s| s.to_string());
+            // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+            let (fields, path) = split_entry_fields(entry, 10)?;
             Some(StatusEntry {
-                xy_status: xy,
-                path,
+                xy_status: format!("u{}", fields[1]),
+                path: path.to_string(),
                 old_path: None,
                 submodule_status: None,
-                conflict_stages,
+                conflict_stages: fields.get(2).map(|s| s.to_string()),
             })
         }
         _ => None,
@@ -301,15 +282,20 @@ pub fn parse_status_v2(output: &str, root: &str) -> RichRepoStatus {
     // Porcelain v2 with -z: everything is NUL-separated.
     // Branch header lines and status entries are all separated by NUL.
     // Format: # branch.oid <sha>\0# branch.head <name>\0...<entries>\0
-    for chunk in output.split('\0') {
-        let chunk = chunk.trim();
+    // Paths are unquoted in -z mode, so records must not be trimmed or
+    // re-split on whitespace.
+    let chunks: Vec<&str> = output.split('\0').collect();
+    let mut idx = 0;
+    while idx < chunks.len() {
+        let chunk = chunks[idx];
+        idx += 1;
         if chunk.is_empty() {
             continue;
         }
 
         if chunk.starts_with("# branch.") {
             parse_branch_line(
-                chunk,
+                chunk.trim(),
                 &mut head,
                 &mut branch,
                 &mut upstream,
@@ -319,46 +305,53 @@ pub fn parse_status_v2(output: &str, root: &str) -> RichRepoStatus {
             continue;
         }
 
-        // Status entries
-        let tokens: Vec<&str> = chunk.split_whitespace().collect();
-        if let Some(prefix) = tokens.first() {
-            match *prefix {
-                "1" | "2" | "3" | "u" => {
-                    if let Some(status_entry) = parse_entry_tokens(&tokens, prefix) {
-                        match classify_entry(&status_entry.xy_status) {
-                            "staged" => staged.push(status_entry),
-                            "unstaged" => unstaged.push(status_entry),
-                            "conflicted" => conflicted.push(status_entry),
-                            "ignored" => ignored.push(status_entry),
-                            "untracked" => untracked.push(status_entry),
-                            _ => {}
-                        }
-                    }
+        // Status entries. Renames/copies (types 2/3) carry the original
+        // path as the NUL-separated record immediately after the entry.
+        let prefix = chunk.split(' ').next().unwrap_or_default();
+        let parsed = match prefix {
+            "1" | "u" => parse_entry(chunk, None),
+            "2" | "3" => {
+                let orig_path = chunks.get(idx).copied();
+                idx += 1;
+                parse_entry(chunk, orig_path)
+            }
+            "?" => {
+                let path = chunk.strip_prefix('?').unwrap_or(chunk).trim().to_string();
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(StatusEntry {
+                        xy_status: "?".to_string(),
+                        path,
+                        old_path: None,
+                        submodule_status: None,
+                        conflict_stages: None,
+                    })
                 }
-                "?" => {
-                    let path = chunk.strip_prefix('?').unwrap_or(chunk).trim().to_string();
-                    if !path.is_empty() {
-                        untracked.push(StatusEntry {
-                            xy_status: "?".to_string(),
-                            path,
-                            old_path: None,
-                            submodule_status: None,
-                            conflict_stages: None,
-                        });
-                    }
+            }
+            "!" => {
+                let path = chunk.strip_prefix('!').unwrap_or(chunk).trim().to_string();
+                if path.is_empty() {
+                    None
+                } else {
+                    Some(StatusEntry {
+                        xy_status: "!".to_string(),
+                        path,
+                        old_path: None,
+                        submodule_status: None,
+                        conflict_stages: None,
+                    })
                 }
-                "!" => {
-                    let path = chunk.strip_prefix('!').unwrap_or(chunk).trim().to_string();
-                    if !path.is_empty() {
-                        ignored.push(StatusEntry {
-                            xy_status: "!".to_string(),
-                            path,
-                            old_path: None,
-                            submodule_status: None,
-                            conflict_stages: None,
-                        });
-                    }
-                }
+            }
+            _ => None,
+        };
+        if let Some(status_entry) = parsed {
+            match classify_entry(&status_entry.xy_status) {
+                "staged" => staged.push(status_entry),
+                "unstaged" => unstaged.push(status_entry),
+                "conflicted" => conflicted.push(status_entry),
+                "ignored" => ignored.push(status_entry),
+                "untracked" => untracked.push(status_entry),
                 _ => {}
             }
         }
@@ -599,7 +592,8 @@ mod tests {
 
     #[test]
     fn parse_status_with_conflicts() {
-        let output = "# branch.oid abc123\0# branch.head main\0u AU N... 100644 100644 100644 1 abc123 abc123 conflict.txt\0";
+        // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+        let output = "# branch.oid abc123\0# branch.head main\0u AU N... 000000 100644 100644 100644 000000 abc123 def456 conflict.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.conflicted.len(), 1);
         assert_eq!(status.conflicted[0].path, "conflict.txt");
@@ -616,7 +610,7 @@ mod tests {
 
     #[test]
     fn conflict_report_populated_when_unmerged() {
-        let output = "# branch.oid abc123\0# branch.head main\0u UU N... 100644 100644 100644 1 abc123 abc123 a.txt\0u AA N... 100644 100644 100644 1 abc123 abc123 b.txt\0";
+        let output = "# branch.oid abc123\0# branch.head main\0u UU N... 000000 100644 100644 100644 000000 abc123 def456 a.txt\0u AA N... 000000 100644 100644 100644 000000 abc123 def456 b.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         let report = status.conflict_report.expect("report present");
         assert_eq!(report.total, 2);
@@ -626,13 +620,35 @@ mod tests {
 
     #[test]
     fn parse_status_with_renamed_files() {
-        // In porcelain v2 type 2: 2 XY SCORE SUB mH mI mW hH hI XCOPY orig path
-        let output = "# branch.oid abc123\0# branch.head main\x002 R.100 N... 100644 100644 100644 abc123 abc123 old_name.txt new_name.txt\0";
+        // Type 2 (rename): `2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>`
+        // with the original path as the next NUL-separated record.
+        let output = "# branch.oid abc123\0# branch.head main\x002 R. N... 100644 100644 100644 abc123 def456 R100 new_name.txt\0old_name.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.staged.len(), 1);
         assert_eq!(status.staged[0].path, "new_name.txt");
         assert_eq!(status.staged[0].old_path, Some("old_name.txt".to_string()));
         assert_eq!(status.staged[0].xy_status, "R.");
+    }
+
+    #[test]
+    fn parse_status_paths_with_spaces() {
+        // Paths are unquoted in -z mode and may contain spaces.
+        let output = "# branch.oid abc123\0# branch.head main\x001 M. N... 100644 100644 100644 abc123 abc123 my file.txt\x001 .M N... 100644 100644 000000 abc123 abc123 dir with spaces/other name.txt\0? untracked file with spaces.txt\0";
+        let status = parse_status_v2(output, "/tmp/repo");
+        assert_eq!(status.staged[0].path, "my file.txt");
+        assert_eq!(status.unstaged[0].path, "dir with spaces/other name.txt");
+        assert_eq!(status.untracked[0].path, "untracked file with spaces.txt");
+    }
+
+    #[test]
+    fn parse_status_rename_with_spaces() {
+        // Rename entries keep both paths verbatim: the new path after the
+        // fixed fields and the original path in the following record.
+        let output = "# branch.oid abc123\0# branch.head main\x002 R. N... 100644 100644 100644 abc123 def456 R100 new name.txt\0old name.txt\0";
+        let status = parse_status_v2(output, "/tmp/repo");
+        assert_eq!(status.staged.len(), 1);
+        assert_eq!(status.staged[0].path, "new name.txt");
+        assert_eq!(status.staged[0].old_path, Some("old name.txt".to_string()));
     }
 
     #[test]
@@ -654,8 +670,9 @@ mod tests {
 
     #[test]
     fn parse_status_copied_files() {
-        // In porcelain v2 type 3: 3 XY SCORE SUB mH mI mW hH hI XCOPY orig path
-        let output = "# branch.oid abc123\0# branch.head main\x003 C.100 N... 100644 100644 100644 abc123 abc123 source.txt copy.txt\0";
+        // Type 3 (copy): `3 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>`
+        // with the source path as the next NUL-separated record.
+        let output = "# branch.oid abc123\0# branch.head main\x003 C. N... 100644 100644 100644 abc123 abc123 C100 copy.txt\0source.txt\0";
         let status = parse_status_v2(output, "/tmp/repo");
         assert_eq!(status.staged.len(), 1);
         assert_eq!(status.staged[0].path, "copy.txt");

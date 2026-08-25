@@ -355,15 +355,22 @@ pub fn interpolate_env_vars(content: &str) -> String {
         if c == '$' && chars.peek() == Some(&'{') {
             chars.next();
             let mut var_name = String::new();
+            let mut terminated = false;
             while let Some(&nc) = chars.peek() {
                 if nc == '}' {
                     chars.next();
+                    terminated = true;
                     break;
                 }
                 var_name.push(nc);
                 chars.next();
             }
-            if let Ok(val) = std::env::var(&var_name) {
+            if !terminated {
+                // Unterminated `${`: emit the literal text rather than
+                // silently dropping the rest of the string.
+                result.push_str("${");
+                result.push_str(&var_name);
+            } else if let Ok(val) = std::env::var(&var_name) {
                 result.push_str(&val);
             }
         } else {
@@ -422,6 +429,14 @@ mod tests {
         let input = r#"{"key": "${NONEXISTENT_VAR_12345}"}"#;
         let output = interpolate_env_vars(input);
         assert!(output.contains(r#""key": """#));
+    }
+
+    #[test]
+    fn test_interpolate_env_vars_unterminated_keeps_literal() {
+        let input = "prefix ${UNCLOSED and more";
+        let output = interpolate_env_vars(input);
+        assert_eq!(output, "prefix ${UNCLOSED and more");
+        assert_eq!(interpolate_env_vars("a ${b"), "a ${b");
     }
 
     #[test]

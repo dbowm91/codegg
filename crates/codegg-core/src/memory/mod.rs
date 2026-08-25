@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 
 const PROJECT_NAMESPACE_DOMAIN: &[u8] = b"codegg-memory-namespace-v1\0";
@@ -449,7 +450,12 @@ impl MemoryStore {
                 ));
             }
 
-            fs::write(&temp_path, &content)?;
+            // Durable temp write (fsync) before rename so a crash
+            // cannot leave an empty or truncated index behind.
+            let mut file = fs::File::create(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
             fs::rename(&temp_path, &index_path)?;
         }
 

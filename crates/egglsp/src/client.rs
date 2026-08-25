@@ -1267,6 +1267,10 @@ impl LspClient {
             .await?;
 
         self.opened_files.lock().await.remove(&uri.to_string());
+        self.last_content_change_at
+            .lock()
+            .await
+            .remove(&uri.to_string());
         Ok(())
     }
 
