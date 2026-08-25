@@ -1,42 +1,41 @@
 # Run Store
 
-## Overview
+Persistent, filesystem-backed run index + artifact storage for
+command executions (shell, git, test, python, native tools).
 
-**Location**: `crates/codegg-core/src/run_store.rs` (~1900 lines)
+## Purpose
 
-The run store provides durable, filesystem-backed persistence for structured command execution records (runs) and their associated artifacts. It replaces ad-hoc log files and JSONL indices with a typed, indexed store that supports ranging, retention, and cleanup.
+Records structured execution metadata (who ran what, how, what
+happened) and their artifacts (stdout, stderr, diffs, projections)
+with JSONL indexing, SHA-256 integrity, retention cleanup, and
+in-memory test doubles.
 
-## Key Responsibilities
+## Where It Lives
 
-- Persist run manifests (metadata, invocation, risk, permissions, sandbox, projection, changes, rerun descriptor)
-- Persist artifacts (stdout, stderr, diffs, test reports, structured JSON, etc.)
-- Provide JSONL index for fast listing and querying
-- Enforce retention limits (bytes, count, age)
-- Support ranged artifact reads for large outputs
-- Provide in-memory implementation for tests
+| Layer | Path |
+|-------|------|
+| Trait + types + impls | `crates/codegg-core/src/run_store.rs` (~2503 lines) |
+| Error variants | `crates/codegg-core/src/error.rs:390-411` (`RunStoreError`) |
+| Root re-export | `src/lib.rs:11` — `pub use codegg_core::run_store;` |
+| Ownership by `WorkspaceServices` | `crates/codegg-core/src/workspace_services.rs` |
 
-## Architecture
+Storage root: `<workspace>/.codegg/runs/`.
 
-### RunStore Trait
+## How It Works
 
-```rust
-#[async_trait]
-pub trait RunStore: Send + Sync {
-    async fn begin_run(&self, draft: RunDraft) -> Result<RunHandle, RunStoreError>;
-    async fn write_artifact(&self, run: &RunHandle, artifact: ArtifactInput) -> Result<ArtifactRef, RunStoreError>;
-    async fn complete_run(&self, run: RunHandle, completion: RunCompletion) -> Result<RunManifest, RunStoreError>;
-    async fn get_run(&self, id: &RunId) -> Result<Option<RunManifest>, RunStoreError>;
-    async fn read_artifact(&self, id: &ArtifactId, range: Option<ByteRange>) -> Result<ArtifactChunk, RunStoreError>;
-    async fn list_runs(&self, query: RunQuery) -> Result<Vec<RunSummary>, RunStoreError>;
-}
-```
+### Lifecycle
 
-### Implementations
-
-| Implementation | Location | Purpose |
-|---------------|----------|---------|
-| `FsRunStore` | `:478` | Filesystem-backed with JSONL index, atomic writes, path traversal protection |
-| `MemRunStore` | `:968` | In-memory for tests, `parking_lot::RwLock` based |
+1. **`begin_run(RunDraft)`** — Creates a `RunId` (UUID v4), builds a
+   `RunManifest` with `Running` status, writes `manifest.json`
+   atomically (fsync before rename), appends to `index.jsonl`, returns
+   `RunHandle`.
+2. **`write_artifact(RunHandle, ArtifactInput)`** — Validates size ≤ 64
+   MiB, computes SHA-256, writes artifact file atomically, updates
+   `manifest.json` with new `ArtifactRecord`, returns `ArtifactRef`.
+3. **`complete_run(RunHandle, RunCompletion)`** — Updates manifest with
+   terminal status, permissions, sandbox, projection, changes, rerun
+   descriptor, actual_backend/fallback. Rewrites index entry under the
+   serialization lock. Triggers best-effort retention cleanup.
 
 ### Directory Layout
 
@@ -54,123 +53,189 @@ pub trait RunStore: Send + Sync {
       ...
 ```
 
-### Key Constants
+### Integrity model
 
-| Constant | Value |
-|----------|-------|
-| `SCHEMA_VERSION` | `1` |
-| `MAX_ARTIFACT_BYTES` | 64 MiB |
-| `DEFAULT_MAX_TOTAL_BYTES` | 1 GiB |
-| `DEFAULT_MAX_RUN_COUNT` | 1000 |
-| `DEFAULT_MAX_AGE_DAYS` | 30 |
-| `DEFAULT_FAILED_EXTRA_DAYS` | 30 |
+`read_artifact` reads the file, recomputes SHA-256, and compares against
+the `ArtifactRecord.sha256` stored in the **persisted** `manifest.json`
+(not a cache copy). Mismatches return `RunStoreError::IntegrityViolation`.
 
-## Domain Types
+### Retention
+
+`FsRunStore::cleanup` runs after each `complete_run` with default limits:
+1 GiB total, 1000 runs, 30-day max age (60 days for failed/timed-out),
+pinned runs exempt. Uses `FsRunStore::plan_cleanup` for dry-run.
+
+## Key Types & APIs
 
 ### Identifiers
 
-- `RunId(String)` — UUID v4, Display, Default, Serialize/Deserialize
-- `ArtifactId(String)` — Same pattern as RunId
+| Type | File:Line | Notes |
+|------|-----------|-------|
+| `RunId` | :24 | UUID v4 newtype, `Display`, `Default` |
+| `ArtifactId` | :55 | Same pattern |
 
 ### Enums
 
-- **`RunKind`** (8 variants): `RawShell`, `ManagedProcess`, `Test`, `GitRead`, `GitMutation`, `Search`, `Python`, `NativeTool`
-- **`RunStatus`** (6 variants): `Running`, `Complete`, `Failed`, `TimedOut`, `Cancelled`, `Incomplete`
-- **`ArtifactKind`** (12 variants): `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence`
-- **`ContextPromotionState`** (5 variants): `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded { artifact_id, start, end }`, `Pinned`, `Excluded`
+| Type | File:Line | Variants |
+|------|-----------|----------|
+| `RunKind` | :206 | `RawShell`, `ManagedProcess`, `Test`, `GitRead`, `GitMutation`, `Search`, `Python`, `NativeTool` (8) |
+| `RunStatus` | :236 | `Running`, `Complete`, `Failed`, `TimedOut`, `Cancelled`, `Incomplete` (6) |
+| `ArtifactKind` | :262 | `Stdout`, `Stderr`, `CombinedLog`, `CommandSource`, `TestReport`, `TestLog`, `UnifiedDiff`, `ChangedFiles`, `Projection`, `RtkProjection`, `StructuredJson`, `PolicyEvidence` (12) |
+| `ContextPromotionState` | :694 | `LocalOnly`, `ProjectionIncluded`, `ArtifactRangeIncluded`, `Pinned`, `Excluded` (5) |
+| `RunOwnership` | :94 | `Caller`, `DelegatedBackend`, `ChildOf(RunId)` (3) |
+| `PlannedBackend` | :111 | `Unrouted`, `RawShell`, `TestRunner`, `PythonScript`, `NativeTool`, `ManagedArgv`, `Git`, `GitMutating` (8, last deprecated) |
+| `ActualBackend` | :154 | Same as PlannedBackend + `Rejected { reason }` (9) |
 
 ### Record Types
 
-- `RunInvocation` — command, argv, script_hash
-- `BackendRecord` — family, detail
-- `RiskRecord` — level, has_subprocess, has_git_mutation, has_destructive_mutation
-- `PermissionDecisionRecord` — tool, path, decision
-- `SandboxRecord` — os_isolation, network_isolation, read_roots, write_roots
-- `ArtifactRecord` — artifact_id, kind, relative_path, mime_type, byte_length, sha256, truncated, redacted, safe_for_model
-- `ProjectionRecord` — projector, exactness, omitted_ranges
-- `ChangedPathRecord` — path, kind
-- `RerunDescriptor` — argv, script_source_ref, backend_family, cwd, workspace_root, mode, config_profile, parent_run_id
+| Type | File:Line | Purpose |
+|------|-----------|---------|
+| `RunInvocation` | :281 | command, argv, script_hash |
+| `BackendRecord` | :292 | family, detail |
+| `RiskRecord` | :301 | level, has_subprocess, has_git_mutation, has_destructive_mutation |
+| `PermissionDecisionRecord` | :311 | tool, path, decision |
+| `SandboxRecord` | :321 | os_isolation, network_isolation, read_roots, write_roots |
+| `ArtifactRecord` | :333 | artifact_id, kind, relative_path, mime_type, byte_length, sha256, truncated, redacted, created_at, safe_for_model |
+| `ProjectionRecord` | :349 | projector, exactness, omitted_ranges, projection_id, source_spans, redaction_records, rtk_metadata, estimated_output_tokens, promotion_decision, input_digests |
+| `ChangedPathRecord` | :419 | path, kind |
+| `RerunDescriptor` | :427 | argv (AuditSafeArgv), script_source_ref, backend_family, cwd, workspace_root, mode, config_profile, parent_run_id |
+| `FallbackRecord` | :194 | planned, actual, reason |
+| `RunAssetProvenance` | :506 | generation, fingerprint, activated_skill_digests |
 
 ### Composite Types
 
-- **`RunManifest`** (:264) — Full run descriptor with all 15 fields
-- **`RunSummary`** (:298) — Lightweight listing (run_id, kind, status, started_at, completed_at, command)
-- **`RunDraft`** (:311) — Input for `begin_run`
-- **`RunHandle`** (:323) — Returned by `begin_run` (run_id, run_dir, started_at)
-- **`RunCompletion`** (:330) — Input for `complete_run`
-- **`RunQuery`** (:343) — Filter for `list_runs` (kind, status, session_id, since, until, limit)
-- **`ArtifactInput`** (:355) — Input for `write_artifact`
-- **`ArtifactRef`** (:363) — Returned by `write_artifact`
-- **`ArtifactChunk`** (:371) — Returned by `read_artifact` (supports ranged reads)
-- **`ByteRange`** (:379) — start, end
-- **`RetentionConfig`** (:387) — max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days
-- **`CleanupPlan`** (:408) — runs_to_delete, bytes_to_free, pinned_runs_skipped
-- **`IndexEntry`** (:417) — JSONL index record (10 fields including pinned, date_dir)
-- **`RunOwnership`** (:75) — Enum (`Caller`, `DelegatedBackend`, `ChildOf(RunId)`) describing who owns the canonical run record for a command execution.
+| Type | File:Line | Purpose |
+|------|-----------|---------|
+| `RunManifest` | :456 | Full run descriptor (~22 fields) |
+| `RunSummary` | :541 | Lightweight listing for `list_runs` |
+| `RunDraft` | :555 | Input for `begin_run` |
+| `RunHandle` | :576 | Returned by `begin_run` (run_id, run_dir, started_at) |
+| `RunCompletion` | :583 | Input for `complete_run` |
+| `RunQuery` | :604 | Filter for `list_runs` |
+| `ArtifactInput` | :615 | Input for `write_artifact` |
+| `ArtifactRef` | :623 | Returned by `write_artifact` |
+| `ArtifactChunk` | :631 | Returned by `read_artifact` (supports ranged reads) |
+| `ByteRange` | :639 | start, end |
+| `RetentionConfig` | :647 | max_total_bytes, max_run_count, max_age_days, preserve_failed_longer, failed_extra_days |
+| `CleanupPlan` | :668 | runs_to_delete, bytes_to_free, pinned_runs_skipped |
+| `IndexEntry` | :677 | JSONL index record |
 
-### View Models (Phase 08)
+### View Models
 
-- **`RunCellView`** (:462) — Compact summary for TUI cells (from_manifest()). Capability flags: `can_rollback` (disabled; no rollback backend exists), `can_rerun` (requires `rerun` descriptor with complete argv), `can_promote` (requires artifacts, projection, completed/failed status, and at least one safe_for_model artifact), `can_view_artifact` (disabled; no ranged reader available yet).
-- **`RunDetailView`** (:530) — Full detail for overlay (from_manifest())
-- Sub-views: `RunInvocationView`, `RunPermissionView`, `RunPolicyView`, `RunArtifactView`, `RunProjectionView`, `RunChangeView`
+| Type | File:Line | Purpose |
+|------|-----------|---------|
+| `RunCellView` | :718 | Compact TUI cell; `from_manifest()` computes capability flags |
+| `RunDetailView` | :861 | Full detail overlay; `from_manifest()` |
+| `RunInvocationView` | :873 | Command, argv, cwd, backend |
+| `RunPermissionView` | :884 | Tool, path, decision |
+| `RunPolicyView` | :891 | Risk + sandbox |
+| `RunArtifactView` | :911 | Metadata only (no raw bytes) |
+| `RunProjectionView` | :923 | projector, exactness, omitted_ranges |
+| `RunChangeView` | :930 | path, kind |
+
+### Trait
+
+```rust
+// run_store.rs:1028
+#[async_trait]
+pub trait RunStore: Send + Sync {
+    async fn begin_run(&self, draft: RunDraft) -> Result<RunHandle, RunStoreError>;
+    async fn write_artifact(&self, run: &RunHandle, artifact: ArtifactInput)
+        -> Result<ArtifactRef, RunStoreError>;
+    async fn complete_run(&self, run: RunHandle, completion: RunCompletion)
+        -> Result<RunManifest, RunStoreError>;
+    async fn get_run(&self, id: &RunId) -> Result<Option<RunManifest>, RunStoreError>;
+    async fn read_artifact(&self, id: &ArtifactId, range: Option<ByteRange>)
+        -> Result<ArtifactChunk, RunStoreError>;
+    async fn list_runs(&self, query: RunQuery) -> Result<Vec<RunSummary>, RunStoreError>;
+}
+```
+
+### Implementations
+
+| Impl | File:Line | Backend |
+|------|-----------|---------|
+| `FsRunStore` | :1110 | Filesystem with JSONL index, `tokio::sync::Mutex<()>` serialization |
+| `MemRunStore` | :1730 | In-memory `parking_lot::RwLock<HashMap>` |
+
+### Constants
+
+| Constant | Value | File:Line |
+|----------|-------|-----------|
+| `SCHEMA_VERSION` | `1` | :13 |
+| `MAX_ARTIFACT_BYTES` | 64 MiB | :16 |
+| `DEFAULT_MAX_TOTAL_BYTES` | 1 GiB | :17 |
+| `DEFAULT_MAX_RUN_COUNT` | 1000 | :18 |
+| `DEFAULT_MAX_AGE_DAYS` | 30 | :19 |
+| `DEFAULT_FAILED_EXTRA_DAYS` | 30 | :20 |
 
 ## Integration Points
 
-### Tool Integration
+### Tool integration
 
 | Location | How Used |
 |----------|----------|
 | `src/tool/mod.rs:242` | `ToolRegistryOptions.run_store: Option<Arc<dyn RunStore>>` |
-| `src/tool/mod.rs:263-266` | `BashTool` receives `run_store` via `with_run_store()` |
-| `src/tool/mod.rs:341-342` | `PythonScriptTool` receives `run_store` via `with_run_store()` |
-| `src/tool/mod.rs:340-341` | `TestTool` receives `run_store` via `with_run_store()` |
-| `src/tool/factory.rs:45-52` | Factory creates `FsRunStore` at `.codegg/runs/` and passes to tools |
-| `src/tool/bash.rs:664-760` | BashTool persists runs with the correct `RunKind` based on routing decision (GitRead, NativeTool, Search, GitMutation, ManagedProcess, Test, Python, RawShell). Skips persistence for TestRunner and PythonScript backends that own their own records. |
-| `src/python_script/tool.rs:143-257` | PythonScriptTool persists `Python` runs with diff/sandbox/changes |
-| `src/test_runner/runner.rs:238-239` | TestRunner persists `Test` runs via `persist_to_run_store()` after each test run |
+| `src/tool/factory.rs:45-52` | Creates `FsRunStore` at `.codegg/runs/`, passes to tools |
+| `src/tool/bash.rs:664-760` | Persists runs with correct `RunKind` per routing decision |
+| `src/python_script/tool.rs:143-257` | Persists `Python` runs with diff/sandbox/changes |
+| `src/test_runner/runner.rs:238-239` | Persists `Test` runs after each run |
 
-### TUI Integration
+### TUI integration
 
 | Location | How Used |
 |----------|----------|
 | `src/tui/app/mod.rs:681` | `App.run_store: Option<Arc<dyn RunStore>>` |
-| `src/tui/app/mod.rs:872-877` | App initializes `FsRunStore` at `.codegg/runs/` |
-| `src/tui/app/mod.rs:3510` | `TuiMsg::OpenRunDetail` loads manifest, creates `RunDetailDialog` |
+| `src/tui/app/mod.rs:872-877` | Initializes `FsRunStore` at `.codegg/runs/` |
 | `src/tui/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
-| `src/tui/components/messages.rs` | `MsgPart::RunCell` — compact run cell rendering |
 
-### Protocol Events (Phase 08)
+### Protocol events
 
-Added to `CoreEvent` in `crates/codegg-protocol/src/core.rs`:
-
-- `RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunProjectionReady`
-- `RunCompleted`, `RunDenied`, `RunPinned`, `ContextPromotionChanged`, `RunRerunLinked`
-
-### Protocol Conversions
-
-In `src/protocol_conversions.rs`:
-
-- `run_started_event()`, `run_progress_event()`, `run_completed_event()`
-- `run_artifact_created_event()`, `run_denied_event()`
+`CoreEvent` variants in `crates/codegg-protocol/src/core.rs`:
+`RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunProjectionReady`,
+`RunCompleted`, `RunDenied`, `RunPinned`, `ContextPromotionChanged`,
+`RunRerunLinked`.
 
 ## Tool Programs Linkage (M003)
 
 RunStore and ToolProgramStore are **separate authorities**:
 
-- **RunStore** owns execution artifacts for concrete command runs (stdout, stderr, diffs, etc.).
-- **ToolProgramStore** owns lifecycle records for agent-submitted Tool Programs (state, manifest, source/IR refs, call ledger, checkpoints).
+- **RunStore** owns execution artifacts for concrete command runs.
+- **ToolProgramStore** owns lifecycle records for agent-submitted
+  Tool Programs (state, manifest, source/IR refs, call ledger).
 
-A `ToolProgramRecord` may link to a RunStore run via `ProgramCallRecord.child_run_id`, but the two stores are not atomically coupled. Tool Programs do not create RunStore records until an executor actually dispatches a nested call (M005+). Until then, Tool Program records are dormant and RunStore is unaffected.
+A `ToolProgramRecord` may link to a RunStore run via
+`ProgramCallRecord.child_run_id`, but the two stores are not atomically
+coupled.
 
-The `JobPayload::ToolProgram` carries references/hashes (`program_id`, `source_digest`, `ir_digest`, `authority_digest`, `submission_key`) — no unbounded source bodies enter the scheduler or RunStore.
+## Invariants & Gotchas
 
-See `architecture/tool_programs.md` for the full Tool Program domain model.
+### `tokio::sync::Mutex` reentrancy
 
-M011 adds a separate bounded Tool Program result/journal surface under the
-workspace `.codegg` directory. It is intentionally not a second RunStore
-authority: the call journal owns replay safety, and the typed result record
-owns Tool Program terminal counters/status/backend selection. RunStore remains
-the authority for process artifacts and `JobAttempt.run_id` linkage.
+`FsRunStore.lock` is **not reentrant**. The single allowed pattern is:
+acquire the lock once, call `rewrite_index_locked` (the `_locked` suffix
+means "caller must hold `self.lock`"). Calling `self.lock.lock().await`
+again from the same task **deadlocks permanently**. The historical
+`fs_store_complete_updates_index` hang was caused by this.
+
+### Integrity source
+
+The authoritative SHA-256 is the `sha256` field on the `ArtifactRecord`
+stored in the artifact store (on-disk manifest for `FsRunStore`, in-memory
+entry for `MemRunStore`). The `RunManifest.artifacts` copy is serialization
+convenience only and is **never** the integrity source.
+
+### `RunOwnership` guard
+
+Tools that delegate to a structured backend (TestRunner, PythonScriptTool)
+MUST set `RunOwnership::DelegatedBackend` and skip their own
+`begin_run`/`write_artifact`/`complete_run` to avoid duplicate records.
+
+### Durable writes
+
+`write_file_durable` fsyncs before rename. `sync_parent_dir` best-effort
+fsyncs the parent directory after rename. This ensures data reaches stable
+storage before the rename is visible.
 
 ## Not Yet Integrated
 
@@ -178,57 +243,27 @@ the authority for process artifacts and `JobAttempt.run_id` linkage.
 |-----|---------|
 | Native git/search tools | No run_store integration |
 | Full rerun from manifest | RerunDescriptor defined but re-execution not wired |
-| Rollback/revert | No rollback infrastructure |
-| Artifact viewer | Run detail shows artifact metadata, not full content |
+| Rollback/revert | No rollback infrastructure (`can_rollback = false`) |
+| Artifact viewer | Run detail shows metadata, not full content (`can_view_artifact = false`) |
 
-## Python Scheduler Ownership (M001)
+## Testing
 
-All production model-facing Python execution is now scheduler-owned. The `PythonJobExecutor` begins a `RunKind::Python` record **before** process launch, writes artifacts (stdout, stderr, unified diff) after execution, and completes the run with terminal status and sandbox evidence.
+```bash
+cargo test -p codegg-core run_store        # 19 unit tests
+```
 
-### Lifecycle
+Covers: ID generation, serde roundtrip, begin/write/complete flow,
+get/list, ranged reads, integrity violation (mem + fs), artifact too
+large, rerun descriptor safety, concurrent writes, path traversal,
+list with limit, cleanup plan, FsRunStore atomic begin, artifact
+write, index update, and the deadlock regression test
+(`fs_store_complete_updates_index_repeated`).
 
-1. **`begin_python_run`** — Creates a `RunDraft` and calls `store.begin_run()`. The run is visible as "active" immediately. Called by `PythonJobExecutor` before subprocess launch.
-2. **`write_python_run_artifacts`** — Writes `ArtifactKind::Stdout`, `ArtifactKind::Stderr`, and `ArtifactKind::UnifiedDiff` to the active run handle.
-3. **`complete_python_run`** — Calls `store.complete_run()` with terminal `RunStatus`, `SandboxRecord`, and `ChangedPathRecord`s.
+Run with `--test-threads=1` to avoid spurious hangs under concurrent load.
 
-### Integration points
+## Related Docs
 
-| Location | How Used |
-|----------|----------|
-| `src/python_script/tool.rs` | `begin_python_run`, `write_python_run_artifacts`, `complete_python_run` — split lifecycle for executor |
-| `src/python_script/tool.rs` | `persist_python_run` — legacy combined helper (delegates to split functions) |
-| `src/scheduler/executors.rs` | `PythonJobExecutor::execute` — calls begin before execution, write+complete after |
-| `src/python_script/source_store.rs` | Content-addressed source persistence; orphan cleanup via scheduler reconcile |
-
-### RunStore artifact expansion
-
-Python run artifacts use real `ArtifactRef` handles (`run://{run_id}/stdout`, `run://{run_id}/stderr`), not pseudo-labels. The `project_python_run` function references these handles for model-facing projection.
-
-## Tests
-
-13 unit tests in `run_store.rs` covering: ID generation, serde roundtrip, begin/write/complete flow, get/list, ranged reads, integrity violation, artifact too large, rerun descriptor safety, concurrent writes, path traversal, list with limit, cleanup plan, FsRunStore (atomic begin, artifact write, index update).
-
-Run with: `cargo test -p codegg-core run_store`. With repeated-run regression coverage (`fs_store_complete_updates_index_repeated`), the full RunStore suite is 19 tests. Always run with `--test-threads=1` (resource-capped) to avoid spurious hangs under concurrent load.
-
-## Invariants
-
-### Authoritative checksum source
-
-The SHA-256 that `read_artifact` validates against is the `sha256` field
-of the **`ArtifactRecord`** stored in the *artifact store*:
-
-- **`MemRunStore`**: `artifacts: parking_lot::RwLock<HashMap<ArtifactId, MemArtifactEntry>>` where `MemArtifactEntry = (RunId, Vec<u8>, ArtifactRecord)`. `read_artifact` reads the bytes, recomputes SHA-256, and compares against `record.sha256`.
-- **`FsRunStore`**: `ArtifactRecord.relative_path` points at a file under `<date>/<run-id>/`. `read_artifact` reads the file, recomputes SHA-256, and compares against `ArtifactRecord.sha256` from the persisted `manifest.json`.
-
-The manifest also carries a copy of each `ArtifactRecord` (in `RunManifest.artifacts`) for serialization convenience, but the manifest copy is **never** the integrity source. Tests that want to verify integrity MUST mutate either the bytes on disk (for `FsRunStore`) or the `MemArtifactEntry` record (for `MemRunStore`).
-
-### `tokio::sync::Mutex` reentrancy rule
-
-`FsRunStore.lock: tokio::sync::Mutex<()>` is **not reentrant**. The
-single allowed lock-holding pattern is: acquire the lock once, then
-call `rewrite_index_locked` (the `_locked` suffix signals "caller must
-hold `self.lock` for the duration"). Never wrap the locked variant in
-code that calls `self.lock.lock().await` again; doing so will deadlock
-the current task permanently. The history commit
-`ba66c7d4a4f448abcadc789c8790ec3ecad54e94` documents the
-`fs_store_complete_updates_index` hang as the originating defect.
+- [storage.md](storage.md) — Daemon catalog and legacy project store
+- [snapshot.md](snapshot.md) — Pre-mutation snapshots
+- `architecture/tool_programs.md` — Tool Program lifecycle
+- `architecture/scheduler.md` — Scheduler admission and RunStore linkage

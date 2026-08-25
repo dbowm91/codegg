@@ -1,52 +1,69 @@
 # Crypto Module
 
-The `crypto` module provides AES-256-GCM encryption for sensitive data using Argon2id key derivation.
+The `crypto` module provides AES-256-GCM encryption for sensitive data
+using Argon2id key derivation. It is the cryptographic backbone for
+encrypting API keys in config files and the user-level credential store.
 
-## Overview
+## Purpose
 
-**Location**: `src/crypto/`
+Encrypt and decrypt secrets (provider API keys, stored credentials)
+using memory-hard key derivation and authenticated encryption. Support
+backward-compatible decryption of legacy HMAC-SHA256-derived ciphertexts.
 
-**Key Responsibilities**:
-- AES-256-GCM encryption/decryption
-- Argon2id key derivation (v2 format)
-- HMAC-SHA256 key derivation (legacy format, pre-v2)
-- Secure string handling with hex encoding
+## Where It Lives
 
-## Key Functions
+| Artifact | Location |
+|----------|----------|
+| Encryption/decryption functions | `crates/codegg-providers/src/crypto.rs` |
+| Re-exported via | `codegg_providers::crypto` |
+| `CryptoError` | `crates/codegg-providers/src/crypto.rs:12` |
+| Master key retrieval | `codegg_config::encryption::get_master_key()` |
 
-### encrypt()
+> **Note:** This module was previously at `src/crypto/` and has been
+> moved into the `codegg-providers` crate. Root `src/` re-exports are
+> available via `codegg_providers::crypto`.
 
-```rust
-pub fn encrypt(plaintext: &str, password: &str) -> Result<EncryptedData, CryptoError>;
+## How It Works
+
+### v2 Format (Current)
+
+1. Generate 32-byte random salt
+2. Derive 32-byte key via Argon2id (m=19,456 KiB, t=2, p=1)
+3. Generate 12-byte random nonce
+4. Encrypt with AES-256-GCM (256-bit key, 96-bit nonce, 128-bit auth tag)
+5. Encode as: `v2:<hex(salt[32] || nonce[12] || ciphertext)>`
+
+### Legacy Format (Pre-v2)
+
+Raw hex without prefix, using HMAC-SHA256 key derivation:
+
+```
+hex(salt[32] || nonce[12] || ciphertext)
 ```
 
-Returns `EncryptedData` containing `salt`, `nonce`, and `ciphertext`.
+Legacy key derivation uses `HMAC-SHA256(salt, password)` as a
+one-shot KDF (not memory-hard).
 
-### decrypt()
+### Decryption
 
-```rust
-pub fn decrypt(encrypted: &EncryptedData, password: &str) -> Result<String, CryptoError>;
-```
+`decrypt_from_string()` accepts both formats:
+- `v2:` prefix → Argon2id key derivation
+- No prefix → Legacy HMAC-SHA256 key derivation
 
-### encrypt_to_string()
+## Key Types & APIs
 
-```rust
-pub fn encrypt_to_string(plaintext: &str, password: &str) -> Result<String, CryptoError>;
-// Returns: "v2:" prefix + hex(salt[32] || nonce[12] || ciphertext)
-```
-
-### decrypt_from_string()
+### CryptoError (`crypto.rs:12`)
 
 ```rust
-pub fn decrypt_from_string(encrypted_str: &str, password: &str) -> Result<String, CryptoError>;
-// Accepts both v2 format ("v2:" prefix) and legacy format
+pub enum CryptoError {
+    EncryptionFailed(String),
+    DecryptionFailed(String),
+    InvalidFormat,
+    KeyDerivationFailed,
+}
 ```
 
-## Implementation Details
-
-### EncryptedData Struct
-
-The `EncryptedData` struct is `pub` (visible outside the crypto module), and its fields are `pub`:
+### EncryptedData (`crypto.rs:24`)
 
 ```rust
 pub struct EncryptedData {
@@ -56,115 +73,114 @@ pub struct EncryptedData {
 }
 ```
 
-### Key Derivation (v2 format)
+### Public Functions
 
-Uses Argon2id for strong memory-hard key derivation:
+- `encrypt(plaintext, password) -> Result<EncryptedData, CryptoError>` (:55)
+- `decrypt(encrypted, password) -> Result<String, CryptoError>` (:75)
+- `encrypt_to_string(plaintext, password) -> Result<String, CryptoError>` (:97)
+- `decrypt_from_string(encrypted_str, password) -> Result<String, CryptoError>` (:106)
 
+### Constants
+
+- `KEY_LEN = 32` — AES-256 key length
+- `NONCE_LEN = 12` — AES-GCM nonce length (96 bits)
+- `SALT_LEN = 32` — Argon2id salt length
+- `FORMAT_V2_PREFIX = "v2:"` — v2 format identifier
+
+### Key Derivation
+
+**v2 (Argon2id):**
 ```rust
 fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; 32], CryptoError> {
-    // Params: m=19,456 KiB, t=2 iterations, p=1 degree, output=32 bytes (key length)
+    // m=19,456 KiB (~19 MiB), t=2 iterations, p=1 parallelism
     let params = Params::new(19_456, 2, 1, Some(32))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     // ...
 }
 ```
 
-### Key Derivation (Legacy)
-
-Pre-v2 ciphertexts used HMAC-SHA256:
-
+**Legacy (HMAC-SHA256):**
 ```rust
 fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; 32] {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
-    // ...
+    // HMAC-SHA256(salt, password) → first 32 bytes
 }
 ```
 
-### AES-256-GCM
+### AES-256-GCM Parameters
 
 - 256-bit key size
-- 96-bit (12-byte) nonce (never reused)
+- 96-bit (12-byte) nonce (never reused — random per encryption)
 - 128-bit authentication tag
 
-### Format
+## Configuration Surface
 
-The `FORMAT_V2_PREFIX` constant (`"v2:"`) identifies the v2 encryption format:
+The master key is retrieved from environment variables (checked in
+order):
+1. `CODEGG_MASTER_KEY`
+2. `CODEGG_ENCRYPTION_KEY`
+3. `OPENCODE_ENCRYPTION_KEY`
 
-```
-v2:<hex(salt[32] || nonce[12] || ciphertext)>
-```
-
-Legacy format (pre-v2) is raw hex without prefix.
-
-## Error Types
-
-```rust
-pub enum CryptoError {
-    #[error("encryption failed: {0}")]
-    EncryptionFailed(String),
-    #[error("decryption failed: {0}")]
-    DecryptionFailed(String),
-    #[error("invalid data format")]
-    InvalidFormat,
-    #[error("key derivation failed")]
-    KeyDerivationFailed,
-}
+```bash
+# Set the master key for encryption/decryption
+export CODEGG_MASTER_KEY="your-master-key-here"
 ```
 
-## Usage
+## Invariants & Gotchas
 
-### Encrypting API Keys
-
-```rust
-use crate::crypto::{encrypt_to_string, decrypt_from_string};
-
-let encrypted = encrypt_to_string("sk-ant-api-key...", &master_key)?;
-// Store encrypted string in config
-```
-
-### Decrypting
-
-```rust
-use crate::crypto::decrypt_from_string;
-
-let api_key = decrypt_from_string(&encrypted, &master_key)?;
-```
-
-## Security Notes
-
-1. **Never log plaintext** - Always handle securely
-2. **Key management** - Master key should be from secure source (environment variable)
-3. **Nonce uniqueness** - Each encryption generates fresh random nonce
-4. **Authentication tag** - Any tampering is detected via AES-GCM authentication
-5. **Memory-hard derivation** - Argon2id resists GPU/ASIC attacks
-6. **Legacy migration** - Legacy ciphertexts are migrated to v2 when `encrypt_provider_keys()` is called during config save. Previously encrypted data remains in legacy format until explicitly re-encrypted.
-
-## Used By
-
-- `config/encryption.rs` - Encrypting config secrets (provider API keys)
-- `config/schema.rs` - `ProviderConfig::api_key(prefix)` method for on-demand decryption
-- `auth/store.rs` - `auth::CredentialStore` uses `crypto::encrypt_to_string` /
-  `decrypt_from_string` to back the user-level encrypted credential store at
-  `~/.config/codegg/credentials.json`. Each `StoredCredentialRecord`'s
-  `encrypted_secret` is a `v2:`-prefixed ciphertext under the same master
-  key (`CODEGG_MASTER_KEY` / `CODEGG_ENCRYPTION_KEY` /
-  `OPENCODE_ENCRYPTION_KEY`). The same primitives are also used by
-  `auth::resolver::AuthResolver` to decrypt
-  `AuthConfig::ApiKey.encrypted_value` from the provider config. See
-  `architecture/auth.md` for the resolution order and security
-  rules around the master key.
+1. **Never log plaintext.** Always handle encrypted data securely in
+   logs and error messages.
+2. **Nonce uniqueness.** Each `encrypt()` call generates a fresh random
+   nonce via `rand::random()`. AES-GCM nonce reuse is catastrophic.
+3. **Memory-hard derivation.** Argon2id with 19 MiB memory cost
+   resists GPU/ASIC attacks. Legacy HMAC-SHA256 does not.
+4. **Legacy migration.** Legacy ciphertexts are decrypted transparently
+   by `decrypt_from_string`. Re-encryption to v2 happens when
+   `encrypt_provider_keys()` is called during config save. Previously
+   encrypted data remains in legacy format until explicitly
+   re-encrypted.
+5. **Master key required to store.** `CredentialStore::put` and
+   `AuthResolver` decryption of `encrypted_value` return
+   `AuthError::MasterKeyMissing` if no master key is configured.
+   Reading plaintext from the store without a master key returns
+   `Ok(None)`.
+6. **Auth logging never reveals secrets.** `mask_secret()` returns a
+   fixed 16-bullet mask regardless of input length.
 
 ## Dependencies
 
-- `aes-gcm` - AES-256-GCM authenticated encryption
-- `argon2` - Argon2id key derivation
-- `hmac`, `sha2` - Legacy key derivation
-- `rand` - Random salt/nonce generation
-- `hex` - Hex encoding for string format
+- `aes-gcm` — AES-256-GCM authenticated encryption
+- `argon2` — Argon2id key derivation (v0x13)
+- `hmac`, `sha2` — Legacy key derivation
+- `rand` — Random salt/nonce generation
+- `hex` — Hex encoding for string format
 
-## See Also
+## Used By
 
-- [config.md](config.md) - Config encryption integration
-- [security.md](security.md) - Additional security measures
+- `codegg_config::encryption` — Encrypting config secrets (provider
+  API keys) via `encrypt_provider_keys()`
+- `codegg_config::schema` — `ProviderConfig::api_key(prefix)` method
+  for on-demand decryption
+- `auth::CredentialStore` — User-level encrypted credential store at
+  `~/.config/codegg/credentials.json`. Each `StoredCredentialRecord`'s
+  `encrypted_secret` is a `v2:`-prefixed ciphertext under the same
+  master key.
+- `auth::AuthResolver` — Decrypts `AuthConfig::ApiKey.encrypted_value`
+  from provider config.
+
+## Testing
+
+```bash
+cargo test -p codegg-providers --lib crypto
+```
+
+Tests verify:
+- v2 encryption/decryption roundtrip
+- Legacy decryption compatibility
+- `encrypt_to_string` / `decrypt_from_string` roundtrip
+- `CryptoError::InvalidFormat` on malformed input
+
+## Related Docs
+
+- [config.md](config.md) — Config encryption integration
+- [auth.md](auth.md) — Credential store and resolution
+- [security.md](security.md) — Additional security measures

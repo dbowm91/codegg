@@ -1,231 +1,278 @@
 # Project Catalog
 
-The daemon-owned project catalog service sits above `ProjectStorage` and
-provides list, get, register, archive, and restore operations for logical
-projects. Catalog identity is stable and path-independent. Catalog listing
-does not trigger expensive services.
+The daemon-owned project catalog service sits above `ProjectStorage`
+and provides list, get, register, archive, and restore operations for
+logical projects. Catalog identity is stable and path-independent.
+Catalog listing does not trigger expensive services.
 
-## Ownership
+## Purpose
 
-`codegg_core::project_catalog` is daemon-owned, UI/server/plugin-free, and
-lives in `crates/codegg-core/src/project_catalog.rs`. It is layered above
-`ProjectStorage` (`crates/codegg-core/src/project_storage.rs`) and reads
-from the same SQLite catalog pool.
+Provide a durable catalog of logical projects and repositories with
+archive/restore, lifecycle/health/locator placeholders, explicit
+local registration, conservative legacy association, restart
+hydration, and bounded project discovery. The catalog is read/list/manage
+from internal/diagnostic surfaces only.
 
-## Public types
+## Where It Lives
 
-| Type | Summary |
-|---|---|
-| `Locator` | Typed reference enum: `Local` (workspace + path), `Ssh` (placeholder), `LinkedNode` (placeholder). |
-| `HealthStatus` | Operator-set enum: `Unknown`, `Available`, `Unavailable`, `Unsupported`, `Stale`, `Error`. |
-| `ProjectCatalogRecord` | Extended project row with description, tags, lifecycle, registration source, timestamps. |
-| `ProjectHealthRecord` | Per-project health row with status, error code/message, source, and evaluation timestamp. |
-| `CatalogLocatorRecord` | Stored locator row with project ID, locator kind, display summary, source, and timestamps. |
-| `WorkspaceSummary` | Compact workspace reference: ID, display name, canonical root path. |
-| `LifecycleCounts` | Aggregate counts by lifecycle: active, archived, total. |
-| `HydrationReport` | Restart hydration output: active/total project counts, locator count, health count. |
-| `LegacyAssociationReport` | Conservative legacy association output: projects associated, diagnostics recorded. |
-| `RegisterLocalProject` | Input for explicit local registration: name, description, tags, primary repository. |
-| `CatalogError` | Error enum: `Database`, `NotFound`, `InvalidValue`, `AlreadyExists`, `Migration`. |
-| `ProjectCatalog` | Service struct: `new(pool)`, list/get/register/archive/restore, locator attach, health upsert, restart hydration, legacy association. |
+| Path | Role |
+|------|------|
+| `crates/codegg-core/src/project_catalog.rs` | Catalog service (list/get/register/archive/restore, locators, health, hydration, legacy association) |
+| `crates/codegg-core/src/project_storage.rs` | `ProjectStorage` layer above which the catalog sits |
+| `crates/codegg-core/src/project_discovery.rs` | Bounded metadata-only scanner (deterministic, no I/O) |
+| `crates/codegg-core/src/project_discovery_service.rs` | Daemon coordinator for discovery (persistence, reconciliation) |
 
-## Locator kinds and inertness
+## How It Works
 
-Locators are inert data — they never trigger filesystem probing or remote
-execution.
+### Catalog Service
 
-- **`Local`**: a workspace-scoped local path reference. The `canonical_root`
-  field is a real filesystem path and the `workspace_id` must be bound to the
-  project in `workspace_project_binding`.
-- **`Ssh`**: an SSH placeholder with host, port, user, path, and label. The
-  `path` field is never exposed in `summary()` or DTO responses. No local path
-  accessor exists.
-- **`LinkedNode`**: a linked-node placeholder with node ID, alias, and
-  `path_hint`. No local path accessor exists.
+`ProjectCatalog` wraps a `SqlitePool` and provides:
 
-`attach_locator` validates workspace binding only for `Local` variants. The
-`Ssh` and `LinkedNode` arms extract `None` for all local path fields in the
-storage tuple — there is no code path that calls `.canonical_root` or
-`.as_path()` on remote locators.
+- `list_projects(include_archived)` — list all or active-only.
+- `get_project(project_id)` — single project by ID.
+- `get_project_with_health(project_id)` — project + health record.
+- `register_local_project(input, workspace_id, source)` — explicit
+  local registration. Creates a new `ProjectId` and binds the
+  workspace, or returns an existing project if the workspace is
+  already bound.
+- `archive_project(project_id, source)` — logical archive (sets
+  `lifecycle = 'archived'`, writes `archived_at`). Retries up to 3
+  times on SQLite `database is locked`.
+- `restore_project(project_id, source)` — clears archive fields.
+- `list_workspaces_for_project(project_id)` — bound workspaces.
+- `list_sessions_for_project(project_id)` — session count.
+- `list_locators(project_id)` — all locators for a project.
+- `attach_locator(project_id, locator, source)` — add a locator.
+- `detach_locator(locator_id)` — remove a locator.
+- `set_health(project_id, status, source)` — upsert health.
+- `get_health(project_id)` — read health record.
+- `mark_opened(project_id)` — update `time_last_opened`.
+- `count_by_lifecycle()` — active/archived/total counts.
+- `restart_hydration()` — aggregate counts at startup.
 
-## Health placeholder model
+### Locator Kinds
+
+Locators are inert data — they never trigger filesystem probing or
+remote execution.
+
+| Kind | Fields | Summary format |
+|------|--------|----------------|
+| `Local` | `workspace_id`, `canonical_root` | `local:/path/to/root` |
+| `Ssh` | `host`, `port`, `user`, `path`, `label` | `ssh:user@host:port (label)` |
+| `LinkedNode` | `node_id`, `alias`, `path_hint` | `node:id (alias) [hint]` |
+
+`attach_locator` validates workspace binding only for `Local`
+variants. `Ssh` and `LinkedNode` arms extract `None` for all local
+path fields — no code path calls `.canonical_root` or `.as_path()`
+on remote locators.
+
+`Locator::validate()` enforces:
+- Non-empty, bounded fields (max `MAX_LOCATOR_FIELD_LENGTH = 512`).
+- No control characters.
+- SSH port must be non-zero.
+- SSH path must not contain a URL with embedded credentials.
+
+### Health Placeholder Model
 
 `HealthStatus` is operator-set, not probed. The catalog never calls
-filesystem, Git, LSP, or provider APIs to compute health. Health rows
-are upserted by callers who already know the status (e.g., daemon startup
-probes, manual diagnostics). The catalog only reads, stores, and returns
-the operator-provided value.
+filesystem, Git, LSP, or provider APIs to compute health. Health
+rows are upserted by callers who already know the status.
 
-## Archive/restore semantics
+Variants: `Unknown`, `Available`, `Unavailable`, `Unsupported`,
+`Stale`, `Error`.
 
-Archive is logical and non-destructive. `archive_project` sets `lifecycle`
-to `Archived` and writes `archived_at`. `restore_project` clears those
-fields. The catalog never deletes:
+### Archive/Restore Semantics
 
-- workspace records
-- repository records
-- session records
-- locator rows
-- health rows
-- any files on disk
+Archive is logical and non-destructive. `archive_project` sets
+`lifecycle` to `Archived` and writes `archived_at`. `restore_project`
+clears those fields. The catalog never deletes workspaces,
+repositories, sessions, locators, health rows, or files on disk.
 
-## Restart hydration contract
+Archive retries up to 3 times on `database is locked` errors
+(retrying after 10 ms). The project may already be archived on
+entry; the method is idempotent.
 
-`restart_hydration()` reads only aggregate counts from the catalog tables.
-It performs no filesystem probing, no Git scanning, no LSP initialization,
-and no provider API calls. The daemon calls this at startup to repopulate a
-small in-memory index of active project counts, locator counts, and health
-counts.
+### Restart Hydration
 
-## Conservative legacy association
+`restart_hydration()` reads only aggregate counts from catalog tables.
+No filesystem probing, Git scanning, LSP initialization, or provider
+API calls. Returns `HydrationReport` with `active_project_count`,
+`total_project_count`, `locator_count`, `health_count`.
 
-`legacy_association()` uses `repository_lineage` to associate unambiguous
-workspaces to canonical projects. Ambiguous cases record diagnostics in
-`identity_diagnostic` without merging. The operation is idempotent: the
-`legacy_catalog_association_marker` table records which sources have already
-been processed and skips re-runs.
+### Conservative Legacy Association
 
-## Schema and migration
+`conservative_legacy_association()` uses `repository_lineage` to
+associate unambiguous workspaces to canonical projects. Ambiguous
+cases record diagnostics in `identity_diagnostic` without merging.
+The operation is idempotent: the `legacy_catalog_association_marker`
+table records which sources have already been processed.
 
-Schema v28 is additive. It creates:
+### Bounded Discovery (M2)
 
-- `project_locator` table (locator kinds, workspace/SSH/node fields, display
-  summary, source, timestamps)
-- `project_health` table (project-keyed status, error fields, source,
-  evaluation timestamp)
-- `legacy_catalog_association_marker` table (source, completion timestamp,
-  counts)
+`project_discovery` is the core-only discovery boundary. It accepts
+only explicitly configured local roots and produces bounded metadata
+candidates. It does not activate workspace services, run LSP/index/
+build/provider work, or write inside candidate repositories.
 
-It also adds five columns to `logical_project`: `archived_at`,
-`description`, `tags`, `registration_source`, `time_last_opened`.
+The scanner is deterministic, does not follow symlinks by default,
+skips heavy directories, and stops at finite depth, entry, candidate,
+elapsed-time, diagnostic, and Git-probe limits.
 
-Idempotent re-runs accept `duplicate column name` errors for `ALTER TABLE`
-statements and use `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT
-EXISTS` for new tables and indexes.
+Default limits: depth 4, 10,000 visited entries, 1,000 candidates,
+5 seconds, stat concurrency 4, Git-probe concurrency 2.
 
-## Invariants
+Reconciliation uses exact/canonical workspace evidence first, then
+unique local Git lineage key. Remote-only, fork-like, ambiguous, and
+plain-directory move evidence remains unresolved.
 
-1. Catalog identity is stable and path-independent — `ProjectId` is never
-   derived from a filesystem path.
-2. Archive is logical and never deletes workspaces, repositories, sessions,
-   locators, or files.
-3. Listing catalog records performs no LSP, Git, indexer, provider probe,
-   or build initialization.
-4. Remote locators (`Ssh`, `LinkedNode`) are inert data; no local-path
-   coercion exists.
+### Discovery Coordinator (M2)
 
-## Integration points
+`DiscoveryCoordinator` is the daemon-owned coordinator. It:
 
-- `architecture/project_identity_storage.md` — ProjectStorage layer above
-  which the catalog sits.
-- `architecture/identity.md` — Typed identity foundation providing
-  `ProjectId`, `RepositoryId`, `WorkspaceId`.
-- `architecture/workspace.md` — Workspace registry, execution context, and
-  path policy.
-- `architecture/storage.md` — SQLite storage layer and migration index.
+- Persists scan metadata in `discovery_root`, `discovery_scan`, and
+  `discovery_observation` tables.
+- Deduplicates concurrent scans of the same root (followers await
+  the leader's result).
+- Runs scans via `tokio::task::spawn_blocking` with cancellation.
+- Reconciles candidates against `KnownProject` records via
+  `reconcile_candidate()`.
+- Prunes old scan generations (retention = 20).
 
-## Source documents
+`DiscoveryRootRecord` converts from `DiscoveryRootConfig` in the
+config schema. `roots_from_config()` validates all roots before the
+coordinator starts.
 
-- `plans/implementation/project-catalog/001-durable-catalog-foundation.md`
-  — Implementation plan for the durable catalog foundation.
-- `plans/closure/project-catalog/001-status.md` — Closure record (link to
-  be added when available).
-- `plans/implementation/project-catalog/003-lazy-activation-and-health.md` —
-  Lazy activation and health implementation plan.
+### Lazy Activation and Health (M3)
 
-## Static guard
+Project activation is explicit and scoped by `(ProjectId, WorkspaceId)`
+plus a bounded owner identifier. `CoreDaemon::activate_project_workspace`
+resolves the typed catalog binding, then acquires an owner-scoped
+`ProjectActivationLease`. The lease has a finite lifetime and releases
+the underlying `WorkspaceServicesLease` on drop, explicit release,
+or bounded expiry eviction.
+
+Activation never creates a second service authority. Workspace bundle
+construction and same-workspace single-flight remain owned by
+`WorkspaceServiceRegistry`.
+
+`CoreDaemon::project_health` is a read-only, bounded aggregate of
+catalog, workspace, runtime-asset, and service state. Health output
+contains only typed IDs, layer states, bounded codes/messages, and
+bounded diagnostics.
+
+### Protocol-Facing Identity Boundary (M4)
+
+Catalog-backed routes return the durable logical `ProjectId` in
+`ProjectInfo.id`. The local path is a separately named compatibility
+locator. Catalog and session counts are read from canonical
+bindings. Local registration first registers the workspace locator
+before delegating to `ProjectCatalog::register_local_project`.
+
+## Key Types & APIs
+
+| Type | File:line | Purpose |
+|------|-----------|---------|
+| `ProjectCatalog` | `project_catalog.rs:432` | Service struct |
+| `ProjectCatalogRecord` | `project_catalog.rs:291` | Extended project row |
+| `Locator` | `project_catalog.rs:67` | Typed reference enum (Local/Ssh/LinkedNode) |
+| `CatalogLocatorRecord` | `project_catalog.rs:89` | Stored locator row |
+| `HealthStatus` | `project_catalog.rs:238` | Operator-set health enum |
+| `ProjectHealthRecord` | `project_catalog.rs:276` | Per-project health row |
+| `WorkspaceSummary` | `project_catalog.rs:317` | Compact workspace ref |
+| `LifecycleCounts` | `project_catalog.rs:329` | Active/archived/total |
+| `HydrationReport` | `project_catalog.rs:342` | Restart hydration output |
+| `LegacyAssociationReport` | `project_catalog.rs:355` | Legacy association output |
+| `RegisterLocalProject` | `project_catalog.rs:377` | Registration input |
+| `CatalogError` | `project_catalog.rs:406` | Error enum (Database/NotFound/InvalidValue/Conflict/AlreadyExists) |
+| `Scanner` | `project_discovery.rs:406` | Reusable bounded scanner |
+| `DiscoveryRoot` | `project_discovery.rs:99` | Explicit local root config |
+| `ScanLimits` | `project_discovery.rs:144` | Finite work limits |
+| `DiscoveryCandidate` | `project_discovery.rs:231` | One metadata-only candidate |
+| `ReconciliationOutcome` | `project_discovery.rs:348` | Pure reconciliation decision |
+| `DiscoveryCoordinator` | `project_discovery_service.rs:191` | Daemon coordinator |
+
+## Configuration Surface
+
+Discovery is opt-in under `discovery` in the config schema. Key
+fields per root: `id`, `path`, `mode` (Git/Directory/Mixed),
+`max_depth`, `max_visited_entries`, `max_candidates`,
+`max_elapsed_ms`, `ignore`, `directory_markers`, `direct_child_only`,
+`include_hidden`, `stat_concurrency`, `git_probe_concurrency`.
+
+Safe defaults: disabled, depth 4, 10,000 entries, 1,000 candidates,
+5 seconds.
+
+## Invariants & Gotchas
+
+1. **Path-independent identity**: `ProjectId` is never derived from
+   a filesystem path.
+
+2. **Archive is non-destructive**: Never deletes workspaces,
+   repositories, sessions, locators, or files.
+
+3. **Listing is probe-free**: No LSP, Git, indexer, provider, or
+   build initialization on catalog reads.
+
+4. **Remote locators are inert**: `Ssh` and `LinkedNode` have no
+   local-path coercion.
+
+5. **Discovery never writes below roots**: The scanner is
+   read-only. The coordinator delegates workspace/project authority
+   to `ProjectStorage`.
+
+6. **Symlinks not followed**: Discovery never follows symlinks.
+   Symlinked entries produce a diagnostic.
+
+7. **Reconciliation is deterministic**: `reconcile_candidate()` is
+   pure. Fork conflicts and ambiguous lineages remain unresolved.
+
+## Testing
+
+```bash
+# Catalog unit tests
+cargo test -p codegg-core -- project_catalog
+
+# Discovery unit tests
+cargo test -p codegg-core -- project_discovery
+
+# Discovery service integration tests
+cargo test -p codegg-core -- project_discovery_service
+
+# Adversarial tests
+cargo test --test command_routing_adversarial
+```
+
+## Static Guards
 
 ```bash
 python3 scripts/check_project_catalog_invariants.py --verbose
+python3 scripts/check_discovery_invariants.py
 ```
 
-Verifies module existence, locator safety invariants, migration schema,
-storage layout version, and lib.rs re-export.
+## Schema and Migration
 
-## Bounded discovery (Milestone 2)
+Schema v28 is additive. It creates:
 
-`codegg_core::project_discovery` is the core-only discovery boundary. It accepts
-only explicitly configured local roots and produces bounded metadata candidates;
-it does not activate workspace services, run LSP/index/build/provider work, or
-write inside candidate repositories. The scanner is deterministic, does not
-follow symlinks by default, skips heavy directories, and stops at finite depth,
-entry, candidate, elapsed-time, diagnostic, and Git-probe limits.
+- `project_locator` table (locator kinds, workspace/SSH/node fields,
+  display summary, source, timestamps).
+- `project_health` table (project-keyed status, error fields, source,
+  evaluation timestamp).
+- `legacy_catalog_association_marker` table (source, completion
+  timestamp, counts).
 
-Discovery configuration is opt-in under `discovery` in the config schema. Safe
-defaults are disabled, depth 4, 10,000 visited entries, 1,000 candidates,
-10 seconds, stat concurrency 4, and Git-probe concurrency 2. Reconciliation
-uses exact/canonical workspace evidence first, then a unique local Git lineage
-key. Remote-only, fork-like, ambiguous, and plain-directory move evidence
-remains unresolved rather than being merged by path or remote URL. Missing
-candidates and unavailable roots update observations only; they do not archive
-or delete catalog authority. Scan generations are persisted in schema v29.
+Adds five columns to `logical_project`: `archived_at`, `description`,
+`tags`, `registration_source`, `time_last_opened`.
 
-## Lazy activation and health (Milestone 3)
+Scan generations persisted in schema v29 (`discovery_root`,
+`discovery_scan`, `discovery_observation` tables).
 
-Project activation is explicit and scoped by `(ProjectId, WorkspaceId)` plus a
-bounded owner identifier. `CoreDaemon::activate_project_workspace` first
-resolves the typed catalog binding, then acquires an owner-scoped
-`ProjectActivationLease` from `src/core/project_activation.rs`. The lease has a
-finite lifetime and releases the underlying `WorkspaceServicesLease` on drop,
-explicit release, or bounded expiry eviction. Repeated activation by the same
-owner is idempotent; different owners may hold independent leases while sharing
-the one workspace service bundle.
+Idempotent re-runs accept `duplicate column name` errors for
+`ALTER TABLE` statements and use `CREATE TABLE IF NOT EXISTS` /
+`CREATE INDEX IF NOT EXISTS` for new tables and indexes.
 
-Activation never creates a second service authority. Workspace bundle
-construction and same-workspace single-flight behavior remain owned by
-`WorkspaceServiceRegistry`. Asset publication is delegated to
-`CoreDaemon::refresh_project_activation`, so the existing runtime-asset
-coordinator remains the only refresh authority and can report published,
-retained, invalid, cancelled, or coalesced outcomes.
+## Related Docs
 
-`CoreDaemon::project_health` is a read-only, bounded aggregate of catalog,
-workspace, runtime-asset, and service state. Health output contains only typed
-IDs, layer states, bounded codes/messages, and bounded diagnostics; it does not
-include filesystem paths, credentials, or asset bodies. The aggregate
-distinguishes unavailable, stale, contended, and error states. Health reads do
-not activate services, probe repositories, or start external processes.
-
-On restart, durable catalog and runtime-asset metadata are hydrated, but
-activation leases and service bundles are intentionally empty. A later explicit
-selection recreates only the selected workspace bundle. After handles release,
-the normal workspace-service idle eviction policy removes the inactive bundle
-without deleting catalog, workspace, or session history.
-
-## See Also
-
-- [`architecture/project_identity_storage.md`](project_identity_storage.md)
-- [`architecture/identity.md`](identity.md)
-- [`architecture/workspace.md`](workspace.md)
-- [`architecture/storage.md`](storage.md)
-## Protocol-facing identity boundary
-
-Catalog-backed routes return the durable logical `ProjectId` in `ProjectInfo.id`.
-The local path is a separately named compatibility locator. Catalog and session
-counts are read from canonical project/workspace/session bindings, and local
-registration first registers the workspace locator before delegating to
-`ProjectCatalog::register_local_project`.
-
-## Native protocol and server migration (Milestone 4)
-
-The project catalog is exposed through the versioned native protocol rather
-than through a server-owned current project. Project list/get/register,
-archive/restore, and scoped health requests carry durable `project_id` and,
-where an executable workspace is required, `workspace_id` fields. Responses
-contain bounded project summaries, workspace summaries, session counts, and
-durable health records; they do not turn a path into an identity or include
-asset bodies.
-
-Project lifecycle and health changes are emitted as project-scoped events.
-Clients advertise and negotiate the project-catalog capability, while older
-clients retain the existing workspace/session wire projections. A legacy
-directory request is accepted only when `ProjectContextResolver` finds one
-active, resolved binding. Missing or ambiguous locators return an actionable
-`project_context_required` or `ambiguous_project_context` error and never
-select another project implicitly.
-
-The HTTP/WebSocket server stores the daemon/catalog pool and core authority,
-not a `project_dir` identity. File and compatibility operations must receive
-an explicit project/workspace scope or a bounded locator that is resolved
-through the same context authority. Catalog listing remains probe-free and
-does not acquire activation leases; project activation, refresh, expiry, and
-eviction remain owned by `CoreDaemon` and the existing registries.
+- `architecture/project_identity_storage.md` — ProjectStorage layer
+- `architecture/identity.md` — Typed identity foundation
+- `architecture/workspace.md` — Workspace registry
+- `architecture/storage.md` — SQLite storage layer

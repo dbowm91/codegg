@@ -1,181 +1,125 @@
 # Util Module
 
-The `util` module provides common utility functions.
+Common utility functions shared across CodeGG.
 
-## Overview
+## Purpose
 
-**Location**: `src/util/`
+Provides clipboard access, fuzzy string matching, text truncation,
+internal metrics, LLM pricing data, and string interning.
 
-**Key Responsibilities**:
-- Clipboard operations (feature-gated)
-- Fuzzy string matching and scoring
-- Text truncation (by lines or bytes)
-- Metrics collection (counters, gauges, histograms)
+## Where It Lives
 
-## Components
+- `src/util/mod.rs` — module root, re-exports
+- `src/util/clipboard.rs` — clipboard operations
+- `src/util/fuzzy.rs` — fuzzy matching/scoring
+- `src/util/truncate.rs` — text truncation (lines, bytes, prefix, suffix)
+- `src/util/metrics.rs` — counters, gauges, histograms
+- `src/util/pricing.rs` — LLM API cost calculation
+- `src/util/interner.rs` — thread-safe string interning
 
-### clipboard.rs
+## How It Works
 
-Clipboard operations using the `arboard` crate. Requires `arboard` feature flag.
+### Clipboard (`clipboard.rs`)
 
-```rust
-pub fn copy_to_clipboard(text: &str) -> Result<(), AppError>;
-pub fn read_from_clipboard() -> Option<String>;
-```
+Feature-gated behind `arboard` (enabled by default). Uses `arboard` crate
+with `default-features = false` — text clipboard API only, no image-data
+stack.
 
-**Feature Gate**: `arboard` must be enabled in Cargo.toml for clipboard support.
+When `arboard` is disabled:
+- `copy_to_clipboard()` returns `Err(AppError::Clipboard(...))`
+- `read_from_clipboard()` returns `None`
 
-The optional `arboard` dependency is configured with `default-features = false`:
-CodeGG uses its text clipboard API and does not enable arboard's image-data
-stack. This is independent of the separate `image` feature for TUI rendering.
+### Fuzzy Matching (`fuzzy.rs`)
 
-### fuzzy.rs
+Two algorithms:
 
-Fuzzy string matching utilities using `strsim` crate for Levenshtein distance.
+- `fuzzy_match(query, candidates)` — Levenshtein distance via `strsim`.
+  Returns candidates sorted by distance (lower = better).
+- `fuzzy_score(query, target)` — character-by-character subsequence match
+  with bonuses for start-of-string and consecutive matches. Case-insensitive.
+  Returns 0 if query chars not all found in order.
 
-```rust
-pub fn fuzzy_match(query: &str, candidates: &[String]) -> Vec<(String, usize)>;
-pub fn fuzzy_score(query: &str, target: &str) -> usize;
-```
+### Truncation (`truncate.rs`)
 
-- `fuzzy_match`: Returns candidates sorted by Levenshtein distance (lower is better)
-- `fuzzy_score`: Returns weighted score for single target (case-insensitive, bonuses for start-of-string and consecutive matches)
+| Function | Behavior |
+|----------|----------|
+| `truncate_lines(text, max)` | Head/tail truncation, inserts `[N lines truncated]` |
+| `truncate_bytes(text, max)` | UTF-8 safe, appends `... [truncated]` |
+| `truncate_prefix(text, max)` | Returns `&str` prefix fitting `max` bytes (UTF-8 safe) |
+| `truncate_suffix(text, max)` | Returns `&str` suffix fitting `max` bytes (UTF-8 safe) |
 
-**Dependencies**: `strsim`
+`truncate_prefix` and `truncate_suffix` are re-exported from `mod.rs`.
 
-### truncate.rs
+### Metrics (`metrics.rs`)
 
-Text truncation utilities for handling long content.
+In-memory observability primitives behind `pub mod inner`:
 
-```rust
-pub fn truncate_lines(text: &str, max_lines: usize) -> String;
-pub fn truncate_bytes(text: &str, max_bytes: usize) -> String;
-```
+- `Counter` — atomic `u64` increment/add
+- `Gauge` — atomic `u64` set/inc/dec (saturates at 0)
+- `Histogram` — bounded `VecDeque<u64>` (max 1000 entries, FIFO eviction)
+- `MetricsSnapshot` — point-in-time copy of all counters/gauges/histograms
 
-- `truncate_lines`: Keeps `max_lines/2` from start and end, shows "[X lines truncated]" in middle
-- `truncate_bytes`: Safely truncates at UTF-8 character boundary, appends "... [truncated]"
+Global singleton: `inner::metrics()` returns `&'static Metrics` via
+`LazyLock`.
 
-### metrics.rs
+### Pricing (`pricing.rs`)
 
-Internal metrics collection system for observability.
+`PricingService` calculates LLM API costs in USD. Pricing lookup is by
+`"{provider}/{model}"` key (lowercased), with fuzzy substring fallback.
 
-```rust
-pub mod inner {
-    pub struct Metrics { ... }
-    impl Metrics {
-        pub fn new() -> Self;
-        pub fn counter(&self, name: &str) -> Counter;
-        pub fn gauge(&self, name: &str) -> Gauge;
-        pub fn histogram(&self, name: &str) -> Histogram;
-        pub fn snapshot(&self) -> MetricsSnapshot;
-    }
+Providers covered: OpenAI (GPT-4, GPT-3.5, o1, o3), Anthropic (Claude
+Opus/Sonnet/Haiku), Google (Gemini), MiniMax.
 
-    pub struct Counter(Arc<AtomicU64>);
-    impl Counter {
-        pub fn inc(&self);
-        pub fn add(&self, v: u64);
-    }
+Formula: `input_cost = non_cached × rate + cached × rate × discount`,
+`output_cost = output × rate`.
 
-    pub struct Gauge(Arc<AtomicU64>);
-    impl Gauge {
-        pub fn set(&self, v: u64);
-        pub fn inc(&self);
-        pub fn dec(&self);
-    }
+### String Interning (`interner.rs`)
 
-    pub struct Histogram(Arc<Mutex<VecDeque<u64>>>);
-    impl Histogram {
-        pub fn record(&self, v: u64);
-    }
+`StringInterner` wraps a `DashMap<Arc<str>, Arc<str>>` for concurrent
+deduplication. `tool_interner()` returns a global `LazyLock<StringInterner>`
+used for interning tool names and identifiers in `src/tool/mod.rs:711`.
 
-    pub struct MetricsSnapshot { ... }
-    pub fn metrics() -> &'static Metrics;
-}
-```
+## Key Types & APIs
 
-**Note**: `metrics.rs` contains metrics infrastructure (counters, gauges, histograms), not file statistics as the misleading filename might suggest.
+| Type | File:Line | Purpose |
+|------|-----------|---------|
+| `copy_to_clipboard()` | `clipboard.rs:4` | Copy text to system clipboard |
+| `read_from_clipboard()` | `clipboard.rs:19` | Read text from system clipboard |
+| `fuzzy_match()` | `fuzzy.rs:3` | Levenshtein-based candidate ranking |
+| `fuzzy_score()` | `fuzzy.rs:12` | Subsequence score with bonuses |
+| `truncate_lines()` | `truncate.rs:1` | Head/tail line truncation |
+| `truncate_bytes()` | `truncate.rs:19` | UTF-8 safe byte truncation |
+| `truncate_prefix()` | `truncate.rs:34` | UTF-8 safe prefix slice |
+| `truncate_suffix()` | `truncate.rs:50` | UTF-8 safe suffix slice |
+| `Metrics` | `metrics.rs:12` | Global metrics singleton |
+| `Counter` | `metrics.rs:84` | Atomic counter |
+| `Gauge` | `metrics.rs:96` | Atomic gauge (saturating dec) |
+| `Histogram` | `metrics.rs:116` | Bounded histogram (1000 entries) |
+| `MetricsSnapshot` | `metrics.rs:128` | Point-in-time metrics copy |
+| `ModelPricing` | `pricing.rs:7` | Per-model token pricing |
+| `PricingService` | `pricing.rs:20` | Cost calculation service |
+| `StringInterner` | `interner.rs:6` | Concurrent string dedup |
+| `tool_interner()` | `interner.rs:41` | Global tool-name interner |
 
-**Histogram bound**: The `Histogram` keeps a bounded buffer of at most 1000 entries (uses `VecDeque` with `pop_front()` when length exceeds 1000). This prevents unbounded memory growth.
+## Configuration Surface
 
-### pricing.rs
+- **`arboard` feature**: enables clipboard support (default on).
+  `default-features = false` on the arboard dep — text API only.
+- No config-file options for util module.
 
-LLM API cost calculation based on token usage.
+## Invariants & Gotchas
 
-```rust
-pub struct ModelPricing {
-    pub input_per_m: f64,    // Price per million input tokens (USD)
-    pub output_per_m: f64,   // Price per million output tokens (USD)
-    pub cached_discount: f64, // Discount factor for cached tokens (0.0=no discount, 1.0=free)
-}
+- **Histogram cap**: `Histogram` keeps at most 1000 entries via
+  `pop_front()` (`metrics.rs:122-124`).
+- **Gauge saturates at zero**: `dec()` uses `saturating_sub(1)`
+  (`metrics.rs:111`).
+- **Fuzzy score returns 0 for incomplete matches**: if not all query
+  chars found in order, returns 0 (`fuzzy.rs:37-38`).
+- **Pricing fallback**: if exact key not found, falls back to substring
+  containment match (`pricing.rs:241-250`). Returns `0.0` if no match.
+- **`tool_interner()` is process-global**: never cleared, grows monotonically.
 
-pub struct PricingService {
-    rates: HashMap<String, ModelPricing>,
-}
+## Related Docs
 
-impl PricingService {
-    pub fn new() -> Self;
-    pub fn calculate_cost(&self, provider: &str, model: &str, input_tokens: i64, output_tokens: i64, cached_tokens: i64) -> f64;
-}
-```
-
-- `calculate_cost()` returns cost in USD (0.0 if model not found in pricing table)
-- Pricing lookup is by `"{provider}/{model}"` key (e.g., `"openai/gpt-4o"`)
-- Covers OpenAI, Anthropic, Google, and MiniMax providers
-- Cached tokens receive a discount based on `cached_discount` factor
-
-### interner.rs
-
-Thread-safe string interning for reducing memory allocation of repeated strings.
-
-```rust
-pub struct StringInterner {
-    map: DashMap<Arc<str>, Arc<str>>,
-}
-
-impl StringInterner {
-    pub fn new() -> Self;
-    pub fn intern(&self, s: &str) -> Arc<str>;
-    pub fn intern_string(&self, s: String) -> Arc<str>;
-    pub fn len(&self) -> usize;
-    pub fn is_empty(&self) -> bool;
-}
-
-pub fn tool_interner() -> &'static StringInterner;
-```
-
-- `tool_interner()` returns a global `LazyLock<StringInterner>` used for interning tool names and identifiers
-- `intern()` deduplicates strings via `DashMap` (concurrent hash map), returning `Arc<str>` references
-
-## Usage Examples
-
-```rust
-use crate::util::clipboard;
-use crate::util::fuzzy::{fuzzy_match, fuzzy_score};
-use crate::util::truncate::{truncate_lines, truncate_bytes};
-
-// Clipboard
-clipboard::copy_to_clipboard("hello")?;
-if let Some(text) = clipboard::read_from_clipboard() {
-    println!("Pasted: {}", text);
-}
-
-// Fuzzy matching
-let candidates = vec!["hello".to_string(), "world".to_string()];
-let results = fuzzy_match("hel", &candidates); // sorted by score
-for (name, score) in &results {
-    println!("{name}: {score}");
-}
-
-let score = fuzzy_score("hello", "hello"); // case-insensitive scoring
-
-// Truncation
-let truncated = truncate_lines("line1\nline2\n...", 10);
-let truncated = truncate_bytes("very long text...", 10);
-```
-
-## See Also
-
-- [tool.md](tool.md) - Tools using utilities
-- [tui.md](tui.md) - TUI uses fuzzy scoring for command matching
-
-(Metadata: reviewed 2026-05-26)
+- [tool.md](tool.md) — tools using utilities
+- [tui.md](tui.md) — TUI uses fuzzy scoring for command matching

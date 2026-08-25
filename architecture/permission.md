@@ -1,258 +1,68 @@
 # Permission Module
 
-The `permission` module enforces access control for tool execution and path access.
+The `permission` module enforces access control for tool execution and
+file paths. It provides a multi-layered ruleset system with cached
+decisions, HMAC-signed persistence, DoomLoop detection, and
+mode-based permission workflows.
 
-## Overview
+## Purpose
 
-**Location**: `src/permission/`
+Enforce per-tool, per-path, and per-command permission decisions before
+any tool executes. Prevent prompt fatigue via cached decisions, detect
+stuck-agent loops, and provide mode-based permission envelopes
+(review/debug/docs) for specialized workflows.
 
-**Key Responsibilities**:
-- Tool permission enforcement
-- Path access restrictions
-- DoomLoop detection (repetitive tool call detection)
-- Mode-based permissions (Review/Debug/Docs)
+## Where It Lives
 
-**Note**: `PermissionRegistry` is located in `src/bus/mod.rs`, not in the permission module.
+| Artifact | Location |
+|----------|----------|
+| `PermissionChecker`, `PermissionStore`, `DoomLoopDetector`, ruleset types | `src/permission/mod.rs` |
+| `ModeDefinition`, `BuiltinModes` (review/debug/docs) | `src/permission/modes.rs` |
+| `PermissionRegistry` (ask-response broker) | `crates/codegg-core/src/bus/mod.rs` |
+| `PermissionDecision` (bus DTO) | `crates/codegg-core/src/bus/mod.rs` |
+| `ToolCategory` enum | `src/tool/mod.rs` |
+| Destructive bash patterns | `src/tool/destructive.rs` |
 
-## Key Types
+> **Note:** `PermissionRegistry` is in `codegg-core`, not in the
+> permission module. The permission module defines domain types; the bus
+> owns the ask-response broker.
 
-### PermissionLevel
+## How It Works
 
-```rust
-pub enum PermissionLevel {
-    Allow,   // Always allow
-    Deny,    // Always deny
-    Ask,     // Prompt user
-}
-```
+### Tool-Category Short-Circuit
 
-### PermissionResult
+Every `Tool` reports a `ToolCategory` (`ReadOnly | SafeMutating |
+Mutating | ShellExec`). The function `tool_category_for_name()` in
+`src/permission/mod.rs:99` maps tool names to categories without a
+`Tool` instance.
 
-```rust
-pub enum PermissionResult {
-    Allow,
-    Deny,
-    Ask(PermissionRequest),
-}
+Categories with `is_permission_free() == true` (`ReadOnly`,
+`SafeMutating`) short-circuit `PermissionChecker::check()` to `Allow`
+before any store/rule/glob lookup, unless a persistent `Deny` is in
+the store. This covers `read`, `glob`, `grep`, `list`, `webfetch`,
+`websearch`, `codesearch`, `lsp`, `diff`, `security`, `skill`,
+`tool_search`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`,
+`question`.
 
-pub struct PermissionRequest {
-    pub tool: String,
-    pub path: Option<String>,
-    pub args: Option<serde_json::Value>,
-}
-```
-
-### PermissionChoice
-
-```rust
-pub enum PermissionChoice {
-    AllowOnce,
-    AlwaysAllow,
-    DenyOnce,
-    AlwaysDeny,
-}
-
-impl PermissionChoice {
-    pub fn allowed(&self) -> bool;
-    pub fn persist(&self) -> bool;  // true for AlwaysAllow/AlwaysDeny
-}
-```
-
-### PermissionResponse (src/permission/mod.rs:1141-1145)
-
-Internal permission response type used by the permission module:
-
-```rust
-#[derive(Debug)]
-pub struct PermissionResponse {
-    pub level: PermissionLevel,
-    pub persist: bool,
-}
-```
-
-### PermissionRuleset
-
-```rust
-pub struct PermissionRuleset {
-    pub default: PermissionLevel,
-    pub tool_rules: Vec<ToolRule>,
-    pub path_rules: Vec<PathRule>,
-}
-
-pub struct ToolRule {
-    pub tool: String,              // Tool name (supports glob patterns)
-    pub level: PermissionLevel,
-    pub paths: Option<Vec<String>>,     // Path restrictions (canonicalized)
-    pub bash_patterns: Option<Vec<String>>, // Bash command patterns
-}
-```
-
-## Components
-
-### PermissionChecker
-
-Main enforcement point:
-
-```rust
-pub struct PermissionChecker {
-    config_rules: PermissionRuleset,
-    session_rules: PermissionRuleset,
-    agent_rules: PermissionRuleset,
-    store: Arc<RwLock<PermissionStore>>,
-    compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>,
-    canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
-    canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
-    canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
-    path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
-}
-
-impl PermissionChecker {
-    pub async fn check(&self, tool: &str, path: Option<&str>, session_id: Option<&str>) -> PermissionResult;
-    pub async fn check_legacy(&self, tool: &str, path: Option<&str>) -> PermissionResult;  // Uses None for session_id
-    pub async fn check_bash(&self, path: Option<&str>, command: Option<&str>, session_id: Option<&str>) -> PermissionResult;
-    pub async fn check_bash_legacy(&self, path: Option<&str>, command: Option<&str>) -> PermissionResult;  // Uses None for session_id
-    pub async fn check_git(&self, path: Option<&str>, subcommand: Option<&str>, session_id: Option<&str>) -> PermissionResult;
-    pub async fn always_allow(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
-    pub async fn always_allow_legacy(&self, tool: &str, path: Option<&str>);  // Uses None for session_id
-    pub async fn always_deny(&self, tool: &str, path: Option<&str>, session_id: Option<&str>);
-    pub async fn always_deny_legacy(&self, tool: &str, path: Option<&str>);  // Uses None for session_id
-    pub async fn clear_decisions(&self);  // Clear all cached decisions
-}
-```
-
-**Check Flow**:
-1. Check PermissionStore (cached decisions with HMAC verification)
-2. Check tool rules (agent > session > config priority)
-3. Check path globs (on canonicalized paths)
-4. Return default if no rule matches
-5. If `Ask`, return `PermissionResult::Ask(...)` - caller handles registration
-
-**Important**: `PermissionChecker::check()` does NOT directly register with `PermissionRegistry`. The caller (`agent/loop.rs`) handles the ask flow by:
-1. Checking permission
-2. If `Ask`, registering with `PermissionRegistry` and publishing `PermissionPending`
-3. Waiting for user response
-
-The agent loop does not treat external origin as an approval. Unknown raw
-MCP tools, including calls without a local path, follow the normal mutating
-default and remain `Ask` until an explicit policy or user decision allows
-them. Accepted calls carry an ephemeral `PermissionDecisionReceipt` into
-execution; unavailable policy or workspace revisions remain absent rather
-than being reconstructed from session or workspace identifiers.
-
-### PermissionStore
-
-HMAC-signed persistent decision cache:
-
-```rust
-pub struct PermissionStore {
-    decisions: Vec<PersistentDecision>,  // Uses Vec, not HashMap
-    store_path: Option<PathBuf>,
-}
-
-pub struct PersistentDecision {
-    pub tool: String,
-    pub path: Option<String>,
-    pub level: PermissionLevel,
-    pub created_at: i64,
-    pub signature: String,           // HMAC-SHA256 signature
-    pub session_id: Option<String>,  // Per-session isolation
-}
-```
-
-**Features**:
-- HMAC signature to prevent tampering (uses `CODEGG_PERM_KEY` env var)
-- Per-session isolation (session-specific decisions checked first)
-- Persists to `~/.config/codegg/permissions.json`
-
-### DoomLoopDetector
-
-Detects repetitive tool call patterns using window-based counting:
-
-```rust
-pub struct DoomLoopDetector {
-    history: VecDeque<String>,        // Ordered recent calls
-    counts: HashMap<String, usize>,  // O(1) count lookups
-    max_window: usize,               // Max history size (capped at 1000)
-    threshold: usize,                // Detection threshold (capped at 100)
-}
-
-impl DoomLoopDetector {
-    pub fn record_tool_call(&mut self, tool_name: &str);
-    pub fn is_doom_loop(&self) -> bool;  // Returns true if last tool has count >= threshold
-    pub fn reset(&mut self);
-}
-```
-
-**Implementation**: Uses window-based counting (NOT consecutive). The `is_doom_loop()` check returns true if the **most recent** tool has been called `threshold` or more times anywhere in the window.
-
-### Mode System (modes.rs)
-
-Specialized permission workflows:
-
-```rust
-pub struct ModeDefinition {
-    pub name: String,
-    pub description: String,
-    pub default: PermissionLevel,
-    pub allowed_tools: Vec<String>,
-    pub restricted_tools: Vec<String>,
-    pub tool_overrides: Vec<(String, PermissionLevel)>,
-}
-```
-
-**Built-in Modes**:
-
-| Mode | Default | Restricted Tools (prompt) |
-|------|---------|---------------------------|
-| `review` | Ask | edit, bash, task |
-| `debug` | Allow | task |
-| `docs` | Ask | bash, task |
-
-> The `Allowed Tools` column is gone: tools are now allowed/denied implicitly by
-> their [`ToolCategory`](tool.md#toolcategory). The built-in mode rules
-> only `tool_overrides` to escalate specific tools (like `edit` in `review`).
-> `bash` is auto-approved in write modes (default) and prompts only when the
-> destructive-pattern check fires (`src/tool/destructive.rs`).
-
-## ToolCategory & Permission-Free Tools
-
-Every `Tool` reports its [`ToolCategory`](tool.md#toolcategory)
-(`ReadOnly | SafeMutating | Mutating | ShellExec`). Categories with
-`is_permission_free() == true` (`ReadOnly`, `SafeMutating`) short-circuit
-`PermissionChecker::check()` to `Allow` before any store / rule / glob
-lookup, unless a persistent `Deny` is in the store. The agent loop relies
-on this for `todowrite` (todo list planning) and the entire read-only
-family (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`,
-`codesearch`, `lsp`, `diff`, `security`, `skill`, `tool_search`,
-`plan_enter`, `plan_exit`).
-
-Shell-exec tools (`bash`, `git` when invoked as a shell) go through
-`check_with_args()` instead. If the user's ruleset hasn't decided, the
-destructive-pattern fallback in `src/tool/destructive.rs` returns
-`Ask` for any of ~10 catastrophic patterns (`rm -rf /`, `mkfs`,
-`dd of=...`, `:(){:|:&};:`, `shutdown`, etc.) and `Allow` otherwise.
-This means a `rm -rf build/` still asks; `ls`, `cat`, `cargo build`,
-`git status` auto-approve even in a strict `default = "ask"` config.
-
-## Permission Flow
+### Check Flow
 
 ```
 ToolCallRequested
     │
     ▼
-PermissionChecker::check()  (or check_with_args() for shell)
+PermissionChecker::check()  (or check_with_args for shell)
     │
     ├──► Tool category short-circuit (ReadOnly / SafeMutating)
     │         │
     │         ├── Persistent Deny in store → Deny
     │         └── otherwise                → Allow
     │
-    ├──► Check PermissionStore (cached)
+    ├──► Check PermissionStore (cached, HMAC-verified)
     │         │
     │         ├── Allow → Return Allow
     │         └── Deny  → Return Deny
     │
-    ├──► Check tool rules (agent > session > config > mode)
+    ├──► Check tool rules (agent > session > config priority)
     │         │
     │         ├── Allow → Return Allow
     │         ├── Deny  → Return Deny
@@ -276,7 +86,8 @@ AgentLoop::check_tool_permission()
     │
     ├──► Create oneshot channel
     │
-    ├──► PermissionRegistry::register(perm_id, tx)  [Registration-before-publish]
+    ├──► PermissionRegistry::register(perm_id, tx)
+    │         [Registration-before-publish; sync fn, NOT async]
     │
     ├──► GlobalEventBus::publish(PermissionPending { ... })
     │
@@ -287,16 +98,212 @@ AgentLoop::check_tool_permission()
     └──► Cache decision if AlwaysAllow/AlwaysDeny
 ```
 
-## Rule Priority
+### Bash Command Handling
 
-Rules are evaluated in order:
-1. **Agent-level rules** - Most specific (via `with_agent_rules()`)
-2. **Session-level rules** - Per-session overrides (via `with_session_rules()`)
-3. **Config rules** - Default configuration
+`check_with_args()` adds a destructive-pattern fallback for
+`ShellExec` tools. If the user's ruleset would allow the command but
+it matches a destructive pattern (`rm -rf /`, `mkfs`, `dd of=...`,
+`:(){:|:&};:`, `shutdown`, etc.), the result is `Ask`. If the command
+is non-destructive, the result is `Allow` — auto-approving safe
+commands like `ls`, `cat`, `cargo build`, `git status` even in a
+strict `default = "ask"` config.
 
-## Registration-Before-Publish Pattern
+Safe bash patterns are defined in `default_bash_allow_patterns()`
+(`src/permission/mod.rs:1315`). Users can extend or override these via
+`bash_allow_patterns` and `bash_deny_patterns` config fields.
 
-When asking user for permission:
+## Key Types & APIs
+
+### PermissionLevel (`src/permission/mod.rs:115`)
+
+```rust
+pub enum PermissionLevel {
+    Deny,
+    Ask,
+    Allow,
+}
+```
+
+### PermissionResult (`src/permission/mod.rs:133`)
+
+```rust
+pub enum PermissionResult {
+    Allow,
+    Deny,
+    Ask(PermissionRequest),
+}
+```
+
+### PermissionDecisionReceipt (`src/permission/mod.rs:145`)
+
+Ephemeral receipt produced when the permission boundary accepts a call.
+Contains `decision_id`, `outcome`, `source`, `issued_at`, and optional
+`policy_revision`. Callers must not manufacture policy revisions from
+unrelated session identifiers after evaluation.
+
+### PermissionChoice (`src/permission/mod.rs:180`)
+
+```rust
+pub enum PermissionChoice {
+    AllowOnce,
+    AlwaysAllow,
+    DenyOnce,
+    AlwaysDeny,
+}
+```
+
+Bidirectional `From` impls convert between `PermissionChoice` (domain)
+and `PermissionDecision` (bus DTO).
+
+### PermissionRuleset (`src/permission/mod.rs:279`)
+
+```rust
+pub struct PermissionRuleset {
+    pub default: PermissionLevel,
+    pub tool_rules: Vec<ToolRule>,
+    pub path_rules: Vec<PathRule>,
+}
+```
+
+### ToolRule (`src/permission/mod.rs:226`)
+
+```rust
+pub struct ToolRule {
+    pub tool: String,                       // Supports glob patterns
+    pub level: PermissionLevel,
+    pub paths: Option<Vec<String>>,         // Path restrictions (canonicalized)
+    pub bash_patterns: Option<Vec<String>>, // Bash command patterns
+}
+```
+
+`matches()` supports `*` wildcard and glob compilation.
+`matches_bash_command()` checks bash command patterns similarly.
+
+### PermissionChecker (`src/permission/mod.rs:489`)
+
+Main enforcement point:
+
+```rust
+pub struct PermissionChecker {
+    config_rules: PermissionRuleset,
+    session_rules: PermissionRuleset,
+    agent_rules: PermissionRuleset,
+    store: Arc<RwLock<PermissionStore>>,
+    compiled_globs: Vec<(globset::GlobMatcher, PermissionLevel)>,
+    canonicalized_config_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_session_tool_rules: Vec<CanonicalizedToolRule>,
+    canonicalized_agent_tool_rules: Vec<CanonicalizedToolRule>,
+    path_cache: Arc<RwLock<HashMap<String, (PathBuf, Instant)>>>,
+}
+```
+
+Key methods:
+- `check(tool, path, session_id)` — main entry point (async)
+- `check_bash(path, command, session_id)` — bash-specific with
+  destructive-pattern fallback
+- `check_git(path, subcommand, session_id)` — git-specific
+- `check_with_args(tool, path, args, session_id)` — generic with args
+- `with_session_rules(rules)` — per-session overrides
+- `with_agent_rules(rules)` — per-agent overrides
+- `with_active_mode(config)` — wires built-in modes into agent rules
+- `with_exec_mode()` — CI/CD mode, all destructive tools auto-allowed
+- `always_allow(tool, path, session_id)` / `always_deny(...)` — persist
+- `clear_decisions()` — wipe cached decisions
+
+### PermissionStore (`src/permission/mod.rs:306`)
+
+HMAC-signed persistent decision cache:
+
+```rust
+pub struct PermissionStore {
+    decisions: Vec<PersistentDecision>,
+    store_path: Option<PathBuf>,
+}
+
+pub struct PersistentDecision {
+    pub tool: String,
+    pub path: Option<String>,
+    pub level: PermissionLevel,
+    pub created_at: i64,
+    pub signature: String,           // HMAC-SHA256 via CODEGG_PERM_KEY
+    pub session_id: Option<String>,  // Per-session isolation
+}
+```
+
+- Session-specific decisions checked first, then global
+- HMAC signature prevents tampering (`CODEGG_PERM_KEY` env var)
+- Persists to `~/.config/codegg/permissions.json`
+
+### DoomLoopDetector (`src/permission/mod.rs:1574`)
+
+Detects repetitive tool call patterns using window-based counting:
+
+```rust
+pub struct DoomLoopDetector {
+    history: VecDeque<String>,
+    counts: HashMap<String, usize>,
+    max_window: usize,    // Capped at 1000
+    threshold: usize,     // Capped at 100, min 1
+}
+```
+
+- `record_tool_call(tool_name, arguments)` — records a composite key
+  (tool + JSON argument hash) into the sliding window
+- `is_doom_loop()` — returns true if the **most recent** tool has been
+  called `threshold` or more times anywhere in the window
+- `current_doom_tool()` — returns the tool name from the last call
+- `reset()` — clears history
+
+### Mode System (`src/permission/modes.rs`)
+
+```rust
+pub struct ModeDefinition {
+    pub name: String,
+    pub description: String,
+    pub default: PermissionLevel,
+    pub allowed_tools: Vec<String>,
+    pub restricted_tools: Vec<String>,
+    pub tool_overrides: Vec<(String, PermissionLevel)>,
+}
+```
+
+**Built-in Modes:**
+
+| Mode | Default | Restricted Tools |
+|------|---------|------------------|
+| `review` | Ask | edit, apply_patch, replace, multiedit, write, bash, terminal, git, commit, image, task |
+| `debug` | Allow | task, image, commit |
+| `docs` | Ask | bash, terminal, git, commit, task, image |
+
+All three modes allow todowrite/todoread for in-flight planning.
+Modes are activated via `[mode.review]` (etc.) in config; the
+permission checker merges mode rules into agent-level rules via
+`with_active_mode()`.
+
+### PermissionRegistry (`crates/codegg-core/src/bus/mod.rs:88`)
+
+The ask-response broker. **All methods are synchronous (`fn`), NOT
+async.** Uses a `DashMap` with 310s TTL auto-cleanup.
+
+```rust
+pub struct PermissionRegistry {
+    senders: DashMap<String, PendingPermission>,
+    last_cleanup_ms: AtomicU64,
+}
+```
+
+Key methods:
+- `register(perm_id, tx)` — backward-compatible, session = "default"
+- `register_with_session(session_id, turn_id, perm_id, tx)` — full
+  session/turn scoping
+- `respond(perm_id, choice)` — backward-compatible
+- `respond_scoped(session_id, perm_id, choice)` — session-verified
+- `unregister(perm_id)` / `unregister_scoped(session_id, perm_id)`
+- `is_registered(perm_id)` / `is_registered_scoped(session_id, perm_id)`
+- `pending_permission_ids()` — all pending across sessions
+- `get_pending_for_session(session_id)` — session-scoped with metadata
+
+### Registration-Before-Publish Pattern
 
 ```rust
 // CORRECT
@@ -310,13 +317,11 @@ let choice = match tokio::time::timeout(Duration::from_secs(300), rx).await {
 PermissionRegistry::unregister(&perm_id);
 ```
 
-## Configuration
+## Configuration Surface
 
 ```toml
 [permission]
 default = "ask"
-
-[permission]
 read = "allow"
 edit = "ask"
 glob = "allow"
@@ -333,70 +338,68 @@ websearch = "ask"
 codesearch = "ask"
 doom_loop = "ask"
 
-[permission]
-tools = { "custom_tool" = "deny" }
+# Custom tool rules
+[permission.tools]
+"custom_tool" = "deny"
 
+# Path-based rules
 [permission.paths]
 "/home/user/project/**" = "ask"
 
+# DoomLoop threshold
 [permission.doomloop_threshold]
-5  # Threshold for DoomLoopDetector (default: 5)
+5
+
+# Bash-specific patterns
+bash_allow_patterns = ["cargo *"]
+bash_deny_patterns = ["rm -rf *"]
+allow_all_bash = false
 ```
 
-## Security Features
+### PERMISSION_TYPES Constant (`src/permission/mod.rs:71`)
 
-1. **HMAC-signed decisions** - Prevents tampering with cached permissions via `CODEGG_PERM_KEY`
-2. **Per-session isolation** - Decisions scoped to sessions, session-specific checked first
-3. **Path canonicalization** - Resolves symlinks before checking (cached with 1s TTL)
-4. **DoomLoop detection** - Prevents infinite loops via window-based counting
-5. **Glob pattern matching** - Supports `*` for tool names and bash commands
-6. **External directory check** - `check_external_directory()` validates paths stay within project root
+19 recognized tool permission names: `read`, `edit`, `glob`, `grep`,
+`list`, `bash`, `git`, `task`, `todowrite`, `todoread`, `question`,
+`webfetch`, `websearch`, `codesearch`, `lsp`, `doom_loop`, `skill`,
+`plan_enter`, `plan_exit`.
 
-## Utility Functions
+## Invariants & Gotchas
 
-### check_external_directory
+1. **PermissionRegistry is synchronous.** `register()`, `respond()`,
+   `answer_question()` are `fn`, not `async fn`. Do NOT `.await` them.
+2. **Registration-before-publish.** Always register the oneshot channel
+   BEFORE publishing the `PermissionPending` event.
+3. **Agent loop does not treat external origin as approval.** Unknown
+   raw MCP tools follow the normal mutating default and remain `Ask`
+   until explicit policy or user decision allows them.
+4. **Path canonicalization TTL is 1 second** (`PATH_CANONICALIZE_CACHE_TTL_SECS`).
+   Not-found entries also cache for 1s.
+5. **Session isolation.** Session-specific decisions are checked before
+   global decisions. A Deny at any layer overrides allows at lower
+   layers.
+6. **Exec mode** (`with_exec_mode()`) sets `default = Allow` and allows
+   bash, edit, task, todowrite — for CI/CD where no TUI is available.
+7. **`check_external_directory()`** is `#[allow(dead_code)]` — exists
+   for potential future use.
 
-```rust
-pub fn check_external_directory(path: &str, project_root: &str) -> bool
+## Testing
+
+```bash
+cargo test -p codegg --lib permission    # unit tests for permission module
+cargo test -p codegg --lib permission::tests  # specific test module
 ```
 
-Security utility that checks if a path is within a project root directory. Returns `true` if the path is inside the project root (safe), `false` if outside (potential security risk). Uses canonicalization when possible, falls back to prefix matching.
+Key test patterns:
+- `read_only_tools_short_circuit_to_allow` — 14 read-only tools
+- `safe_mutating_tools_short_circuit_to_allow` — todowrite, todoread,
+  question, invalid
+- `destructive_bash_prompts` — rm -rf /, mkfs, fork bomb, shutdown
+- `non_destructive_bash_auto_allows` — ls, cat, cargo test, git status
+- `builtin_mode_review_blocks_mutation` — review mode Deny rules
+- `builtin_modes_all_allow_todo_tools` — all modes allow todos
 
-**Note**: This function is marked `#[allow(dead_code)]` - it exists for potential future use.
+## Related Docs
 
-## PermissionRegistry (in bus/mod.rs)
-
-The `PermissionRegistry` uses `PermissionDecision` (the bus-owned DTO type),
-not `PermissionChoice` (the domain type in the permission module). This keeps
-the bus layer decoupled from the permission domain. Bidirectional `From` impls
-in `src/permission/mod.rs` allow lossless conversion between the two:
-
-```rust
-// PermissionDecision is owned by bus/mod.rs
-pub enum PermissionDecision {
-    AllowOnce,
-    AlwaysAllow,
-    DenyOnce,
-    AlwaysDeny,
-}
-
-pub struct PermissionRegistry {
-    senders: DashMap<String, PendingPermission>,
-}
-
-impl PermissionRegistry {
-    pub fn register(perm_id: String, tx: tokio::sync::oneshot::Sender<PermissionDecision>);
-    pub fn respond(perm_id: String, choice: PermissionDecision) -> bool;
-    pub fn unregister(perm_id: &str);
-    pub fn is_registered(perm_id: &str) -> bool;
-    pub fn pending_permission_ids() -> Vec<String>;
-}
-```
-
-**Note**: All methods are synchronous (`fn`), NOT async. TTL of 300s for entries.
-
-## See Also
-
-- [tool.md](tool.md) - Tools that use PermissionChecker
-- [bus.md](bus.md) - PermissionRegistry pattern
-- [security.md](security.md) - Additional security measures
+- [tool.md](tool.md) — Tools that use PermissionChecker
+- [bus.md](bus.md) — PermissionRegistry pattern
+- [security.md](security.md) — Additional security measures

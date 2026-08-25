@@ -1,51 +1,49 @@
 # Skills Module
 
-The `skills` module provides specialized capabilities activated via `/skill:` commands.
+Source-aware skill discovery, portable SKILL.md package parsing,
+precedence resolution, and bounded resource access for on-demand
+skill activation via `/skill:<name>` commands.
 
-## Overview
+## Purpose
 
-**Location**: `src/skills/`
+Discovers skill packages from multiple harness-compatible locations
+(CodeGG, .agents, OpenCode, Claude), resolves name conflicts by
+precedence, computes content digests for change detection, and
+provides lazy, security-bounded resource access for skill assets.
 
-**Key Responsibilities**:
-- Source-aware asset discovery from CodeGG, `.agents`, OpenCode, and Claude-compatible harness locations
-- Portable `SKILL.md` package parsing with YAML frontmatter
-- Deterministic precedence and duplicate resolution
-- Content digest computation for change detection
-- Security-bounded discovery (symlink escape, path traversal, bounded sizes)
-- Skill activation via `/skill:<name>` commands
-- System prompt augmentation with skill content
-- Backward-compatible `SkillIndex` facade for existing consumers
+## Where It Lives
 
-## Architecture
+| Layer | Path |
+|-------|------|
+| Module root | `src/skills/mod.rs` — re-exports + legacy `Skill`/`SkillIndex` |
+| Registry | `src/skills/registry.rs` — `AssetRegistry::build`, resolution |
+| Sources | `src/skills/source.rs` — `SourceKind`, `SourceRoot`, `AssetDiscoveryConfig` |
+| Parser | `src/skills/parser.rs` — frontmatter parsing, digest, resource inventory |
+| Candidates | `src/skills/candidate.rs` — `SkillCandidate`, `EffectiveSkill`, `ResolvedRegistry` |
+| Resources | `src/skills/resource.rs` — `ResourceHandle`, `ResourceReadLimits`, bounded reads |
+| Diagnostics | `src/skills/diagnostic.rs` — `Diagnostic`, `Severity` |
+| Compat adapter | `src/skills/compat.rs` — `SkillIndexCompat` wrapping `AssetRegistry` |
+| Tests | `tests/skills.rs`, `tests/skills_registry.rs` |
 
-### Asset Registry
+## How It Works
 
-The `AssetRegistry` is the primary public type. It is constructed once at startup via `AssetRegistry::build(config, project_root, global_roots)` and produces an immutable, source-aware snapshot of all discovered skills.
+### Discovery pipeline
 
-```rust
-pub struct AssetRegistry {
-    pub effective: Vec<EffectiveSkill>,
-    pub diagnostics: Vec<Diagnostic>,
-    pub sources: Vec<SourceSummary>,
-}
-```
+1. `AssetRegistry::build(config, project_root, global_roots)` resolves
+   `SourceRoot` entries from the config, project root, and global roots.
+2. For each root, `discover_in_root` reads directory entries, validates
+   symlink boundaries, and calls `parser::parse_candidate` for each
+   `SKILL.md` (or direct `.md` for CodeGG-native compat).
+3. `resolve` groups candidates by normalized name, sorts by precedence
+   rank, selects the winner (first valid), records shadowed alternatives.
+4. Returns `AssetRegistry { effective, diagnostics, sources }`.
 
-Key methods:
-- `get(name)` — exact name lookup (case-insensitive normalized)
-- `list()` — all effective skills
-- `find_matching(query)` — partial match across name, description, metadata
-- `build_system_prompt()` — formatted skill listing for agent prompts
-- `activate(name)` — retrieve skill body by name
-- `resource_handle(skill, relative_path, limits)` — create a lazy,
-  containment-checked handle for an inventoried resource; the body is not
-  read during discovery
+### Precedence
 
-### Source Kinds and Precedence
+Lower rank wins. Project-local always beats global.
 
-Each discovered skill is tagged with a `SourceKind` indicating its origin. Lower precedence rank wins:
-
-| Rank | SourceKind | Location |
-|------|-----------|----------|
+| Rank | SourceKind | Location Pattern |
+|------|-----------|-----------------|
 | 0 | `CodeGGProject` | `<project>/.codegg/skills/<name>/SKILL.md` |
 | 10 | `AgentsProject` | `<project>/.agents/skills/<name>/SKILL.md` |
 | 20 | `OpenCodeProject` | `<project>/.opencode/skills/<name>/SKILL.md` |
@@ -56,11 +54,10 @@ Each discovered skill is tagged with a `SourceKind` indicating its origin. Lower
 | 70 | `ClaudeGlobal` | `~/.claude/skills/<name>/SKILL.md` |
 | 80 | `CodeGGNativeCompat` | `<project>/.codegg/skills/*.md` (direct markdown) |
 
-Project-local sources always take precedence over global sources. The CodeGG-native direct markdown path has the lowest precedence.
+CodeGGProject also discovers direct `.md` files in `.codegg/skills/`,
+treating them as `CodeGGNativeCompat` entries.
 
-### Portable Skill Schema
-
-Skills are stored as markdown files with YAML frontmatter:
+### Portable SKILL.md schema
 
 ```markdown
 ---
@@ -78,182 +75,163 @@ allowed-tools:
 # Skill body content
 ```
 
-**Required fields**: `name`, `description`
-**Optional fields**: `license`, `compatibility`, `metadata` (preserved as-is), `allowed-tools` (preserved as metadata only, never expanded into permissions)
+**Required**: `name`, `description`.
+**Optional**: `license`, `compatibility`, `metadata`, `allowed-tools`
+(preserved as metadata only, never expanded into permissions).
 
-### Native Compatibility
+### Native compat
 
-CodeGG-native skills in `.codegg/skills/` (legacy compatibility location) continue to accept the legacy frontmatter shape:
+CodeGG-native `.codegg/skills/` also accepts legacy frontmatter
+(`name`, `version`, `tags`). The parser auto-detects portable vs
+native shape by checking for portable required fields.
 
-```markdown
----
-name: my-skill
-version: 1.0.0
-tags: [vcs, git]
----
-```
+### Digest computation (parser.rs:308)
 
-The parser auto-detects portable vs native frontmatter. Direct `.md` files in `.codegg/skills/` are treated as `CodeGGNativeCompat` entries.
+SHA-256 over: frontmatter bytes + `\n` + body with CRLF→LF
+normalization. Format-stable across platforms.
 
-### Digest Computation
+### Resource access (resource.rs)
 
-Content digests are SHA-256 hashes computed over:
-1. Existing frontmatter is read through the centralized YAML compatibility
-   codec; new generated configuration/assets use the subsystem's canonical
-   TOML or JSON/JSON5 format.
-2. Body with CRLF→LF normalization
+`ResourceHandle` provides lazy, bounded reads of files inside a
+skill package:
 
-This ensures format-stable, content-stable digests across platforms.
+- Accepts relative paths only (no `..`, no absolute, no backslash)
+- Canonicalizes at construction AND read time
+- Rejects symlink escape (canonical must stay under package root)
+- Enforces `max_resource_size` (default 1 MiB) and
+  `max_bytes_returned` (default 64 KiB)
+- `read_text()` additionally rejects malformed UTF-8
 
-### Diagnostics
+## Key Types & APIs
 
-Invalid skills produce `Diagnostic` entries (severity + reason + location) without aborting the registry. The registry always completes; diagnostics are available for inspection.
-
-- `Severity::Error` — skill is invalid, skipped
-- `Severity::Warning` — non-fatal issue (oversized description, allowed-tools metadata)
-- `Severity::Info` — informational (shadowing notification)
-
-### Refresh lifecycle
-
-The daemon refreshes the immutable asset snapshot on session lifecycle and
-through the native `/reload` command. The command and its focused aliases
-share the `AssetRefresh` protocol request; they do not scan or mutate assets
-in the TUI. Refresh reports are bounded to names, digests, counts, and
-diagnostics. A failed or cancelled candidate leaves the previous generation
-published, and a turn retains the `Arc` captured before prompt construction.
-
-### Bounded resource handles
-
-`ResourceHandle` (`src/skills/resource.rs`) is the only resource-body read
-surface for discovered skill resources. Handles accept relative paths only,
-canonicalize the package root and candidate at construction/read time, reject
-symlink escape, and enforce both a maximum resource size and maximum returned
-bytes. `read_text()` additionally rejects malformed UTF-8. Discovery records
-resource names and sizes only; it never eagerly reads or executes resource
-bodies.
-
-### Security Bounds
-
-- `AssetDiscoveryConfig` carries all configurable bounds with safe defaults:
-  - `max_skill_file_size`: 256 KB
-  - `max_frontmatter_size`: 64 KB
-  - `max_skills_per_root`: 256
-  - `max_resources_per_skill`: 64
-  - `max_skill_name_length`: 128
-  - `max_description_length`: 2048
-  - `enabled_sources`: all source kinds enabled
-- Symlink escape containment: canonicalize paths and reject candidates that escape the source root
-- Resource path traversal: relative paths only, no `..` components
-- Script files are inventoried (name + size) but never executed
-- Resource bodies are lazy and bounded by `ResourceReadLimits` (1 MiB file
-  size and 64 KiB read defaults)
-
-### Compatibility Adapter
-
-`SkillIndexCompat` wraps `AssetRegistry` behind the legacy `SkillIndex` API:
+### AssetRegistry (registry.rs:11)
 
 ```rust
-pub struct SkillIndexCompat {
-    registry: Arc<AssetRegistry>,
+pub struct AssetRegistry {
+    pub effective: Vec<EffectiveSkill>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: Vec<SourceSummary>,
 }
 ```
 
-This preserves the existing `load(&str)` → `get()` → `activate()` flow used by `src/main.rs` and `src/tool/skill.rs`. The adapter uses `std::env::current_dir()` fallback for the `load` method (grandfathered), while the new `AssetRegistry::build` API requires explicit roots.
+Methods: `build`, `get`, `list`, `find_matching`, `build_system_prompt`,
+`activate`, `resource_handle`.
 
-## Key Types
-
-### Skill (legacy, preserved for backward compatibility)
+### EffectiveSkill (candidate.rs:32)
 
 ```rust
-pub struct Skill {
+pub struct EffectiveSkill {
     pub name: String,
+    pub normalized_name: String,
     pub description: String,
-    pub version: Option<String>,
-    pub tags: Vec<String>,
+    pub source_kind: SourceKind,
+    pub source_path: PathBuf,
+    pub package_root: PathBuf,
+    pub content_digest: String,
+    pub metadata: HashMap<String, serde_json::Value>,
+    pub resources: Vec<ResourceDescriptor>,
     pub body: String,
-    pub source: PathBuf,
+    pub precedence_rank: u32,
+    pub shadowed_alternatives: Vec<ShadowedAlternative>,
 }
 ```
 
-### SkillIndex (legacy, preserved for backward compatibility)
+### SourceKind (source.rs:6)
+
+Enum with 9 variants. Methods: `precedence_rank`, `is_project_local`,
+`is_global`, `directory_name`, `is_foreign`.
+
+### AssetDiscoveryConfig (source.rs:84)
 
 ```rust
-pub struct SkillIndex {
-    skills: Vec<Skill>,
+pub struct AssetDiscoveryConfig {
+    pub max_skill_file_size: u64,          // 256 KiB
+    pub max_frontmatter_size: usize,       // 64 KiB
+    pub max_skills_per_root: usize,        // 256
+    pub max_resources_per_skill: usize,    // 64
+    pub max_skill_name_length: usize,      // 128
+    pub max_description_length: usize,     // 2048
+    pub enabled_sources: HashSet<SourceKind>,
 }
 ```
 
-Methods: `new()`, `load(&str)`, `get(&str)`, `list()`, `find_matching(&str)`, `build_system_prompt()`, `activate(&str)`.
-
-## File Layout
-
-```
-src/skills/
-  mod.rs           — pub re-exports; legacy Skill + SkillIndex
-  registry.rs      — AssetRegistry, build logic, resolution
-  source.rs        — SourceKind, SourceRoot, SourceSummary, AssetDiscoveryConfig
-  parser.rs        — frontmatter parsing, candidate construction, digest computation
-  candidate.rs     — SkillCandidate, EffectiveSkill, ResolvedRegistry, ResourceDescriptor
-  resource.rs      — ResourceHandle, ResourceReadLimits, bounded resource reads
-  diagnostic.rs    — Diagnostic, Severity
-  compat.rs        — SkillIndexCompat adapter
-```
-
-## Loading Locations
-
-### Project-local
-- `.opencode/skills/<name>/SKILL.md` (canonical portable package)
-- `.codegg/skills/<name>/SKILL.md` (portable package, legacy)
-- `.codegg/skills/*.md` (native compat direct markdown, legacy)
-- `.agents/skills/<name>/SKILL.md` (symlink to `.opencode/skills/`)
-- `.claude/skills/<name>/SKILL.md`
-
-### Global
-- `<config>/codegg/skills/<name>/SKILL.md`
-- `~/.agents/skills/<name>/SKILL.md`
-- `~/.config/opencode/skills/<name>/SKILL.md`
-- `~/.claude/skills/<name>/SKILL.md`
-
-### Absent directories are harmless
-
-Missing global or foreign directories produce no errors.
-
-## Activation
-
-User activates skill via `/skill:` command:
-
-```
-/skill:git
-```
-
-The `SkillTool` (`src/tool/skill.rs`) handles runtime skill loading.
-
-## Usage in Agent
+### ResourceHandle (resource.rs:44)
 
 ```rust
-// In main.rs - load at startup using compat adapter
-let mut skills = SkillIndex::new();
-skills.load(&project_dir).await?;
-
-// Activate from CLI flag
-if let Some(skill_body) = skills.activate(skill_name) {
-    app.prompt_state.prompt.set_text(skill_body);
+pub struct ResourceHandle {
+    package_root: PathBuf,
+    relative_path: PathBuf,
+    limits: ResourceReadLimits,
 }
 ```
 
-For new code, prefer the primary `AssetRegistry` API:
+Methods: `new`, `validate_relative_path`, `read_bytes`, `read_text`,
+`package_root`, `relative_path`, `limits`.
+
+### ResourceReadLimits (resource.rs:8)
 
 ```rust
-let config = AssetDiscoveryConfig::default();
-let registry = AssetRegistry::build(&config, &project_root, &global_roots);
-if let Some(skill_body) = registry.activate("my-skill") {
-    // ...
+pub struct ResourceReadLimits {
+    pub max_resource_size: u64,      // default 1 MiB
+    pub max_bytes_returned: usize,   // default 64 KiB
 }
 ```
 
-## See Also
+### SkillIndexCompat (compat.rs:11)
 
-- [tool.md](tool.md) - `/skill:` tool
-- `src/skills/` - Runtime loader implementation
-- `tests/skills.rs` - Legacy SkillIndex tests
-- `tests/skills_registry.rs` - AssetRegistry integration tests
+Wraps `Arc<AssetRegistry>` behind the legacy `SkillIndex` API.
+Used by `src/main.rs` and `src/tool/skill.rs`. The `load` method
+derives global roots from `dirs::config_dir()`.
+
+### Legacy types (mod.rs)
+
+`Skill` (name, description, version, tags, body, source) and
+`SkillIndex` (legacy facade) are preserved for backward compatibility.
+
+### Diagnostic (diagnostic.rs:22)
+
+```rust
+pub struct Diagnostic {
+    pub severity: Severity,  // Error | Warning | Info
+    pub reason: String,
+    pub location: Option<String>,
+}
+```
+
+## Security Bounds
+
+- Symlink escape containment: canonicalize paths, reject candidates
+  that escape the source root (registry.rs:328)
+- Resource path traversal: relative paths only, no `..` (resource.rs:89)
+- Script files inventoried (name + size) but never executed
+- Resource bodies lazy and bounded by `ResourceReadLimits`
+- `max_skills_per_root` cap prevents pathological directories
+- Invalid skills produce `Diagnostic` entries without aborting the
+  registry
+
+## Refresh lifecycle
+
+The daemon refreshes the immutable asset snapshot on session lifecycle
+and through the native `/reload` command. Refresh reports are bounded
+to names, digests, counts, and diagnostics. A failed candidate leaves
+the previous generation published.
+
+## Testing
+
+```bash
+cargo test -p codegg skills               # legacy SkillIndex tests
+cargo test --test skills_registry          # AssetRegistry integration tests
+```
+
+`tests/skills_registry.rs` covers: empty project, all 4 project source
+kinds, global skills, precedence (project over global), native compat
+direct .md, invalid fallback, disabled sources, get/list/find_matching,
+build_system_prompt, activate, symlink escape rejection, oversized
+frontmatter, malformed YAML, resource inventory, allowed-tools metadata
+warning, digest stability, digest CRLF normalization, name validation.
+
+## Related Docs
+
+- [tool.md](tool.md) — `/skill:` tool
+- `src/skills/` — Runtime implementation
+- `.opencode/skills/*/SKILL.md` — Skill package location

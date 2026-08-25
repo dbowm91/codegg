@@ -74,6 +74,7 @@ schema, reconciliation, import, inspection, and operator workflow.
 The catalog service in `codegg_core::project_catalog` provides
 list/get/register/archive/restore operations on top of the identity
 storage layer.
+
 ## Daemon context authority
 
 Domain Identity Milestone 003 makes `codegg_core::context::ProjectContextResolver`

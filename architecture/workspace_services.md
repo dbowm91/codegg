@@ -169,7 +169,7 @@ into two entry points:
 | `init_pool_at(db_path)` | arbitrary | Test-friendly escape hatch used by integration tests. |
 | `init(project_dir)` *(deprecated)* | ambiguous | Routes to one of the above based on whether `project_dir` is empty or a real directory. New code MUST NOT use this. |
 
-`STORAGE_LAYOUT_VERSION` is now `25` and is referenced from
+`STORAGE_LAYOUT_VERSION` is now `35` and is referenced from
 `MigrationMarker.storage_layout_version` so the migration tooling can
 report which layout a legacy database was imported under.
 
@@ -201,7 +201,7 @@ report which layout a legacy database was imported under.
   - `SourceMissing` — no `<root>/.codegg/sessions.db` exists.
   - `InvalidSchema(source_path)` — source DB does not look like a
     codegg session store.
-  - `Imported { workspace_id, sessions, messages }` — first successful
+  - `Imported { sessions, messages }` — first successful
     import.
   - `AlreadyMigrated` — the source path already has a marker row in the
     catalog; the function is a no-op and returns the cached outcome.
@@ -317,8 +317,6 @@ python3 scripts/check-core-boundary.sh
 python3 scripts/check_daemon_cwd_usage.py
 ```
 
-## See Also
-
 ## Discovery boundary
 
 Project discovery is intentionally upstream of this registry. A bounded scan
@@ -327,15 +325,15 @@ not call `acquire`, `activate`, create a service bundle, or retain a lease.
 Activation remains an explicit later operation for a selected project or
 workspace.
 
+## See Also
+
 - [`architecture/workspace.md`](workspace.md) — Phase 2 workspace
   identity, `WorkspaceRegistry`, `ExecutionContext`, and path policy.
 - [`architecture/storage.md`](storage.md) — Storage layout and migration
-  index (now `STORAGE_LAYOUT_VERSION = 29`).
+  index (now `STORAGE_LAYOUT_VERSION = 35`).
 - [`architecture/run_store.md`](run_store.md) — `RunStore` and
   `RunManifest` semantics used by the bundle.
 - [`architecture/protocol.md`](protocol.md) — Phase 3 protocol variants
   and DTO additions.
 - [`architecture/core.md`](core.md) — `CoreDaemon` and `CoreRuntimeDeps`
   wiring (workspace_services section).
-- `architecture/workspace_services.md`
-  — Full Phase 3 contract.

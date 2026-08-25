@@ -1,41 +1,63 @@
 # Testing Architecture
 
-CodeGG's workspace test suite has substantially different resource profiles.
-Unbounded parallelism has been observed to spawn many threads plus subprocesses,
-with some processes consuming substantial memory. The repository intentionally
-does not maintain a fragile exact global test total; command output at a
-specific revision is the authoritative count. The canonical verification
-commands use limited parallelism:
+CodeGG's workspace test suite has substantially different resource
+profiles. Unbounded parallelism has been observed to spawn many threads
+plus subprocesses, with some processes consuming substantial memory. The
+repository intentionally does not maintain a fragile exact global test
+total; command output at a specific revision is the authoritative count.
+
+## Canonical Verification Commands
 
 ```bash
 scripts/verify.sh quick    # cheap sanity for ordinary iteration
 scripts/verify.sh full     # broad verification before handoff or release
 ```
 
-This document defines the test taxonomy, resource model, and guidance for adding new tests.
+### `verify.sh quick`
+
+1. `cargo fmt --check --all`
+2. `generate_builtin_agents.py --check`
+3. `check-core-boundary.sh`
+4. `check_sandbox_contract.py`
+5. `check_execution_ownership.py`
+6. `cargo check --workspace --all-targets --locked`
+
+### `verify.sh full`
+
+Runs quick first, then:
+
+1. `cargo clippy --workspace --all-targets --locked -- -D warnings`
+2. `cargo test --workspace --locked -- --test-threads=1`
+3. `cargo check -p codegg --locked --features server,plugins,lsp-test-support`
+
+Both modes set `CARGO_BUILD_JOBS=1` by default.
 
 ## Test Resource Classes
 
 | Class | Description | Parallelism | Examples |
 |-------|-------------|-------------|----------|
-| `fast` | Pure/unit tests, in-memory registries, parsing, config logic | Safe with `current_thread` | `egggit::diff`, `eggsentry::profile`, `plugin::registry`, `command::mod` |
-| `storage` | SQLite pool ops, session CRUD, snapshot capture/restore | Serial or low parallelism | `tests/session_crud.rs`, `tests/snapshot.rs`, `goal::store` |
-| `process-heavy` | Fake LSP stdio, supervisor restart, daemon sockets, subprocess spawning | Serial (`--test-threads=1`) | `tests/lsp.rs`, `tests/lsp_composite_stdio.rs`, `tests/supervisor_restart_stdio.rs` |
-| `plugin-heavy` | Wasmtime runtime, plugin install/registry/management | Serial | `tests/plugin.rs`, `src/plugin/management.rs` |
-| `adversarial` | Command routing, Python sandbox, context projection adversarial tests | Serial | `tests/command_routing_adversarial.rs`, `tests/python_sandbox_adversarial.rs`, `tests/context_projection_adversarial.rs` |
-| `workspace` | Two-workspace isolation and unbound session rejection | Serial | `tests/workspace_isolation.rs` |
-| `real-lsp` | Actual language server smoke tests (rust-analyzer, pyright, gopls) | Manual/scheduled only | `crates/egglsp/tests/real_server_smoke.rs` |
-| `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` (adds clippy, production-feature check) |
+| `fast` | Pure/unit, parsing, config | Safe | `egggit::diff`, `eggsentry::profile` |
+| `storage` | SQLite pool ops, CRUD | Serial or low | `tests/session_crud.rs` |
+| `process-heavy` | Fake LSP stdio, daemon | Serial | `tests/lsp_composite_stdio.rs` |
+| `plugin-heavy` | Wasmtime runtime | Serial | `tests/plugin.rs` |
+| `adversarial` | Routing, sandbox, projection | Serial | `tests/command_routing_adversarial.rs` |
+| `workspace` | Workspace isolation | Serial | `tests/workspace_isolation.rs` |
+| `real-lsp` | Actual server smoke | Manual | `crates/egglsp/tests/real_server_smoke.rs` |
+| `release-full` | Conservative full validation for main/tags | Serial | `scripts/verify.sh full` |
 
 ## Why Serial by Default
 
-The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning tests. Key amplification factors:
+Key amplification factors:
 
-- **LSP tests** spawn fake language-server subprocesses, create temp Rust
-  workspaces, write scenario files, and exercise async shutdown/restart.
+- **LSP tests** spawn fake language-server subprocesses, create temp
+  Rust workspaces, write scenario files, exercise async shutdown/restart.
 - **Plugin tests** may instantiate Wasmtime runtime state.
-- **Tokio default flavor** is single-threaded/current-thread. Bare `#[tokio::test]` already has the lightweight default runtime; `audit_tokio_tests.py` remains available to identify tests that need explicit concurrency review. Use an explicit multi-threaded flavor only when a test genuinely requires worker-thread concurrency.
-- **SQLite migration churn** — `isolated_pool()` runs full migrations on every call. Some test files add redundant `migrate()` calls on top.
+- **Tokio default flavor** is single-threaded/current-thread. Bare
+  `#[tokio::test]` already has the lightweight default runtime;
+  `audit_tokio_tests.py` remains available to identify tests needing
+  explicit concurrency review.
+- **SQLite migration churn** — `isolated_pool()` runs full migrations
+  on every call.
 
 ## Tokio Runtime Flavor Rules
 
@@ -43,117 +65,97 @@ The workspace mixes cheap pure-logic tests with heavyweight subprocess-spawning 
 
 ```rust
 #[tokio::test]
-async fn test_something() {
-    // ...
-}
+async fn test_something() { /* ... */ }
 ```
 
-This default is appropriate for:
-- Pure unit tests and parsing
-- SQLite pool operations (in-memory)
-- In-memory registry tests (PluginRegistry, PermissionRegistry, etc.)
-- Mock provider tests
-- Shell projection fixture tests
+Appropriate for: pure unit tests, SQLite pool ops, in-memory registry
+tests, mock provider tests, shell projection fixtures.
 
 ### Multi-threaded (explicit)
 
 ```rust
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_concurrent_access() {
-    // ...
-}
+async fn test_concurrent_access() { /* ... */ }
 ```
 
-Use multi-threaded only when the test:
-- Spawns background tasks via `tokio::spawn` that must execute concurrently
-- Uses `tokio::sync::broadcast` or `tokio::sync::mpsc` with real concurrent producers/consumers
+Use only when the test:
+- Spawns background `tokio::spawn` tasks requiring concurrency
+- Uses `tokio::sync::broadcast`/`mpsc` with real concurrent producers
 - Tests actual subprocess lifecycle (LSP, daemon, shell)
 - Uses `tokio::time::sleep` for timing-dependent behavior
 
 ### Always serial (`--test-threads=1`)
 
-LSP subprocess tests, plugin heavy tests, and real-server tests must run serially regardless of runtime flavor because they compete for:
-- Fixed ports or sockets
-- Global process state
-- Limited system resources (memory, file descriptors)
+LSP subprocess, plugin-heavy, and real-server tests must run serially
+because they compete for fixed ports, global process state, or limited
+system resources.
 
 ## Pool Strategy
 
 ### `isolated_pool()` — Fresh DB per test
 
-```rust
-let pool = common::pool::isolated_pool().await;
-```
+Creates a named in-memory SQLite DB (`codegg_test_iso_{uuid}`) with
+full migrations. Use when tests need a clean slate with hardcoded IDs.
 
-Creates a named in-memory SQLite DB (`codegg_test_iso_{uuid}`) and runs full migrations. Use when tests need a clean slate with hardcoded IDs that would collide in a shared pool.
-
-**Warning:** Do NOT add redundant `migrate()` calls after `isolated_pool()` — migrations run internally via `build_pool()`.
+**Do NOT add redundant `migrate()` calls** — migrations run internally.
 
 ### `shared_pool()` — Process-wide shared DB
 
-```rust
-let pool = common::pool::shared_pool().await;
-```
-
-Process-wide shared in-memory DB (`?cache=shared`). Migrations run once via `OnceLock`. Use when tests can tolerate other tests' data or clean up after themselves.
+Process-wide shared in-memory DB (`?cache=shared`). Migrations run
+once via `OnceLock`. Use when tests tolerate other tests' data.
 
 ### Choosing a pool
 
 | Scenario | Pool | Reason |
 |----------|------|--------|
-| Tests use hardcoded IDs (`"test-session"`) | `isolated_pool()` | Avoids cross-test collision |
-| Tests clean up their own data | `shared_pool()` | Avoids redundant migration overhead |
-| Tests need exact DB state | `isolated_pool()` | Clean slate guaranteed |
-| High test count, simple ops | `shared_pool()` | Faster — no per-test migration cost |
+| Hardcoded IDs (`"test-session"`) | `isolated_pool()` | Avoids cross-test collision |
+| Tests clean up own data | `shared_pool()` | No per-test migration cost |
+| Exact DB state needed | `isolated_pool()` | Clean slate |
+| High test count, simple ops | `shared_pool()` | Faster |
 
 ## Adding New Tests
 
-1. **Choose the lightest runtime flavor** that works. Start with `current_thread`.
-2. **Use `isolated_pool()`** for storage tests unless you can guarantee cleanup.
-3. **Never add redundant `migrate()` calls** after `isolated_pool()` or `shared_pool()`.
-4. **Don't spawn real language servers** in default tests. Use fake transports.
-5. **Don't use fixed ports, global paths, or shared env vars** without serializing.
-6. **Prefer deterministic fakes** over subprocesses when process lifecycle isn't under test.
-7. **Keep timeouts as failure bounds only** — don't use `sleep` as synchronization.
-8. **For multi-threaded tests**, set explicit `worker_threads = 2` rather than using the default.
+1. Start with `current_thread` runtime.
+2. Use `isolated_pool()` for storage tests unless you guarantee cleanup.
+3. Never add redundant `migrate()` calls.
+4. Don't spawn real language servers in default tests.
+5. Don't use fixed ports, global paths, or shared env vars without
+   serializing.
+6. Prefer deterministic fakes over subprocesses.
+7. Keep timeouts as failure bounds only.
+8. For multi-threaded tests, set explicit `worker_threads = 2`.
 
 ## Resource-Class Checklist
 
-Classify every new test against these resource classes before writing it:
+| Class | Runtime | Pool | Parallelism |
+|-------|---------|------|-------------|
+| `fast` | `current_thread` | `shared_pool()` or none | Safe |
+| `storage` | `current_thread` | `isolated_pool()` | Serial or low |
+| `process-heavy` | `current_thread` or `multi_thread` | `shared_pool()` | Serial |
+| `plugin-heavy` | `current_thread` | none | Serial |
+| `adversarial` | `current_thread` | none | Serial |
+| `workspace` | `current_thread` | `isolated_pool()` | Serial |
+| `real-lsp` | `multi_thread` bounded | none | Manual |
 
-| Class | Runtime | Pool | Parallelism | CI Lane | Triggers |
-|-------|---------|------|-------------|---------|----------|
-| `fast` | `current_thread` | `shared_pool()` or none | Safe | Default | Pure logic, parsing, config, in-memory registries |
-| `storage` | `current_thread` | `isolated_pool()` | Serial or low | Default | SQLite CRUD, session, snapshot, goal store |
-| `process-heavy` | `current_thread` or `multi_thread` | `shared_pool()` | Serial (`--test-threads=1`) | Default | Fake LSP stdio, supervisor, daemon, subprocess spawn |
-| `plugin-heavy` | `current_thread` | none | Serial | Default | Wasmtime runtime, plugin install/registry |
-| `adversarial` | `current_thread` | none | Serial | Default | Command routing, Python sandbox, context projection adversarial tests |
-| `real-lsp` | `multi_thread` with bounded workers | none | Manual/scheduled | Separate | Actual language server subprocesses |
-| `workspace` | `current_thread` | `isolated_pool()` | Serial | Default | Workspace isolation, unbound session rejection |
-| `release-full` | varies | varies | Serial | Default | Full workspace `--all-features` sweep |
-
-**Quick decision**: If the test spawns `tokio::process::Command` or needs
-concurrent background tasks, use an explicitly bounded `multi_thread` runtime;
+**Quick decision**: if the test spawns `tokio::process::Command` or
+needs concurrent background tasks, use explicitly bounded `multi_thread`;
 otherwise prefer `current_thread`. If it touches SQLite, use
-`isolated_pool()`. If it needs installed binaries, it is `real-lsp` (never in
-default CI). Test binaries that require serial resource use run with
-`--test-threads=1`; this does not imply that every async test uses a
-single-threaded Tokio runtime.
+`isolated_pool()`.
 
 ## Local Commands
 
 ```bash
-# Canonical verification entry points
-scripts/verify.sh quick              # cheap sanity (fmt, static checks, compile)
-scripts/verify.sh full               # broad verification (adds clippy, tests, feature check)
+# Canonical verification
+scripts/verify.sh quick
+scripts/verify.sh full
 
-# Fast feedback (cheap tests only, low parallelism)
+# Fast feedback (cheap crates)
 cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 
 # Single crate
 cargo test -p codegg-core
 
-# Capped workspace validation (what verify.sh full runs internally)
+# Capped workspace validation
 CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
 
 # LSP integration (fake server, serial)
@@ -163,121 +165,84 @@ cargo test --features lsp-test-support --test lsp_composite_stdio
 # Plugin tests (serial)
 cargo test -p codegg --lib plugin --all-features
 
-# Workspace isolation tests (serial)
+# Workspace isolation
 cargo test --test workspace_isolation
 
-# Adversarial tests (serial)
+# Adversarial tests
 cargo test --test command_routing_adversarial
 cargo test --test python_sandbox_adversarial
 cargo test --test context_projection_adversarial
 
-# Real LSP smoke tests (manual, requires installed servers)
-cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer
+# Real LSP smoke tests (requires installed servers)
+cargo test -p egglsp --features lsp-real-server-tests \
+  --test real_server_smoke -- rust_analyzer
+
+# Tokio flavor audit
+python3 scripts/audit_tokio_tests.py
 ```
 
 ## Test Timing with Nextest
 
-Nextest is optional diagnostic tooling configured in `.config/nextest.toml`. It is not required for quick or full verification. Use it to identify slow tests and capture baseline timing data.
-
-### Profiles
+Optional diagnostic tooling configured in `.config/nextest.toml`.
 
 | Profile | Timeout | Threads | Use Case |
 |---------|---------|---------|----------|
 | `default` | 30s | Auto | Local development |
 | `timing` | 60s | Serial | Local timing diagnostics |
 
-### Local Timing Commands
-
 ```bash
-# Install nextest (one-time)
 cargo install cargo-nextest
-
-# Run full workspace with timing
 cargo nextest run --workspace --profile timing --all-features
-
-# Run specific crate with timing
-cargo nextest run -p codegg-core --profile timing
-
-# Capture timing report via helper script
 scripts/capture-nextest-timing.sh --top 20
-scripts/capture-nextest-timing.sh --profile timing --top 30
-
-# Manual timing report (slowest tests first)
-cargo nextest run --workspace --profile timing --all-features --json | \
-  python3 -c "import sys,json; data=json.load(sys.stdin); tests=data.get('test',{}).get('executed',[]); tests.sort(key=lambda t: t.get('time',{}).get('duration',0), reverse=True); [print(f\"{t['time']['duration']:.2f}s  {t['name']}\") for t in tests[:20]]"
-```
-
-### Baseline Metrics
-
-To capture baseline timing data for comparison:
-
-```bash
-# Full workspace timing (single run)
-cargo nextest run --workspace --profile timing --all-features 2>&1 | \
-  grep -E "^test result:|slow test" > /tmp/nextest-baseline.txt
-
-# Compare against future runs
-diff /tmp/nextest-baseline.txt <(cargo nextest run --workspace --profile timing --all-features 2>&1 | grep -E "^test result:|slow test")
 ```
 
 ## CI Structure
 
-Routine CI consists of one bounded `verify` job in `.github/workflows/ci.yml` that runs for pull requests and pushes to `main`. It uses default features, bounded Cargo resources (`CARGO_BUILD_JOBS=1`, `--test-threads=1`), and performs no release, artifact, cross-build, audit, or example work.
+Routine CI is one bounded `verify` job in `.github/workflows/ci.yml`
+for PRs and pushes to `main`. Steps in order:
 
-The job runs these steps in order:
-
-1. Generated-agent schema/source synchronization (`generate_builtin_agents.py --check`)
-2. `codegg-core` boundary guard (`check-core-boundary.sh`)
+1. Generated-agent schema sync (`generate_builtin_agents.py --check`)
+2. Core boundary guard (`check-core-boundary.sh`)
 3. Sandbox contract guard (`check_sandbox_contract.py`)
 4. Execution ownership guard (`check_execution_ownership.py`)
 5. Formatting (`cargo fmt --check --all`)
-6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked -- -D warnings`)
+6. Workspace Clippy (`cargo clippy --workspace --all-targets --locked`)
 7. Workspace tests (`cargo test --workspace --locked -- --test-threads=1`)
 
-The local quick script additionally runs the generated-agent synchronization check, core
-boundary, sandbox contract, and execution-ownership guard before the workspace
-check. CI runs the same cheap boundary guards in its single job, then uses
-Clippy as the default-feature workspace compile/type-check gate before the
-workspace tests. The sandbox and execution-ownership guard self-tests remain
-useful local maintenance commands but are not unconditional routine
-verification steps. CI omits the production-feature compile check
-(`server,plugins,lsp-test-support`) because that requires `--features` and is
-heavier than default-feature compilation.
-
-Optional feature, plugin, example, LSP, audit, and cross-platform checks are not part of routine CI. They remain available locally via the change-specific matrix documented in `scripts/verify.sh` and this file.
+CI uses default features, bounded resources. Optional feature, plugin,
+example, LSP, audit, and cross-platform checks remain local.
 
 ### Release-footprint measurements
 
-When investigating dependency or binary footprint, build the default and
-maintainer production feature combinations in isolated targets:
-
 ```bash
-CARGO_TARGET_DIR=/tmp/codegg-release-default cargo build --release --locked --bin codegg
-CARGO_TARGET_DIR=/tmp/codegg-release-production cargo build --release --locked --bin codegg --features server,plugins,lsp-test-support
+CARGO_TARGET_DIR=/tmp/codegg-release-default \
+  cargo build --release --locked --bin codegg
+
+CARGO_TARGET_DIR=/tmp/codegg-release-production \
+  cargo build --release --locked --bin codegg \
+  --features server,plugins,lsp-test-support
 ```
 
-Record the host, compiler, feature set, and byte counts in the relevant closure
-record. `cargo bloat --release --bin codegg --crates` is optional diagnostic
-tooling. Binary size is evidence, not a continuous CI gate; do not change
-supported features, MSRV, or panic semantics without separate compatibility
-evidence.
+Binary size is evidence, not a CI gate.
 
-### Real LSP tests
+### `--all-features` and real-server tests
 
-Real-server compatibility tests are run locally as opt-in commands, not part of routine CI. There is no automated workflow for real-server testing. Tests verify compatibility with actual language server binaries (rust-analyzer, basedpyright, gopls, typescript-language-server, clangd) and require installed server binaries.
+`--all-features` enables `lsp-real-server-tests` which compiles
+`real_server_smoke.rs`. Tests skip at runtime when server binaries
+are not installed. CI does not install real servers.
+
+`verify.sh full` uses `--features server,plugins,lsp-test-support`
+instead of `--all-features` to avoid activating `lsp-real-server-tests`.
 
 ### Session projection transport closure
-
-The transport isolation guard and focused ownership tests are part of the
-projection regression surface:
 
 ```bash
 python3 scripts/check_projection_transport_isolation.py
 python3 scripts/check_websocket_bounds.py
 cargo test -p codegg-protocol
-cargo test -p codegg --lib core::transport::projection -- --nocapture
-cargo test -p codegg --lib server::ws -- --nocapture
-cargo test -p codegg --lib core::transport::daemon_socket -- --nocapture
+cargo test -p codegg --lib core::transport::projection
+cargo test -p codegg --lib server::ws
+cargo test -p codegg --lib core::transport::daemon_socket
 cargo test --test projection_replay_daemon_protocol
 cargo test --test projection_replay_subscription
 cargo test --test projection_replay_resume
@@ -285,48 +250,28 @@ cargo test --test projection_disclosure_invariants
 cargo test --test projection_artifact_handles
 ```
 
-The guard requires raw daemon broadcast forwarders to reject
-`ProjectionStreamEvent` and rejects stream IDs derived from subscription IDs.
-Transport adapters use bounded WebSocket queues; overflow is tested as typed
-subscriber lag/resync rather than silent acknowledgement advancement.
+### CI Lane Roadmap Decision
 
-### `--all-features` and real-server tests
-
-The root `--all-features` flag enables the `lsp-real-server-tests` feature, which compiles `crates/egglsp/tests/real_server_smoke.rs`. This is safe because:
-
-1. **Tests skip at runtime** — each test calls `require_server_binary()` which returns `None` when the server binary is not installed, causing the test to skip with `eprintln!("SKIP: ...")`
-2. **No subprocess launched** — skipped tests never spawn a language server process
-3. **CI does not install real servers** — the default `test` job does not set `CODEGG_RA_BIN` or similar env vars
-
-Local real-server smoke tests (requires installed servers):
-
-```bash
-cargo test -p egglsp --features lsp-real-server-tests --test real_server_smoke -- rust_analyzer
-```
-
-`scripts/verify.sh full` uses `--features server,plugins,lsp-test-support` instead of `--all-features` to avoid activating `lsp-real-server-tests`. Real-server tests remain opt-in local commands.
-
-See `AGENTS.md` for the full test command catalog.
-
-## CI Lane Roadmap Decision
-
-**Decision: Conservative keep** — maintain the current single-job bounded test lane.
-
-The closure pass evaluation determined that splitting CI into resource lanes
-(fast, storage, process-heavy, plugin-heavy) would add complexity without a
-concrete measured need. The conservative approach is retained because:
-
-1. **Documentation is sufficient** — the test resource taxonomy, process-heavy file headers, and audit scripts provide visibility into resource usage without CI complexity.
-2. **The runtime default is documented directly** — Tokio's bare test macro uses a current-thread runtime; `audit_tokio_tests.py` remains available for concurrency-sensitive test review.
-3. **Limited parallelism is reliable** — `--test-threads=1` balances speed with resource control.
-4. **Wall-clock is acceptable** — the bounded suite completes within CI timeout limits.
+**Conservative keep** — maintain the current single-job bounded test
+lane. Splitting into resource lanes would add complexity without
+measured need. If test count grows or wall-clock becomes problematic,
+consider nextest adoption, resource-aware splitting, or selective
+feature flags. These changes should be driven by measured regressions.
 
 ### Future Considerations
 
-If test count grows significantly or wall-clock becomes problematic, consider:
+If test count grows significantly or wall-clock becomes problematic,
+consider:
 
-1. **Nextest adoption** — use `.config/nextest.toml` profiles for timing data and potential parallelism.
-2. **Resource-aware splitting** — split into sequential lanes: fast/default → storage → process-heavy → plugin-heavy.
-3. **Selective feature flags** — use `--features` instead of `--all-features` for targeted CI runs.
+1. **Nextest adoption** — use `.config/nextest.toml` profiles for
+   timing data and potential parallelism.
+2. **Resource-aware splitting** — split into sequential lanes:
+   fast/default → storage → process-heavy → plugin-heavy.
+3. **Selective feature flags** — use `--features` instead of
+   `--all-features` for targeted CI runs.
 
-These changes should be driven by measured regressions, not speculative optimization.
+## Related Docs
+
+- `AGENTS.md` — full test command catalog
+- `.config/nextest.toml` — nextest profiles
+- `scripts/audit_tokio_tests.py` — Tokio runtime flavor audit

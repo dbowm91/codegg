@@ -1,28 +1,47 @@
 # Tool Program Restricted-Python Language Specification
 
-Status: normative (M004)
+Status: normative (M004, closed)
 
 Version: 1
 
-This document specifies the restricted-Python language subset accepted by the Tool Program compiler. The language is deliberately minimal — it provides deterministic control flow, bounded iteration, and safe tool invocation without requiring CPython execution, imports, reflection, or arbitrary standard-library access.
+This document specifies the restricted-Python language subset accepted
+by the Tool Program compiler. The language is deliberately minimal — it
+provides deterministic control flow, bounded iteration, and safe tool
+invocation without requiring CPython execution, imports, reflection,
+or arbitrary standard-library access.
 
-## 1. Design Principles
+## Purpose
 
-1. **Parse-only pipeline**: The parser never executes source. Compilation produces deterministic IR without loading modules or spawning processes.
-2. **Fail-closed**: Unknown syntax, ambiguous constructs, and unbounded operations are rejected at parse or validation time.
-3. **Bounded execution**: Every accepted program has statically provable finite bounds for steps, iterations, calls, parallelism, and nesting.
-4. **Deterministic output**: The same source, manifest, limits, and versions always produce identical IR and deterministic content hashes.
-5. **Separate from general Python**: Tool Programs are not general Python. The ordinary `python_script` tool remains unrestricted.
+Define the normative grammar, semantics, bounds, and rejection rules
+for the restricted-Python language that Tool Programs compile to IR.
+The language is not general Python — the ordinary `python_script` tool
+remains unrestricted.
 
-## 2. Grammar (Version 1)
+## Design Principles
 
-### 2.1 Program
+1. **Parse-only pipeline**: the parser never executes source.
+   Compilation produces deterministic IR without loading modules or
+   spawning processes.
+2. **Fail-closed**: unknown syntax, ambiguous constructs, and
+   unbounded operations are rejected at parse or validation time.
+3. **Bounded execution**: every accepted program has statically
+   provable finite bounds for steps, iterations, calls, parallelism,
+   and nesting.
+4. **Deterministic output**: the same source, manifest, limits, and
+   versions always produce identical IR and deterministic content
+   hashes.
+5. **Separate from general Python**: Tool Programs are not general
+   Python. The ordinary `python_script` tool remains unrestricted.
+
+## Grammar (Version 1)
+
+### Program
 
 ```text
 program     = statement* EOF
 ```
 
-### 2.2 Statements
+### Statements
 
 ```text
 statement   = assignment
@@ -31,6 +50,7 @@ statement   = assignment
             | assert_stmt
             | tool_call_stmt
             | parallel_stmt
+            | submit_job_stmt
             | emit_stmt
             | fail_stmt
             | pass_stmt
@@ -41,12 +61,14 @@ for_stmt    = 'for' target 'in' iterable ':' block
 assert_stmt = 'assert' expression [',' expression]
 tool_call_stmt = target '=' 'call' '(' arguments ')'
 parallel_stmt  = target '=' 'parallel' '(' call_list ')'
+submit_job_stmt = target '=' 'submit_job' '(' expression ',' expression ')'
+                | 'submit_job' '(' expression ',' expression ')'
 emit_stmt   = 'emit' '(' expression ')'
 fail_stmt   = 'fail' '(' [expression] ')'
 pass_stmt   = 'pass'
 ```
 
-### 2.3 Expressions
+### Expressions
 
 ```text
 expression  = boolean_or
@@ -86,9 +108,7 @@ tuple       = '(' [expression (',' expression)* [',']] ')'
 dict        = '{' [expression ':' expression (',' expression ':' expression)* [',']] '}'
 ```
 
-### 2.4 Call Descriptors
-
-Call descriptors are structured arguments to `call()`:
+### Call Descriptors
 
 ```text
 call_list   = call_descriptor (',' call_descriptor)*
@@ -96,21 +116,23 @@ call_descriptor = '{' key_value (',' key_value)* '}'
 key_value   = STRING ':' expression
 ```
 
-### 2.5 Targets
+### Targets
 
 ```text
 target_list = target (',' target)*
 target      = IDENTIFIER
 ```
 
-Destructuring assignment (`a, b = ...`) is supported for simple target lists.
+Destructuring assignment (`a, b = ...`) is supported for simple target
+lists. Target count must match source count (TP018).
 
-## 3. Allowed Built-ins
+## Allowed Built-ins
 
 | Name | Signature | Description |
 |------|-----------|-------------|
-| `call` | `(tool: dict, **kwargs) -> Any` | Invoke an approved tool through the Tool Broker |
+| `call` | `(tool: dict) -> Any` | Invoke an approved tool through the Tool Broker |
 | `parallel` | `(*calls: dict) -> list` | Execute call descriptors concurrently |
+| `submit_job` | `(op: str, config: dict) -> dict` | Submit a scheduler-owned child job (M007) |
 | `emit` | `(value: Any) -> None` | Emit a structured result value |
 | `fail` | `(reason: str) -> None` | Fail the program with a reason |
 | `len` | `(collection) -> int` | Collection length |
@@ -118,11 +140,16 @@ Destructuring assignment (`a, b = ...`) is supported for simple target lists.
 | `int` | `(value) -> int` | Integer conversion |
 | `bool` | `(value) -> bool` | Boolean conversion |
 
-Shadowing `call`, `parallel`, `emit`, or `fail` as a local variable is rejected by the validator.
+Shadowing `call`, `parallel`, `submit_job`, `emit`, or `fail` as a
+local variable is rejected by the validator (TP005).
 
-## 4. Value Types
+Allowed methods on objects (`validator.rs:17`):
+`append`, `items`, `keys`, `values`, `split`, `join`, `strip`,
+`lower`, `upper`, `replace`, `get`.
 
-### 4.1 Primitives
+## Value Types
+
+### Primitives
 
 | Type | Representation | Bounds |
 |------|---------------|--------|
@@ -132,7 +159,7 @@ Shadowing `call`, `parallel`, `emit`, or `fail` as a local variable is rejected 
 | `float` | Decimal float literal | Configurable max magnitude (default: 2^53 mantissa) |
 | `str` | Single/double-quoted string | Configurable max length (default: 10,000 chars) |
 
-### 4.2 Collections
+### Collections
 
 | Type | Syntax | Element bounds |
 |------|--------|---------------|
@@ -140,15 +167,18 @@ Shadowing `call`, `parallel`, `emit`, or `fail` as a local variable is rejected 
 | `tuple` | `(a, b, c)` | Configurable max elements (default: 1,000) |
 | `dict` | `{k: v}` | Configurable max entries (default: 1,000) |
 
-### 4.3 Slicing
+### Slicing
 
-Slicing produces the same type as the source collection. Slice indices must be compile-time integers or `None`.
+Slicing produces the same type as the source collection. Slice
+indices must be compile-time integers or `None`.
 
-## 5. Deterministic Evaluation Order
+## Deterministic Evaluation Order
 
-All expressions evaluate left-to-right. Function arguments evaluate left-to-right. No short-circuit evaluation is performed for `and`/`or` — both operands are evaluated.
+All expressions evaluate left-to-right. Function arguments evaluate
+left-to-right. No short-circuit evaluation is performed for `and`/`or`
+— both operands are evaluated.
 
-## 6. Truthiness and Equality
+## Truthiness and Equality
 
 - `None` is falsy.
 - `0`, `0.0`, `""` are falsy.
@@ -156,70 +186,126 @@ All expressions evaluate left-to-right. Function arguments evaluate left-to-righ
 - All other values are truthy.
 - Equality follows Python semantics for the supported types.
 
-## 7. Loop and Parallel Bounds
+## Loop and Parallel Bounds
 
-### 7.1 Static Loop Analysis
+### Static Loop Analysis
 
 The compiler statically analyzes every `for` loop:
 
-- **Literal range**: `for i in range(N)` — N must be a non-negative integer constant.
-- **Literal collection**: `for x in [a, b, c]` — iteration count is the collection length.
-- **Bounded variable**: `for x in prior_result` — the variable must have a statically known bound from a prior `call`, `len`, or `range`.
-- **Range with bounds**: `for i in range(start, stop, step)` — all arguments must be static integers, and `stop - start` divided by `step` must be finite.
+- **Literal range**: `for i in range(N)` — N must be a non-negative
+  integer constant.
+- **Literal collection**: `for x in [a, b, c]` — iteration count is
+  the collection length.
+- **Bounded variable**: `for x in prior_result` — the variable must
+  have a statically known bound from a prior `call`, `len`, or `range`.
+- **Range with bounds**: `for i in range(start, stop, step)` — all
+  arguments must be static integers, and `stop - start` divided by
+  `step` must be finite.
 
-### 7.2 Parallel Bounds
+### Parallel Bounds
 
 - Maximum parallel width: configurable (default: 10).
 - Maximum nested parallel depth: configurable (default: 2).
 - `parallel()` call descriptors must be statically countable.
 
-### 7.3 Total Loop Budget
+### Total Loop Budget
 
-An upper bound on total iterations across all loops is computed and stored in the IR. Programs exceeding the configured maximum total iterations are rejected.
+An upper bound on total iterations across all loops is computed and
+stored in the IR. Programs exceeding the configured maximum total
+iterations are rejected (TP012).
 
-## 8. Error Classes
+## Error Classes
 
-| Code | Description |
-|------|-------------|
-| `TP001` | Unsupported syntax (while, try, import, class, lambda, etc.) |
-| `TP002` | Unbounded loop or unknown iteration count |
-| `TP003` | Maximum nesting depth exceeded |
-| `TP004` | Maximum collection/literal size exceeded |
-| `TP005` | Built-in shadowing of reserved name |
-| `TP006` | Illegal attribute access on arbitrary object |
-| `TP007` | Maximum parallel width exceeded |
-| `TP008` | Maximum IR steps exceeded |
-| `TP009` | Maximum call sites exceeded |
-| `TP010` | Unresolvable identifier |
-| `TP011` | Invalid call descriptor structure |
-| `TP012` | Maximum total loop iterations exceeded |
-| `TP013` | Source too large |
-| `TP014` | Maximum AST node count exceeded |
-| `TP015` | Maximum identifier length exceeded |
-| `TP016` | Unsupported compiler/language version |
-| `TP017` | Source body too large for diagnostic span |
-| `TP018` | Destructuring assignment target count mismatch |
+| Code | Name | Description |
+|------|------|-------------|
+| `TP001` | `UnsupportedSyntax` | while, try, import, class, lambda, etc. |
+| `TP002` | `UnboundedLoop` | Unknown iteration count |
+| `TP003` | `MaxNestingDepth` | Nesting exceeds max (20) |
+| `TP004` | `MaxCollectionSize` | Literal/collection too large |
+| `TP005` | `BuiltInShadowing` | Shadowed call/parallel/submit_job/emit/fail |
+| `TP006` | `IllegalAttributeAccess` | Disallowed method on object |
+| `TP007` | `MaxParallelWidth` | Parallel group too wide |
+| `TP008` | `MaxIrSteps` | IR step budget exceeded |
+| `TP009` | `MaxCallSites` | Too many tool call sites |
+| `TP010` | `UnresolvedIdentifier` | Unknown variable name |
+| `TP011` | `InvalidCallDescriptor` | call() missing descriptor arg |
+| `TP012` | `MaxTotalIterations` | Total loop iterations exceeded |
+| `TP013` | `SourceTooLarge` | Source exceeds 1 MB |
+| `TP014` | `MaxAstNodes` | AST node count exceeded (10K) |
+| `TP015` | `MaxIdentifierLength` | Identifier too long |
+| `TP016` | `UnsupportedVersion` | IR/language/compiler version mismatch |
+| `TP017` | `DiagnosticSpanTooLarge` | Source span exceeds bounds |
+| `TP018` | `DestructuringMismatch` | Assignment target count mismatch |
+| `TP998` | `VerificationFailed` | IR verification failed |
+| `TP999` | `InternalError` | Internal compiler error |
 
-## 9. Source-Span Diagnostics
+## Source-Span Diagnostics
 
 Diagnostics include:
 
 - Error code (e.g., `TP001`)
 - Human-readable message
-- Source span: byte offset and length (capped at 200 bytes of surrounding context)
+- Source span: byte offset and length (capped at 200 bytes of
+  surrounding context)
 - Never echo full source bodies or secret-sized content
 
-## 10. IR Versioning and Compatibility Policy
+## IR Versioning and Compatibility Policy
 
 - IR format starts at version 1.
-- Each IR is content-addressed with SHA-256 over: source hash, manifest hash, limits hash, language version, compiler version, parser version, and IR instruction sequence.
-- The same source with the same parameters always produces the same IR hash.
+- Each IR is content-addressed with SHA-256 over: source hash,
+  manifest hash, limits hash, language version, compiler version,
+  parser version, and IR instruction sequence.
+- The same source with the same parameters always produces the same
+  IR hash.
 - Stored IR can be reused only when all version/hash tuples match.
-- New IR format changes increment the compiler version and invalidate stored IR.
+- New IR format changes increment the compiler version and invalidate
+  stored IR.
 
-## 11. Examples
+## IR Opcodes (39 total)
 
-### 11.1 Accepted
+The `IrOp` enum defines 39 opcodes in `crates/codegg-core/src/tool_program/ir.rs:93`:
+
+| Category | Opcodes |
+|----------|---------|
+| Constants | `LoadInt`, `LoadFloat`, `LoadString`, `LoadTrue`, `LoadFalse`, `LoadNone` |
+| Locals | `LoadLocal`, `StoreLocal` |
+| Collections | `MakeList`, `MakeTuple`, `MakeDict` |
+| Operators | `BinOp`, `UnaryOp`, `Compare` |
+| Logic | `BoolAnd`, `BoolOr`, `BoolNot` |
+| Stack | `Pop`, `Dup`, `Index`, `Slice`, `Len`, `Str`, `Int`, `Bool` |
+| Control | `JumpIfFalse`, `Jump`, `ForLoopStart`, `ForLoopNext`, `ForLoopIter` |
+| Tool calls | `ConstructCall`, `ExecuteCall` |
+| Parallel | `ParallelStart`, `ParallelExecute` |
+| Child jobs | `ExecuteChildJob` |
+| Terminal | `Emit`, `Fail`, `Checkpoint`, `Return` |
+
+## Runtime Limits (M005)
+
+The compiler computes static bounds (`IrBounds`) that constrain
+runtime execution. The interpreter enforces these via `RuntimeLimits`:
+
+| Budget | Source | Description |
+|--------|--------|-------------|
+| Steps | `max_steps` | Total IR instructions executed |
+| Loop iterations | `max_loop_iterations` | Per-loop cap |
+| Total iterations | `max_total_iterations` | Aggregate across all loops |
+| Dynamic calls | `max_dynamic_calls` | `call()` invocations |
+| Parallel width | `max_parallel_width` | Concurrent `parallel()` calls |
+| Parallel depth | `max_parallel_depth` | Nested parallel groups |
+| Value growth | `max_value_growth` | Aggregate byte size of all live values |
+| In-flight calls | `max_inflight_calls` | Concurrent broker calls |
+| Wall time | `max_wall_time_ms` | Total execution time (0 = unlimited) |
+| Stall time | `max_stall_time_ms` | No-progress timeout (0 = unlimited) |
+| Per-call time | `max_per_call_time_ms` | Individual call timeout (0 = unlimited) |
+| Retries | `max_retries` | Transient error retry count |
+| Retry delay | `retry_base_delay_ms` | Base delay for exponential backoff |
+
+Bounds are computed conservatively at compile time. Runtime limits
+add executor-configured timeouts on top of static bounds.
+
+## Examples
+
+### Accepted
 
 ```python
 results = []
@@ -254,21 +340,26 @@ for i in range(10):
 emit({"found": count})
 ```
 
-### 11.2 Rejected
-
 ```python
-import os                          # TP001: import not allowed
-while True:                         # TP001: while not allowed
-    pass
-def foo():                          # TP001: function def not allowed
-    pass
-[x**2 for x in range(10)]          # TP001: comprehension not allowed
-lambda x: x + 1                     # TP001: lambda not allowed
-call({"tool": "exec", "cmd": rm -rf /})  # TP011: dangerous tool not in manifest
-result = something.method()         # TP006: arbitrary attribute access
+build = submit_job("build", {"argv": ["cargo", "build", "--release"]})
+emit({"build_status": build["success"]})
 ```
 
-## 12. Dependency Review
+### Rejected
+
+```python
+import os              # TP001: import not allowed
+while True:            # TP001: while not allowed
+    pass
+def foo():             # TP001: function def not allowed
+    pass
+[x**2 for x in range(10)]  # TP001: comprehension not allowed
+lambda x: x + 1       # TP001: lambda not allowed
+call({"tool": "exec", "cmd": rm -rf /})  # TP011: dangerous tool not in manifest
+result = something.method()  # TP006: arbitrary attribute access
+```
+
+## Dependency Review
 
 Parser: `rustpython-parser` 0.4.0
 
@@ -282,26 +373,43 @@ Parser: `rustpython-parser` 0.4.0
 | Fuzz posture | Upstream fuzz corpus exists; Codegg adds adversarial corpus |
 | Dependency weight | ~15 transitive crates; no network/filesystem/async deps |
 
-## 13. Runtime Limits (M005)
+No `pyo3` or CPython bindings. The frontend does not use RustPython's
+optional location or fold APIs.
 
-The compiler computes static bounds (`IrBounds`) that constrain
-runtime execution. The interpreter enforces these via `RuntimeLimits`:
+## Static Guards
 
-| Budget | Source | Description |
-|--------|--------|-------------|
-| Steps | `max_steps` | Total IR instructions executed |
-| Loop iterations | `max_loop_iterations` | Per-loop cap |
-| Total iterations | `max_total_iterations` | Aggregate across all loops |
-| Dynamic calls | `max_dynamic_calls` | `call()` invocations |
-| Parallel width | `max_parallel_width` | Concurrent `parallel()` calls |
-| Parallel depth | `max_parallel_depth` | Nested parallel groups |
-| Value growth | `max_value_growth` | Aggregate byte size of all live values |
-| In-flight calls | `max_inflight_calls` | Concurrent broker calls |
-| Wall time | `max_wall_time_ms` | Total execution time (0 = unlimited) |
-| Stall time | `max_stall_time_ms` | No-progress timeout (0 = unlimited) |
-| Per-call time | `max_per_call_time_ms` | Individual call timeout (0 = unlimited) |
-| Retries | `max_retries` | Transient error retry count |
-| Retry delay | `retry_base_delay_ms` | Base delay for exponential backoff |
+Compile-time and module-level guards prevent CPython execution:
 
-Bounds are computed conservatively at compile time. Runtime limits
-add executor-configured timeouts on top of static bounds.
+- No `pyo3` dependency in `codegg-core/Cargo.toml`
+- No `std::process::Command::new("python3")` in `tool_program/` module
+- No `eval()`/`exec()`/`compile()` on user source
+- `guards.rs` module documents invariants and provides
+  `assert_parse_only!()` macro
+- `cargo deny` / `cargo audit` in CI verifies no CPython dependencies
+
+## Fuzz Targets
+
+Located in `crates/codegg-core/fuzz/fuzz_targets/`:
+
+| Target | What it tests |
+|--------|--------------|
+| `parser_fuzz` | Parser never panics on arbitrary bytes |
+| `compiler_fuzz` | Full pipeline never panics on arbitrary input |
+| `roundtrip_fuzz` | IR serialize/deserialize round-trip integrity |
+
+Run with: `cargo fuzz run <target> -- -max_total_time=300`
+
+## Testing
+
+```bash
+cargo test -p codegg-core --lib tool_program::parser
+cargo test -p codegg-core --lib tool_program::compiler
+cargo test -p codegg-core --lib tool_program::validator
+cargo test -p codegg-core --lib tool_program::static_bounds
+cargo test -p codegg-core --lib tool_program::ir_verifier
+```
+
+## Related Docs
+
+- `architecture/tool_programs.md` — Domain, storage, execution
+- `architecture/tool_broker.md` — Tool Broker pipeline

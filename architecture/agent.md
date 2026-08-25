@@ -1,118 +1,187 @@
 # Agent Module Architecture
 
-## Overview
+## Purpose
 
-The `agent` module (`src/agent/`) is the core orchestration engine for Codegg. It manages the main execution cycle that processes messages from the LLM provider, executes tools via the `ToolRegistry`, handles permissions via `PermissionChecker`, and manages context compaction when token limits are approached.
+The `agent` module (`src/agent/`) is Codegg's core orchestration engine. It
+manages the execution cycle between LLM providers and tools, handling
+streaming, tool dispatch, permissions, context compaction, background
+subagents, model routing, and specialized runtimes (research, security
+review). It also owns agent resolution, prompt compilation, and runtime
+asset management.
 
-## Module Structure
+## Where It Lives
+
+| File | Role |
+|------|------|
+| `src/agent/mod.rs` | `Agent`, `AgentMode`, `AgentRuntimeKind`, builtin agents, resolution, safety envelope |
+| `src/agent/loop.rs` | `AgentLoop` — main execution cycle, ~75 fields, streaming, tool dispatch |
+| `src/agent/loop.rs:76` | `ToolDefCache` tuple type for cached tool definitions |
+| `src/agent/loop.rs:403` | `AgentLoop` struct definition |
+| `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
+| `src/agent/context_runtime.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
+| `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — provider retry and stream normalization |
+| `src/agent/processor.rs` | `EventProcessor` — accumulates `ChatEvent` stream into messages |
+| `src/agent/compaction.rs` | `ContextTracker`, compaction strategies, hybrid/programmatic engine |
+| `src/agent/worker.rs` | `SubAgentPool`, `SubAgentSpawner`, `SubAgentReport`, descendant admission |
+| `src/agent/router.rs` | `ModelRouter` — automatic model selection by task complexity |
+| `src/agent/policy.rs` | `ExecutionPolicy`, `ToolExposureMode`, profile-aware defaults |
+| `src/agent/tool_surface.rs` | `ResolvedToolSurface` — immutable, deterministic tool authority |
+| `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
+| `src/agent/registry.rs` | `AgentRegistry` — source-provenance-tracked agent resolution |
+| `src/agent/asset_context.rs` | `AssetContext` — explicit workspace/project identity |
+| `src/agent/asset_snapshot.rs` | `ProjectAssetSnapshot` — immutable runtime asset view |
+| `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder` |
+| `src/agent/asset_refresh.rs` | `AssetRefreshCoordinator` — single-flight publication per scope |
+| `src/agent/instructions.rs` | `ProjectInstructionResolver` — bounded instruction fragments |
+| `src/agent/prompt.rs` | `PromptCompiler` — sole production system-prompt assembly |
+| `src/agent/turn_runtime.rs` | `TurnRunInput`, `DefaultTurnRuntime` — daemon turn submission |
+| `src/agent/specialized_runtime.rs` | Host-owned finalization for security-review and research runtimes |
+| `src/agent/progress_recovery.rs` | `AutonomyState`, `RecoveryController` — bounded structured recovery |
+| `src/agent/mention.rs` | `@mention` parsing and agent filtering |
+| `src/agent/team.rs` | `Team`, `TeamMessage`, `AgentRole` — file-based multi-agent coordination |
+| `src/agent/teams.rs` | `TeamManager`, `SharedTaskList`, team tools |
+| `src/agent/builtins/generated.rs` | Auto-generated built-in agent definitions (do not edit) |
+
+## How It Works
+
+### Execution Lifecycle
 
 ```
-src/agent/
-├── mod.rs          # Agent struct, AgentMode enum, builtin_agents, agent resolution
-├── loop.rs         # AgentLoop - main execution cycle
-├── tool_batch.rs   # Typed permission/dispatch/result boundary for tool batches
-├── context_runtime.rs # Ephemeral context-policy backoff state
-├── provider_turn.rs # Provider retry/stream normalization boundary
-├── processor.rs    # EventProcessor - processes ChatEvents from provider
-├── compaction.rs  # ContextTracker, compaction strategies
-├── worker.rs       # SubAgentPool, SubAgentSpawner - background task execution
-├── router.rs       # ModelRouter - automatic model selection based on task complexity
-├── team.rs         # Team, TeamMessage, AgentRole - multi-agent coordination
-├── teams.rs        # TeamManager, SharedTaskList, team tools (team_create, send_message, etc.)
-├── mention.rs      # @mention parsing and agent filtering
-├── prompt.rs       # Canonical prompt compiler and instruction loading
-└── prompts/        # Provider-specific system prompts
-    ├── anthropic.txt
-    ├── beast.txt
-    ├── codex.txt
-    ├── default.txt
-    ├── gemini.txt
-    ├── gpt.txt
-    ├── kimi.txt
-    └── trinity.txt
+TurnSubmit (daemon)
+  → DefaultTurnRuntime builds TurnRunInput
+    → AgentLoop constructed per turn
+      → PromptCompiler::compile() assembles system prompt
+      → ResolvedToolSurface built (native plan/model filtered)
+      → ExecutionPolicy derived from ResolvedModelProfile
+    → AgentLoop::run()
+      1. Pre-execution hooks (SessionStart)
+      2. ModelRouter::apply_auto_routing()
+      3. Tool definitions built + exposure filter applied
+      4. ContextTracker initialized
+      Main Loop:
+      5. Check limits (turns, tokens, timeout, steering)
+      6. Pre-turn hooks (AgentStart)
+      7. compact_if_needed() — overflow detection → pruning → hybrid/legacy compaction
+      8. History hardening (fix orphan tool messages)
+      9. ProviderTurnAdapter::stream_with_retry()
+      10. EventProcessor accumulates streaming events
+      11. Text repair (if adapter grammar configured)
+      12. ToolBatchExecutor: permission → snapshot → parallel execution → results
+      13. RecoveryController: progress/stall/fingerprint tracking
+      14. Plan mode detection
+      15. Post-turn hooks (AgentEnd)
+      Repeat until no tool calls
+      Post-loop:
+      16. Goal accounting, continuation decision
+      17. Drain follow-up prompts
+      18. SessionEnd hooks
 ```
 
-### Canonical prompt compilation
+### Agent Resolution (5-layer priority)
 
-`PromptCompiler` is the single production entry point for system prompts.
-Root turns and descendant turns provide the same typed inputs: the resolved
-agent, model profile, capability names, plan-mode state, explicit execution
-identity, and (when available) the immutable `ProjectAssetSnapshot` and its
-pin. The compiler sorts capability metadata, emits deterministic prompt
-content, and records a versioned fingerprint. Each block has a typed kind,
-source identity, cache class, required/optional policy, bounded content, and
-content hash. Memory, goals, specialized evidence, LSP, Git, asset
-instructions, skills, and plan/control guidance are collected before compile;
-there is no production post-compilation system-string mutation. The same
-contract is used by root and descendant turns. `ContextPlan` receives the
-compiler fingerprint directly rather than re-hashing flattened text.
+1. Compiled built-in agents (from `assets/agents/*.toml` → generated.rs)
+2. Global user files: `~/.config/codegg/agents/*.toml|*.md`
+3. Project files: `.codegg/agents/*.toml|*.md` (relative to workspace root)
+4. Config `agent` map overrides
+5. Config `mode` compatibility overrides
 
-Agent files merge by default and may use `replace = true` for full
-replacement. Native TOML agents may use `extends = "<resolved-agent>"`;
-missing bases and self-inheritance fail closed. Resolution order is built-in,
-inheritance, global file, project file, config, then the runtime safety
-envelope. Remote instruction URLs are not fetched during compilation and are
-not inserted as placeholder content; a bounded asset-refresh owner must
-resolve them before they become effective instructions.
+Overlay behavior: file-based agents merge by default; `replace = true` for
+full replacement; `disable = true` removes an agent. TOML files support
+`extends = "<base>"` for inheritance. Config layers merge on top of existing
+agents. The safety envelope (`apply_safety_envelope`) bounds permissions by
+the most restrictive across agent, session, config, and hard-deny.
 
----
+### Canonical Prompt Compilation
 
-## 1. AgentLoop (`loop.rs`)
+`PromptCompiler` is the sole production entry point for system prompts.
+It consumes a resolved agent, model profile, capability surface, skills,
+and an immutable `ProjectAssetSnapshot`. Each block has a typed kind, cache
+class, and content hash. The compiler emits a versioned fingerprint used
+by `ContextPlan` for context identity. There is no production
+post-compaction system-string mutation.
 
-### Purpose
+### Runtime Asset Refresh
 
-`AgentLoop` is the main orchestration struct that manages the conversation cycle between the LLM and tools. It handles message streaming, tool execution, permission checks, context tracking, and hook dispatching.
+`AssetRefreshCoordinator` owns one publication stream per
+`(project_id, workspace_id)`. It accepts an explicit `AssetContext`,
+builds a candidate outside the publication lock, and assigns a generation
+on publish. Failures retain the previous valid snapshot.
+`TurnRunInput::asset_snapshot` pins the published `Arc` for the whole
+turn. Refresh swaps affect subsequent turns only.
 
-Each production loop is constructed with its session identifier and explicit
-workspace root before workspace-sensitive state is initialized. Snapshot
-capture and native `ToolExecutionContext::cwd` both derive from that immutable
-root; process-global CWD is not an authority for an active turn. The internal
-`AgentLoopFactory` accepts the daemon-resolved `ExecutionContext` as part of
-its typed build input and is not a second runtime construction layer.
+## Key Types & APIs
 
-### Durable ownership boundaries
+### Agent (`src/agent/mod.rs:100`)
 
-`AgentLoop` retains turn identity, mutable turn limits, provider-facing
-messages, steering/follow-up state, and sequencing decisions. Concrete
-runtime owners keep domain policy out of the turn driver: `ToolBatchExecutor`
-owns the typed permission/MCP/native/broker batch boundary and ordered
-`ToolExecutionOutcome` values; `ProviderTurnAdapter` owns provider retry and
-stream normalization; `PromptCompiler`/`ContextPlan` plus `ContextTracker`
-own context identity, packing and compaction; and
-`AutonomyState`/`RecoveryController` own bounded structured recovery.
+```rust
+pub struct Agent {
+    pub name: String,
+    pub role: Option<String>,
+    pub description: String,
+    pub mode: AgentMode,
+    pub mode_name: Option<String>,
+    pub model: Option<String>,
+    pub fallback_model: Option<String>,
+    pub variant: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub color: Option<String>,
+    pub steps: Option<usize>,
+    pub system_prompt: Option<String>,
+    pub permissions: HashMap<String, String>,
+    pub hidden: bool,
+    pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
+    pub runtime_kind: Option<AgentRuntimeKind>,
+}
+```
 
-The field list below is intentionally illustrative rather than an ownership
-inventory; source types and Rustdoc are authoritative.
+### AgentRuntimeKind (`src/agent/mod.rs:51`)
 
-### Implementation inventory boundary
+```rust
+pub enum AgentRuntimeKind {
+    Standard,        // Default
+    SecurityReview,  // Defensive scanning
+    Research,        // Multi-hop research
+    Compaction,      // Context compaction
+    Title,           // Title generation
+    Summary,         // Summary generation
+}
+```
 
-The concrete field set is intentionally not reproduced here. It changes as
-ownership moves into the domain modules above; source types and Rustdoc are
-authoritative. This document records stable boundaries and turn flow rather
-than maintaining a second implementation inventory.
+### AgentLoop (`src/agent/loop.rs:403`)
 
-### AgentLoopState
+~57 fields. Key groups:
 
-Tracks execution state:
+- **Turn identity**: `session_id`, `agents`, `state`, `limits`
+- **Provider**: `provider: Box<dyn Provider>`, `tool_def_cache`, `base_request_tools`
+- **Context**: `context_tracker`, `execution_policy`, `context_ledger`, `context_plan_cache_key`
+- **Tool execution**: `tool_registry`, `tool_broker`, `permission_checker`, `mcp_service`
+- **Recovery**: `progress_recovery: RecoveryController`, `recovery_parallel_limit`
+- **State**: `steering`, `follow_up_tx/rx`, `question_tx/rx`, `pending_steer`, `cancel_rx`
+- **Assets**: `runtime_asset_pin`, `projection_config`, `artifact_store`
+- **Goals**: `goal_store`, `goal_wall_clock`
+- **Subagents**: `subagent_pool`, `submission`
+- **Workspace**: `workspace_root` (immutable, captured at construction)
+
+### AgentLoopState (`src/agent/loop.rs`)
 
 ```rust
 pub struct AgentLoopState {
-    pub current_agent: String,    // Active agent name
-    pub turn_count: usize,         // Incremented each turn
-    pub total_tokens: usize,      // Running token total
-    pub start_time: Instant,      // Session start time
-    pub plan_mode: bool,          // Plan mode flag
-    pub plan_topic: Option<String>, // Plan mode topic
-    pub tool_call_count: usize,   // Cumulative hard-limit counter
-    pub unaccounted_tool_calls: usize, // Since the last successful goal update
-    pub unaccounted_input_tokens: i64, // Provider-response deltas awaiting accounting
+    pub current_agent: String,
+    pub turn_count: usize,
+    pub total_tokens: usize,
+    pub start_time: Instant,
+    pub plan_mode: bool,
+    pub plan_topic: Option<String>,
+    pub tool_call_count: usize,
+    pub unaccounted_tool_calls: usize,
+    pub unaccounted_input_tokens: i64,
     pub unaccounted_output_tokens: i64,
 }
 ```
 
-### ExecutionLimits
-
-Bounds on execution:
+### ExecutionLimits (`src/agent/loop.rs`)
 
 ```rust
 pub struct ExecutionLimits {
@@ -122,1405 +191,168 @@ pub struct ExecutionLimits {
 }
 ```
 
-### Main Execution Flow (`run()` method)
-
-```
-1. Pre-execution hooks (SessionStart)
-2. Apply auto-routing (ModelRouter)
-3. Apply agent config (model, temperature, top_p, thinking_budget)
-4. Build tool definitions (with MCP tools, plugin hooks)
-5. Add system prompt modifications for MiniMax models
-
-Main Loop:
-6. Check limits (max turns, tokens, timeout, steering)
-7. Pre-turn hooks (AgentStart)
-8. Compact if needed (context overflow detection)
-9. Harden history (fix orphan tool messages)
-10. Stream with retry (provider communication)
-11. Process events (EventProcessor)
-12. Handle missing structured tool calls through the explicitly resolved
-    adapter repair contract, when one is configured
-13. Execute tool calls (permission check → parallel execution)
-15. Publish tool results to event bus
-16. Detect plan mode changes
-17. Post-turn hooks (AgentEnd)
-18. Repeat until no tool calls
-
-Structured provider tool calls remain the canonical execution signal. The
-generic loop does not interpret arbitrary assistant prose, fenced JSON, or
-embedded JSON as executable. Any textual compatibility grammar is selected by
-the resolved model adapter and is bounded and tool-surface validated before it
-enters the ordinary permission and broker path.
-
-Post-loop:
-19. Drain follow-up prompts
-20. SessionEnd hooks
-```
-
-### Tool Execution Flow (`ToolBatchExecutor`)
-
-1. **Permission Check** (`check_tool_permission`):
-   - Empty tool name → deny
-   - `question` tool → register with QuestionRegistry, publish QuestionPending event
-   - Route to appropriate permission checker (bash/git/general)
-   - Auto-accept read-only tools within working directory
-   - For `Ask` permissions: register with PermissionRegistry, publish PermissionPending
-
-2. **Snapshot Capture**:
-   - Before file-modifying tools (write, edit, replace, multiedit, apply_patch)
-   - Drains file change events to only checkpoint this batch
-
-3. **MCP Tool Handling**:
-   - Parse MCP tool names (`mcp__server__tool`)
-   - Call MCP service via `try_read()` (non-blocking)
-   - Fall back gracefully if service is write-locked
-
-4. **Parallel Execution**:
-   - Semaphore-controlled concurrency (default max 100)
-   - Per-tool timeout via `get_tool_timeout()`
-   - Hook dispatch: plugin hook → ToolExecuteBefore → tool execution → ToolExecuteAfter
-   - Native tools execute through the Tool Broker with the permission receipt and
-     execution context. MCP tools are dispatched separately. Both paths return
-     typed outcomes and preserve the original provider-call ordering.
-
-5. **Question Handling**:
-   - Wait for question_rx (300s timeout)
-   - Format answers via `format_question_answers()`
-   - Handle cancelled/timeout cases
-
-### Stream Handling
-
-- **Timeout**: 120 seconds for stream initiation
-- **Idle Timeout**: 90 seconds between events
-- **Retry Logic**: 3 retries with exponential backoff (1s, 2s, 4s, max 30s)
-- **Retry Condition**: Only retryable `ProviderError` instances
-
-### Path Redaction
-
-Redacts local paths in tool outputs:
-- `/home/[user]`, `/Users/[user]`, `/var/[user]`, `/tmp/[user]`
-- `C:\Users\[user]`, `C:\Program Files\[user]`, `C:\Windows\[user]`
-- Current working directory and HOME replaced with `[CWD]` and `[HOME]`
-
-### History Hardening
-
-Ensures tool results match tool calls (no orphans):
-- Matches `tool_call_id` between assistant tool calls and tool results
-- Drops orphan tool messages with debug logging
-- Flushes pending tool calls at message boundaries
-
----
-
-## 2. Agent Struct and AgentMode (`mod.rs`)
-
-## 2A. Runtime asset refresh and immutable turn capture
-
-`AssetRefreshCoordinator` in `src/agent/asset_refresh.rs` owns one
-publication stream per `(project_id, workspace_id)`. It accepts an explicit
-`AssetContext`, builds a candidate with `ProjectAssetSnapshotBuilder` outside
-the publication lock, and assigns a generation only when the candidate is
-published. Failures, invalid contexts, and cancellation retain the previous
-valid `Arc<ProjectAssetSnapshot>`. Concurrent requests for one scope are
-single-flight/coalesced; different scopes remain isolated.
-
-The daemon invokes the coordinator from session create/load/attach/import and
-template seams, from manual `AssetRefresh` protocol requests, and as the
-final gate before `TurnSubmit`. `TurnRunInput::asset_snapshot` pins the
-published `Arc` for the whole turn, so later refreshes cannot change an
-in-flight prompt. Reports contain bounded names, digests, counts, and
-diagnostics only; bodies and absolute paths stay local.
-
-`runtime_asset_refresh` stores only generation/fingerprint metadata for
-restart continuity. Snapshot bodies are reconstructed from the explicit
-workspace on demand. `/reload`, `/reload skills`, and `/reload agents` are
-native aliases for the same daemon protocol request.
-
-Each published snapshot also exposes a `RuntimeAssetPin`. The daemon captures
-its generation, fingerprint, and bounded skill-digest index at `TurnSubmit`,
-passes the immutable pin alongside the snapshot to `TurnRunInput`, and keeps
-the pin on the active `TurnHandle`. A pin can record activated skill names
-only against digests present in that captured snapshot; it never rereads the
-workspace. Refresh swaps affect subsequent turns only. Durable run manifests
-carry additive, optional path-free asset provenance for compatibility with
-older records.
-
-Remote workspace manifests use the inert DTOs in
-`codegg_protocol::runtime_assets`. They contain bounded identity, digest,
-size, source-kind, and compatibility diagnostics only. They do not contain
-local paths, executable instructions, permissions, or synchronization state,
-and therefore cannot authorize local execution. Rollback is the existing
-last-valid publication behavior: invalid, failed, or cancelled refreshes
-retain the prior `Arc` and its pin; restart reconstructs bodies from explicit
-context after restoring only generation/fingerprint metadata.
-
-### Agent Struct
+### ToolDefCache (`src/agent/loop.rs:76`)
 
 ```rust
-pub struct Agent {
-    pub name: String,              // "build", "plan", "explore", etc.
-    pub description: String,       // Human-readable description
-    pub mode: AgentMode,           // Primary, Subagent, or All
-    pub mode_name: Option<String>, // Mode label (e.g., "review", "debug")
-    pub model: Option<String>,     // Override model
-    pub variant: Option<String>,    // Model variant
-    pub temperature: Option<f64>,   // Temperature override
-    pub top_p: Option<f64>,        // Top-p override
-    pub color: Option<String>,     // UI color hint
-    pub steps: Option<usize>,      // Max steps limit
-    pub system_prompt: Option<String>, // Custom system prompt
-    pub permissions: HashMap<String, String>, // Tool/path permissions
-    pub hidden: bool,              // Hidden from agent list
-    pub thinking_budget: Option<usize>,   // Thinking budget override
-    pub reasoning_effort: Option<String>, // Reasoning effort override
-}
+type ToolDefCache = (
+    Option<String>,    // model
+    bool,              // plan_mode
+    bool,              // lsp_enabled
+    String,            // mcp_surface_digest
+    u64,               // permission_version
+    bool,              // has_functional_task_spawner
+    Vec<ToolDefinition>, // base definitions
+    Vec<ToolDefinition>, // deferred definitions
+);
 ```
 
-### AgentMode Enum
+### ResolvedAgentExecutionProfile (`src/agent/mod.rs:436`)
+
+Fully resolved execution profile for subagent tasks. Bundles agent,
+runtime kind, resolved model, and effective permissions.
+`resolve()` applies model inheritance: agent.model → fallback_model →
+parent model → config model → emergency default.
+
+### EMERGENCY_DEFAULT_MODEL (`src/agent/mod.rs:402`)
 
 ```rust
-pub enum AgentMode {
-    Primary,  // Full access agent
-    Subagent, // Limited agent (no todo management)
-    All,      // Combines multiple agents
-}
+pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
+pub const EMERGENCY_DEFAULT_WORKHORSE_MODEL: &str = "openai/gpt-4o-mini";
 ```
 
-### Permission Ruleset Generation
-
-`Agent::permission_ruleset()` converts the permissions HashMap to a `PermissionRuleset`:
-
-- `"allow"` → `PermissionLevel::Allow`
-- `"deny"` → `PermissionLevel::Deny`
-- `_*` → `PermissionLevel::Ask`
-- Special `"paths"` key creates `PathRule` with `PermissionLevel::Ask`
-- Structured keys:
-  - `bash:allow:<pattern>` → `ToolRule` with `bash_patterns` and Allow level
-  - `bash:deny:<pattern>` → `ToolRule` with `bash_patterns` and Deny level (listed before allow)
-  - `path:allow:<pattern>` → `PathRule` with Allow level
-  - `path:deny:<pattern>` → `PathRule` with Deny level
-
-### Mode Application
-
-- `with_mode()`: Applies a `ModeDefinition` to an agent
-- `with_config_mode()`: Applies a `ModeConfig` from config file
-
-### Built-in Agents (9 total)
-
-| Name | Mode | Permissions | Hidden | Purpose |
-|------|------|-------------|--------|---------|
-| **build** | Primary | None (full access) | No | Default build agent |
-| **plan** | Primary | deny: write, edit, bash | No | Read-only planning |
-| **general** | Subagent | deny: todowrite | No | Subagent without todos |
-| **explore** | All | deny: write, edit | No | Read-only exploration |
-| **title** | Subagent | None | Yes | Generate session titles |
-| **summary** | Subagent | None | Yes | Generate session summaries |
-| **compaction** | Subagent | deny: * (all) | Yes | Context compaction agent |
-| **security-review** | Subagent | deny: write, edit | No | Defensive security review |
-| **research** | All | deny: image | No | Long-horizon research |
-
-### Source Assets
-
-Built-in agent definitions are maintained as TOML files in `assets/agents/` with
-companion prompt markdown in `assets/prompts/agents/`. A Python generator
-(`scripts/generate_builtin_agents.py`) compiles these into
-`src/agent/builtins/generated.rs`. Run
-`scripts/generate_builtin_agents.py --check` to validate the schema and verify
-the TOML sources match the generated Rust output.
-
-The generator supports `--check` mode for CI: validates schema (valid mode,
-required name/description, permission actions, prompt file existence, no unknown
-keys, no duplicate names) and verifies the checked-in generated output matches
-a fresh generation (exits non-zero on drift). Determinism is verified by
-generating twice and comparing.
-
-The `builtin_agents()` function in `src/agent/mod.rs` delegates to the
-generated `builtins::generated_builtin_agents()`.
-
-### Agent Resolution (`resolve_agents()`)
-
-Loads agents from multiple sources (in priority order):
-
-1. Built-in agents (base)
-2. `~/.config/codegg/agents/*.md` (user config)
-3. `.codegg/agents/*.md` (project config)
-4. Config file `agent` section
-5. Config file `mode` section (creates agents from modes)
-
-**Overlay behavior**:
-- Layers 2-3 (file-based agents): **Merge by default** — overlay fields are applied on top of the base agent. Use `replace = true` for full replacement.
-- Layer 4 (config `agent` map): **Field-level merge** — each field uses `cfg.field.or_else(|| agent.field)` pattern.
-- Layer 5 (config `mode` map): **Permission merge** — mode tools are applied on top of existing agent permissions.
-
-**Safety envelope**: Agent permissions are bounded by the most restrictive level across agent, session, config, and hard-deny layers.
-
-Markdown agent files retain YAML frontmatter for compatibility. It is parsed
-through the centralized `codegg-config` document codec; new generated agent
-definitions use TOML:
-
-```yaml
----
-name: CustomAgent
-mode: primary
-description: Custom agent description
-model: gpt-4o
-temperature: 0.7
-permission:
-  bash: allow
-  write: deny
----
-Agent-specific instructions or markdown content
-```
-
-> **Limitations:** Markdown is a **prompt-first, merge-only** format. It does not support overlay flags (`replace`, `merge`) — files always use merge mode. It also does not support `[bash_permission]` or `[path_permission]` sections; use flat `permission` map or TOML format for structured permissions.
-
-TOML agent files support rich permissions and overlay flags:
-
-```toml
-name = "my-agent"
-mode = "subagent"          # case-insensitive: Primary, SUBAGENT, All, etc.
-description = "Agent with rich permissions"
-
-[bash_permission]
-action = "ask"
-allow_patterns = ["git diff*", "cargo test*"]
-deny_patterns = ["curl*", "rm *"]
-
-[path_permission]
-allow = ["src/**", "crates/**"]
-deny = [".git/**", "target/**"]
-```
-
----
-
-## AgentRegistry (Milestone 4)
-
-`AgentRegistry` (`src/agent/registry.rs`) is the central registry that separates declarative agent sources from resolved runtime agents. It provides source provenance tracking and diagnostics.
-
-### Types
-
-- `AgentSpec` — Declarative agent representation for future TOML/MD agents
-- `ResolvedAgent` — An agent with its source stack and diagnostics
-- `AgentSource` / `AgentSourceKind` — Tracks where an agent came from (Builtin, GlobalFile, ProjectFile, ConfigAgent, ConfigMode, Session)
-- `AgentDiagnostic` / `AgentDiagnosticSeverity` — Issues found during resolution (Info, Warning, Error)
-
-### Registry API
-
-- `AgentRegistry::load(config)` — Resolves agents using the same 5-layer order as `resolve_agents()`
-- `get(name)` — Look up a resolved agent by name
-- `list()` — Iterate all resolved agents (deterministic BTreeMap order)
-- `list_visible()` — Non-hidden agents
-- `list_primary()` — Primary or All mode agents (user-selectable)
-- `list_spawnable()` — Subagent or All mode agents (spawnable via `task`)
-- `diagnostics()` — All diagnostics emitted during resolution
-- `source_stack(name)` — Source provenance for a named agent
-- `into_agents()` — Convert to `Vec<Agent>` for backward compatibility
-
-### Resolution Order
-
-1. Compiled generated built-ins (source: `Builtin`)
-2. Global user agent files `~/.config/codegg/agents/*.md` (source: `GlobalFile`)
-3. Project agent files `.codegg/agents/*.md` (source: `ProjectFile`)
-4. Config `agent` overrides (source: `ConfigAgent`)
-5. Config `mode` compatibility overrides (source: `ConfigMode`)
-
-**Overlay behavior (Milestone 6)**:
-- Layers 2-3: **Merge by default** — `Agent::merge_overlay()` applies overlay fields on top of base agent. Use `replace = true` for full replacement.
-- `disable = true` removes agent from resolution (Info diagnostic)
-- TOML files support `[bash_permission]` and `[path_permission]` sections for rich permissions
-
-### Compatibility
-
-Existing callers continue using `resolve_agents(config)` and `builtin_agents()`. The registry is additive — new code that needs diagnostics or source provenance should use `AgentRegistry::load(config)`.
-
----
-
-## AssetContext and ProjectAssetSnapshot (Runtime Assets Milestone 2)
-
-`AssetContext` (`src/agent/asset_context.rs`) and `ProjectAssetSnapshot`
-(`src/agent/asset_snapshot.rs` + `src/agent/asset_snapshot_builder.rs`)
-are the explicit-context layer for project agents, skills, and
-instructions. They replace `PWD`/`current_dir()` inference on the
-agent-resolution surface so the daemon can host multiple concurrent
-projects without cross-contamination.
-
-### `AssetContext`
-
-- `ProjectId` — typed opaque identifier (UUID string). Either
-  `Authoritative` (from `ProjectStorage`), `SyntheticEmbedding` (the
-  daemon synthesized one for an embedding caller), or `Unbound`
-  (no project; e.g. CLI bootstrap before identity binding).
-- `AssetContext` — immutable bundle: `project_id`, `workspace_root`,
-  global roots (agents, skills, instructions), `config_revision`,
-  and an explicit `ProjectIdSource`.
-- `AssetContextBuilder` — only constructor. Requires a workspace root;
-  refuses empty paths. `with_synthetic_project_id(ProjectId::new())`
-  is the canonical escape hatch for CLI bootstrap that has no
-  authoritative identity yet.
-- `default_global_agents_root()` / `default_global_skills_root()` /
-  `default_global_instructions_path()` — process-global roots derived
-  from `dirs::config_dir()`. These are the only `dirs::*` lookups
-  allowed in the agent-resolution surface.
-
-`AssetContext` never reads `std::env::current_dir()` and never reads
-`std::env::var("PWD")`. Process-global cwd is consumed exactly once at
-CLI bootstrap boundaries and converted to an `AssetContext` before any
-registry call.
-
-### `ProjectInstructionResolver`
-
-- `InstructionResolverConfig` — bounds: `max_file_size`, `max_total_bytes`,
-  `max_depth`, `max_fragment_count`, `include_global`.
-- `InstructionFragment` — `{ kind, source_path, content, content_digest,
-  size_bytes }`.
-- `InstructionResolution` — `{ fragments, merged, diagnostics }`.
-- The walk goes `workspace_root → parent → ...` up to either the
-  containing git root (`.git` directory) or `max_depth`, then reads
-  `<dir>/AGENTS.md`, `<dir>/.codegg/instructions.md`, and
-  `<dir>/INSTRUCTIONS.md` at each level. The deepest fragment
-  (closest to the workspace) is first in the output.
-- Ancestor paths above the workspace root are accepted; paths that are
-  neither ancestors nor descendants of the workspace root are
-  rejected and produce a `Warning` diagnostic.
-
-### `ProjectAssetSnapshot`
-
-- Immutable view of all effective runtime assets for one
-  `AssetContext`: resolved agents, source-aware skills, project
-  instruction fragments, and per-asset content digests.
-- `compute_snapshot_fingerprint(agents, skills, instructions)` — SHA-256
-  over sorted, semantically meaningful fields only. Stable across
-  unchanged builds. Does not depend on wall-clock time, map iteration
-  order, or absolute paths (paths live in provenance).
-- `SnapshotBuilder` trait — production builder is
-  `ProjectAssetSnapshotBuilder` (`src/agent/asset_snapshot_builder.rs`),
-  constructed with `(SnapshotBuilderConfig, Arc<Config>)`.
-- Builds do not perform publication or generation management.
-  Milestone 3 owns those concerns.
-
-### Primary constructors
-
-- `AgentRegistry::load_for_context(&Config, &AssetContext)` — primary
-  constructor. Project-file layer is included when the context's
-  workspace root resolves to a real directory; otherwise skipped.
-- `resolve_agents_with_context(&Config, Option<&Path>)` — surface
-  parity with legacy `resolve_agents(&Config)` but takes the project
-  root explicitly.
-- `PromptCompiler::compile(PromptCompilerInput)` — the sole production
-  system-prompt assembly path. It consumes the resolved model adapter/profile,
-  explicit execution context, and an immutable asset snapshot.
-- `AssetRegistry::build(&AssetDiscoveryConfig, &workspace_root,
-  &global_roots)` — context-aware skill discovery used by the
-  snapshot builder.
-
-### Compatibility / deprecated surfaces
-
-- `AgentRegistry::load(&Config)` — **deprecated**. Reads `PWD` and
-  should only be called from CLI bootstrap, tests, or embedding
-  constructors that do not have a closed identity interface.
-- `resolve_agents(&Config)` — kept for backward compatibility. Reads
-  cwd exactly once at the boundary and forwards to
-  `resolve_agents_with_context`.
-- The former process-CWD prompt loaders and provider-template selector were
-  removed in M004 after the caller audit found no supported Rust callers.
-  Production callers use `PromptCompiler` and `ProjectAssetSnapshot`; there
-  is no compatibility path that can make process-global CWD or network I/O
-  authoritative for a turn prompt.
-
-### Static guard
-
-`scripts/check_project_agent_pwd_inference.py` scans the
-project-agent resolution surface (`agent/asset_context.rs`,
-`agent/asset_snapshot*.rs`, `agent/instructions.rs`,
-`agent/registry.rs`, `agent/prompt.rs`, `agent/mod.rs`,
-`tool/skill.rs`) for new `std::env::var("PWD")` or
-`std::env::current_dir()` usage. The allowlist is intentionally
-narrow: only the deprecated `load` constructor, the legacy
-`resolve_agents` boundary, the legacy `find_*_instructions` helpers,
-and CLI-bootstrap contexts that immediately feed
-`AssetContextBuilder::with_workspace_root` are exempt.
-
----
-
-## 3. Compaction (`compaction.rs`)
-
-### ContextTracker
-
-Monitors token usage and determines when compaction is needed:
+### Model Aliases (`src/agent/mod.rs:397`)
 
 ```rust
-pub struct ContextTracker {
-    current_tokens: usize,      // Running token count
-    context_limit: usize,      // Max context (default 128,000)
-    threshold: f64,            // Compaction threshold (default 0.85)
-    message_token_counts: Vec<usize>, // Per-message token counts
-    max_messages: Option<usize>,    // Optional message cap
-    max_total_bytes: Option<usize>, // Optional byte cap
-    model: Option<String>,          // Model for tokenizer selection
-}
+pub const MODEL_ALIAS_FRONTIER: &str = "tier.frontier";
+pub const MODEL_ALIAS_WORKHORSE: &str = "tier.workhorse";
 ```
 
-**Token Estimation**:
-- Uses tiktoken for base encoding
-- Model-specific multipliers:
-  - `Cl100kBase` (GPT models): 1.0x
-  - `Claude`: 1.4x
-  - `Gemini`: 1.2x
-  - `O200kBase`: 1.0x
-
-**Key Methods**:
-- `needs_compaction()`: Current tokens > limit × threshold
-- `needs_overflow_protection(reserved)`: Current tokens > limit - reserved
-- `reset()`: Clears counts for post-compaction
-
-### Compaction Strategies
-
-Three strategies defined in `CompactionStrategy` enum:
-
-1. **`TruncateToolOutputs`**: Truncates tool results > 500 chars to 500 + "...[truncated]"
-
-2. **`DropMiddleMessages`**: Keeps first 2 and last 2 non-system messages
-
-3. **`SummarizeOldTurns`**: Uses LLM to create a summary (async only)
-
-### Compaction Invariants
-
-All compaction must preserve:
-1. No orphan `Message::Tool` (every tool result needs matching tool call)
-2. No tool-call without its required tool results
-3. Relative order of tool call/result pairs
-4. `tool_call_id` field unchanged
-5. Multi-tool pair order preserved
-
-### Auto-Compaction Flow
-
-```
-detect_overflow() → prune_tool_outputs() → reset tracker
-                                            ↓
-                    if still needs compaction:
-                        dispatch SessionCompacting hook
-                        if not blocked:
-                            select_compaction_strategy()
-                            if SummarizeOldTurns + provider: async compaction
-                            else: sync compaction (DropMiddleMessages fallback)
-                        reset tracker and re-add messages
-```
-
-**Auto-compaction selection logic**:
-- `has_long_tool_outputs` (>2000 chars) AND `non_system_count > 6` → TruncateToolOutputs
-- `non_system_count > 8` → SummarizeOldTurns
-- Otherwise → DropMiddleMessages
-
----
-
-## 4. Worker - SubAgentPool (`worker.rs`)
-
-### SubAgentRequest
+### SubAgentRequest (`src/agent/worker.rs:82`)
 
 ```rust
 pub struct SubAgentRequest {
     pub task_id: u64,
     pub prompt: String,
-    pub agent: String,              // Agent name to use
-    pub parent_id: Option<String>,   // Parent session ID
-    pub denied_tools: Vec<String>,   // Tools to exclude
-    pub allowed_paths: Vec<String>,  // Path restrictions
+    pub agent: String,
+    pub parent_id: Option<String>,
+    pub denied_tools: Vec<String>,
+    pub allowed_paths: Vec<String>,
     pub description: String,
-    pub depth: usize,               // Nesting depth (max_depth check)
+    pub depth: usize,
+    pub max_tool_calls: Option<usize>,
+    pub parent_model: Option<String>,
+    pub workspace_root: Option<PathBuf>,
 }
 ```
 
-### SubAgentResult
-
-```rust
-pub struct SubAgentResult {
-    pub task_id: u64,
-    pub success: bool,
-    pub result: String,
-}
-```
-
-### SubAgentPool
-
-Manages a pool of background worker tasks:
-
-```rust
-pub struct SubAgentPool {
-    shutdown_tx: broadcast::Sender<()>,
-    active_count: Arc<AtomicUsize>,    // Currently running tasks
-    max_concurrent: usize,             // Default: 5
-    max_depth: usize,                   // Default: 3
-    task_store: Arc<TokioMutex<TaskStore>>,
-    request_tx: mpsc::Sender<WorkerRequest>,
-    // ...
-}
-```
-
-**Key Methods**:
-- `new()`: Creates pool with TaskStore initialization
-- `new_with_store()`: Uses provided TaskStore
-- `spawner()`: Returns `SubAgentSpawner` for enqueuing tasks
-- `shutdown()`: Graceful shutdown with 10x 100ms waits, then abort
-
-### ActiveCountGuard (RAII)
-
-Ensures active count is decremented even on panic:
-
-```rust
-struct ActiveCountGuard {
-    active_count: Arc<AtomicUsize>,
-}
-impl Drop for ActiveCountGuard {
-    fn drop(&mut self) {
-        self.active_count.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-```
-
-### SubAgentSpawner
-
-Enqueues subagent requests:
-
-```rust
-pub struct SubAgentSpawner {
-    pool: SubAgentPool,
-}
-```
-
-- `send()`: Fire-and-forget with result handler
-- `send_async()`: Same as send (both spawn async task)
-
-### Execution Flow (`execute_agent_task()`)
-
-1. Publish `SubagentStarted` event
-2. Update task status to `Running`
-3. Resolve agent and provider
-4. Create `ToolRegistry` (filtering denied tools)
-5. Build permission ruleset (allow specific paths, deny others)
-6. Create `AgentLoop` with filtered registry
-7. Set session ID, enter plan mode if needed
-8. Run agent loop with messages
-9. Extract text output from events
-10. Publish `SubagentCompleted` or `SubagentFailed`
-11. Update task store
-
-### Depth Limiting
-
-Prevents infinite nesting:
-- `SubAgentSpawner::enqueue_request()` checks `request.depth >= max_depth`
-- Returns error if exceeded
-
----
-
-## 5. Router - ModelRouter (`router.rs`)
-
-### TaskComplexity Enum
-
-```rust
-pub enum TaskComplexity {
-    Simple,   // Read-only, low cognitive load
-    Medium,   // Edit, write, moderate complexity
-    Complex,  // Debug, analyze, high cognitive load
-}
-```
-
-### ModelRouter
-
-Routes requests to appropriate models based on task complexity:
-
-```rust
-pub struct ModelRouter {
-    enabled: bool,
-    simple_model: Option<String>,   // e.g., gpt-4o-mini
-    medium_model: Option<String>,    // e.g., gpt-4o
-    complex_model: Option<String>,   // e.g., o1-preview
-}
-```
-
-**Configuration** (`from_config()`):
-- `enabled`: `config.auto_route_models.unwrap_or(false)`
-- `simple_model`: `config.small_model.clone()`
-- `medium_model`: `config.medium_model.clone()`
-- `complex_model`: `config.model.clone()` (default model)
-
-### Classification
-
-**By Tool Name**:
-- `Simple`: read, cat, ls, glob, list
-- `Medium`: edit, write, grep, search
-- `Complex`: debug, plan, review, architect, analyze
-
-**By Content** (keyword matching):
-- 2+ complex keywords OR "debug this"/"analyze the" → Complex
-- 1 complex keyword → Medium
-- 2+ medium keywords → Medium
-- 2+ simple keywords OR prompt < 50 chars → Simple
-- Otherwise → Medium
-
-### Routing
-
-If enabled, `apply_auto_routing()` modifies `request.model` based on classified complexity.
-
----
-
-## 6. Team Coordination (`team.rs`, `teams.rs`)
-
-### Team (`team.rs`)
-
-File-based message passing between agents:
-
-```rust
-pub struct Team {
-    name: String,
-    agents: Vec<AgentRole>,
-    inbox_dir: PathBuf,   // .opencode/team/{team}/inbox/{agent}
-    outbox_dir: PathBuf,  // .opencode/team/{team}/outbox/{agent}
-    status_file: PathBuf, // .opencode/team/{team}/status.json
-}
-```
-
-**AgentRole**:
-```rust
-pub struct AgentRole {
-    pub name: String,
-    pub instructions: String,
-    pub capabilities: Vec<String>,
-}
-```
-
-**Message Delivery**:
-- `send_message()`: Writes JSON to recipient's inbox
-- `deliver_messages()`: Reads and marks messages as delivered
-- `mark_completed()`: Updates message status to Completed
-
-### TeamManager (`teams.rs`)
-
-In-memory team management:
-
-```rust
-pub struct TeamManager {
-    teams: RwLock<HashMap<String, Arc<Team>>>,
-    team_configs: RwLock<HashMap<String, TeamConfig>>,
-    shutdown_txs: RwLock<HashMap<String, broadcast::Sender<()>>>,
-}
-```
-
-**Operations**:
-- `create_team()`: Creates team and registers shutdown sender
-- `get_team()`: Lookup by name
-- `list_teams()`: All team names
-- `shutdown_team()`: Sends shutdown signal, removes from maps
-- `send_message()`: Delegates to Team
-- `deliver_messages()`: Delegates to Team
-- `get_team_status()`: Delegates to Team
-
-### Team Tools
-
-Implements tool interface for team operations:
-
-- **`team_create`**: Create a team with agents
-- **`send_message`**: Send message to team agent
-- **`list_messages`**: List pending messages for agent
-- **`team_status`**: Get team status
-- **`list_teams`**: List all teams
-
-### SharedTaskList
-
-Task dependency tracking:
-
-```rust
-pub struct SharedTaskList {
-    tasks: RwLock<HashMap<String, TaskDependency>>,
-    completed: RwLock<HashMap<String, bool>>,
-}
-```
-
-- `add_task(task_id, depends_on)`: Register task with dependencies
-- `mark_completed(task_id)`: Mark task done
-- `is_completed(task_id)`: Check completion status
-- `can_start(task_id)`: All dependencies satisfied?
-- `get_pending_tasks()`: Non-completed tasks
-
-### IdleNotifier
-
-Agent idle notification:
-
-```rust
-pub struct IdleNotifier {
-    listeners: RwLock<HashMap<String, broadcast::Sender<()>>>,
-}
-```
-
-- `register(agent_name)`: Returns receiver for idle notifications
-- `notify_idle(agent_name)`: Send notification
-
-### GracefulShutdown
-
-Coordinates team shutdown:
-
-```rust
-pub struct GracefulShutdown {
-    shutdown_tx: broadcast::Sender<TeamShutdownSignal>,
-    teams: Arc<TeamManager>,
-}
-```
-
----
-
-## 7. EventProcessor (`processor.rs`)
-
-Accumulates streaming ChatEvents:
-
-```rust
-pub struct EventProcessor {
-    accumulated_text: String,
-    accumulated_reasoning: String,
-    tool_calls: Vec<ToolCall>,
-    tool_results: Vec<(String, String)>,
-    stop_reason: Option<String>,
-    input_tokens: usize,
-    output_tokens: usize,
-    cached_tokens: Option<usize>,
-    is_complete: bool,
-}
-```
-
-**Processing**:
-- `TextDelta` → append to `accumulated_text`
-- `ReasoningDelta` → append to `accumulated_reasoning`
-- `ToolCall` → add to `tool_calls`
-- `ToolResult` → add to `tool_results`
-- `Finish` → set stop_reason, tokens, `is_complete = true`
-
-**Output Methods**:
-- `to_assistant_message()`: Converts accumulated content to `Message::Assistant`
-- `to_tool_messages()`: Converts tool_results to `Vec<Message::Tool>`
-
----
-
-## 8. Hooks Integration
-
-### Hook Types Dispatched
-
-| Hook Event | Plugin Service Method | Purpose |
-|------------|----------------------|---------|
-| `SessionStart` | `dispatch_session_start()` | Before main loop |
-| `AgentStart` | `dispatch_agent_start()` | Before each turn |
-| `ToolExecuteBefore` | `dispatch_tool_execute_before()` | Before each tool |
-| `ToolExecuteAfter` | `dispatch_tool_execute_after()` | After each tool |
-| `AgentEnd` | `dispatch_agent_end()` | After each turn |
-| `SessionEnd` | `dispatch_session_end()` | After main loop |
-| `SessionCompacting` | `dispatch_session_compacting()` | Before compaction |
-
-### Plugin Service Hooks
-
-Tool definition hooks:
-- `dispatch_tool_definition()`: Modify tool list before sending to model
-
-Tool execution hooks:
-- `dispatch_tool_execute_before()`: Can block tool execution
-- `dispatch_tool_execute_after()`: Post-execution processing
-
----
-
-## 9. Goal Runtime Integration (`goal/runtime.rs`)
-
-### Purpose
-
-The goal runtime provides autonomous long-horizon work. When a user sets a goal via `/goal set <objective>`, the agent loop can continue working across multiple turns and sessions, with budget enforcement and automatic continuation.
-
-### AgentLoop Goal Fields
-
-```rust
-pub goal_store: Option<Arc<GoalStore>>,   // SQLite goal persistence
-pub goal_wall_clock: Mutex<GoalWallClock>, // Wall-clock tracking for budget
-```
-
-### Turn Lifecycle with Goals
-
-```
-Turn ends
-  → ChatEvent::Finish captures input_tokens/output_tokens
-  → publish_agent_finished() emits AgentFinished
-  → account_goal_for_turn() advances usage counters
-  → maybe_continue_goal() decides:
-      Continue → queue build_continuation_prompt(), drain follow_up
-      BudgetLimited → queue build_budget_wrap_up_prompt(), stop
-      Terminal/NoGoal → exit
-```
-
-### Accounting and turn identity
-
-Session-origin context (`original_user_prompt`) is retained for long-lived goal
-and security-review context. Turn-local routing, research triggering, and
-repository-task recovery use the latest user message in the submitted request.
-
-`tool_call_count` remains cumulative for hard limits. Goal accounting consumes
-separate `unaccounted_*` deltas and clears them only after a successful storage
-update, so continuations cannot charge earlier work again. Provider usage is
-accumulated from each response in the logical turn.
-
-`AgentLoop` is the sole publisher of `AgentFinished`, including failure and
-interruption summaries. `TurnRuntime` separately publishes exactly one daemon
-`TurnCompleted` or `TurnFailed` event.
-
-### Continuation Loop Safety
-
-`maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per `run()` invocation to prevent infinite loops.
-
-### Prompt Steering
-
-`goal_and_todos_contract()` in `agent/prompt.rs` instructs the model about two planning surfaces:
-- **Todos** (`todo` tool): in-flight steps the user can check off
-- **Goals** (`goal_set`/`goal_update_progress`/`goal_request_completion`): long-horizon work spanning sessions
-
-See [goal.md](goal.md) for full architecture.
-
----
-
-## 10. Prompt Assembly (`prompt.rs`)
-
-### Provider prompt specialization
-
-Provider/model specialization is owned by the resolved model adapter/profile
-and emitted as typed compiler blocks. Generic prompt assembly does not select
-provider-name templates or inspect model-name prefixes.
-
-### System Prompt Assembly
-
-`PromptCompiler` builds startup behavior contracts from the resolved agent,
-model profile, capability surface, skills, and immutable project/runtime
-assets. Provider tool schemas remain authoritative for actual tools; startup
-text does not duplicate a textual tool inventory or model-name label. Plan
-mode describes only the capabilities present in the resolved surface, and
-goal/todo/research guidance is omitted when its required capability is not
-available. Profile-specific tool-call, patch, and todo discipline is emitted
-as stable compiler blocks, so it is included in the prompt fingerprint.
-
-`push_control_instruction()` remains reserved for genuinely dynamic controls
-such as steering, recovery, notifications, permissions, compaction frames,
-and todo reminders. Its provider-specific placement rules are unchanged.
-
-### Instruction File Loading
-
-`ProjectInstructionResolver` resolves bounded instruction fragments from an
-explicit `AssetContext`. `ProjectAssetSnapshotBuilder` runs that resolver;
-refresh publishes the immutable snapshot before turn compilation. Prompt
-compilation itself performs no filesystem lookup and no network fetch. URL
-entries in configuration are not treated as prompt bodies by the compiler.
-
-### Subagent Output Contracts
-
-`subagent_output_contract()` in `prompt.rs` returns role-specific output format guidance. These contracts define the expected shape of subagent responses to improve result parsing and quality.
-
-```rust
-pub fn subagent_output_contract(role: &str) -> &'static str {
-    match role {
-        "explore" | "explorer" => "Output contract: Return a compact report with: files examined, key symbols/modules found, relevant relationships, and uncertainties. Do not include raw file contents.",
-        "review" | "reviewer" => "Output contract: Return findings by severity (critical/high/medium/low/info). For each: file path, line number if applicable, title, rationale, and suggested patch scope. Prioritize correctness and security over style.",
-        "debug" => "Output contract: Return: commands/logs that revealed the issue, failure signature, root-cause candidates ranked by likelihood, and next experiment to try.",
-        "test" => "Output contract: Return: tests added or run, pass/fail status per test, coverage gaps identified, and any flaky or skipped tests.",
-        "security" | "security_reviewer" => "Output contract: Return findings with: severity, confidence, title, file path, line, evidence (code locations + risk markers + call paths), reasoning, recommendation, and suggested tests. Return review prompts (marker-only) separately from evidence-based findings. Do not inflate severity without exploitability evidence.",
-        "planner" => "Output contract: Return: implementation plan with ordered steps, estimated complexity per step, dependencies between steps, files to create/modify, and verification criteria.",
-        "executor" | _ => "Output contract: Return a compact summary with: work performed, key findings, files touched, and suggested next steps.",
-    }
-}
-```
-
-The output contract is injected into both `assemble_system_prompt_with_profile()` (used with model profiles) and the corresponding typed compiler blocks used by production prompt construction. It is appended after the role contract, giving subagents explicit guidance on response format.
-
-### Specialized research runtime
-
-When the resolved agent has `runtime_kind = research`, `DefaultTurnRuntime`
-builds a deterministic, bounded research plan before starting the ordinary
-agent loop. Quick lookups create no children; direct repository/spec questions
-use one investigator role; multi-source questions use at most two non-overlapping
-source scouts and one claim verifier. The plan is advisory evidence scope —
-the existing task tool, scheduler, permission checker, cancellation path, and
-agent loop remain authoritative.
-
-Research services are rooted from the daemon's explicit
-`ExecutionContext.workspace_root`; the production session registry never uses
-the process cwd to establish research identity. Child results use bounded
-source/evidence/claim records, source locators are normalized and deduplicated,
-and final reports must reference collected evidence and source records. Unknown
-citation references are rejected, conflicts and unresolved questions remain
-explicit, retrieved text is treated as untrusted data, and the built-in
-research agent denies shell, filesystem mutation, terminal, and commit tools.
-
----
-
-## 10. Background scheduling
-
-Recurring work is represented by durable `ScheduleRecord` values and is
-claimed and admitted by the scheduler. The former in-memory
-`BackgroundScheduler` and its UUID/numeric task-id bridge are deleted. The
-legacy storage migration retains duration parsing only while importing old
-`task` rows into `ScheduleStore`.
-
----
-
-## 11. Mention Parsing (`mention.rs`)
-
-### MentionContext
-
-```rust
-pub struct MentionContext {
-    pub trigger_pos: usize,  // Position of @ in input
-    pub query: String,       // Full mention including @ (e.g., "@build")
-}
-```
-
-### Parsing Rules
-
-- Must be at start of input or after whitespace
-- `@` must not be part of another word (e.g., `user@host`)
-- Query includes `@` prefix (e.g., `@build`)
-
-### Agent Filtering
-
-`filter_agents()` matches by name or description (case-insensitive).
-
----
-
-## 12. Interaction with Other Modules
-
-### Provider Module
-
-- `AgentLoop` holds `Box<dyn Provider>`
-- `stream()` method for LLM communication
-- `ChatEvent` types for streaming responses
-- Tool definitions passed in `ChatRequest`
-
-### Tool Module
-
-- `ToolRegistry` for tool lookup and execution
-- `Tool` trait: `name()`, `description()`, `parameters()`, `execute()`
-- 27 built-in tools (including ImageTool)
-- Tool filtering based on model capabilities and plan mode
-
-### Permission Module
-
-- `PermissionChecker` for tool access control
-- `DoomLoopDetector` for repetitive call detection
-- `PermissionRegistry` for pending permission handling
-- `QuestionRegistry` for question tool handling
-
-### Bus Module
-
-- `GlobalEventBus` for event publishing
-- Key events:
-  - `ToolCallStarted`, `ToolResult` - tool lifecycle
-  - `TextDelta`, `ReasoningDelta` - streaming text
-  - `AgentFinished` - session completion
-  - `PermissionPending`, `QuestionPending` - pending user input
-  - `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` - subagent lifecycle
-
-### Session Module
-
-- `UsageStore` for tracking token usage and cost
-- `SessionStore` for session persistence
-- `snapshot` integration for file state capture
-
-### Config Module
-
-- `Config` struct for all settings
-- Agent config, mode config, compaction config
-- Server config for timeouts and limits
-
-### Plugin Module
-
-- `PluginService` for WASM hook dispatch
-- `HookRegistry` for hook management
-
----
-
-## 13. Key Implementation Details
-
-### Tool Definition Caching
-
-`ToolDefCache` tuple:
-```rust
-(Option<String>, bool, bool, u64, u64, Vec<ToolDefinition>)
-// model, plan_mode, lsp_enabled, mcp_surface_digest, perm_ver, definitions
-```
-
-Invalidated when any component changes. The MCP component is a digest of the
-provider-visible identity, schema, description, and deferred-loading metadata,
-so replacing a tool or schema at the same count also invalidates the cache.
-
-### File-Modifying Tool Detection
-
-```rust
-fn is_file_modifying_tool(name: &str) -> bool {
-    matches!(name, "write" | "edit" | "replace" | "multiedit" | "apply_patch")
-}
-```
-
-Snapshots captured before these tools execute.
-
-### Doom Loop Detection
-
-Counts identical tool calls. If threshold exceeded (default 20, configurable):
-- Tool is denied even if permission would allow it
-- Message indicates potential doom loop
-
-### Bounded autonomy recovery
-
-The generic agent loop uses one turn-local `AutonomyState` for recovery
-transitions. Provider/network retries remain in the concrete
-`ProviderTurnAdapter` implementation in `provider_turn.rs` and are not charged
-against model recovery. The state machine admits at most one
-adapter repair and one post-tool continuation, while `RecoveryController`
-tracks bounded fingerprints for repeated calls, equivalent results, denied
-tools, and short cycles. Observable progress resets the incident; otherwise
-the state reaches `Stall` and publishes a compact, actionable diagnostic.
-
-Recovery never expands the profile-filtered tool surface. In particular,
-permission denial is typed separately from tool failure and cannot trigger
-base-palette restoration. The generic loop does not synthesize a repository
-`list .` bootstrap call or issue a second heuristic continuation after the
-bounded transition. Primary and follow-up loops share the same continuation
-budget. `ToolExecutionOutcome` carries typed status into recovery; native,
-MCP, and question execution branches preserve known status before rendering
-model text, so recovery never classifies ordinary results by substrings. Strong
-models finish directly and fragile-model compatibility belongs behind an
-explicit adapter contract.
-
-Recovery progress is effect-aware. Mutating progress requires an observed
-state-change fact (currently the bounded file-change event stream); a successful
-call or changing display text is not sufficient. Read-only/read-validate calls
-may count their first changed result for the same canonical tool and normalized
-arguments as bounded new evidence. Later volatile changes do not reset the
-semantic recovery budget. Child progress is recorded only from an actual child
-state transition, not from successful task-submission text. Equivalent-result
-incidents are scoped to the same action identity, and recovery status remains
-distinct for denied, timeout, cancelled, protocol-error, and tool-error
-outcomes.
-
-### Auto-Accept Read-Only Tools
-
-Read-only tools (`read`, `glob`, `grep`, `list`, `webfetch`, `websearch`, `codesearch`) that target paths within the working directory are auto-accepted without user prompt.
-
-### MiniMax Model Handling
-
-Models containing "minimax" get special system prompt modification:
-```
-Tool-use contract: For repository/file/code/doc tasks, emit structured tool calls before giving conclusions.
-```
-
-Also avoids late system messages for MiniMax.
-
-### Parallel Tool Execution
-
-- Semaphore-controlled (max configurable, default 100)
-- Per-tool timeout via `get_tool_timeout()`
-- MCP tools executed separately from regular tools
-
-### Follow-up Prompt Handling
-
-- `follow_up_sender()` returns channel for queuing prompts
-- `drain_follow_up()` processes queued follow-ups
-- Non-blocking `try_recv()` - late follow-ups require new `run()` call
-
----
-
-## 14. Snapshot Integration
-
-### Snapshot Capture Flow
-
-1. **Pre-change snapshot** (`capture_snapshot_if_needed()`):
-   - Before file-modifying tools
-   - Drains file change events to only capture current batch
-
-2. **Incremental snapshot** (`capture_incremental_snapshot_if_needed()`):
-   - After file-modifying tools complete
-   - Captures file changes since last snapshot
-
-### File Change Events
-
-`FileChanged` events are drained from the event bus subscription:
-- `path`: File path
-- `action`: Change type
-- `old_content`: Previous content (if available)
-
----
-
-## 15. ExecutionPolicy (`policy.rs`)
-
-### Purpose
-
-`ExecutionPolicy` is a per-turn execution configuration derived from the active model's `ResolvedModelProfile`. It centralizes parameters that control tool exposure, context budgeting, parallelism, and behavioral toggles — ensuring each turn adapts to the model's capabilities.
-
-### Struct
-
-```rust
-pub struct ExecutionPolicy {
-    pub model: String,                          // Model identifier
-    pub prompt_profile: PromptProfileKind,      // Profile classification
-    pub context_window: usize,                  // Max context tokens (default 128k)
-    pub compaction_threshold: f64,              // When to trigger compaction (default 0.85)
-    pub reserved_output_tokens: usize,          // Tokens reserved for output (default 12k)
-    pub max_tool_result_tokens: usize,          // Max tokens per tool result (default 8k)
-    pub max_parallel_tools: usize,              // Max concurrent tool executions (default 10)
-    pub expose_tool_search: bool,               // Always true
-    pub initial_tool_mode: ToolExposureMode,    // Tool exposure filter mode
-    pub prefer_user_control_messages: bool,     // Use user-role for control messages
-    pub supports_late_system_messages: bool,    // Provider supports late system messages
-    pub disabled_tools: Option<Vec<String>>,    // Tools to remove from exposure
-    pub task_state_policy: TaskStatePolicy,     // Todo injection behavior
-}
-```
-
-### Construction
-
-Created via `ExecutionPolicy::from_profile(profile, config)`. Config values override profile defaults when present (e.g., `config.compaction.max_tokens` overrides `profile.context_window`).
-
-### Defaults by Profile
-
-| Profile | Context | Threshold | Reserved | Max Result | Max Parallel | Tool Mode |
-|---------|---------|-----------|----------|------------|--------------|-----------|
-| FrontierReasoning/FrontierExecutor | 128k | 0.85 | 12k | 8k | 10 | Curated |
-| LongContextPlanner | 512k | 0.70 | 16k | 8k | 8 | Curated |
-| FastExecutor/ToolFragile | 128k | 0.70 | 8k | 4k | 2 | MinimalWithDiscovery |
-| LocalStrict | 32k | 0.65 | 4k | 2k | 1 | MinimalWithDiscovery |
-| Reviewer | 128k | 0.80 | 10k | 6k | 4 | Curated |
-| Summarizer | 64k | 0.75 | 4k | 2k | 1 | MinimalWithDiscovery |
-| Default | 128k | 0.85 | 10k | 6k | 6 | Full |
-
----
-
-## 16. Tool Exposure Modes (`policy.rs`)
-
-### ToolExposureMode Enum
-
-Controls which tools are visible to the LLM for a given turn:
-
-```rust
-pub enum ToolExposureMode {
-    Full,
-    Curated,
-    MinimalWithDiscovery,
-}
-```
-
-### Mode Definitions
-
-| Mode | Tools Included | Use Case |
-|------|---------------|----------|
-| **Full** | All registered tools | Default/unknown models |
-| **Curated** | read, list, grep, glob, codesearch, edit, apply_patch, bash, git, diff, todoread, todowrite, question, tool_search, skill | Frontier reasoning/executor models, long-context planners, reviewers |
-| **MinimalWithDiscovery** | read, list, grep, codesearch, edit, apply_patch, bash, question, todowrite, todoread, tool_search | Fast/fragile models, local strict, summarizers |
-
-### Application
-
-Applied in `AgentLoop::apply_tool_exposure_filter()` during `build_tool_definitions()`:
-
-1. Match `policy.initial_tool_mode` → filter tool definitions to the allowed set
-2. Then apply `policy.disabled_tools` → remove any additional tools the profile disables
-3. Returns filtered definitions before MCP tools are appended
-
-Recovery behavior is owned by the turn-local autonomy state machine; tool
-exposure mode only controls the authorized profile-filtered surface.
-
----
-
-## 17. Profile-Aware Tool Filtering (`policy.rs`)
-
-### `filter_tool_definitions_for_profile()`
-
-A standalone function that removes tools listed in `ResolvedModelProfile.disabled_tools` from the tool definition list. Called in subagent execution flows (e.g., `agent_loop.rs:1859`) to apply per-model tool restrictions.
-
-```rust
-pub fn filter_tool_definitions_for_profile(
-    defs: Vec<ToolDefinition>,
-    profile: &ResolvedModelProfile,
-) -> Vec<ToolDefinition>
-```
-
-This is separate from `apply_tool_exposure_filter()` (which handles exposure mode). The two are applied in sequence:
-
-- **`apply_tool_exposure_filter()`**: Mode-based filter (Full/Curated/MinimalWithDiscovery) + disabled_tools
-- **`filter_tool_definitions_for_profile()`**: Standalone disabled_tools filter for subagent/provider request construction
-
----
-
-## 18. ContextFrame (`context_frame.rs`)
-
-### Purpose
-
-`ContextFrame` is a deterministic context snapshot injected into the conversation after compaction. It preserves the session's essential state across context window resets, ensuring the LLM retains awareness of goals, progress, and open issues.
-
-### Struct
-
-```rust
-pub struct ContextFrame {
-    pub user_goal: Option<String>,          // Original user prompt
-    pub current_task: Option<String>,       // In-progress todo item
-    pub constraints: Vec<String>,           // Known constraints
-    pub decisions: Vec<String>,             // Decisions made so far
-    pub touched_files: Vec<String>,         // Files modified in session
-    pub commands_run: Vec<String>,          // Commands executed
-    pub test_results: Vec<String>,          // Test outcomes
-    pub unresolved_errors: Vec<String>,     // Open issues
-    pub security_findings: Vec<String>,     // Security findings (capped at 5)
-    pub next_steps: Vec<String>,            // Pending todo items (capped at 3)
-}
-```
-
-### Population
-
-Built by `AgentLoop::build_context_frame()` which populates fields from:
-
-- `user_goal` ← `self.original_user_prompt`
-- `current_task` ← First in-progress todo item
-- `next_steps` ← Up to 3 pending todo items
-- `security_findings` ← Up to 5 recent findings from `self.recent_findings`
-- Other fields: Currently empty vectors (populated by future enhancements)
-
-### Injection
-
-After compaction completes (`compact_if_needed()` in `loop.rs:1780`):
-
-1. `build_context_frame()` constructs the frame
-2. If non-empty, `to_control_text()` renders it as a human-readable block
-3. `push_control_instruction()` injects it as a control message into the message history
-4. Optionally followed by a todo reminder if `task_state_policy.inject_after_compaction` is set
-
-### Output Format
-
-`to_control_text()` produces lines like:
-
-```
-Current session context:
-- Goal: Fix the failing test
-- Active task: Investigate test_output
-- Touched files: src/main.rs, src/lib.rs
-- Commands/tests: cargo test
-- Test results: 2 passed, 0 failed
-- Security findings: [SSRF] Internal IP access attempted
-- Next steps: Fix regex; Add integration test
-```
-
----
-
-## 19. SubAgentReport (`worker.rs`)
-
-### Purpose
-
-`SubAgentReport` is a typed, structured result from subagent execution. It provides a richer alternative to the raw `result: String` in `SubAgentResult`, enabling programmatic consumption of subagent outputs.
-
-### Struct
+### SubAgentReport (`src/agent/worker.rs:30`)
 
 ```rust
 pub struct SubAgentReport {
-    pub summary: String,                     // High-level summary
-    pub files_examined: Vec<String>,         // Files inspected
-    pub commands_run: Vec<String>,           // Commands executed
-    pub findings: Vec<SubAgentFinding>,      // Structured findings
-    pub next_steps: Vec<String>,             // Recommended follow-ups
-    pub confidence: Option<String>,          // Confidence level (e.g., "high", "medium")
+    pub summary: String,
+    pub files_examined: Vec<String>,
+    pub commands_run: Vec<String>,
+    pub findings: Vec<SubAgentFinding>,
+    pub next_steps: Vec<String>,
+    pub confidence: Option<String>,
 }
 ```
 
-### SubAgentFinding
+### ModelRouter (`src/agent/router.rs:22`)
+
+Routes by task complexity (Simple/Medium/Complex) based on tool name and
+prompt content keywords. Configured via `auto_route_models`,
+`small_model`, `medium_model`, `model`.
+
+### ExecutionPolicy (`src/agent/policy.rs:12`)
+
+Per-turn configuration derived from `ResolvedModelProfile`. Controls
+context window, compaction threshold, reserved output tokens, max
+parallel tools, tool exposure mode (Full/Curated/MinimalWithDiscovery),
+and disabled tools.
+
+### ToolExposureMode (`src/agent/policy.rs:4`)
 
 ```rust
-pub struct SubAgentFinding {
-    pub severity: Option<String>,   // "critical", "high", "medium", "low", "info"
-    pub file: Option<String>,       // Source file path
-    pub line: Option<u32>,          // Line number
-    pub title: String,              // Finding title
-    pub rationale: String,          // Explanation
+pub enum ToolExposureMode {
+    Full,                  // All tools (default for unknown models)
+    Curated,               // Frontier/reviewer: core + specialized
+    MinimalWithDiscovery,  // Fast/fragile/local: core + tool_search
 }
 ```
 
-### SubAgentResult Integration
+### Capability & AgentCapabilitySet (`src/agent/tool_surface.rs:14`)
 
-`SubAgentResult` wraps the report:
+12 capability kinds: `FilesystemRead`, `FilesystemWrite`, `ShellReadonly`,
+`ShellMutating`, `GitRead`, `GitWrite`, `NetworkResearch`, `Delegate`,
+`ManageTodos`, `ManageGoals`, `Terminal`, `Image`. The capability set is
+monotonic and supports intersection for parent ceiling enforcement.
 
-```rust
-pub struct SubAgentResult {
-    pub task_id: u64,
-    pub success: bool,
-    pub result: String,
-    pub report: Option<SubAgentReport>,
-}
-```
+### AgentRegistry (`src/agent/registry.rs:374`)
 
-Construction methods:
-- `success(task_id, result)` — report is `None`
-- `success_with_report(task_id, result, report)` — report is `Some`
+Central registry separating declarative sources from resolved runtime
+agents. API: `load_for_context()`, `get()`, `list()`, `list_visible()`,
+`list_primary()`, `list_spawnable()`, `diagnostics()`, `source_stack()`.
+Uses `BTreeMap` for deterministic iteration order.
 
-### `to_compact_text()`
+## Configuration Surface
 
-Serializes the report to a compact text format:
+| Config Key | Effect |
+|------------|--------|
+| `model` | Default model for all agents |
+| `small_model` | ModelRouter simple-tier model |
+| `medium_model` | ModelRouter medium-tier model |
+| `auto_route_models` | Enable ModelRouter (default: false) |
+| `agent.<name>` | Per-agent overrides (model, prompt, permissions, etc.) |
+| `mode.<name>` | Mode definitions applied to matching agents |
+| `compaction.*` | Compaction settings (mode, policy, thresholds) |
+| `server.max_parallel_tools` | Override max parallel tool executions |
+| `[context_policy]` | Context budget compaction settings |
+| `[context_packer]` | Cache-aware context packing settings |
+| `[model_profile.<model>]` | Per-model profile overrides |
+| `EMERGENCY_DEFAULT_MODEL` | Hardcoded fallback when no model configured |
+| `CODEGG_ROUTING_DISABLE=1` | Kill switch for command routing |
 
-```
-Summary text
-Files: file1.rs, file2.rs
-Commands: cargo test, cargo build
-[critical] Title (file.rs:42): Rationale
-[medium] Another finding: Rationale
-Next: Add tests; Fix regex
-Confidence: high
-```
+## Invariants & Gotchas
 
-Used for including structured subagent output in parent agent context.
+- **Singleton daemon**: Exactly one daemon per OS user. `AgentLoop` runs
+  inside the daemon; it does not hold the daemon lock itself.
+- **Workspace root is immutable**: `workspace_root` is captured at
+  construction. Never derive from `std::env::current_dir()` mid-turn.
+- **Sync registries**: `PermissionRegistry`, `QuestionRegistry` are
+  synchronous (`fn`, not `async fn`). Register before publishing events.
+- **Registration-before-publish**: When publishing `PermissionPending` or
+  `QuestionPending`, register the responder first.
+- **Tool call count is cumulative**: For hard limits. Goal accounting
+  uses separate `unaccounted_*` deltas.
+- **Recovery never expands tool surface**: Permission denial is typed
+  separately from tool failure. No base-palette restoration on failure.
+- **AgentLoop::run returns Vec<ChatEvent>**: Compatibility vector.
+  `terminal_output()` exposes only bounded public text to finalizers.
+  Reasoning deltas are never passed to specialized finalizers.
+- **Agent files merge by default**: `replace = true` for full replacement.
+  Markdown files are merge-only (no overlay flags).
+- **TOML-only features**: `bash_permission`, `path_permission`, `replace`,
+  `merge` keys only work in TOML format, not markdown.
+- **`disable = true`** removes an agent from resolution (Info diagnostic).
 
----
+## Testing
 
-## Summary
+- Unit tests: `src/agent/mod.rs::tests`, `src/agent/registry.rs::tests`
+- Integration: `tests/agent_loop_harness.rs` (extensive harness)
+- Compaction: `tests/compaction.rs`
+- Narrowest run:
+  ```bash
+  cargo test -p codegg --test compaction
+  cargo test -p codegg --lib agent
+  ```
 
-The `agent` module is the central coordinator for Codegg's AI-powered task execution. It orchestrates:
+## Related Docs
 
-1. **Message handling** via `AgentLoop` with streaming provider communication
-2. **Tool execution** via `ToolRegistry` with permission enforcement
-3. **Context management** via `ContextTracker` with automatic compaction
-4. **Background tasks** via `SubAgentPool` for parallel work
-5. **Multi-agent teams** via `Team` and `TeamManager` with file-based messaging
-6. **Model routing** via `ModelRouter` for automatic model selection
-7. **Execution policies** via `ExecutionPolicy` for per-turn model-aware configuration
-8. **Tool exposure filtering** via `ToolExposureMode` and profile-aware disabled tool lists
-9. **Post-compaction context** via `ContextFrame` for deterministic state preservation
-10. **Structured subagent results** via `SubAgentReport` for typed, parseable outputs
-11. **Hook system** integration for extensibility
-
-The module maintains strict boundaries with other components through clear interfaces (Provider trait, Tool trait, PermissionChecker), enabling testability and modularity.
-# Specialized runtime finalization
-
-Security-review and research agents use the ordinary `AgentLoop` for provider
-streaming, tools, permissions, scheduling, and cancellation. The host adds a
-small prepare/coordinate/finalize seam around that loop. `AgentLoop::run`
-continues to return its compatibility event vector, while
-`AgentLoop::terminal_output` exposes only bounded public assistant text,
-terminal reason, usage, and tool-event counts to finalizers; reasoning deltas
-are never passed to them. A specialized turn publishes completion only after
-its local finalizer accepts the typed output.
-
-Research coordination uses the existing `SubAgentPool` with fixed read-only
-child roles, explicit path/tool/depth/time ceilings, and typed
-`ResearchEvidenceReport` responses. The parent owns source normalization,
-evidence and citation validation, conflicts, limitations, and minimum-evidence
-policy. Child essays and fabricated citations cannot become authoritative
-completion data.
-# Descendant admission and cancellation
-
-`SubAgentPool` admits descendants through one atomic admission registry. The
-registry reserves accepted capacity, identity, direct-child fan-out, and the
-cumulative child tool-call budget before queue send. Each accepted request
-owns one idempotent RAII lease; dropping it releases only active capacity, so
-queue failure, cancellation, worker abort, and shutdown cannot leak capacity.
-
-The limits have distinct meanings: `max_concurrent` bounds provider/tool
-workers; `max_active_descendants` bounds accepted queued plus running
-descendants; `max_direct_children` bounds total accepted direct children per
-parent for the lifetime of the transient pool; and
-`max_total_child_tool_calls` is a cumulative pool budget. Accepted task and
-delegation identities remain retained for deterministic duplicate rejection.
-
-Every root lineage has its own cancellation token. `cancel_lineage` cancels
-only that root's queued and running descendants; pool shutdown remains the
-separate global cancellation path. Descendant native tools receive an
-explicit inherited workspace root. Production execution context must not
-derive cwd from process-global current directory; legacy isolated fixtures use
-the non-authoritative `.` fallback until they provide a workspace context.
+- [compaction.md](compaction.md) — context window compaction
+- [model-adapters.md](model-adapters.md) — declarative model adapters
+- [agent-tool-surface.md](agent-tool-surface.md) — resolved tool surface
+- [provider.md](provider.md) — provider trait and registry
+- [permission.md](permission.md) — permission system
+- [goal.md](goal.md) — goal runtime for long-horizon work
+- [scheduler.md](scheduler.md) — global admission scheduler

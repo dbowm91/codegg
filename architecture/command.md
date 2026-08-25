@@ -1,85 +1,34 @@
 # Command Module
 
-The `command` module provides slash command registry loaded from markdown files and configuration.
+The `command` module provides slash command registry loaded from markdown
+files and configuration.
 
-## Overview
+## Purpose
 
-**Location**: `src/command/`
+Parses user-typed `/command args` into structured `Command` objects,
+resolves them from built-in, config, and file sources, and executes
+template substitution or process-backed execution.
 
-**Key Responsibilities**:
-- Slash command registration from markdown files (`command/` and `commands/` directories)
-- Command resolution from configuration (`opencode.jsonc`)
-- Template variable substitution with deterministic ordering
-- Command name validation
+## Where It Lives
 
-## Key Types
+- `src/command/` — Core `Command` struct, file loading, template processing
+- `src/tui/command.rs` — TUI `CommandRegistry` with 108 built-in commands
+- `src/config/schema.rs` — `CommandConfig` for config-file commands
 
-### Command (src/command/mod.rs)
+## How It Works
 
-```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Command {
-    pub name: String,
-    pub description: Option<String>,
-    pub template: String,
-    pub agent: Option<String>,
-    pub model: Option<String>,
-    #[deprecated(since = "2026-05-22", note = "subtask field is not yet implemented")]
-    pub subtask: Option<bool>,
-    pub source: String,
-    pub process: Option<ProcessCommandSpec>,
-}
+### Command Loading (priority order)
 
-pub struct ProcessCommandSpec {
-    pub command: String,
-    pub args: Vec<String>,
-    pub stdin: CommandStdinMode,
-    pub stdout: CommandStdoutMode,
-    pub timeout_ms: u64,
-    pub cwd: Option<String>,
-    pub env: Vec<String>,
-    pub output: Vec<String>,
-}
-```
-
-Note: The TUI `Command` struct with aliases is in `src/tui/command.rs`.
-
-### CommandConfig (src/config/schema.rs)
-
-```rust
-pub struct CommandConfig {
-    pub template: String,
-    pub description: Option<String>,
-    pub agent: Option<String>,
-    pub model: Option<String>,
-    pub subtask: Option<bool>,
-    pub runtime: Option<CommandRuntimeKind>,
-    pub command: Option<String>,
-    pub args: Option<Vec<String>>,
-    pub stdin: Option<CommandStdinMode>,
-    pub stdout: Option<CommandStdoutMode>,
-    pub timeout_ms: Option<u64>,
-    pub cwd: Option<String>,
-    pub env: Option<Vec<String>>,
-    pub output: Option<Vec<String>>,
-}
-```
-
-## Command Loading
-
-### Sources (in priority order)
-
-1. **Built-in commands**: 96 hardcoded commands (highest priority)
+1. **Built-in commands**: 108 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **File commands**: From `command/` or `commands/` directories in CWD
 
+Built-in commands take precedence — duplicates from config/files are
+skipped.
+
 ### File Format (Markdown with YAML Frontmatter)
 
-Command frontmatter is a read-only compatibility input parsed through the
-centralized `codegg-config` document codec. New generated command definitions
-should use the canonical subsystem format.
-
-**Template command** (existing behavior):
+**Template command**:
 ```markdown
 ---
 description: A test command
@@ -101,40 +50,75 @@ timeout_ms: 5000
 ---
 ```
 
-If `runtime` is absent, existing template behavior is preserved. When `runtime: process`, the command field `command` is required.
+If `runtime` is absent, existing template behavior is preserved.
 
 ### Validation Rules
 
-Command names must:
-- Not be empty
-- Not contain whitespace
-- Not start with `/`
+Command names must: not be empty, not contain whitespace, not start
+with `/`. Invalid commands are logged and skipped.
 
-Invalid commands are logged and skipped with a warning.
-
-## Template Processing
-
-### Variable Substitution
+### Template Processing
 
 ```rust
 pub fn execute_command_template(template: &str, variables: &HashMap<String, String>) -> String
 ```
 
-- Supports both `{{variable}}` and `{variable}` syntax
-- **Deterministic ordering**: Keys are sorted before replacement to ensure consistent output
-- Missing variables remain as literal placeholders (e.g., `{name}` stays if `name` not provided)
+Supports `{{variable}}` and `{variable}` syntax. Keys sorted before
+replacement for deterministic output. Missing variables remain as
+literal placeholders.
 
-### Available Variables (TUI Execution)
+### TUI Execution Variables
 
-Currently only `args` is available during TUI execution:
-- `{args}` - Everything after the command name (space-separated arguments)
+- `{args}` — Everything after the command name (space-separated)
 
-## TUI Integration
+### Command Execution Flow
 
-### CommandRegistry
+1. If command has `dialog` set → open that dialog
+2. If command has `process` set (process-backed):
+   - Extract args from user input after command name
+   - Send `TuiCommand::PluginCommandRun { spec, args }` through channel
+   - Process spawns as child with timeout, output capping
+   - Completion arrives as `PluginCommandFinished`
+3. If command has `template`:
+   - Extract `args` from user input after command name
+   - Render template with `{args}` variable
+   - Add rendered text as user message
+   - Trigger agent processing
+
+## Key Types & APIs
+
+### Core Command (`src/command/mod.rs:39`)
 
 ```rust
-#[derive(Debug, Clone)]
+pub struct Command {
+    pub name: String,
+    pub description: Option<String>,
+    pub template: String,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub source: String,
+    pub process: Option<ProcessCommandSpec>,
+}
+```
+
+### ProcessCommandSpec (`src/command/mod.rs:12`)
+
+```rust
+pub struct ProcessCommandSpec {
+    pub command: String,
+    pub args: Vec<String>,
+    pub stdin: CommandStdinMode,
+    pub stdout: CommandStdoutMode,
+    pub timeout_ms: u64,
+    pub cwd: Option<String>,
+    pub env: Vec<String>,
+    pub output: Vec<String>,
+}
+```
+
+### TUI Command (`src/tui/command.rs:27`)
+
+```rust
 pub struct Command {
     pub name: String,
     pub aliases: Vec<String>,
@@ -144,24 +128,72 @@ pub struct Command {
     pub template: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
-    pub subtask: Option<bool>,
     pub source: Option<String>,
     pub process: Option<ProcessCommandSpec>,
 }
 ```
 
-### Built-in Commands (96 total)
+### CommandCategory (`src/tui/command.rs:9`)
 
-`src/tui/command.rs::CommandRegistry::built_in_commands()` is the
-source of truth for the complete list. The count is covered by
-`built_in_command_count_matches_release_docs` so documentation drift is
-caught in unit tests.
+```rust
+pub enum CommandCategory {
+    Session,
+    Agent,
+    System,
+}
+```
+
+### CommandConfig (`src/config/schema.rs`)
+
+```rust
+pub struct CommandConfig {
+    pub template: String,
+    pub description: Option<String>,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub subtask: Option<bool>,
+    pub runtime: Option<CommandRuntimeKind>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub stdin: Option<CommandStdinMode>,
+    pub stdout: Option<CommandStdoutMode>,
+    pub timeout_ms: Option<u64>,
+    pub cwd: Option<String>,
+    pub env: Option<Vec<String>>,
+    pub output: Option<Vec<String>>,
+}
+```
+
+### Plugin Commands (`src/command/plugin.rs`)
+
+```rust
+#[derive(Debug, Subcommand)]
+pub enum PluginCommand {
+    List,
+    Search { query: String },
+    Install { source: String },
+}
+```
+
+### CommandRegistry (`src/tui/command.rs:84`)
+
+```rust
+pub struct CommandRegistry {
+    commands: Vec<Command>,
+}
+```
+
+Accessed via `static COMMAND_REGISTRY: LazyLock<CommandRegistry>`.
+The `built_in_commands()` method returns all 108 built-in commands.
+
+### Built-in Commands (108 total)
 
 Representative built-ins:
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/connect` | | Connect provider |
+| `/connections` | | Manage connections |
 | `/exit` | `quit`, `q` | Exit the app |
 | `/status` | | View status |
 | `/themes` | | Switch theme |
@@ -172,7 +204,6 @@ Representative built-ins:
 | `/unshare` | | Unshare session |
 | `/rename` | | Rename session |
 | `/compact` | `summarize` | Compact session |
-
 | `/timeline` | | Jump to message |
 | `/fork` | | Fork from message |
 | `/undo` | | Undo previous message |
@@ -196,101 +227,99 @@ Representative built-ins:
 | `/stats` | | View session analytics and cost breakdown |
 | `/tui` | `fullscreen` | Toggle fullscreen mode |
 | `/tts` | `voice` | Toggle text-to-speech |
-| `/loop` | | Schedule periodic task (e.g. /loop 5m "check status") |
+| `/loop` | | Schedule periodic task |
 | `/tasks` | | List background tasks |
 | `/task-del` | | Delete background task |
 | `/memory` | | Memory dashboard |
-| `/memory-search` | | Search memories (args: query) |
-| `/memory-list` | | List memories (args: namespace) |
-| `/memory-remember` | | Remember something (args: text) |
-| `/memory-forget` | | Forget a memory (args: id) |
+| `/memory-search` | | Search memories |
+| `/memory-list` | | List memories |
+| `/memory-remember` | | Remember something |
+| `/memory-forget` | | Forget a memory |
 | `/memory-consolidate` | | Consolidate session into memories |
-| `/checkpoint` | | Create a checkpoint of current session |
+| `/checkpoint` | | Create a checkpoint |
 | `/pr` | | GitHub pull requests |
 | `/issue` | `bugs`, `features` | GitHub issues |
-| `/lsp-servers` | `/lsp-detail` | List active LSP servers with status, root, generation |
+| `/lsp-servers` | `/lsp-detail` | List active LSP servers |
 | `/lsp-preview` | `/preview-show` | Show LSP preview detail |
-| `/tool-backends` | `/tools`, `/backends` | Show resolved backend for each model-facing tool |
+| `/tool-backends` | `/tools`, `/backends` | Show resolved tool backends |
 | `/security-review` | | Security review of changed files |
 | `/shell-list` | | List recent shell commands |
-| `/test` | | Run supervised tests (/test, /test workspace, /test changed, /test package <name>, /test file <path>, /test previous|prev|last, /test custom <command>). Previous failures scope reruns the most recent failing test from the bounded index. Custom commands are validated as argv-prefix matches against a strict allowlist — see `architecture/test_runner.md`. |
+| `/shell-show` | | Show shell command detail |
+| `/shell-ask` | | Ask about a shell command |
+| `/test` | | Run supervised tests |
 | `/tui-stats` | | Show TUI runtime diagnostics |
-
-`/connect` opens the local Eggpool workflow. It collects the endpoint, default
-port `11300`, TLS policy, masked API key, display name, and scope, then sends
-the secret-bearing create request through local authenticated core IPC. It
-does not accept an API key in slash-command arguments, write provider config,
-or change the session's selected model.
+| `/git-status` | | Show git status |
+| `/provider-connections` | | Manage provider connections |
 
 ### Dynamic Commands
 
-Dynamic commands from config and files are appended to built-in commands. **Built-in commands take precedence** - duplicates are skipped.
+Dynamic commands from config and files are appended to built-in commands.
+Built-in commands take precedence.
 
-### Plugin Commands (`src/command/plugin.rs`)
+## Configuration Surface
 
-Plugin commands via the `/plugin` subcommand:
+### Config file (`opencode.jsonc`)
 
-```rust
-#[derive(Debug, Subcommand)]
-pub enum PluginCommand {
-    /// List installed plugins
-    List,
-    /// Search available plugins
-    Search { query: String },
-    /// Install a plugin
-    Install { source: String },
+```jsonc
+{
+  "commands": {
+    "my-command": {
+      "template": "Do something with {args}",
+      "description": "My custom command",
+      "agent": "build",
+      "model": "claude-3.5-sonnet"
+    }
+  }
 }
 ```
 
-### Command Execution (src/tui/app/mod.rs)
+### Process-backed config
 
-When a command is executed:
-
-1. If command has `dialog` set → open that dialog
-2. If command has `process` set (process-backed):
-   - Extract args from user input after command name
-   - Send `TuiCommand::PluginCommandRun { spec, args }` through command channel
-   - Process spawns as child with timeout, output capping
-   - Completion arrives as `PluginCommandFinished`
-3. If command has `template`:
-   - Extract `args` from user input after command name
-   - Render template with `{args}` variable
-   - Add rendered text as user message
-   - Trigger agent processing
-
-### Test Lifecycle Events
-
-The `/test` command publishes lifecycle events through the AppEvent bus, which are bridged to the core protocol for remote clients:
-
-- `test_run:started` — A supervised test run began. Includes job ID, command, and working directory.
-- `test_run:progress` — Throttled progress updates (test counts, failures detected).
-- `test_run:completed` — The run finished with status, summary, and log directory path.
-
-Events are throttled to at most one progress event per 500ms to avoid flooding the bus.
-
-The `BusEventSink` (`src/test_runner/bus_sink.rs`) bridges `TestEventSink` calls to `GlobalEventBus`. The core daemon's `map_app_event_to_core_event()` converts these to `CoreEvent::TestRun*` variants for remote client visibility. See `architecture/test_runner.md` for the full event flow.
-
-Stale completion protection: each `/test` invocation captures a monotonic `AsyncUiRequestState` request ID. If a newer `/test` invocation begins before the previous one finishes, the previous result is silently dropped instead of overwriting the UI state. See `src/tui/app/state/async_request.rs`.
-
-## Error Handling
-
-- **File read failures**: Logged with `tracing::warn`
-- **Parse failures**: Logged and skipped
-- **Invalid command names**: Logged and skipped
-- **Config load failures**: Falls back to empty config (non-fatal)
-
-## Async File Operations
-
-`find_command_files()` is an async wrapper that calls a sync function internally. `load_command_from_file()` is truly async using `tokio::fs` for non-blocking I/O:
-
-```rust
-pub async fn find_command_files(base: &Path) -> Vec<Command>
-pub async fn load_command_from_file(path: &Path) -> Result<Command, String>
+```jsonc
+{
+  "commands": {
+    "quota": {
+      "description": "Show quota",
+      "runtime": "process",
+      "command": "python3",
+      "args": ["scripts/quota.py"],
+      "stdout": "text",
+      "timeout_ms": 5000
+    }
+  }
+}
 ```
 
-## See Also
+### File-based commands
 
-- [command.md](command.md) - Agent guidance for command module
+Place `.md` files in `command/` or `commands/` directories in CWD.
+Frontmatter supports: `description`, `agent`, `model`, `template`,
+`runtime`, `command`, `args`, `stdin`, `stdout`, `timeout_ms`, `cwd`,
+`env`, `output`.
 
-- [tui.md](tui.md) - TUI command input handling
-- [agent.md](agent.md) - Agent execution with command templates
+## Invariants & Gotchas
+
+- **Built-in count is 108**: Tested by
+  `built_in_command_count_matches_release_docs` in
+  `src/tui/command.rs:520`. Update both the test assertion and this doc
+  when adding built-ins.
+- **Core Command has no `subtask` field**: The `subtask` field exists
+  only in `CommandConfig` (config schema), not in `src/command::Command`.
+- **`find_command_files()` is async wrapper**: Internally calls sync
+  function. `load_command_from_file()` is truly async via `tokio::fs`.
+- **Template ordering is deterministic**: Keys sorted before replacement.
+
+## Testing
+
+```bash
+cargo test -p codegg -- command     # Command module unit tests
+cargo test -p codegg -- command     # includes built_in_command_count test
+```
+
+The `built_in_command_count_matches_release_docs` test ensures the
+108 count stays in sync with this documentation.
+
+## Related Docs
+
+- [tui.md](tui.md) — TUI command input handling and dispatch
+- [agent.md](agent.md) — Agent execution with command templates

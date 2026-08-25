@@ -1,6 +1,8 @@
 # Session Projection Contract
 
-Status: implemented (Milestone 1 — projection contracts and canonical reducer; Milestone 2 — scoped subscriptions and durable replay strictly closed at the corrective daemon-integration commit).
+Status: implemented (M1 — projection contracts and canonical reducer;
+M2 — scoped subscriptions, durable replay, daemon integration;
+M005 — remote transport isolation; M006 — atomic control delivery).
 
 Long-term references:
 
@@ -8,90 +10,55 @@ Long-term references:
 - `plans/000-long-term-specification.md#14-acp-integration`
 - `plans/subsystems/session-projections-roadmap.md`
 
-This document describes the frontend-neutral session projection
-contract implemented by `codegg-protocol::projection`. It covers the
-versioned bounded DTOs, the deterministic canonical reducer, the
-adapter layer that bridges the existing core protocol, and the
-explicit non-goals that bound Milestone 1.
+## Purpose
 
-## 1. Purpose and ownership boundary
+The projection is a **derived** frontend contract — never a second
+session execution authority. The reducer never performs I/O, network,
+filesystem, or provider calls. All frontends (local TUI, remote TUI,
+observer clients, ACP adapters) consume the same logical session
+model rather than re-implementing event interpretation per frontend.
 
-The projection is a **derived** frontend contract. It is not a second
-session execution authority and the reducer never performs I/O,
-network, filesystem, or provider calls. The contract exists so local
-TUI, remote TUI, observer clients, and ACP adapters all consume the
-same logical session model rather than re-implementing event
-interpretation per frontend.
+## Where It Lives
 
-Milestone 1 is intentionally bounded:
+| Path | Role |
+|------|------|
+| `crates/codegg-protocol/src/projection/mod.rs` | Module root, re-exports |
+| `crates/codegg-protocol/src/projection/caps.rs` | Version/capability negotiation |
+| `crates/codegg-protocol/src/projection/limits.rs` | Payload and collection bounds |
+| `crates/codegg-protocol/src/projection/dto.rs` | Bounded projection DTOs |
+| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (39 variants) |
+| `crates/codegg-protocol/src/projection/snapshot.rs` | `SessionProjectionSnapshot` |
+| `crates/codegg-protocol/src/projection/reducer.rs` | Deterministic canonical reducer |
+| `crates/codegg-protocol/src/projection/adapters.rs` | Bridges `CoreResponse`/`CoreEvent` into projection |
+| `crates/codegg-protocol/src/projection/fixtures.rs` | Golden fixtures for tests |
+| `crates/codegg-protocol/src/projection/replay.rs` | Durable replay transport types |
+| `crates/codegg-protocol/src/projection/controller.rs` | Frontend projection client controller |
 
-- One versioned, bounded projection schema (`SessionProjectionSnapshot`).
-- One deterministic canonical reducer (`ProjectionReducer`).
-- One adapter layer that maps the existing `CoreResponse` snapshot
-  variants and `CoreEvent` families into the projection contract
-  without replacing the wire shape.
-- At least two independent consumers (the in-crate reducer tests and
-  the root `session_projection_consumer` integration test) producing
-  equivalent logical state from the same fixtures.
+## How It Works
 
-Out of scope for this milestone:
-
-- Durable replay database, indexed events, or checkpoints.
-- Subscription registry, acknowledgement cursors, or retention.
-- Final visibility / authorization policy.
-- Presence, observer UX, chat, ACP implementation, or web frontend.
-- Exposing hidden chain-of-thought.
-- Full durable agent-run tree semantics.
-
-## 2. Module layout
-
-```
-crates/codegg-protocol/src/projection/
-├── mod.rs        # Re-exports + module map
-├── caps.rs       # ProjectionCapabilities, version negotiation
-├── limits.rs     # MAX_PROJECTION_* constants, truncate_str, clip_str
-├── dto.rs        # Bounded projection DTOs (SessionSummaryProjection, …)
-├── event.rs      # ProjectionEnvelope, ProjectionEvent, ProjectionStreamScope
-├── snapshot.rs   # SessionProjectionSnapshot, ProjectionDiagnostic
-├── reducer.rs    # ProjectionReducer, ReducerEventInput, ReducerConfig
-├── adapters.rs   # snapshot_from_snapshot_session, projection_events_from_core, …
-└── fixtures.rs   # idle_snapshot, active_turn_event_script, completed_snapshot, …
-```
-
-The integration test `tests/session_projection_consumer.rs` exercises
-the second independent consumer (a "fake TUI-style" state builder)
-that produces equivalent logical state from the same fixtures.
-
-## 3. Versioning and capability negotiation
+### Versioning and Capability Negotiation
 
 Two constants define the contract surface:
 
-- `PROJECTION_PROTOCOL_VERSION` (`u32 = 1`) — the current projection
-  protocol version.
-- `PROJECTION_PROTOCOL_VERSION_MIN` (`u32 = 1`) — the minimum version
-  this build can interoperate with.
+- `PROJECTION_PROTOCOL_VERSION` (`u32 = 1`) — current version.
+- `PROJECTION_PROTOCOL_VERSION_MIN` (`u32 = 1`) — minimum
+  interoperable version.
 
-A capability declaration [`caps::ProjectionCapabilities`] carries a
-`min_version..=max_version` range plus two booleans:
-`supports_incremental_events` and `supports_unknown_fields`. The
-negotiated version is the intersection of the two sides' ranges.
-Versions outside the declared range produce a typed
-`ReducerError::UnsupportedProtocolVersion` rather than silently
-mutating state.
+`ProjectionCapabilities` carries a `min_version..=max_version` range
+plus a `supports_incremental_events` boolean. The negotiated version
+is the intersection of the two sides' ranges. Versions outside the
+range produce `ReducerError::UnsupportedProtocolVersion`.
 
 The capability identifier is `PROJECTION_CAPABILITY =
-"session_projection.v1"`. Daemons and clients add it to their
-existing `ClientCapabilities` / `ServerCapabilities` declarations;
-this milestone does not yet wire it into the protocol frames — that
-follows Milestone 2.
+"session_projection.v1"`.
 
-## 4. Bounded payload and collection limits
+### Bounded Payload and Collection Limits
 
 All projection DTOs honour explicit caps declared in
 `projection::limits`:
 
 | Constant | Bound |
-|---|---|
+|----------|-------|
 | `MAX_PROJECTION_SESSIONS` | 16 |
 | `MAX_PROJECTION_MESSAGES` | 256 per turn |
 | `MAX_PROJECTION_RECENT_TOOLS` | 32 per turn |
@@ -100,6 +67,10 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_RUNS` | 32 |
 | `MAX_PROJECTION_ARTIFACTS` | 32 |
 | `MAX_PROJECTION_JOBS` | 32 |
+| `MAX_PROJECTION_TOOL_PROGRAMS` | 32 |
+| `MAX_PROJECTION_CALL_PAGE_SIZE` | 32 |
+| `MAX_PROJECTION_TOOL_PROGRAM_CALLS` | 128 |
+| `MAX_PROJECTION_NOTIFICATION_BOUND` | 16 |
 | `MAX_PROJECTION_SUBAGENTS` | 16 |
 | `MAX_PROJECTION_DIAGNOSTICS` | 32 |
 | `MAX_PROJECTION_DIFF_LINES` | 64 |
@@ -109,295 +80,237 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_RUN_SUMMARY_BYTES` | 2,048 |
 | `MAX_PROJECTION_TRUNCATION_MARKER_BYTES` | 64 |
 
-Strings that exceed their bound are truncated using
-`limits::truncate_str`, which appends the `TRUNCATION_MARKER`
-(`"\u{2026}[truncated]"`) and rounds the cut down to the nearest UTF-8
-char boundary. Tool arguments and outputs that exceed their caps are
-replaced with [`ToolArgumentProjection::TruncatedArguments`] /
-[`ToolOutputProjection::TruncatedOutput`] variants carrying the
-original byte length and a bounded preview. Anything that exceeds
-`MAX_PROJECTION_ARTIFACTS` is replaced by an
-[`ArtifactHandleProjection`] rather than being embedded inline.
+Strings exceeding their bound are truncated with
+`TRUNCATION_MARKER` (`"\u{2026}[truncated]"`) rounded to the nearest
+UTF-8 char boundary. Tool arguments/outputs exceeding caps become
+`TruncatedArguments` / `TruncatedOutput` variants.
 
-## 5. Visibility classification
+### Visibility Classification
 
-Every payload field carries a [`dto::VisibilityClass`] tag:
+Every payload field carries a `VisibilityClass` tag:
 
-- `Public` — visible to any frontend client (default).
-- `ClientLocal` — visible to the active client only. Reserved for
-  subagent task ids and diagnostics that may reveal internal
-  sequencing.
-- `Internal` — internal; never serialised into a projection event.
-- `Sensitive` — must be redacted before leaving the daemon. The
-  reducer currently leaves the field as-is and records a diagnostic;
-  the full policy lands in Milestone 3.
+- `Public` — visible to any frontend (default).
+- `ClientLocal` — active client only (subagent task ids, diagnostics).
+- `Internal` — never serialized (reducer drops before publishing).
+- `Sensitive` — must be redacted before leaving daemon (Milestone 3
+  lands the full policy).
 
-This milestone ships the typed seam; runtime filtering is the
-responsibility of Milestone 3.
+### Canonical Reducer
 
-## 6. Canonical reducer
-
-`projection::reducer::ProjectionReducer` is pure and deterministic.
-It accepts a bounded [`snapshot::SessionProjectionSnapshot`] and an
-ordered stream of [`reducer::ReducerEventInput`] (which the
-`ProjectionEnvelope` shape can be converted into via `From`). Each
-input yields one [`reducer::ApplyOutcome`]:
+`ProjectionReducer` is pure and deterministic. It accepts a bounded
+`SessionProjectionSnapshot` and an ordered stream of
+`ReducerEventInput`. Each input yields one `ApplyOutcome`:
 
 | Outcome | Meaning |
-|---|---|
+|---------|---------|
 | `Applied` | Snapshot updated. |
-| `Duplicate` | `event_seq` was at or below the snapshot's `event_seq`. |
+| `Duplicate` | `event_seq` at or below snapshot's. |
 | `ScopeMismatch` | `session_id` does not match. |
-| `Reconciled` | Impossible / out-of-order transition; diagnostic recorded. |
-| `ResyncRequired { from_event_seq, current_seq }` | Reducer requested full resync. |
-| `Error(ReducerError)` | `UnsupportedProtocolVersion` or `SequenceRegression` with replay disabled. |
+| `Reconciled` | Impossible transition; diagnostic recorded. |
+| `ResyncRequired` | Full resync requested. |
+| `Error(ReducerError)` | Protocol version or seq regression. |
 
-Lifecycle invariants enforced by the reducer:
+Lifecycle invariants:
 
-- Two compliant reducers given the same `(snapshot, events)` produce
+- Two compliant reducers with the same `(snapshot, events)` produce
   equivalent serialized snapshots.
-- Events whose `session_id` does not match the snapshot's primary
-  session id (and the snapshot is not a multi-session scope) are
-  ignored with a `scope_mismatch` diagnostic.
-- Out-of-order or impossible transitions do not panic; they append a
-  diagnostic and return `Reconciled`.
-- The reducer never performs I/O, network, filesystem, or provider
-  calls.
-- Concurrent readers may share immutable snapshot clones; one
-  controlled writer/reducer applies ordered events per projection
-  instance.
+- Out-of-order transitions do not panic; they record a diagnostic
+  and return `Reconciled`.
+- The reducer never performs I/O.
+- Concurrent readers may share immutable snapshot clones; one writer
+  applies ordered events per projection instance.
 
 `ProjectionState` is the public extension trait that exposes the
-snapshot helpers (`upsert_secondary`, `push_recent_turn`) used by
-the reducer and the adapters. External reducer implementations
-**MUST** go through these helpers so the bound invariants stay in
-sync with the snapshot type.
+snapshot helpers (`upsert_secondary`, `push_recent_turn`). External
+implementations MUST go through these helpers.
 
-## 7. Adapter layer
+### ProjectionEvent (39 variants)
 
-The adapter layer in `projection::adapters` bridges the existing
-`CoreResponse` snapshot variants and `CoreEvent` families:
+| Family | Variants |
+|--------|----------|
+| Session | `SessionActivated` |
+| Turn | `TurnStarted`, `TurnCompleted`, `TurnFailed` |
+| Message | `MessageAppended`, `ReasoningAppended` |
+| Tool | `ToolStarted`, `ToolCompleted`, `ToolFailed` |
+| Permission | `PermissionPending`, `PermissionResolved` |
+| Question | `QuestionPending`, `QuestionResolved` |
+| Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
+| File | `FileChanged` |
+| Run | `RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunCompleted`, `RunDenied` |
+| Job | `JobUpserted`, `JobRemoved` |
+| Tool Program | `ToolProgramSubmitted`, `ToolProgramTerminal`, `ToolProgramAdmitted`, `ToolProgramStarted`, `ToolProgramProgress`, `ToolProgramWaitingForCall`, `ToolProgramWaitingForJob`, `ToolProgramRetryBackoff` |
+| Selection | `TokenUsageUpdated`, `ModelSelected`, `AgentSelected` |
+| Meta | `Diagnostic`, `ResyncRequired`, `Unknown` |
 
-- `snapshot_from_snapshot_session` builds a projection snapshot
-  from `CoreResponse::SnapshotSession`.
-- `snapshot_from_daemon` and `snapshot_from_session_snapshot` build
-  projections from the lightweight `SessionSnapshot` carried in
-  `CoreResponse::SnapshotDaemon`.
-- `project_summary_from_dto` builds a projection project summary
-  from `ProjectSummaryDto`.
-- `projection_events_from_core` and `projection_envelopes_from_core`
-  convert any `CoreEvent` envelope into one or more projection
-  events / envelopes.
+### Adapter Layer
 
-The adapters **never** replace existing core events. They add the
-projection surface as an additive layer: clients that do not advertise
-the projection capability simply ignore the new variants.
+`projection::adapters` bridges existing `CoreResponse` snapshot
+variants and `CoreEvent` families:
 
-Mappings cover the following families:
+- `snapshot_from_snapshot_session` — builds projection from
+  `CoreResponse::SnapshotSession`.
+- `snapshot_from_daemon` — from `CoreResponse::SnapshotDaemon`.
+- `snapshot_from_session_snapshot` — from `SessionSnapshot`.
+- `projection_events_from_core` — converts `CoreEvent` into
+  projection events.
+- `projection_envelopes_from_core` — wraps events in envelopes.
 
-- turn lifecycle (`TurnStarted` / `TurnTextDelta` /
-  `TurnReasoningDelta` / `TurnCompleted` / `TurnFailed`),
-- tool lifecycle (`ToolStarted` / `ToolCompleted`),
-- permission / question lifecycle (`PermissionPending` /
-  `QuestionPending`),
-- subagent lifecycle (`SubagentStarted` / `SubagentProgress` /
-  `SubagentCompleted` / `SubagentFailed`),
-- file changes (`FileChanged`),
-- run lifecycle (`RunStarted` / `RunProgress` /
-  `RunArtifactCreated` / `RunCompleted` / `RunDenied`),
-- job lifecycle (`JobCreated` / `JobStarted` / `JobCompleted` /
-  `JobFailed`),
-- everything else maps to `ProjectionEvent::Unknown { variant_name,
-  notice }` and produces a single bounded diagnostic.
+Adapters never replace existing core events. They add the projection
+surface as an additive layer.
 
-Tool output larger than `MAX_PROJECTION_TOOL_OUTPUT_BYTES` becomes a
-`TruncatedOutput` rather than being embedded inline.
+### Replay and Durable Subscriptions (M2)
 
-## 8. Fixtures and independent consumers
+`projection::replay` defines the transport-neutral replay protocol:
 
-The fixture module (`projection::fixtures`) provides:
+- `ProjectionStreamId`, `ProjectionSubscriptionId` — opaque IDs.
+- `ProjectionStreamDescriptor` — durable stream metadata.
+- `ProjectionCursor` — client-held cursor for resume.
+- `ProjectionReplayBatch` — batch of replayed events with optional
+  snapshot.
+- `ProjectionSnapshotBundle` — `One` or `BoundedSessionList`.
+- `ProjectionAck` — acknowledgement of processed events.
+- `ProjectionArtifactReadRequest/Response` — bounded artifact reads.
 
-- `idle_snapshot`, `active_turn_snapshot`, `permission_pending_snapshot`,
-  `completed_snapshot`, `project_summary_fixture`,
-- event scripts: `active_turn_event_script`, `permission_event_script`,
-  `completed_event_script`, `subagent_event_script`,
-  `file_change_event_script`, `job_event_script`, `question_event_script`.
+Replay caps: `MAX_REPLAY_EVENTS = 512`, `MAX_REPLAY_BYTES = 1 MB`,
+`MAX_REPLAY_EVENT_BYTES = 64 KB`.
+
+### Frontend Controller (M2)
+
+`ProjectionClientController` is a transport-neutral state machine
+that:
+
+1. Negotiates projection capabilities with the daemon.
+2. Selects a `ProjectionMode` (`ProjectionPrimary`,
+   `RawCompatibility`, or `Unsupported`).
+3. Subscribes to scoped projection streams.
+4. Applies events through the canonical reducer.
+5. Acknowledges cursors with bounded cadence.
+6. Handles resync / restart / version mismatch.
+
+Key constants: `MAX_CONTROLLER_SUBSCRIPTIONS = 16`,
+`MAX_OUTSTANDING_LAG = 1024`, `DEFAULT_ACK_CADENCE = 16`.
+
+### Remote Transport Isolation (M005)
+
+`ProjectionConnectionState` is a transport-neutral transient owner
+shared by Unix socket, `/core`, and `/tui` adapters. It bounds
+subscriptions, artifact reads, diagnostics, and reconnect generations.
+
+Raw event forwarders explicitly discard
+`CoreEvent::ProjectionStreamEvent`. Projection-private envelopes
+originate only from the receiver owned by the matching authenticated
+connection.
+
+### Atomic Control Delivery (M006)
+
+Remote projection control responses are critical writer operations.
+The adapter serializes the frame, enqueues on a bounded control
+channel, and waits for a bounded writer receipt (500 ms). `Initializing
+-> Live` completes only after that receipt.
+
+### Fixtures and Independent Consumers
+
+`projection::fixtures` provides golden snapshots and event scripts:
+`idle_snapshot`, `active_turn_event_script`, `completed_snapshot`,
+`permission_event_script`, `subagent_event_script`,
+`file_change_event_script`, `job_event_script`,
+`question_event_script`, `project_summary_fixture`.
 
 Two independent consumers produce equivalent logical state:
 
-1. The in-crate reducer tests in `projection::reducer::tests` and
-   `projection::fixtures::tests` apply the same event scripts through
-   the canonical `ProjectionReducer` and assert the expected
-   logical state.
-2. The root integration test `tests/session_projection_consumer.rs`
-   re-implements a minimal "fake TUI-style" state consumer
-   (`FakeTuiState`) that consumes the exact same fixture scripts and
-   compares its own logical state to the canonical snapshot's
-   logical state. The test asserts that both consumers agree on
-   active turn id, status, message count, tool count, pending
-   permission count, recent turn count, and active subagent count.
+1. In-crate reducer tests in `projection::reducer::tests`.
+2. Root integration test `tests/session_projection_consumer.rs`
+   re-implements a minimal `FakeTuiState` that consumes the same
+   fixture scripts.
 
-## 9. Static guarantees
+## Key Types & APIs
 
-The projection module is enforced to remain UI / server / plugin
-free by `scripts/check-core-boundary.sh`. The contract depends only
-on `serde` / `serde_json`; it has no `axum`, `ratatui`, `crossterm`,
-`wasmtime`, or filesystem dependency.
+| Type | File:line | Purpose |
+|------|-----------|---------|
+| `ProjectionCapabilities` | `caps.rs:39` | Version negotiation |
+| `SessionProjectionSnapshot` | `snapshot.rs:26` | Bounded session snapshot |
+| `ProjectionReducer` | `reducer.rs:236` | Canonical pure reducer |
+| `ReducerEventInput` | `reducer.rs:143` | Lightweight reducer input |
+| `ApplyOutcome` | `reducer.rs:112` | Reducer application result |
+| `ProjectionEvent` | `event.rs:127` | 39-variant event enum |
+| `ProjectionEnvelope` | `event.rs:53` | Event envelope with metadata |
+| `ProjectionStreamScope` | `event.rs:38` | Session/Project/Workspace/Daemon |
+| `ProjectionClientController` | `controller.rs` | Frontend state machine |
+| `ProjectionMode` | `controller.rs:82` | ProjectionPrimary/RawCompat/Unsupported |
+| `ProjectionStreamId` | `replay.rs:41` | Opaque stream identifier |
+| `ProjectionCursor` | `replay.rs:106` | Client cursor for resume |
+| `ProjectionReplayBatch` | `replay.rs:161` | Replay event batch |
+| `ToolProgramSummary` | `dto.rs:583` | Background tool program state |
+| `ToolProgramDetail` | `dto.rs:708` | Full tool program inspection |
+| `ToolProgramCallPage` | `dto.rs:679` | Paginated call history |
+| `VisibilityClass` | `dto.rs:26` | Public/ClientLocal/Internal/Sensitive |
 
-The reducer is dependency-free: it does not pull in the daemon, the
-TUI, or any storage layer. Frontends wire to it via the projection
-types only.
+## Configuration Surface
 
-## 10. Compatibility matrix
+No runtime configuration. All limits, versions, and caps are
+compile-time constants. The projection protocol version is bumped
+when additive changes land that the reducer MUST interpret.
 
-| Component | Compatibility |
-|---|---|
-| `codegg::protocol::projection` consumers | Forward and backward compatible via `ProjectionCapabilities`; unknown optional variants tolerated. |
-| Existing `CoreResponse` / `CoreEvent` consumers | Unchanged; projection events are additive. |
-| `TuiMessage` / remote TUI | Unchanged this milestone; durable migration is Milestone 2. |
-| Web / observer adapters | Not yet present; deferred to later frontend milestones. |
-| ACP v1 | `codegg acp` is implemented as a thin stdio adapter over native daemon sessions and canonical projections; see [acp.md](acp.md). |
+## Invariants & Gotchas
 
-## 11. Security classification
+1. **Derived, not authoritative**: The projection is never a second
+   session execution authority. The reducer never performs I/O.
 
-- No credential, secret, environment-variable, or raw provider
-  config field is ever embedded in a projection DTO. The adapter
-  layer asserts this contract statically by not importing the
-  `SecretInput` / `SecretInputRef` types from `codegg-protocol`.
-- Tool outputs that exceed `MAX_PROJECTION_TOOL_OUTPUT_BYTES`
-  become `TruncatedOutput { original_bytes, preview }` rather than
-  being embedded.
-- File bodies, render frames, and chat content stay in existing
-  stores / tools. The projection never embeds `RawRenderFrame` or
-  chat block content.
-- Provider private hidden reasoning is **not** mapped by the
-  adapter. The `TurnReasoningDelta` event is folded into a
-  `VisibilityClass::Internal` message in the projection; consumers
-  may choose to render it or hide it.
-- Full redaction policy lands in Milestone 3.
+2. **Deterministic**: Two compliant reducers with the same
+   `(snapshot, events)` MUST produce equivalent serialized snapshots.
 
-## 12. Verification commands
+3. **Additive-only**: New `ProjectionEvent` variants MUST NOT cause
+   existing reducers to reject older events. Unknown variants map to
+   `Unknown { variant_name, notice }`.
+
+4. **No credentials in DTOs**: The adapter layer never imports
+   `SecretInput` / `SecretInputRef` types. Tool outputs exceeding
+   bounds become `TruncatedOutput`.
+
+5. **Transport isolation**: Raw event forwarders discard
+   `ProjectionStreamEvent`. Projection-private envelopes originate
+   only from the matching authenticated connection's receiver.
+
+6. **RenderFrame unsupported**: The `/tui` protocol does not support
+   `RenderFrame`. It is event/state-driven via `TuiCommand`.
+
+7. **Protocol version 5**: The `/tui` protocol version is 5.
+   Projection-primary clients negotiate before using resume,
+   acknowledgement, or unsubscribe.
+
+## Testing
 
 ```bash
-# Inline unit tests for the projection module (caps, limits, dto,
-# event, snapshot, reducer, adapters, fixtures).
+# Inline unit tests (caps, limits, dto, event, snapshot, reducer,
+# adapters, fixtures, controller)
 cargo test -p codegg-protocol
 
-# Independent consumer equivalence test (root integration test).
+# Independent consumer equivalence test
 cargo test --test session_projection_consumer
 
-# Lint.
-cargo clippy -p codegg-protocol --all-targets --all-features -- -D warnings
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+# Adversarial tests
+cargo test --test context_projection_adversarial
 
-# Format.
-cargo fmt -- --check
+# Remote transport tests (needs server feature)
+cargo test --test projection_transport_real --features server
+
+# Lint
+cargo clippy -p codegg-protocol --all-targets --all-features -- -D warnings
 ```
 
-## 13. Future milestone ownership
+## Static Guards
 
-- **Milestone 2** owns durable replay, subscription registry,
-  acknowledgement cursors, and retention. It consumes
-  `ProjectionCapabilities` and the reducer deterministically;
-  adding replay MUST NOT require changes to the projection DTOs.
-- **Milestone 3** owns the visibility / redaction pipeline, the
-  full authorization seam, and bounded artifact read APIs. It
-  consumes the `VisibilityClass` tag introduced here.
-- **Milestone 4** owns remaining frontend adoption (local / remote TUI
-  and future observer clients), migration of `TuiMessage::StateSnapshot`
-  to the new contract, and reference second-frontend compatibility tests.
-  ACP v1 is already implemented by the agent-runtime/ACP subsystem and
-  must remain a projection consumer rather than a second runtime.
+```bash
+bash scripts/check_projection_disclosure.sh
+bash scripts/check_projection_publication_seam.sh
+python3 scripts/check_projection_transport_isolation.py
+python3 scripts/check_projection_transport_lifecycle.py
+python3 scripts/check_websocket_bounds.py
+```
 
-## 14. M2 daemon integration summary
+## Related Docs
 
-The corrective daemon-integration commit lands the full production
-plumbing for the M2 replay subsystem while preserving M1 invariants:
-
-- `EventLog` carries one optional `ProjectionSink` hook. The
-  default `CoreDaemon` installs `SeamProjectionSink` so every
-  production `event_log.publish(...)` call site reaches the
-  durable `projection_event` store exactly once. Legacy raw
-  `CoreEvent` clients continue to receive the additive-compatible
-  broadcast on the unfiltered channel.
-- `ProjectionPublicationSeam` resolves canonical
-  `(ProjectId, WorkspaceId, binding_revision)` from
-  `ProjectStorage::session_binding(session_id)` before publication.
-  Unbound, ambiguous, archived, or unresolved bindings fail closed
-  with `PublishOutcome::Skipped { UnboundSession }` before any
-  sequence allocation.
-- `ProjectionReplayStore::get_or_create_session_stream_with_revision`
-  invalidates the old stream when the canonical binding revision
-  advances. The new active stream carries the new revision; the old
-  row is marked `lifecycle = 'rebound'`.
-- Real `ProjectionStreamId` values minted by the store are used
-  for queue delivery, cursor validation, replay, and acknowledgement.
-  The previous synthetic `"session-stream"` / `"project-stream"`
-  placeholders are gone.
-- `CoreRequest::Projection*` requests dispatch through
-  `CoreDaemon::handle_request`. Each variant maps to a bounded
-  `CoreResponse::Projection*`. Capability, version, scope, and
-  client ownership are enforced.
-- `daemon_socket` opens one bounded receiver per
-  `ProjectionSubscribe` and spawns a per-connection forwarder that
-  writes `CoreEvent::ProjectionStreamEvent { subscription_id, ... }`
-  to the owning client. Disconnect / unsubscribe / lag /
-  generation change drop the receiver and abort the forwarder.
-  Two clients with different subscriptions never observe each
-  other's projection events.
-- The replay store, service, and seam are constructed from the
-  daemon's SQLite pool during `CoreDaemon::with_deps_and_identity`.
-  A background task runs `ProjectionReplayService::maintenance_tick`
-  on a 300-second interval to drive retention pruning and
-  checkpoint writing.
-- `scripts/check_projection_publication_seam.sh` is a new static
-  guard that fails CI if any non-test production source calls
-  `ProjectionReplayHandle::publish_core_event` outside the
-  centralized `EventLog` sink.
-
-## 15. Remote transport isolation (Milestone 005)
-
-Remote projection transport is connection-owned rather than broadcast-owned.
-`ProjectionConnectionState` is a transport-neutral transient owner shared by
-the Unix socket, `/core`, and `/tui` adapters. It bounds subscriptions,
-artifact reads, diagnostics, and reconnect generations. Each
-`OwnedProjectionSubscription` retains the daemon-issued subscription ID, the
-persisted descriptor and stream ID, latest cursor, forwarder task, lifecycle,
-and cancellation token.
-
-The subscribe/replay handoff installs the service receiver before its response
-is released. Resume uses the client-held `ProjectionCursor`; the daemon either
-returns a canonical replay batch, a typed `ProjectionResyncRequired`, or an
-error. A newly established replay subscription is identified only by the
-daemon-issued subscription ID. The transport never derives a stream ID from a
-subscription ID, and an unbound resync carries a null subscription ID.
-
-Raw event forwarders explicitly discard `CoreEvent::ProjectionStreamEvent`.
-Projection-private envelopes can therefore originate only from the receiver
-owned by the matching authenticated connection. A static guard,
-`scripts/check_projection_transport_isolation.py`, protects both WebSocket
-adapters and the Unix-socket identity path.
-
-The `/tui` protocol is version 5. Projection-primary clients negotiate before
-using resume, acknowledgement, unsubscribe, status, or bounded artifact
-operations. Version-4 clients retain the legacy raw event path; that path is
-bounded, isolated from projection state, and accompanied by a deprecation
-diagnostic for clients that can negotiate the projection contract.
-
-### Atomic control delivery (Milestone 006)
-
-Remote projection control responses are critical writer operations. The
-adapter serializes the frame, enqueues it on a bounded control channel, and
-waits for a bounded writer receipt (500 ms) with cancellation and writer-close
-failure outcomes. `Initializing -> Live` is completed only after that receipt;
-queue full, serialization, timeout, cancellation, and writer failures remove
-the transient receiver and issue a daemon unsubscribe. Projection forwarders
-are held behind the lifecycle ready permit, which proves response-before-live
-ordering at the transport boundary.
-
-The legacy `/ws` JSON-RPC adapter is deprecated and uses the same finite
-outbound bound; overflow terminates the connection. The
-`scripts/check_websocket_bounds.py` and
-`scripts/check_projection_transport_isolation.py` guards prevent reintroducing
-unbounded server WebSocket channels or activation-before-control-delivery
-drift.
+- `architecture/server.md` — HTTP/WebSocket server
+- `architecture/tui.md` — local TUI
+- `architecture/acp.md` — ACP adapter
+- `architecture/bus.md` — event bus

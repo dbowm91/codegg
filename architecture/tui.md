@@ -2,63 +2,75 @@
 
 The `tui` module provides the terminal user interface using Ratatui.
 
-## Overview
+## Purpose
 
-## `/connections` lifecycle contract
+Renders the interactive terminal UI: message display, prompt input, modal
+dialogs, sidebar, status bar, completions, and remote TUI protocol. Routes
+user input through `TuiCommand` dispatch to session/memory/research/plugin
+backends via `CoreClient`.
 
-The `/connections` surface consumes redacted connection detail/status and
-keeps selection explicit. Lifecycle actions use daemon protocol requests;
-secret rotation input is local-only, masked, bounded, and never copied into
-normal prompt history or remote snapshots. Delete presents tombstone/purge
-consequences and renders reference blockers.
+## Where It Lives
 
-**Location**: `src/tui/`
+`src/tui/` — ~15,340 lines in `app/mod.rs` alone.
 
-**Key Responsibilities**:
-- Terminal UI rendering with Ratatui
-- Keyboard input handling via configurable keybindings
-- Application state management across 6 state domains
-- Layout and component rendering
-- Notifications, dialogs, and FocusManager-based modal handling
-- Core-backed session/history operations via `CoreClient`
+## How It Works
 
-## Core Integration
+### Core Integration
 
-The TUI no longer talks directly to session storage for most migrated flows. Instead, it routes session, history, task, memory, and worktree actions through `CoreClient` so the same logic can run in-process, over stdio, or over a socket transport.
+The TUI routes session, history, task, memory, and worktree actions through
+`CoreClient` so the same logic can run in-process, over stdio, or over a
+socket transport.
 
-Local transport selection is handled by `CoreRuntimeMode` (default `DaemonClient`):
-- `DaemonClient` (default) — connects to or auto-starts the user-scoped singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`). Uses `SocketCoreClient`.
-- Plain startup reaches the TUI through that verified daemon-client path without requiring a manually prestarted daemon. An autostarted daemon remains independent of the initiating frontend; startup and graceful-shutdown bounds are controlled by the daemon configuration.
-- `StandaloneInproc` — keeps the core in the same process via `InprocCoreClient`. Requires `--standalone`.
-- `StandaloneStdio` — spawns `codegg core-stdio` via `StdioCoreClient`. Requires `--stdio`.
+Local transport selection is handled by `CoreRuntimeMode` (default
+`DaemonClient`):
 
-Legacy `--core-transport inproc|stdio` flags still parse but emit a deprecation warning. `InprocCoreClient` is now only used when `--standalone` is passed (tests and embedding).
+- `DaemonClient` (default) — connects to or auto-starts the user-scoped
+  singleton daemon via `connect_or_start_daemon` (`src/core/instance.rs`).
+  Uses `SocketCoreClient`.
+- `StandaloneInproc` — keeps the core in the same process via
+  `InprocCoreClient`. Requires `--standalone`.
+- `StandaloneStdio` — spawns `codegg core-stdio` via `StdioCoreClient`.
+  Requires `--stdio`.
 
-## Async Command Pattern
+Legacy `--core-transport inproc|stdio` flags still parse but emit a
+deprecation warning.
 
-High-latency `TuiCommand` handlers are converted to a spawn-and-complete pattern to keep the event loop responsive. The pattern:
+### Async Command Pattern
 
-1. **Start**: `start_*` function performs immediate UI mutation (sets loading state, adds toast), clones needed inputs, and spawns a Tokio task. Lifecycle-tracked command work should use `spawn_registered_tui_task`; `spawn_tui_task` remains for fire-and-forget work.
-2. **Complete**: The spawned task sends a typed completion `TuiCommand` (e.g., `SessionsReloaded`, `SessionMessagesLoaded`) back through the command channel.
-3. **Apply**: The event loop receives the completion and applies results to UI state synchronously.
+High-latency `TuiCommand` handlers use a spawn-and-complete pattern:
 
-This ensures keyboard input, resize handling, streaming redraws, spinner animation, and toast expiry continue even while core requests are slow.
+1. **Start**: `start_*` function performs immediate UI mutation, clones
+   inputs, and spawns a Tokio task. Lifecycle-tracked work uses
+   `spawn_registered_tui_task`; `spawn_tui_task` is for fire-and-forget.
+2. **Complete**: The spawned task sends a typed completion `TuiCommand`
+   back through the command channel.
+3. **Apply**: The event loop receives the completion and applies results
+   to UI state synchronously.
 
-**Stale protection**: Operations that can be repeated rapidly use `AsyncUiRequestState` request IDs. Completions with a stale or cancelled id are silently ignored before they mutate state or show toasts.
+**Stale protection**: `AsyncUiRequestState` request IDs. Completions with
+a stale or cancelled ID are silently ignored.
 
-**Converted handlers**: `ReloadSessions`, `LoadSessionMessages`, `OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`, `ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`, `MemoryRemember`, `MemoryForget`, `RunDoctor`, all session mutations (delete, archive, fork, bulk delete/archive/export, rename, undo delete, share, unshare, export), goal operations (show, checkpoint, budget, refresh session state), task operations (list, delete, schedule), worktree list, template create, notification send, plugin commands (`PluginCommandRun`, `PluginCommandFinished`, `PluginUiEffect`), and the project-catalog refresh pair (`RefreshProjectCatalog`, `ProjectCatalogRefreshed`).
+**Converted handlers**: `ReloadSessions`, `LoadSessionMessages`,
+`OpenTreeDialog`, `PreviewImport`, `ConfirmImport`, `ResearchListRuns`,
+`ResearchLoadRun`, `ResearchLoadSection`, `MemorySummary`, `MemorySearch`,
+`MemoryRemember`, `MemoryForget`, `RunDoctor`, all session mutations,
+goal operations, task operations, worktree list, template create,
+notification send, plugin commands, project-catalog refresh pair, test
+run, asset refresh, provider connection lifecycle, and session selection.
 
-**File diff pipeline** (related but distinct): `FileDiffStatsReady` uses a separate spawn-and-complete pattern via `spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. It does not go through `spawn_tui_task`. The background worker is bounded by a semaphore (max 2 concurrent tasks), enforces 1 MiB size caps, binary detection, and stale-generation protection.
+**File diff pipeline**: `FileDiffStatsReady` uses a separate
+`spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. Bounded by
+semaphore (max 2 concurrent), 1 MiB size caps, binary detection, and
+stale-generation protection.
 
-**Not converted** (remain synchronous in command dispatch): shell commands, security review, and other already-fast or already-spawned handlers.
+See `src/tui/async_cmd.rs` for `spawn_tui_task` and
+`spawn_registered_tui_task`.
 
-See `src/tui/async_cmd.rs` for `spawn_tui_task` and `spawn_registered_tui_task`.
+### AsyncUiRequestState
 
-### AsyncUiRequestState (Phase 10)
+`AsyncUiRequestState` (`src/tui/app/state/async_request.rs:20`) is a
+reusable state machine for async dialog lifecycle:
 
-`AsyncUiRequestState` (`src/tui/app/state/async_request.rs`) is a small reusable state machine that replaces ad-hoc generation counters and boolean in-flight flags for dialog async lifecycle.
-
-**Type:**
 ```rust
 pub struct AsyncUiRequestState {
     request_id: u64,        // Monotonically increasing generation counter
@@ -68,790 +80,325 @@ pub struct AsyncUiRequestState {
 }
 ```
 
-**Methods:**
-- `begin() -> u64` — increments request ID, sets loading, clears cancelled and previous error. Returns the new ID.
-- `cancel()` — sets cancelled, clears loading, increments request ID to invalidate in-flight work.
-- `finish(request_id) -> bool` — returns true (and clears loading) only if the ID is current and not cancelled. Stale completions return false.
-- `fail(request_id, error) -> bool` — same guard as `finish`, but stores the error message on success.
-- `is_current(request_id) -> bool` — checks if a request ID matches the current generation.
-- `clear_loading()` — clears loading without modifying the request ID (useful for dialog close cleanup).
+**Methods**: `begin() -> u64`, `cancel()`, `finish(request_id) -> bool`,
+`fail(request_id, error) -> bool`, `is_current(request_id) -> bool`,
+`clear_loading()`, `is_loading()`, `is_cancelled()`, `request_id()`,
+`last_error()`.
 
-**DialogState fields using AsyncUiRequestState:**
-- `import_request` — import preview/confirm
-- `research_request` — research browser list/run/section loads
-- `session_reload_request` — session list reload
-- `task_list_request` — task listing
-- `task_delete_request` — task deletion
-- `worktree_list_request` — worktree listing
-- `template_create_request` — template creation
-- `session_mutation_request` — session delete/archive/fork/rename/share
-- `session_messages_request` — session message loading
+**DialogState fields using AsyncUiRequestState**:
+`import_request`, `research_request`, `session_reload_request`,
+`task_list_request`, `task_delete_request`, `worktree_list_request`,
+`template_create_request`, `session_mutation_request`,
+`session_messages_request`, `test_run_request`.
 
-**Dialog close integration:** `close_dialog()` (`pub(crate)` for testability) cancels async request states for Import, ResearchBrowser, and Session dialogs, ensuring stale completions are ignored after dismissal.
+**Dialog close integration**: `close_dialog()` cancels async request
+states for Import, ResearchBrowser, and Session dialogs.
 
-**Completion semantics:** All async apply handlers follow a single canonical pattern:
+**Completion semantics**: All async apply handlers follow:
 
 ```rust
 if !app.dialog_state.<field>.finish(request_id) {
     return;  // stale or cancelled, ignore
 }
-// ... apply changes ...
 ```
 
-`finish(request_id)` returns `false` for stale or cancelled completions; the apply function returns immediately. `fail(request_id, error)` does the same guard but records the error. Never mix `is_current()` + manual mutation; always go through `finish`/`fail`.
+Never mix `is_current()` + manual mutation; always use `finish`/`fail`.
 
-**Apply handlers guarded by `finish`/`fail` (12 total):**
-- Import: `apply_import_preview_loaded`, `apply_import_confirmed` (`src/tui/commands/import.rs`)
-- Research: `apply_research_runs_loaded`, `apply_research_run_loaded`, `apply_research_section_loaded` (`src/tui/commands/research.rs`)
-- Session reload: `apply_sessions_reloaded` (`src/tui/commands/sessions.rs`)
-- Session mutation: `apply_session_mutation_finished` (`src/tui/commands/sessions.rs`)
-- Session messages: `apply_session_messages_loaded` (`src/tui/commands/sessions.rs`)
-- Tasks: `apply_tasks_listed`, `apply_task_operation_finished` (`src/tui/commands/tasks.rs`)
-- Worktrees: `apply_worktree_listed` (`src/tui/commands/tasks.rs`)
-- Templates: `apply_template_session_created` (`src/tui/commands/sessions.rs`)
+### Background Task Lifecycle
 
-Each handler has a stale-completion test under `src/tui/mod.rs::async_cmd_tests` proving that an older request ID is dropped before mutating dialog state or showing a toast.
+TUI-owned background tasks tracked via `TuiTaskRegistry`
+(`src/tui/task_lifecycle.rs:14`) on `App`.
 
-### Background Task Lifecycle (Phase 7)
+**Key types**:
+- `TuiTaskId(u64)` — monotonically increasing task ID
+- `TuiTaskKind` — category enum: `Command`, `FileDiff`, `Shell`,
+  `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`,
+  `GitStatus`, `Other`
+- `TuiTaskRecord` — stores name, kind, started_at, abort_handle,
+  completion flag
 
-TUI-owned background tasks are tracked via [`TuiTaskRegistry`](../src/tui/task_lifecycle.rs) on `App`.
+**Registry operations**: `spawn(kind, name, future)`, `cancel(id)`,
+`cancel_kind(kind)`, `cancel_all()`, `reap_finished()`, `is_finished(id)`,
+`active_count()`, `summary()`.
 
-**Key types:**
-- `TuiTaskId(u64)` -- monotonically increasing task identifier
-- `TuiTaskKind` -- category enum: `Command`, `FileDiff`, `Shell`, `Research`, `Memory`, `Notification`, `SecurityReview`, `Indexer`, `GitStatus`, `Other`
-- `TuiTaskRecord` -- stores name, kind, started_at, abort_handle, completion flag
+**Outcome accounting**: `completed_count` increments on `reap_finished`
+only. `cancelled_count` increments on `cancel_kind`/`cancel`.
+`panicked_count` is reserved (stays at 0 with abort-handle design).
 
-**Registry operations:**
-- `spawn(kind, name, future)` -- register and spawn a tracked task, returns `TuiTaskId`
-- `cancel(id)` -- abort a specific task
-- `cancel_kind(kind)` -- abort all tasks of a given kind
-- `cancel_all()` -- abort all registered tasks
-- `reap_finished()` -- remove completed tasks from the registry, incrementing `completed_count`
-- `is_finished(id)` -- true once the task has either completed naturally or been aborted (the `is_finished` rename reflects that `AbortHandle::is_finished` is true for both outcomes)
-- `active_count()` / `summary()` -- diagnostics
+**Integration**: `spawn_tui_task()` is fire-and-forget;
+`spawn_registered_tui_task(tx, registry, kind, name, fut)` is tracked.
 
-**Outcome accounting:**
-- `completed_count` increments on `reap_finished` only (natural completion).
-- `cancelled_count` increments inside `cancel_kind` / `cancel` (abort).
-- `panicked_count` is reserved; with the abort-handle-only design (no `JoinHandle`), it cannot be observed and stays at 0. When/if the registry upgrades to `JoinHandle`, this counter is the seam.
+**Reaping**: Event loop calls `app.task_registry.reap_finished()` on
+every iteration including idle.
 
-**Integration with spawn_tui_task:**
-- `spawn_tui_task()` -- unchanged, fire-and-forget (no tracking)
-- `spawn_registered_tui_task(tx, registry, kind, name, fut)` -- tracked variant, returns `Option<TuiTaskId>`
+**Shutdown**: `App::prepare_shutdown()` cancels all registered tasks and
+kills shell handles.
 
-**Reaping:** The event loop calls `app.task_registry.reap_finished()` on every
-iteration, including idle iterations. This keeps the registry bounded even
-when no animation, resize debounce, or toast timer is active.
-
-**Shutdown:** `App::prepare_shutdown()` cancels all registered tasks and kills shell handles. Called before `terminal_guard.restore()` in `runtime/event_loop::run_event_loop`.
-
-**Diagnostics:** `/tui-stats` now includes task registry stats (active counts by kind, oldest task, completed count, cancelled count) and shell handle count.
+**Diagnostics**: `/tui-stats` includes task registry stats and shell
+handle count.
 
 ### Cached Git Sidebar State
 
-Sidebar git metadata (branch, dirty) is computed in the background rather than on every render frame, so a slow or hung git process cannot stall the event loop.
+Sidebar git metadata computed in background, never on render frame.
 
-**Storage:** `GitSidebarState` (in `src/tui/app/state/session.rs`) holds `root`, `branch`, `dirty`, `last_refreshed`, `loading`, `error`, and a `generation: u64` counter. The struct is `Default`-derived and lives as `session_state.git_sidebar`.
+**Storage**: `GitSidebarState` (`src/tui/app/state/session.rs:134`)
+holds `root`, `branch`, `dirty`, `staged_count`, `unstaged_count`,
+`untracked_count`, `conflicted_count`, `ahead`, `behind`,
+`operation_state_label`, `available_actions`, `conflicted_paths`,
+`last_refreshed`, `loading`, `error`, and `generation: u64`.
 
-**Refresh pipeline:**
-1. `start_refresh_git_sidebar(app)` (`src/tui/commands/git_sidebar.rs`) bumps the generation via `git_sidebar.begin_refresh()`, sets `loading = true`, and spawns a registered task (`TuiTaskKind::GitStatus`).
-2. The probe runs `egggit::status::repo_status` inside `tokio::time::timeout` (`GIT_REFRESH_TIMEOUT = 3s`) so a wedged git invocation cannot block forever.
-3. The probe posts `TuiCommand::GitSidebarRefreshFinished { generation, root, branch, dirty, error }`.
-4. `apply_git_sidebar_refresh` calls `git_sidebar.apply_refresh(...)` or `apply_refresh_error(...)`. Both return `false` for stale generations, so a slow probe arriving after the user switched sessions is dropped silently.
+**Refresh pipeline**:
+1. `start_refresh_git_sidebar(app)` bumps generation via
+   `git_sidebar.begin_refresh()`, spawns registered task.
+2. Probe runs `egggit::status::repo_status` inside
+   `tokio::time::timeout` (3s).
+3. Probe posts `TuiCommand::GitSidebarRefreshFinished`.
+4. `apply_git_sidebar_refresh` calls `git_sidebar.apply_refresh(...)` or
+   `apply_refresh_error(...)`. Both return `false` for stale generations.
 
-**Triggers:** Refresh is kicked on `TuiMsg::SelectSession`, on `App::set_session`, and when the session reload completes. The render path (`render_sidebar`) only reads from `session_state.git_sidebar`; it never shells out to git.
+**Triggers**: `SelectSession`, `App::set_session`, session reload.
 
-**Remote TUI:** `RemoteTuiStateSnapshot.git: Option<RemoteGitInfo>` (`crates/codegg-protocol/src/tui.rs`) carries the cached sidebar state to remote clients. `loading` and `error` are exposed so a remote client can render the same spinner / error affordance as the local TUI.
+**Remote TUI**: `RemoteTuiStateSnapshot.git: Option<RemoteGitInfo>`
+carries cached sidebar state to remote clients.
 
 ### Long Output → Info Dialog
 
-Multi-line command results no longer get joined into a single toast. Toasts are a short-feedback channel; collapsing a 30-line shell list or memory summary into one toast eats the toast column and pushes other toasts out before they can be read.
-
-`App::show_short_or_info(info_type, lines)` (`src/tui/app/mod.rs`) routes output to either a short toast (≤3 lines) or the scrollable `InfoDialog`. The dialog is reused if already open — re-opening it pushes focus only once, not per command. Callers should provide their own empty-state or usage message before invoking the helper. Use this helper for any handler that may emit a non-trivial number of lines; reserve raw `toasts.info(joined)` for genuinely single-line responses (`/status`, `/cost`).
+`App::show_short_or_info(info_type, lines)` routes output to short toast
+(≤3 lines) or scrollable `InfoDialog`. Dialog reused if already open.
 
 ### Remote TUI Snapshot Sequencing
 
-`App::remote_sequence: u64` is a monotonically increasing counter on `App` (initialised at 0).
+`App::remote_sequence: u64` is monotonically increasing.
 
-- `App::remote_snapshot()` — non-mutating, returns the most recent committed snapshot.
-- `App::next_remote_snapshot()` — mutating, increments the counter and returns the new snapshot. Used by `RequestSnapshot` and `Resume` handlers when they reply to a remote client.
-- `App::build_remote_snapshot(sequence)` — builder used by both, with `sequence` parameterised so callers can compose snapshots at any position.
+- `remote_snapshot()` — non-mutating, returns most recent snapshot.
+- `next_remote_snapshot()` — mutating, increments and returns new snapshot.
+- `build_remote_snapshot(sequence)` — builder parameterised by sequence.
 
-**Resume semantics** (`Ok(RemoteTuiMessage::Resume { from_event_seq })` arm of `handle_remote_event`):
-- `from_event_seq == 0` — invalid resume, toasts a warning and sends `ResyncRequired { reason: "invalid_resume_sequence" }`.
-- `from_event_seq > remote_sequence` — client is ahead of server, toasts a warning and sends `ResyncRequired { reason: "requested_sequence_ahead_of_current" }`.
-- `from_event_seq <= remote_sequence` — client is behind or current; replies with a fresh `StateSnapshot` whose `sequence` is the next monotonic value (the server does not currently maintain a per-event replay log, so the client adopts the new snapshot directly).
+**Resume semantics**: `from_event_seq == 0` → invalid resume;
+`> remote_sequence` → client ahead; `<= remote_sequence` → fresh snapshot.
 
 ### Remote Plugin UI Effects
 
-Plugin UI effects reach the TUI through two independent routes, both applying the same session-filtering and dialog-priority logic:
-
-1. **Remote protocol route**: `RemoteTuiMessage::PluginUiEffect` arrives via WebSocket in `handle_remote_event`. The handler compares `session_id` against the current session and calls `App::apply_plugin_ui_effect()` only when the session matches (or is `None`).
-2. **Bus event route**: `AppEvent::PluginUiEffect` arrives on the `GlobalEventBus` in `runtime/app_events.rs`. It applies identical session filtering before delegating to the same `apply_plugin_ui_effect()` method.
-
-`App::apply_plugin_ui_effect()` mutates `PluginUiState` (storing dialog/panel/status data), then opens a `Dialog::Plugin` in the `FocusManager` — but only when no higher-priority modal is active. Permission, Question, and SecurityReview dialogs retain modal precedence; plugin dialogs are deferred until those close.
+Two independent routes: `RemoteTuiMessage::PluginUiEffect` via WebSocket
+and `AppEvent::PluginUiEffect` via `GlobalEventBus`. Both apply session
+filtering before `apply_plugin_ui_effect()`.
 
 ### Synchronous Command Dispatch
 
-Command dispatch arms in `src/tui/runtime/command_dispatch.rs` are all `fn (non-async)`. Handlers that need to do real async work either:
-1. Fire-and-forget via `tokio::spawn` and post a `TuiCommand` completion variant back on the channel (e.g. `handle_goal_*`, `handle_compact_session`).
-2. Use `spawn_registered_tui_task` for lifecycle-tracked work (e.g. `handle_spawn_subagent` → `SubagentSpawnFinished`, `start_refresh_git_sidebar` → `GitSidebarRefreshFinished`).
-3. Await synchronously only if the work is genuinely fast (single quick DB read, no network).
+All dispatch arms in `src/tui/runtime/command_dispatch.rs` are
+`fn` (non-async). No `.await` points in the match. Handlers that need
+async work use spawn-and-complete or fire-and-forget patterns.
 
-The dispatch `match` contains no `.await` points. Any handler that needs awaiting must be converted to one of the patterns above.
+## Key Types & APIs
 
-## Directory Structure
-
-```
-tui/
-├── app/                    # Main application state
-│   ├── mod.rs              # App struct, event loop, key handling
-│   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
-│   └── state/              # State domains
-│       ├── agent.rs        # AgentState (models, agents, selection)
-│       ├── async_request.rs # AsyncUiRequestState (shared async dialog lifecycle)
-│       ├── diagnostics.rs  # TuiDiagnostics (runtime counters)
-│       ├── dialog.rs       # DialogState (dialog instances, dialog visibility)
-│       ├── messages.rs     # MessagesState (message history, toasts, spinner)
-│       ├── plugin_ui.rs   # PluginUiState (plugin dialog/panel/status storage)
-│       ├── prompt.rs       # PromptState (prompt, completions)
-│       ├── session.rs      # SessionState (session, history, git info)
-│       └── ui.rs           # UiState (theme, layout, routes, keybindings)
-├── commands/               # TUI command handlers (extracted from mod.rs)
-│   ├── mod.rs              # Re-exports
-│   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share, import
-│   ├── tasks.rs            # Tasks, worktrees, templates, notifications, file-diff completions
-│   ├── goals.rs            # Goal set, pause, resume, clear, done, checkpoint, budget
-│   ├── memory.rs           # Memory summary, search, remember, forget
-│   ├── research.rs         # Research list runs, load run, load section
-│   ├── import.rs           # Import preview, confirm
-│   ├── shell.rs            # Shell list, include, rerun, kill
-│   ├── security.rs         # Security review dispatch
-│   └── diagnostics.rs      # Doctor, diagnostics commands
-├── runtime/                # Runtime logic (extracted from mod.rs)
-│   ├── mod.rs              # Re-exports
-│   ├── event_loop.rs       # Main event loop (select loop, render cadence, terminal setup)
-│   ├── command_dispatch.rs # Main command dispatch match (TuiCommand routing)
-│   ├── app_events.rs       # Bus event handling (AppEvent subscription and dispatch)
-│   └── render_recovery.rs  # Render panic recovery (progressive fallback logic)
-├── components/             # UI widgets and components
-│   ├── component/          # Component trait and FocusManager
-│   │   ├── component.rs    # Component trait, DialogType enum (NOT mod.rs)
-│   │   ├── focus.rs        # FocusManager for modal focus stack
-│   │   └── context.rs      # AppContext for overlay dialogs
-│   ├── dialogs/            # Modal dialogs (all implement Component trait)
-│   │   ├── agent.rs        # AgentDialog
-│   │   ├── command.rs      # CommandPalette
-│   │   ├── confirm.rs      # ConfirmDialog
-│   │   ├── connect.rs      # ConnectDialog (Eggpool endpoint/API key entry)
-│   │   ├── diff.rs         # DiffDialog
-│   │   ├── goto.rs         # GotoDialog (jump to message)
-│   │   ├── help.rs         # HelpDialog
-│   │   ├── import.rs       # ImportDialog (import sessions)
-│   │   ├── info.rs         # InfoDialog (Context/Cost/Usage)
-│   │   ├── keybind.rs      # KeybindDialog
-│   │   ├── mcp.rs          # McpDialog (MCP server management)
-│   │   ├── model.rs        # ModelDialog (model selection)
-│   │   ├── permission.rs   # PermissionDialog
-│   │   ├── plan.rs         # PlanDialog
-│   │   ├── plugin.rs       # PluginDialog (plugin UI content dialog)
-│   │   ├── ui_node.rs      # UiNodeDialog (generic UiNode dialog, Phase 14)
-│   │   ├── question.rs     # QuestionDialog
-│   │   ├── research.rs     # ResearchBrowserDialog (research runs browser)
-│   │   ├── review.rs       # ReviewDialog (diff review)
-│   │   ├── session.rs      # SessionDialog
-│   │   ├── share.rs        # ShareDialog (share sessions)
-│   │   ├── template.rs     # TemplateDialog
-│   │   ├── theme.rs         # ThemePickerDialog
-│   │   └── tree.rs         # TreeDialog (session hierarchy)
-│   ├── completion_overlay.rs # Slash/file/agent completion popups
-│   ├── diff.rs             # DiffViewer (diff visualization)
-│   ├── help_overlay.rs     # HelpOverlay (dead code — not imported; help is now mode-aware via input.rs)
-│   ├── image.rs            # ImageViewer (image rendering via ANSI)
-│   ├── messages.rs         # MessagesWidget (message display, streaming)
-│   ├── notification.rs     # NotificationManager (desktop notifications)
-│   ├── plugin_renderer.rs  # PluginUiRenderer (compat alias for UiNodeRenderer)
-│   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode to ratatui/line adapter, Phase 14)
-│   ├── prompt.rs           # PromptWidget (input prompt)
-│   ├── scroll.rs           # CenteredScroll (reusable scrolling)
-│   ├── sidebar.rs          # SidebarWidget (side panel, git info, file changes with diff stats)
-│   ├── spinner.rs          # SpinnerWidget (busy indicator)
-│   ├── status_bar.rs       # StatusBarWidget (bottom status: status + tokens)
-│   ├── toast.rs            # ToastManager (notifications)
-│   └── tool_output.rs      # ToolOutput (tool execution output display)
-├── input.rs                # Key event handling, keybindings, InputMode
-├── layout.rs               # Layout calculations, TuiLayout
-├── route.rs                # Route/RouteManager (Home, Session routes)
-├── theme.rs                # Theme definitions (31 themes)
-├── terminal.rs             # TerminalGuard lifecycle, AppTerminal type alias, create_terminal()
-├── file_diff.rs            # Async diff stats computation for sidebar file changes
-├── task_lifecycle.rs       # Task registry for lifecycle tracking (TuiTaskRegistry)
-├── async_cmd.rs            # Async command spawn helpers (spawn_tui_task, spawn_registered_tui_task)
-├── command.rs              # Slash command registry
-└── mod.rs                  # TUI entry point, module declarations, re-exports (~1040 lines)
-```
-
-### UI Builders Directory (`ui_builders/`)
-
-Pure functions that convert first-party domain data into `UiNode` trees (Phase 14). The builders are intentionally free of `App` and ratatui dependencies so they are easy to unit-test and so the same data can be lowered to either the ratatui dialog surface or a flat text fallback via `UiNodeRenderer`.
-
-| Module | Responsibility |
-|--------|----------------|
-| `stats.rs` | `stats_node(diagnostics, task_summary, shell_handles_count) -> UiNode` for `/tui-stats` |
-| `plugins.rs` | Re-exports plugin management builders (`plugins_table`, `plugin_info_node`, `doctor_report_node`, `node_to_lines`) from `crate::plugin::management_ui` |
-| `shell.rs` | `shell_detail_node(entry) -> UiNode` for `/shell-show` |
-
-### Commands Directory (`commands/`)
-
-Command handlers extracted from the monolithic `mod.rs` into domain-specific submodules. Each submodule exports public handler functions that are called from `runtime/command_dispatch.rs`.
-
-| Module | Responsibility |
-|--------|---------------|
-| `sessions.rs` | Session CRUD: delete, archive, fork, bulk ops, rename, share/unshare, export, reload |
-| `tasks.rs` | Background task operations plus related command completions: task list/delete/schedule, worktree list, template creation, notifications, subagent spawn, file-diff stats |
-| `goals.rs` | Goal lifecycle: set, pause, resume, clear, done, checkpoint, budget |
-| `memory.rs` | Persistent memory: summary, search, remember, forget |
-| `research.rs` | Research browser: list runs, load run, load section |
-| `import.rs` | Session import: preview, confirm |
-| `shell.rs` | Human shell: list, include, rerun, kill |
-| `security.rs` | Security review dispatch |
-| `diagnostics.rs` | Diagnostics: doctor, context diagnostics |
-
-### Runtime Directory (`runtime/`)
-
-Runtime logic extracted from `mod.rs` to separate concerns:
-
-| Module | Responsibility |
-|--------|---------------|
-| `command_dispatch.rs` | The main `match cmd { ... }` dispatch that routes `TuiCommand` variants to handler functions in `commands/` |
-| `app_events.rs` | Bus event handling: `AppEvent` subscription, match, and dispatch to appropriate state mutations |
-| `render_recovery.rs` | Progressive render panic recovery logic (component fallbacks, root fallback, state reset) |
-
-## State Domains
-
-The `App` struct is organized into 8 state domains:
-
-### UiState (`app/state/ui.rs`)
+### App (`src/tui/app/mod.rs:865`)
 
 ```rust
-pub struct UiState {
-    pub theme: Arc<Theme>,              // Current color theme
-    pub layout: TuiLayout,              // Layout manager
-    pub sidebar_visible: bool,          // Sidebar visibility
-    pub auto_scroll: bool,              // Auto-scroll messages
-    pub show_thinking: bool,            // Show reasoning/thinking
-    pub show_timestamps: bool,          // Show message timestamps
-    pub routes: RouteManager,           // Home/Session navigation
-    pub dialog: Dialog,                 // Current dialog
-    pub command_mode: bool,             // Slash command mode
-    pub input_mode: InputMode,          // Insert/Normal (vim-style)
-    pub shutdown_tx: Option<broadcast::Sender<()>>,
-    pub help_lines: Vec<String>,        // Help content (deprecated — generated dynamically by build_help_lines())
-    pub bindings: HashMap<(KeyModifiers, KeyCode), InputAction>,
-    pub keybinds: Option<KeybindConfig>, // Raw keybind config
-    pub remote_mode: bool,              // Cline compatibility
-    pub remote_status: Option<String>,  // Remote connection status
-    pub running: bool,                  // Event loop running flag
-    pub timeline_visible: bool,         // Timeline visibility
-    pub timeline_selected: usize,       // Timeline selection index
-    pub tts: Tts,                       // Text-to-speech
-    pub tts_enabled: bool,
-    pub fullscreen: bool,               // DEC 1049 alternate screen
-    pub dirty_regions: Vec<Rect>,       // Partial redraw optimization
-    pub render_panic_count: usize,
-    pub last_render_error: Option<String>,
-    pub resize_debounce: Option<std::time::Instant>, // Resize debounce timer
+pub struct App {
+    pub ui_state: UiState,
+    pub session_state: SessionState,
+    pub prompt_state: PromptState,
+    pub messages_state: MessagesState,
+    pub dialog_state: DialogState,
+    pub agent_state: AgentState,
+    pub sidebar: SidebarWidget,
+    pub status_bar: StatusBarWidget,
+    pub session_store: Option<Arc<SessionStore>>,
+    pub message_store: Option<Arc<MessageStore>>,
+    pub memory_store: Option<Arc<MemoryStore>>,
+    pub run_store: Option<Arc<dyn RunStore>>,
+    pub preferences: Option<UserPreferences>,
+    pub core_client: Option<Arc<dyn CoreClient>>,
+    pub config_watcher: Option<ConfigWatcher>,
+    pub theme_registry: Arc<ThemeRegistry>,
+    pub subagent_pool: Option<Arc<SubAgentPool>>,
+    pub focus_manager: FocusManager,
+    pub busy_spinner: SpinnerWidget,
+    pub active_goal: Option<GoalSnapshot>,
+    pub lsp_tool: Option<Arc<LspTool>>,
+    pub security_review_running: Option<SecurityReviewTaskState>,
+    pub shell_store: ShellOutputStore,
+    pub command_run_store: CommandOutputStore,
+    pub shell_handles: HashMap<u64, ShellHandle>,
+    pub task_registry: TuiTaskRegistry,
+    pub plugin_ui_state: PluginUiState,
+    pub plugin_manager: Option<PluginManager>,
+    pub remote_sequence: u64,
+    // ... viewport, scroll, click, hover, border areas, etc.
 }
 ```
 
-### SessionState (`app/state/session.rs`)
+### State Domains (`src/tui/app/state/`)
+
+18 state modules:
+
+| Module | Purpose |
+|--------|---------|
+| `ui.rs` | Theme, layout, routes, dialog, input mode, keybindings, TTS, diagnostics |
+| `session.rs` | Session, token counts, changed files, git sidebar, rate limits |
+| `agent.rs` | Agents, models, selection, plan mode, project asset snapshot |
+| `dialog.rs` | All dialog instances, async request states, pending operations |
+| `messages.rs` | Message history, toasts, spinner |
+| `prompt.rs` | Prompt text, completions |
+| `async_request.rs` | `AsyncUiRequestState` reusable state machine |
+| `diagnostics.rs` | `TuiDiagnostics` runtime counters |
+| `plugin_ui.rs` | Plugin dialog/panel/status storage |
+| `project_tabs.rs` | Multi-project tab state (Milestone 1) |
+| `project_picker.rs` | Project picker state (Milestone 2) |
+| `view_switch.rs` | Active-view switch coordinator |
+| `routing.rs` | Route routing helpers |
+| `snapshot.rs` | Remote snapshot building |
+| `persistence.rs` | State persistence |
+| `restore.rs` | State restore |
+| `manifest.rs` | Manifest handling |
+| `projection_client.rs` | Projection client state |
+
+### UiState (`src/tui/app/state/ui.rs:40`)
+
+```rust
+pub struct UiState {
+    pub theme: Arc<Theme>,
+    pub layout: TuiLayout,
+    pub sidebar_visible: bool,
+    pub auto_scroll: bool,
+    pub show_thinking: bool,
+    pub show_timestamps: bool,
+    pub routes: RouteManager,
+    pub dialog: Dialog,
+    pub command_mode: bool,
+    pub input_mode: InputMode,
+    pub shutdown_tx: Option<broadcast::Sender<()>>,
+    pub help_lines: Vec<String>,
+    pub bindings: HashMap<(KeyModifiers, KeyCode), InputAction>,
+    pub keybinds: Option<KeybindConfig>,
+    pub vim_mode: bool,
+    pub mode: AppMode,           // Embedded | RemoteCore { endpoint }
+    pub remote_status: Option<String>,
+    pub running: bool,
+    pub timeline_visible: bool,
+    pub timeline_selected: usize,
+    pub render_panic_count: usize,
+    pub last_render_error: Option<String>,
+    pub tts: Tts,
+    pub tts_enabled: bool,
+    pub fullscreen: bool,
+    pub dirty_regions: Vec<Rect>,
+    pub resize_debounce: Option<std::time::Instant>,
+    pub tts_via_daemon: bool,
+    pub diagnostics: TuiDiagnostics,
+    pub plugin_ui_caps: PluginUiCapabilities,
+}
+```
+
+### SessionState (`src/tui/app/state/session.rs:71`)
 
 ```rust
 pub struct SessionState {
     pub session: Option<Session>,
-    pub session_status: SessionStatus,  // Idle/Working/Error
+    pub session_status: SessionStatus,
     pub token_in: u64,
     pub token_out: u64,
+    pub live_output_tokens: u64,
+    pub live_output_text: String,
     pub reasoning_tokens: usize,
+    pub cached_tokens: u64,
     pub history: VecDeque<HistoryEntry>,
-    pub history_pos: Option<usize>,     // History navigation position
+    pub history_pos: Option<usize>,
     pub indexed_files: Arc<RwLock<Vec<String>>>,
     pub project_dir: String,
-    pub last_edited_file: Option<String>, // Most recently edited file path
+    pub last_edited_file: Option<String>,
     pub changed_files: Vec<ChangedFile>,
-    // DiffStatsState (src/tui/app/state/session.rs):
-    // pub enum DiffStatsState {
-    //     Pending { generation: u64 },
-    //     Ready { generation: u64, additions: usize, deletions: usize },
-    //     Skipped { generation: u64, reason: &'static str },
-    //     Error { generation: u64, message: String },
-    // }
     pub mcp_servers: Vec<(String, String)>,
     pub context_tokens: usize,
     pub context_limit: usize,
     pub compaction_count: usize,
-    pub rpm_limit: Option<u64>,         // Requests per minute limit
-    pub tpm_limit: Option<u64>,         // Tokens per minute limit
-    pub rpm_remaining: Option<u64>,     // RPM remaining in current window
-    pub tpm_remaining: Option<u64>,     // TPM remaining in current window
-    pub permission_pending: bool,       // Permission dialog is pending
+    pub rpm_limit: Option<u64>,
+    pub tpm_limit: Option<u64>,
+    pub rpm_remaining: Option<u64>,
+    pub tpm_remaining: Option<u64>,
+    pub permission_pending: bool,
     pub subagent_count: usize,
+    pub git_sidebar: GitSidebarState,
 }
 ```
 
-### AgentState (`app/state/agent.rs`)
+### AgentState (`src/tui/app/state/agent.rs:6`)
 
 ```rust
 pub struct AgentState {
-    pub agents: Vec<Agent>,              // Available agents
-    pub current_agent: usize,           // Selected agent index
-    pub current_model: String,          // Current model (provider/name)
-    pub models: Vec<String>,            // Available models
+    pub snapshot: Option<Arc<ProjectAssetSnapshot>>,
+    pub agents: Vec<Agent>,        // Legacy cache; prefer snapshot
+    pub current_agent: usize,
+    pub current_model: String,
+    pub models: Vec<String>,
     pub model_idx: usize,
-    pub plan_mode: bool,                // Plan/build mode
+    pub plan_mode: bool,
     pub plan_topic: Option<String>,
 }
 ```
 
-### DialogState (`app/state/dialog.rs`)
-
-Contains all dialog instances, including optional dialogs:
-- Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`, `tree_dialog`, `command_palette`
-- On-demand (modal dialogs): `theme_picker`, `question_dialog`, `permission_dialog`, `keybind_dialog`, `mcp_dialog`, `share_dialog`, `import_dialog`, `template_dialog`, `connect_dialog`, `goto_dialog`, `plan_dialog`, `diff_dialog`, `help_dialog`, `info_dialog`, `review_dialog`, `research_browser`
-
-Plugin dialogs are stored in `PluginUiState` (`app/state/plugin_ui.rs`), not `DialogState`. A single `Dialog::Plugin` variant handles all plugin dialogs.
-
-**Pending fields** (for tracking pending permission/question responses):
-- `permission_perm_id: Option<String>` - permission ID when permission dialog is pending
-- `question_session_id: Option<String>` - session ID when question dialog is pending
-
-## Multi-Project State (Milestone 1)
-
-Multi-Project TUI milestone 1 introduces two new state domains that
-sit alongside the legacy single-project surface. They are **frontend
-local**: the TUI never becomes authoritative for project, workspace,
-or session identity. Durable identity still comes from the daemon
-through `CoreClient`.
-
-### `ProjectTabs` (`app/state/project_tabs.rs`)
-
-Ordered collection of open project tabs with one designated active
-tab. Tab IDs are opaque UUID strings generated by `ProjectTabId::new`
-and are never reused as daemon project IDs or session IDs.
-
-```rust
-pub struct ProjectTabs {
-    tabs: HashMap<ProjectTabId, ProjectTabState>,
-    order: Vec<ProjectTabId>,
-    active_tab_id: Option<ProjectTabId>,
-}
-
-pub struct ProjectTabState {
-    pub tab_id: ProjectTabId,
-    pub label: String,                // Trailing component of project_dir or display name
-    pub project_id: Option<String>,   // Daemon-typed project id
-    pub workspace_id: Option<String>, // Daemon-typed workspace id
-    pub session_id: Option<String>,   // Daemon-typed session id
-    pub model: String,                // Selected model identifier
-    pub agent: String,                // Selected agent name
-    pub request_state: AsyncUiRequestState, // Per-tab request generation
-}
-```
-
-`ProjectTabs` invariants:
-
-- `active_tab_id` always points to an open tab if any are open.
-- Removing a tab does not delete the underlying session in the daemon.
-- Two tabs may share a session title (and even a daemon session id)
-  because identity is the `ProjectTabId`, not the session id.
-- After construction, the container always holds at least one
-  compatibility tab that mirrors the legacy single-project state.
-
-### `ProjectCatalogState` (`app/state/project_tabs.rs`)
-
-Bounded cache of project catalog summaries plus the request state
-for the most recent list operation.
-
-```rust
-pub struct ProjectCatalogState {
-    pub entries: Vec<ProjectSummaryDto>, // Bounded summaries only
-    pub capability_supported: bool,
-    pub last_error: Option<String>,
-    pub truncated: bool,
-    pub list_request: AsyncUiRequestState,
-}
-```
-
-The cache never holds credentials or secret-bearing config. When the
-daemon does not advertise `project_catalog.v1`, `capability_supported`
-stays `false` and the catalog stays empty. The compat tab continues
-to function.
-
-### Active-tab accessors on `App`
-
-`App` exposes a small accessor seam that reads through the active
-tab so future picker/navigation code can rely on stable entry points:
-
-| Accessor | Returns |
-|----------|---------|
-| `active_tab()` / `active_tab_mut()` | `Option<&ProjectTabState>` |
-| `active_tab_id()` | `Option<ProjectTabId>` |
-| `active_project_id()` | `Option<&str>` |
-| `active_workspace_id()` | `Option<&str>` |
-| `active_session_id()` | `Option<&str>` |
-| `active_model()` | `&str` |
-| `active_agent()` | `&str` |
-| `open_tab_count()` | `usize` |
-| `project_catalog_supported()` | `bool` |
-
-These accessors are the migration seam for the existing single-
-project code paths. New components SHOULD read through them. Old
-components that still touch `app.session_state.session`,
-`app.agent_state.current_model`, etc. continue to work because those
-fields are kept in sync with the active tab by `App::set_session`
-and the model/agent selection handlers.
-
-### Catalog async command pair
-
-The catalog client uses the standard spawn-and-complete pattern. The
-private command module lives at `src/tui/commands/project_catalog.rs`
-and is wired through `dispatch_tui_command`:
-
-```text
-App::refresh_project_catalog(&mut self)
-    -> TuiCommand::RefreshProjectCatalog
-    -> start_refresh_project_catalog (spawns registered task)
-        -> CoreRequest::ProjectCatalogCapabilities
-        -> CoreRequest::ProjectList (bounded, 128 entries)
-    -> TuiCommand::ProjectCatalogRefreshed { request_id, supported, entries, truncated, error }
-    -> apply_project_catalog_refreshed (drops stale results)
-```
-
-The completion carries `request_id` so a second refresh that begins
-before the first finishes drops the older result. The public façade
-is `App::apply_project_catalog_refreshed(...)`.
-
-### Compatibility startup
-
-At startup the App constructs a single compatibility tab whose
-identities mirror the resolved daemon session. As soon as a session
-is attached, `App::set_session` updates the active tab's
-`project_id`, `workspace_id`, and `session_id`. The legacy fields on
-`session_state` continue to drive rendering, so all existing single-
-project rendering paths remain functional without modification.
-
-### Identity-correct async seams
-
-Future picker and navigation work should treat tab identity as a
-first-class concern:
-
-- Async completions MUST carry a request id (`AsyncUiRequestState`)
-  so a result that lands after the originating tab was removed is
-  dropped at apply time.
-- Tab-local refresh operations should attach to the tab's own
-  `request_state` (not a global counter) so removal bumps a
-  per-tab generation.
-- Frontend-local `ProjectTabId` MUST NEVER be reused as a daemon
-  `ProjectId` or `SessionId`. The IDs are UUID strings with no
-  semantic overlap with the typed identifiers.
-- Project catalog cache holds only `ProjectSummaryDto` (bounded).
-  `ProjectGet` is invoked on demand; the cache never holds secrets.
-
-### TUI stats/debug summaries
-
-`App::open_tab_count()` and `App::project_catalog_supported()`
-expose the active tab count and the negotiated catalog capability so
-future `/stats` and `/doctor` surfaces can report project-aware
-diagnostics. The legacy `App::session_count()` and similar surfaces
-remain unchanged.
-
-### Compatibility mode and diagnostics
-
-When the daemon returns `ProjectCatalogCapabilities { supported:
-false }`, the TUI:
-
-- Records `capability_supported = false`.
-- Keeps the legacy single-project compat tab usable.
-- Renders an actionable diagnostic ("project catalog unsupported by
-  this daemon — upgrade or use --standalone") when the picker
-  is opened. The catalog state remains otherwise invisible to the user.
-
-## Project Picker and Tab Navigation (Milestone 2)
-
-Milestone 2 adds a bounded, searchable project picker, a visible tab
-strip, next/previous/close navigation, per-tab session listing, and a
-controlled active-view switch transaction.
-
-### Project Picker (`Dialog::ProjectPicker`)
-
-The picker is a modal dialog opened by `Space f` (Insert), `\` (Vim
-Normal), or `Ctrl+\`. It searches the daemon-backed project catalog
-using fuzzy matching over display names, tags, and project IDs.
-
-Picker phases (`PickerPhase` enum in `src/tui/app/state/project_picker.rs`):
-
-| Phase | Description |
-|-------|-------------|
-| `Catalog` | Search and select from loaded project summaries |
-| `WorkspaceSelection` | Choose workspace when project has >1 workspaces |
-| `RegistrationInput` | Enter local directory path for registration |
-| `RegistrationConfirm` | Review and confirm registration draft |
-| `Error` | Show actionable error with retry hint |
-
-The picker state (`ProjectPickerState`) lives on
-`App::dialog_state.project_picker`. It carries the query text, filtered
-indices, selected row, cached project detail, registration draft, and a
-`picker_request: AsyncUiRequestState` generation guard.
-
-Filtering operates only on bounded daemon-returned summaries
-(`MAX_PROJECT_LIST_ITEMS = 128`). Results are capped at
-`MAX_PICKER_VISIBLE_ROWS = 16` for rendering.
-
-### Tab Strip
-
-A 1-row tab strip is rendered above the viewport on wide terminals
-(≥80 cols). Narrow terminals suppress the strip to preserve prompt
-space. The strip uses a bounded sliding window (max 7 visible tabs)
-centered on the active tab.
-
-Tab labels are truncated to `MAX_TAB_LABEL_LEN = 24` characters at
-Unicode-safe boundaries. Duplicate labels are disambiguated by
-appending a short stable suffix derived from the workspace ID or tab
-ID — never from a path.
-
-### Keybindings
-
-Default bindings (Insert mode):
-
-| Action | Key |
-|--------|-----|
-| Open project picker | `Space f` / `Ctrl+\` |
-| Next project tab | `Space Tab` / `Ctrl+Shift+]` |
-| Previous project tab | `Space Shift+Tab` / `Ctrl+Shift+[` |
-| Close active project tab | `Space Backspace` / `Alt+W` |
-
-Vim Normal mode: `\` (picker), `}` (next), `{` (prev), `Q` (close).
-
-All bindings go through the configurable `InputAction` / `ActionKey`
-system. The keybinding collision audit test verifies no two actions
-share a default key in the same mode.
-
-### Active-View Switch Transaction
-
-`ViewSwitchCoordinator` (`src/tui/app/state/view_switch.rs`) manages a
-controlled transition when switching tabs:
-
-1. Snapshot outgoing tab's lightweight selection (model, agent).
-2. Increment `active_view_epoch` before starting any incoming load.
-3. Mark incoming tab as pending, set it active for presentation.
-4. If the tab has a selected session, request session load/attach
-   through `CoreClient`. The returned canonical binding must match the
-   tab's project/workspace.
-5. Apply heavy `SessionState`, route, messages, and model/agent/provider
-   selection only when `(tab_id, project_id, workspace_id, session_id,
-   active_view_epoch)` still match.
-6. If no session, cancel the switch and clear active heavy state.
-7. On failure, keep tab selected with actionable error; do not restore
-   outgoing project's heavy state.
-
-This is a temporary compatibility bridge. Milestone 3 systematically
-routes remaining async/event paths; Session Projections Milestone 004
-replaces bespoke session reconstruction.
-
-### Close Semantics
-
-`close_active_project_tab` (dispatched via `TuiCommand::CloseProjectTab`):
-
-- Removes only frontend tab state.
-- Bumps `view_switch.active_view_epoch` to invalidate in-flight loads.
-- Cancels any in-flight switch targeting the closed tab.
-- Falls back to the adjacent previous tab in display order; if the
-  closed tab was first, falls back to the adjacent next tab.
-- If the last tab closes, creates a fallback "default" tab with no
-  daemon IDs.
-- Never issues daemon delete, archive, or cancel requests.
-
-### Project-Local Session List
-
-Per-tab bounded session summary cache (`session_summaries: Vec<SessionSummaryCacheEntry>`)
-on `ProjectTabState`. Session list requests use the tab's stable project
-ID and carry tab ID, project ID, workspace ID, and request generation.
-Results are filtered to sessions whose canonical binding matches the
-tab's project/workspace scope.
-
-### One-Off Registration
-
-The picker supports explicit local workspace registration via
-`WorkspaceRegister` then `ProjectRegister`. The flow is gated to
-`AppMode::Embedded` only — remote clients get an actionable toast.
-
-### Compatibility Mode
-
-When `project_catalog.v1` is unsupported:
-
-- `Space f` opens the picker, which displays an actionable notice:
-  "Project catalog unsupported by this daemon. Upgrade or use
-  --standalone."
-- The existing compat tab and session workflow continue.
-- Tab navigation actions remain harmless when only one tab exists.
-- No synthetic catalog is built from cwd or local session rows.
-
-### Stale Completion Rejection
-
-All picker async operations carry identity for stale rejection:
-
-| Operation | Guard |
-|-----------|-------|
-| `ProjectGetLoaded` | `picker.is_request_current(picker_request_id)` |
-| `ProjectSessionsLoaded` | `tab.request_state.is_current(request_id)` + project/workspace match |
-| `WorkspaceRegistered` | `picker.is_request_current(picker_request_id)` |
-| `ProjectRegistered` | `picker.is_request_current(picker_request_id)` |
-| `ViewSwitchCoordinator` | `(tab_id, project_id, workspace_id, session_id, epoch)` match |
-
-### Deferred to Milestone 003
-
-- Persistent tab restoration across process restart.
-- Full project-correct routing of every streaming event, dialog, Git
-  completion, and background task under rapid switching.
-- Per-tab session list projection into `SessionDialog`.
-- Systematic audit of all existing streaming events and legacy async
-  commands.
-
-## Routes
-
-```rust
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum Route {
-    #[default]
-    Home,           // Welcome screen
-    Session(String), // Active session view
-}
-```
-
-## Dialog Variants
+### DialogState (`src/tui/app/state/dialog.rs:27`)
+
+Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`,
+`tree_dialog`, `command_palette`.
+
+On-demand (Option): `theme_picker`, `question_dialog`,
+`permission_dialog`, `keybind_dialog`, `mcp_dialog`, `share_dialog`,
+`import_dialog`, `template_dialog`, `connect_dialog`,
+`connection_selection_dialog`, `goto_dialog`, `plan_dialog`,
+`diff_dialog`, `review_dialog`, `security_review_dialog`,
+`source_preview_dialog`, `run_detail_dialog`, `research_browser`,
+`help_dialog`, `info_dialog`, `ui_node_dialog`,
+`shell_detail_dialog`, `project_picker`.
+
+Async request states: `import_request`, `research_request`,
+`session_reload_request`, `task_list_request`, `task_delete_request`,
+`worktree_list_request`, `template_create_request`,
+`session_mutation_request`, `session_messages_request`,
+`test_run_request`.
+
+Pending fields: `permission_perm_id`, `question_session_id`,
+`pending_delete_session`, `pending_archive_session`,
+`pending_bulk_delete`, `pending_bulk_delete_ids`,
+`pending_bulk_archive`, `pending_bulk_archive_ids`,
+`pending_shell_command`, `pending_connection_lifecycle`,
+`shell_detail_id`.
+
+Plugin dialogs stored in `PluginUiState`, not `DialogState`.
+A single `Dialog::Plugin` variant handles all plugin dialogs.
+
+### Dialog Variants (`src/tui/app/types.rs:2`)
 
 ```rust
 pub enum Dialog {
-    None,
-    Model, Agent, Session, Help, Tree, Theme,
+    None, Model, Agent, Session, Help, Tree, Theme,
     Question, Permission, Mcp, Keybind,
-    Share, Import, Template, Connect,
+    Share, Import, Template, Connect, ConnectionSelection,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
-    Review,              // Diff review dialog
-    ResearchBrowser,     // Research browser for web research
-    Plugin,              // Generic plugin UI content dialog (Phase 2)
+    Review, ResearchBrowser, SecurityReview, SourcePreview,
+    ShellShow, TaskList, WorktreeList, GoalShow, MemoryResults,
+    DoctorReport, Plugin, RunDetail, ProjectPicker,
 }
 ```
 
-## Input Handling
-
-### InputMode
+### DialogType (`src/tui/components/component.rs:22`)
 
 ```rust
-pub enum InputMode {
-    #[default]
-    Insert,  // Text input mode
-    Normal,  // Navigation mode (vim-style)
+pub enum DialogType {
+    Share, Model, Agent, Session, Help, Tree, Theme,
+    Permission, Mcp, Question, Diff, Import, Template,
+    Connect, ConnectionSelection, Keybind,
+    Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
+    ResearchBrowser, SecurityReview, SourcePreview, ShellShow,
+    TaskList, WorktreeList, GoalShow, MemoryResults,
+    DoctorReport, Plugin, RunDetail, None,
 }
 ```
 
-### InputAction
+Note: `Dialog::ProjectPicker` has no corresponding `DialogType` variant;
+the picker dialog component returns `DialogType::None`.
 
-Key events are mapped to InputAction via keybindings:
-- `Send`, `Newline`, `Cancel` - submission
-- `NavigateUp`, `NavigateDown` - selection
-- `SwitchAgent`, `SelectModel`, `ClearSession`, `NewSession` - actions
-- `FocusPrompt`, `StashPrompt`, `RestorePrompt` - prompt management
-- `Char`, `Backspace`, `Delete`, `CursorLeft/Right/Home/End` - text input
-- `PageUp`, `PageDown`, `Search`, `GoToTop`, `GoToBottom` - navigation
-
-## Event Handling
-
-### TuiMsg
-
-Internal messages from TUI to App (in `app/types.rs`):
-
-```rust
-pub enum TuiMsg {
-    SubmitPrompt, NavigateUp, NavigateDown, NavigateLeft, NavigateRight, CycleAgent,
-    OpenModelDialog, OpenAgentDialog, OpenSessionDialog, OpenHelpDialog,
-    SelectModel { model: String }, SelectAgent { agent_name: String },
-    SelectSession(Box<Session>),  // Full Session object, not just session_id
-    OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
-    OpenShareDialog, OpenThemeDialog, ExternalEditor, UndoDelete,
-    ConfirmResult(Option<bool>),  // Confirmed=true, Cancelled=false, Dismissed=None
-    ReviewOpenDiff { path: String },  // Open review for file path
-    ResearchOpenRun { run_id: String },  // Open research run
-    ResearchRefreshRuns,  // Refresh research runs list
-    ResearchLoadSection { run_id: String, section: String },  // Load research section
-    // ... and many more
-}
-```
-```
-
-### TuiCommand
-
-Async commands sent via channel (in `app/mod.rs`):
-
-```rust
-pub enum TuiCommand {
-    DeleteSession { session_id: String },
-    ArchiveSession { session_id: String, unarchive: bool },
-    UndoDelete { session_id: String },
-    ForkSession { session_id: String },
-    ShareSession { session_id: String },
-    UnshareSession { session_id: String },
-    ExportSession { session_id: String },
-    RenameSession { session_id: String, new_title: String },
-    BulkDelete { session_ids: Vec<String> },
-    BulkArchive { session_ids: Vec<String>, unarchive: bool },
-    BulkExport { session_ids: Vec<String> },
-    ReloadSessions,
-    OpenTreeDialog,
-    PreviewImport { source: ImportSource },
-    ConfirmImport { source: ImportSource },
-    CreateFromTemplate { key: String, template: SessionTemplate },
-    LoadSessionMessages { session_id: String },
-    SpawnSubagent { agent_name: String, prompt: String },
-    ListTasks,
-    DeleteTask { id: String },
-    TaskSchedule { interval_secs: u64, message: String },
-    WorktreeList,
-    MemorySummary,
-    MemorySearch { query: String },
-    MemoryRemember { text: String },
-    MemoryForget { id: String },
-    CompactSession,
-    OpenDiffDialog { old_content: Box<str>, new_content: Box<str>, title: Box<str> },
-    SendNotification { notification_type: NotificationType, body: String },
-    GoalSet { session_id, project_id, objective },
-    GoalFromFile { session_id, project_id, path },
-    GoalShow { session_id },
-    GoalPause { session_id },
-    GoalResume { session_id },
-    GoalClear { session_id },
-    GoalDone { session_id },
-    GoalCheckpoint { session_id, project_id },
-    GoalBudget { session_id, subcommand },  // "show" or "raise <axis> <n>"
-    RefreshSessionState { session_id },
-    UpdateModels(Vec<String>),
-    SessionsReloaded { sessions: Vec<SessionDto>, message_counts: HashMap<String, usize>, error: Option<String> },
-    SessionMessagesLoaded { session_id: String, messages: Vec<Message>, error: Option<String> },
-    TreeDialogLoaded { current_session_id: Option<String>, nodes: Vec<TreeNode>, error: Option<String> },
-    ImportPreviewLoaded { request_id: u64, session: Option<Session>, msg_count: usize, error: Option<String> },
-    ImportConfirmed { request_id: u64, session: Option<Session>, error: Option<String> },
-    ResearchRunsLoaded { request_id: u64, runs: Vec<ResearchRunSummary>, error: Option<String> },
-    ResearchRunLoaded { request_id: u64, run_id: String, bundle: Option<Box<ResearchBundle>>, error: Option<String> },
-    ResearchSectionLoaded { request_id: u64, section: String, content: Option<(ReportSection, String)>, error: Option<String> },
-    MemoryResult { toast_message: String, is_error: bool },
-    DoctorResult { summary: String, is_error: bool },
-    FileDiffStatsReady { path: PathBuf, generation: u64, result: FileDiffStatsResult },
-}
-```
-
-## Component Trait
-
-All dialogs implement the `Component` trait from `src/tui/components/component.rs`:
+### Component Trait (`src/tui/components/component.rs:110`)
 
 ```rust
 pub trait Component: Send + Any {
@@ -871,47 +418,7 @@ pub trait Component: Send + Any {
 }
 ```
 
-### Plugin UI Renderer (Phase 2)
-
-`PluginUiRenderer` (`src/tui/components/plugin_renderer.rs`) is now a compat shim that re-exports `UiNodeRenderer` (`src/tui/components/ui_node_renderer.rs`). The renderer converts protocol `UiNode` trees into ratatui widgets and flat text lines. Supported nodes: Text, Markdown (as wrapped text), Code, Table, KeyValue, Progress, Container, Empty, Unsupported. Hardened behaviors (Phase 14): empty-table fallback message, key-value alignment to longest key, column-width cap of 60 chars with `…` truncation, ANSI/control-character sanitization in line output, safe `total=0` percentage handling. `App::apply_plugin_ui_effect()` routes `UiEffect` variants to state mutations and toast/chat emission.
-
-### Shared `UiNode` Surface (Phase 14)
-
-The portable `UiNode` schema (defined in `codegg_protocol::ui`) is now used for both plugin UI and selected first-party read-only surfaces. The shared pipeline is:
-
-```
-Domain data -> UiNode builder -> UiNodeRenderer -> ratatui / line output
-```
-
-- **Builders** live in `src/tui/ui_builders/`: `stats.rs` (TUI diagnostics), `plugins.rs` (re-exports plugin management builders), `shell.rs` (shell command detail). All builders are pure functions of their inputs and produce `UiNode` trees; they have no `App` or ratatui dependencies.
-- **Renderer** (`UiNodeRenderer` in `src/tui/components/ui_node_renderer.rs`) is the single lowering adapter used by both plugin and first-party code.
-- **Generic dialog** (`UiNodeDialog` in `src/tui/components/dialogs/ui_node.rs`) accepts a `UiNode` directly, supports scroll/page/jump navigation, and reuses the `DialogType::Plugin` slot in the focus manager.
-
-First-party surfaces that render through this path as of Phase 14: `/tui-stats` (via `stats_node`). Plugin UI dialogs (Phase 2-13) continue to flow through the same renderer.
-
-### When to Use `UiNode` vs Native Components
-
-Use `UiNode` for: read-only or mostly-read-only informational surfaces (tables, key-value lists, text/code dumps, structured reports, scrollable summaries, plugin-generated dialogs).
-
-Do NOT use `UiNode` for: interactive components that need focus management, selection, or editing — permission prompts, question dialogs, command palette, file diff viewers, source preview with focus/selection semantics, security review workflows with actions, tree browsers, shell interactive execution views. Keep those as native `Component` impls.
-
-### DialogType
-
-```rust
-pub enum DialogType {
-    Share, Model, Agent, Session, Help, Tree, Theme, Permission,
-    Mcp, Question, Diff, Import, Template, Connect, Keybind,
-    Context, Cost, Usage, Stats, Goto, Plan, Confirm,
-    Review,           // Diff review dialog
-    ResearchBrowser,  // Research browser dialog
-    Plugin,           // Plugin UI content dialog (Phase 2)
-    None,
-}
-```
-
-## FocusManager
-
-Modal focus handling via stack in `components/component/focus.rs`:
+### FocusManager (`src/tui/components/component/focus.rs:14`)
 
 ```rust
 pub struct FocusManager {
@@ -920,445 +427,260 @@ pub struct FocusManager {
 }
 ```
 
-Key methods:
-- `push(component)` - add dialog to stack
-- `pop()` - remove top dialog
-- `top()` / `top_mut()` - access top dialog
-- `handle_key(key)` - delegate to top dialog
-- `active_dialog_type()` - current dialog type
+Key methods: `push(component)`, `pop()`, `top()`/`top_mut()`,
+`handle_key(key)`, `active_dialog_type()`, `len()`.
 
-### Dialog Lifecycle
+### TuiMsg (`src/tui/app/types.rs:86`)
 
-**Opening**: `open_dialog()` sets `ui_state.dialog` and pushes component to FocusManager
+Internal messages from TUI to App. Key variants: `SubmitPrompt`,
+`NavigateUp`/`Down`/`Left`/`Right`, `CycleAgent`, `OpenModelDialog`,
+`OpenAgentDialog`, `OpenSessionDialog`, `OpenHelpDialog`, `OpenTreeDialog`,
+`SelectModel`, `SelectAgent`, `SelectSession(Box<Session>)`,
+`OpenDiffDialog`, `OpenShareDialog`, `OpenThemeDialog`,
+`ExternalEditor`, `UndoDelete`, `ConfirmResult`, `ReviewOpenDiff`,
+`ResearchOpenRun`, `ResearchRefreshRuns`, `ResearchLoadSection`.
 
-**Confirm dialogs**: `push_dialog()` creates temporary dialogs (like ConfirmDialog)
+### TuiCommand (`src/tui/app/types.rs`)
 
-**Closing**: `close_dialog()` pops FocusManager and syncs `ui_state.dialog` from `active_dialog_type()`
+Async commands sent via channel. ~80 variants covering: session CRUD,
+archive, fork, bulk ops, share, export, rename, undo delete, import,
+template creation, session message loading, subagent spawn, task/worktree
+operations, memory operations, goal lifecycle, research browser, doctor,
+security review, git sidebar, plugin commands, test run, shell operations,
+provider connection lifecycle, project catalog, file diff stats, and
+completion/result variants for each async operation.
 
-## Terminal Lifecycle
-
-Terminal setup and teardown is managed by `TerminalGuard` (`src/tui/terminal.rs`).
-
-### Setup Order (in `TerminalGuard::enter()`)
-
-1. Enter alternate screen
-2. Enable raw mode
-3. Enable bracketed paste
-4. Enable mouse capture
-
-### Teardown Order (in `TerminalGuard::restore()`)
-
-1. Disable mouse capture
-2. Disable bracketed paste
-3. Disable raw mode
-4. Leave alternate screen
-
-`TerminalGuard::restore()` is idempotent. The `Drop` impl calls `restore()`. If any setup step fails, all previously enabled features are rolled back before returning the error.
-
-## Logging and Diagnostics
-
-### Logging Policy
-
-Normal builds use `tracing` only. The `debug_log!` macro in `src/tui/mod.rs` was removed. Feature-gated `debug_log!` macros remain in `src/tui/app/mod.rs` and `src/tui/input.rs` behind the `debug-logging` feature flag. No `codegg_debug.log` file is created in the working directory during normal operation.
-
-### Tracing Targets
-
-TUI tracing events use these targets:
-
-| Target | Module |
-|--------|--------|
-| `codegg::tui::events` | Event loop and bus subscription |
-| `codegg::tui::session` | Session state transitions |
-| `codegg::tui::input` | Key event handling and dispatch |
-| `codegg::tui::render` | Render pipeline and panic recovery |
-| `codegg::tui::loop` | Main loop timing and diagnostics |
-
-### TuiDiagnostics
-
-The `TuiDiagnostics` struct tracks runtime performance metrics:
-
-| Metric | Description |
-|--------|-------------|
-| Slow loop iterations | Iterations exceeding 250ms |
-| Slow render frames | Frames exceeding 16ms (streaming) or 100ms (always logged) |
-| Slow command handlers | Command dispatch exceeding threshold |
-| Dropped bus events | Broadcast receiver lag (missed events) |
-| Render panic count | Number of render panics recovered |
-| Component render panic count | Number of component-level render panics |
-| Last render error | Most recent render panic message |
-
-Recent slow commands, slow renders, and component render panics are stored in bounded ring buffers for inspection.
-
-`/tui-stats` also reports background task lifecycle stats (active tasks by kind, oldest task, cancelled count) and shell handle count, appended to the diagnostics summary.
-
-### Diagnostics Command
-
-`/tui-stats` displays a summary of runtime diagnostics including slow iterations, dropped events, render panics, and recent slow command/render records.
-
-### Render Panic Recovery
-
-- **Component-level**: `App::render()` wraps risky surfaces (viewport, sidebar, dialog, completions, timeline) in `std::panic::catch_unwind`. A component panic renders a compact fallback in that region. `TuiDiagnostics` tracks `component_render_panic_count` and `recent_component_render_panics` for observability.
-- **Root-level**: `runtime/event_loop::run_event_loop` wraps `terminal.draw()` in `catch_unwind`. Recovery is progressive:
-  - First root failure: log + render error screen
-  - Repeated failures (≥1): hide optional overlays/dialogs
-  - Final fallback (≥3 = `MAX_RENDER_PANICS`): reset minimal volatile UI state
-- `clear_render_error()` resets only `render_panic_count` and `last_render_error`.
-- `App::reset_state()` clears dialog, command_mode, timeline_visible, show_completions, completion_filter. Does NOT clear prompt text or search state.
-
-## Rendering Flow
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                  runtime/event_loop::run_event_loop()                │
-│                                                               │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
-│  │ EventStream │───►│ on_key()    │───►│ process_msg()│      │
-│  │ (keyboard)  │    │ (dispatch)  │    │ (TuiMsg)    │      │
-│  └─────────────┘    └─────────────┘    └──────┬──────┘      │
-│                                                │              │
-│                                                ▼              │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐      │
-│  │ render()    │◄───│ App::render │◄───│ State       │      │
-│  │ (Terminal)  │    │             │    │ mutations   │      │
-│  └─────────────┘    └─────────────┘    └─────────────┘      │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Render Order
-
-1. **Header**: Agent name, model, session info, and active indicators
-2. **Timeline**: Optional timeline panel (when `timeline_visible` is true)
-3. **Viewport**: Messages (Home or Session view)
-4. **Prompt**: Input area with status indicator, mode indicator
-5. **Footer**: Status bar with: session status, goal indicator (`[status] title budget`), subagent count, token counts, keybinds
-6. **Sidebar**: Optional session/agent info panel (if visible)
-7. **Dialog**: Modal overlay via FocusManager (if open)
-8. **Completions**: Slash/file/agent completion popup (if active)
-9. **Toasts**: Notification messages (topmost)
-
-## Event Subscriptions
-
-TUI subscribes to `GlobalEventBus` for:
-
-| Event | Handler Action |
-|-------|---------------|
-| `TextDelta` | Append to messages |
-| `ReasoningDelta` | Add reasoning text |
-| `ToolCallStarted` | Add tool call entry |
-| `ToolResult` | Update tool call status |
-| `AgentFinished` | Update session status, trigger memory consolidation |
-| `PermissionPending` | Show permission dialog |
-| `QuestionPending` | Show question dialog |
-| `FileChanged` | Cheap state mutation (mark Pending, update sidebar), spawn background diff via `spawn_sidebar_diff_stats()` |
-| `SubagentStarted/Progress/Completed/Failed` | Show toasts |
-| `CompactionTriggered` | Show toast |
-| `TodoUpdated` | Update sidebar todo list |
-| `GoalUpdated` | Update `app.active_goal`, refresh status bar |
-| `GoalUsageUpdated` | Update usage on `app.active_goal` |
-| `GoalBudgetLimited` | Show budget-limited toast |
-| `GoalCompleted` | Clear active goal, show completion toast |
-
-## UX Consistency and Discoverability (Phase 12)
-
-### InfoDialog for Long Output
-
-`InfoDialog` (`src/tui/components/dialogs/info.rs`) is the standard scrollable surface for long structured output. It handles:
-
-- `/tui-stats` diagnostics output
-- Task list (`/tasks`)
-- Worktree list (`/worktree`)
-- Memory search results (`/memory search`)
-- Doctor output (`/doctor`)
-- Shell list (`/shell-list`)
-- Shell detail view (`/shell-show`)
-
-The dialog supports keyboard scrolling (Up/Down/j/k) and shows a scroll indicator with line counts in the footer.
-
-### Unified Status Bar
-
-The status bar uses `TuiStatusSummary` and `build_status_summary()` for unified state composition. The summary is built once per render frame and applied via `StatusBarWidget::apply_summary()`.
-
-**Priority order** (first match wins for the primary status label):
-
-1. Render error (degraded)
-2. Permission pending
-3. Question pending
-4. Security review running
-5. Agent working
-6. Shell commands running
-7. Background tasks active
-8. Error
-9. Idle
-
-**Activity chips** are appended to the `activity` vector and rendered as compact indicators in the status bar:
-
-| Chip | Meaning |
-|------|---------|
-| `agent:<name>` | Current agent name |
-| `subagents:<n>` | Active subagent count |
-| `reloading` | Session list reload in flight |
-| `importing` | Import preview/confirm in flight |
-| `research` | Research browser load in flight |
-| `mem:<n>` | Active memory tasks |
-| `tasks:<n>` | Active background tasks |
-| `shell:<n>` | Running shell commands |
-| `diff:<n>` | Pending diff computations |
-| `security` | Security review in progress |
-| `goal:<status>` | Active goal indicator |
-
-### Dialog Footer Hints
-
-Dialog footers use a standardized format with `|` separator for multiple actions. Examples:
-
-- `"j/k move | f filter (All) | Enter preview | Esc close"` — research browser
-- `"Enter copy to clipboard  Esc close"` — share dialog
-- `"Esc/Enter to close"` — info dialog
-- `"j/k scroll | PgUp/PgDn | Home/End | Esc close (N/M lines)"` — source preview
-
-### Error Message Conventions
-
-When core is unavailable (e.g., no daemon running), error messages use a consistent pattern:
-
-```
-Core unavailable — check daemon status with /doctor
-```
-
-This pattern appears in:
-- Toast notifications for synchronous failures
-- `error` field in completion TuiCommand variants
-- Import error states
-
-Error messages avoid raw debug dumps and use human-readable text.
-
-### Shell UX Improvements
-
-The shell detail view (`/shell-show`) displays:
-- Full metadata: ID, command, CWD, started/finished timestamps, elapsed time
-- Status with formatted label (running/done/timeout/failed/killed)
-- Exit code when available
-- Promoted state (`yes`/`no`)
-- Capture policy
-- stdout/stderr sections with head text
-- Scroll indicator with line counts
-
-The shell list (`/shell-list`) shows promoted state per entry via the compact status format. The shell detail dialog uses `InfoDialog` with `InfoType::ShellShow`, providing scrollable output with `j/k` navigation.
-
-## Keyboard Shortcuts
-
-Help text is mode-aware (Phase 5). The `/help` dialog content is generated by
-`build_help_lines(vim_mode, active_mode)` in `src/tui/input.rs`, not hardcoded.
-`HelpMode` (Insert/Normal/Command/Dialog) and `HelpEntry` types centralize help
-metadata. `default_help_entries()` provides the base list; `help_entries_for_mode()`
-filters entries by the active mode. In **insert mode**, only modifier-based shortcuts
-(Ctrl+*, Shift+*) are shown as shortcuts — bare `?`, `/`, `j`, `k` insert text. In
-**normal mode**, bare navigation keys (`j`, `k`, `h`, `l`, `?`, `/`) are shown as
-shortcuts.
-
-### Global Shortcuts
-
-| Shortcut | Mode | Action |
-|----------|------|--------|
-| `Enter` | Insert | Send prompt |
-| `Shift+Enter` | Insert | Newline in prompt |
-| `Esc`, `Ctrl+C` | Any | Cancel operation |
-| `↑/k`, `↓/j` | Normal | Navigate up/down |
-| `Tab` | Normal | Switch agent |
-| `Shift+Tab` | Normal | Toggle permission mode |
-| `Ctrl+L` | Normal | Model selector |
-| `Ctrl+K` | Normal | Clear session |
-| `Ctrl+N` | Normal | New session |
-| `Ctrl+T` | Normal | Toggle sidebar |
-| `Ctrl+W` | Normal | Close session |
-| `/` | Normal | Focus prompt |
-| `?` | Normal | Help |
-| `Ctrl+S` | Normal | Stash prompt |
-| `Ctrl+R` | Normal | Restore prompt |
-| `Ctrl+P` | Normal | Cycle model forward |
-| `Ctrl+Shift+P` | Normal | Cycle model backward |
-| `Ctrl+Y` | Normal | Toggle TTS |
-| `Ctrl+Shift+Y` | Normal | Stop TTS |
-| `Ctrl+Shift+F` | Normal | Toggle fullscreen |
-| `PgUp/PgDn` | Any | Page scroll |
-| `Ctrl+F` | Any | Search |
-
-> **Note:** `help_overlay.rs` exists but is dead code — it is not imported.
-> The help dialog is rendered inline from the mode-aware `build_help_lines()` output.
-
-## GlobalEventBus Integration
-
-The TUI uses `GlobalEventBus::subscribe()` to receive events from AgentLoop:
+### Routes (`src/tui/route.rs`)
 
 ```rust
-let mut bus_rx = GlobalEventBus::subscribe();
-
-tokio::select! {
-    Some(result) = reader.next() => { /* keyboard/mouse */ }
-    Ok(event) = bus_rx.recv() => {
-        match event {
-            AppEvent::TextDelta { delta, .. } => { /* ... */ }
-            AppEvent::ToolCallStarted { tool_name, tool_id, arguments, .. } => { /* ... */ }
-            // ... handle other events
-        }
-    }
+pub enum Route {
+    Home,
+    Session(String),
 }
 ```
 
-### ClickTarget Enum
-
-Mouse interaction targets for click handling:
+### InputMode (`src/tui/input.rs`)
 
 ```rust
-#[derive(Debug, Clone, PartialEq)]
-pub enum ClickTarget {
-    Viewport,   // Main message area
-    Prompt,     // Input prompt area
-    Dialog,     // Active dialog overlay
-    Completion, // Completion popup
-    Sidebar,    // Sidebar panel
-    None,       // No target (background)
+pub enum InputMode {
+    Insert,
+    Normal,
 }
 ```
 
-Used by `clickable_area_at()` to determine which UI region was clicked, and `on_click()` to handle the interaction appropriately.
+### InputAction
 
-The `App` struct (in `src/tui/app/mod.rs`) includes these fields (among many others):
+Key events mapped to: `Send`, `Newline`, `Cancel`, `NavigateUp`/`Down`,
+`SwitchAgent`, `SelectModel`, `ClearSession`, `NewSession`,
+`FocusPrompt`, `StashPrompt`, `RestorePrompt`, `Char`, `Backspace`,
+`Delete`, `CursorLeft`/`Right`/`Home`/`End`, `PageUp`, `PageDown`,
+`Search`, `GoToTop`, `GoToBottom`.
 
-```rust
-pub struct App {
-    // ... state domains ...
-    pub busy_spinner: SpinnerWidget,  // Animated busy indicator
-    pub focus_manager: FocusManager,  // Modal focus stack
-    pub notification_manager: Option<NotificationManager>,
-    pub undo_session_id: Option<String>,
-    pub undo_until: Option<Instant>,
-    pub config_watcher: Option<ConfigWatcher>,
-    pub core_client: Option<Arc<dyn CoreClient>>,
-    pub active_goal: Option<GoalSnapshot>,  // Active goal for status bar
-    // ... other fields ...
-}
+## Directory Structure
+
+```
+tui/
+├── app/
+│   ├── mod.rs              # App struct, event loop, key handling (~15,340 lines)
+│   ├── types.rs            # Dialog, TuiMsg, TuiCommand, SessionStatus, etc.
+│   └── state/              # 18 state domain modules
+│       ├── agent.rs        # AgentState (models, agents, snapshot)
+│       ├── async_request.rs # AsyncUiRequestState
+│       ├── diagnostics.rs  # TuiDiagnostics
+│       ├── dialog.rs       # DialogState (all dialog instances)
+│       ├── manifest.rs     # Manifest handling
+│       ├── messages.rs     # MessagesState (messages, toasts, spinner)
+│       ├── persistence.rs  # State persistence
+│       ├── plugin_ui.rs    # PluginUiState
+│       ├── project_picker.rs # Project picker (Milestone 2)
+│       ├── project_tabs.rs # Multi-project tabs (Milestone 1)
+│       ├── projection_client.rs # Projection client state
+│       ├── prompt.rs       # PromptState (prompt, completions)
+│       ├── restore.rs      # State restore
+│       ├── routing.rs      # Route routing helpers
+│       ├── session.rs      # SessionState (session, history, git info)
+│       ├── snapshot.rs     # Remote snapshot building
+│       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
+│       └── view_switch.rs  # Active-view switch coordinator
+├── commands/               # 19 command handler submodules
+│   ├── mod.rs              # Re-exports
+│   ├── agents.rs           # Asset refresh, agent operations
+│   ├── diagnostics.rs      # Doctor, diagnostics, tool contracts
+│   ├── git_sidebar.rs      # Git sidebar refresh
+│   ├── goals.rs            # Goal lifecycle, session state refresh
+│   ├── import.rs           # Import preview, confirm
+│   ├── manifest_restore.rs # Manifest restore operations
+│   ├── memory.rs           # Memory summary, search, remember, forget
+│   ├── plugin_management.rs # Plugin management operations
+│   ├── plugins.rs          # Plugin command run, UI effect
+│   ├── project_catalog.rs  # Project catalog refresh
+│   ├── project_picker.rs   # Project picker navigation
+│   ├── provider_connections.rs # Provider connection lifecycle
+│   ├── research.rs         # Research list runs, load run, load section
+│   ├── security.rs         # Security review dispatch
+│   ├── session_selection.rs # Session selection refresh/load
+│   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share
+│   ├── shell.rs            # Shell list, include, rerun, kill, show, ask
+│   ├── tasks.rs            # Task/worktree/template/notification/file-diff
+│   └── test.rs             # Test run lifecycle
+├── runtime/
+│   ├── mod.rs              # Re-exports
+│   ├── event_loop.rs       # Main event loop (select loop, render, terminal)
+│   ├── command_dispatch.rs # Main TuiCommand dispatch match
+│   ├── app_events.rs       # Bus event handling (AppEvent subscription)
+│   └── render_recovery.rs  # Render panic recovery (progressive fallback)
+├── components/
+│   ├── component/
+│   │   ├── component.rs    # Component trait, DialogType enum
+│   │   ├── focus.rs        # FocusManager for modal focus stack
+│   │   └── context.rs      # AppContext for overlay dialogs
+│   ├── dialogs/            # Modal dialogs (all implement Component)
+│   │   ├── agent.rs        # AgentDialog
+│   │   ├── command.rs      # CommandPalette
+│   │   ├── confirm.rs      # ConfirmDialog
+│   │   ├── connect.rs      # ConnectDialog (Eggpool endpoint/API key)
+│   │   ├── connection_selection.rs # ConnectionSelectionDialog
+│   │   ├── diff.rs         # DiffDialog
+│   │   ├── goto.rs         # GotoDialog
+│   │   ├── help.rs         # HelpDialog
+│   │   ├── import.rs       # ImportDialog
+│   │   ├── info.rs         # InfoDialog (Context/Cost/Usage/Stats/etc.)
+│   │   ├── keybind.rs      # KeybindDialog
+│   │   ├── mcp.rs          # McpDialog
+│   │   ├── model.rs        # ModelDialog
+│   │   ├── permission.rs   # PermissionDialog
+│   │   ├── plan.rs         # PlanDialog
+│   │   ├── plugin.rs       # PluginDialog (generic plugin UI)
+│   │   ├── project_picker.rs # ProjectPickerDialog
+│   │   ├── question.rs     # QuestionDialog
+│   │   ├── research.rs     # ResearchBrowserDialog
+│   │   ├── review.rs       # ReviewDialog
+│   │   ├── run_detail.rs   # RunDetailDialog
+│   │   ├── security_review.rs # SecurityReviewDialog
+│   │   ├── session.rs      # SessionDialog
+│   │   ├── share.rs        # ShareDialog
+│   │   ├── source_preview.rs # SourcePreviewDialog
+│   │   ├── template.rs     # TemplateDialog
+│   │   ├── theme.rs        # ThemePickerDialog
+│   │   ├── tree.rs         # TreeDialog
+│   │   └── ui_node.rs      # UiNodeDialog (generic, reuses Plugin slot)
+│   ├── completion_overlay.rs # Slash/file/agent completion popups
+│   ├── diff.rs             # DiffViewer
+│   ├── help_overlay.rs     # Dead code (help is mode-aware via input.rs)
+│   ├── image.rs            # ImageViewer (image rendering via ANSI)
+│   ├── messages.rs         # MessagesWidget (message display, streaming)
+│   ├── notification.rs     # NotificationManager
+│   ├── plugin_renderer.rs  # Compat alias for UiNodeRenderer
+│   ├── ui_node_renderer.rs # UiNodeRenderer (UiNode → ratatui/line)
+│   ├── prompt.rs           # PromptWidget
+│   ├── scroll.rs           # CenteredScroll
+│   ├── sidebar.rs          # SidebarWidget
+│   ├── spinner.rs          # SpinnerWidget
+│   ├── status_bar.rs       # StatusBarWidget
+│   ├── toast.rs            # ToastManager
+│   └── tool_output.rs      # ToolOutput
+├── input.rs                # Key event handling, keybindings, InputMode
+├── layout.rs               # Layout calculations, TuiLayout
+├── route.rs                # Route/RouteManager (Home, Session)
+├── theme.rs                # TUI-local Theme (ratatui projection)
+├── terminal.rs             # TerminalGuard lifecycle, AppTerminal
+├── file_diff.rs            # Async diff stats for sidebar
+├── task_lifecycle.rs       # TuiTaskRegistry for background task tracking
+├── async_cmd.rs            # spawn_tui_task, spawn_registered_tui_task
+├── command.rs              # Slash command registry (108 built-in)
+├── ui_builders/            # Pure UiNode builder functions
+│   ├── mod.rs
+│   ├── stats.rs            # stats_node for /tui-stats
+│   ├── plugins.rs          # Plugin management builders
+│   └── shell.rs            # shell_detail_node for /shell-show
+└── mod.rs                  # TUI entry point, module declarations, re-exports
 ```
 
-**`busy_spinner: SpinnerWidget`** - Located at `src/tui/components/spinner.rs`. Shows animated busy indicator (frames: `["░", "▏", "▎", "▍", "▌", "▋", "▊", "▉"]`). Starts when `session_status` is `Working`, stops on `Idle` or `Error`. Tick called every render frame (~60fps).
+### UiNode Builders (`ui_builders/`)
 
-## Eggpool `/connect`
+Pure functions converting domain data into `UiNode` trees. Free of `App`
+and ratatui dependencies for testability.
 
-`ConnectDialog` is a local asynchronous form for the daemon-owned Eggpool
-workflow. It collects provider, host, port (default `11300`), TLS policy,
-masked API key, optional display name, and personal scope, then shows a
-redacted review before submitting `CoreRequest::EggpoolConnectionCreate`.
-The key is cleared from dialog state immediately after submission and on
-close/error. Probe completion is delivered through a registered task; closing
-the dialog cancels the operation and stale completions are ignored by the
-normal command-task lifecycle.
+| Module | Responsibility |
+|--------|----------------|
+| `stats.rs` | `stats_node(diagnostics, task_summary, shell_handles_count) -> UiNode` |
+| `plugins.rs` | Re-exports plugin management builders from `crate::plugin::management_ui` |
+| `shell.rs` | `shell_detail_node(entry) -> UiNode` for `/shell-show` |
 
-The dialog creates a connection and discovers models, but does not alter the
-session's selected provider/model. Project scope remains unavailable from
-this context until authoritative project-aware TUI state is available.
+### Shared `UiNode` Surface
 
-## Remote TUI Protocol (Phase 8)
+The portable `UiNode` schema (`codegg_protocol::ui`) is used for both
+plugin UI and selected first-party surfaces:
 
-### Protocol Model
+```
+Domain data -> UiNode builder -> UiNodeRenderer -> ratatui / line output
+```
 
-The remote TUI uses an **event/state-driven** protocol. The daemon sends typed state snapshots and event deltas; remote clients render independently. Frame-driven rendering (`RenderFrame`) is explicitly **unsupported** — receiving it returns an `Error` response with code `unsupported_render_frame`.
+- **Builders** live in `src/tui/ui_builders/`.
+- **Renderer** (`UiNodeRenderer` in `src/tui/components/ui_node_renderer.rs`)
+  is the single lowering adapter.
+- **Generic dialog** (`UiNodeDialog` in `src/tui/components/dialogs/ui_node.rs`)
+  accepts `UiNode`, supports scroll/page/jump, reuses `DialogType::Plugin`
+  slot in FocusManager.
 
-### Protocol Version
+Use `UiNode` for: read-only informational surfaces (tables, key-value
+lists, text/code dumps, scrollable summaries, plugin dialogs).
 
-The remote TUI protocol version is defined as `REMOTE_TUI_PROTOCOL_VERSION = 5` in `crates/codegg-protocol/src/tui.rs`. Projection-capable clients negotiate the additive projection lifecycle before using stream-scoped operations; incompatible clients remain on bounded raw compatibility.
+Do NOT use `UiNode` for: interactive components needing focus management
+(permission, question, command palette, diff, tree, shell interactive).
 
-### State Snapshots
+## Configuration Surface
 
-`RemoteTuiStateSnapshot` is a frontend-neutral DTO containing only render-relevant state: route, model, agent, status, messages (as previews), prompt, dialog, and toasts. Snapshots are produced by `App::remote_snapshot()` which is a pure, nonblocking read of current `App` state.
+No direct TUI config keys in `opencode.jsonc`. TUI state is driven by:
+- Theme selection via `[theme]` config
+- Keybindings via `[keybindings]` config
+- Vim mode via config
+- Agent/model selection stored in session
 
-### Resync
+## Invariants & Gotchas
 
-On reconnect or sequence gaps, the server replays events from the EventLog and sends a `ResyncRequired` event. Clients can request a full resync via `RequestSnapshot` — the server responds by replaying all events from sequence 0 followed by `ResyncRequired`. When a client receives a `StateSnapshot`, it applies the snapshot fields (model, status) to local App state. The `ResyncRequired` event is also sent when the broadcast channel lags.
-
-### Unsupported RenderFrame
-
-If a `RenderFrame` payload is received, the handler returns a `TuiMessage::Error` with:
-- message: `Frame-driven remote rendering is not supported; request state snapshots instead (unsupported_render_frame)`
-
-The `unsupported_render_frame` identifier is embedded in the message string. This replaces the previous silent log-and-ignore behavior.
-
-### Deferred Items
-
-The following Phase 8 items are defined in the plan but deferred for future work:
-
-- **Hello/Ack handshake** — No protocol version negotiation on connect. Handshakes should reject incompatible major versions or degrade explicitly.
-- **Structured RemoteTuiError** — Plan specifies `{ code, message, recoverable }` fields. Current implementation uses `TuiMessage::Error { message: String }` with code embedded in the message string.
-- **Server-side input forwarding** — `Input`, `KeyDown`, `MouseClick`, `Resize` handlers in the server WebSocket are logging-only stubs. Remote user input should eventually convert into the same input/command paths as local input.
-- **State delta protocol** — `RemoteTuiStateDelta` is not implemented. Snapshot-only is acceptable per the plan.
-
-## Projection-primary remote state
-
-Projection-primary remote TUI connections are reducer-driven. The server
-retains connection-local ownership for each daemon-issued subscription and
-sends the canonical snapshot/cursor followed by live envelopes from that
-subscription's bounded receiver. `ProjectionEvent` carries the persisted
-stream ID separately from the subscription ID; v4 event fixtures without the
-additive stream field remain decodable.
-
-Reconnect uses `ProjectionResume { cursor, include_snapshot_if_resync }` and
-returns a replay batch or typed `ProjectionResync` (including
-`SubscriberLagged`, `HistoryExpired`, stream, scope, and version failures).
-Acknowledgement, unsubscribe, status, and artifact list/range reads are
-explicit typed operations and are rejected unless the connection owns the
-subscription/project scope. Legacy `Resume { from_event_seq }` and raw session
-messages remain available only as bounded compatibility traffic and cannot
-mutate projection-primary state.
+- **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
+  enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
+  `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`, etc.
+  via `dialog_type_for_info_type()`.
+- **DialogType in component.rs**: `DialogType` lives in
+  `src/tui/components/component/component.rs`, not `types.rs`.
+- **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant
+  handles all plugin dialogs. `UiNodeDialog` also reuses this slot.
+- **Dispatch arms are all non-async**: `command_dispatch.rs` has no
+  `.await` points.
+- **Git sidebar is cached, not live**: Render reads from
+  `session_state.git_sidebar`; never shells out to git.
+- **Remote TUI is event/state-driven**: `RenderFrame` is unsupported.
+- **State domains are 18 modules**: Not the 6 listed in the doc header;
+  the domain model expanded across multiple milestones.
+- **Async command stale-completion tests**: Each guarded handler has a
+  stale-completion test in `src/tui/mod.rs::async_cmd_tests`.
 
 ## Testing
 
-TUI render regression tests live in `tests/tui_render.rs` (97 tests). They use `ratatui::backend::TestBackend` to exercise `App::render()` across multiple terminal sizes without requiring an interactive terminal. Component-level panic injection tests verify fallback behavior for messages, sidebar, dialog, completions, and timeline surfaces.
-
-**Run all render regression tests:**
-
 ```bash
-cargo test --test tui_render
+cargo test --test tui_render      # 97 render regression tests
+cargo test --test tui              # integration tests
 ```
 
-**Test matrix** (terminal sizes):
+### Render Regression Tests (`tests/tui_render.rs`)
 
-| Size | Dimensions | Purpose |
-|------|-----------|---------|
-| tiny | 40x12 | Minimal viable terminal |
-| small | 60x20 | Compact terminal |
-| normal | 100x32 | Standard terminal |
-| wide | 160x40 | Ultra-wide terminal |
-| tall | 100x60 | Tall terminal |
+Uses `ratatui::backend::TestBackend` across terminal sizes:
+tiny (40×12), small (60×20), normal (100×32), wide (160×40),
+tall (100×60).
 
-**Coverage areas:**
+Coverage: empty/home state, active session with messages, streaming,
+tool calls, sidebar file changes, all 30+ dialog variants, completion
+overlay, toasts, pathological content, component panic injection,
+combined states.
 
-- Empty/home state (sidebar visible/hidden)
-- Active session with messages
-- Streaming state with active tokens
-- Tool calls (pending, completed, error)
-- Sidebar with file changes (pending, ready, skipped, error states)
-- All 28 dialog variants (help, model, session, agent, tree, theme, mcp, keybind, cost, usage, stats, goto, plan, confirm, review, context, connect, template, share, import, question, permission, diff, research browser, security review, source preview, shell show)
-- Completion overlay at various sizes
-- Toast notifications
-- Pathological content (long lines, wide Unicode, ANSI escapes, malformed JSON, combining marks)
-- Component panic injection (messages, sidebar, dialog, completions, timeline fallbacks)
-- Component fallback diagnostics tracking
-- Error dialog rendering
-- Timeline visible state
-- Tool-only messages (no user messages)
-- Shell cells and reasoning content
-- Combined states (sidebar + messages + toasts, dialog + sidebar, streaming + dialog + sidebar + toasts, etc.)
+Key patterns: `render_app_to_buffer(app, w, h)`,
+`assert_render_ok(app, w, h)`, `text_in_buffer(buffer)`,
+`buffer_contains(buffer, needle)`.
 
-**Key patterns:**
+## Related Docs
 
-- `render_app_to_buffer(app, w, h)` — renders to `TestBackend`, returns `Buffer`
-- `assert_render_ok(app, w, h)` — asserts no panic, returns buffer
-- `text_in_buffer(buffer)` — extracts rendered text as string
-- `buffer_contains(buffer, needle)` — case-insensitive substring search
-- Tests avoid brittle full-screen snapshots; use semantic assertions instead
-
-**Bug fix included:** `PromptWidget::clamp_scroll` and `ensure_cursor_visible` now use `saturating_sub` for `visible_lines - 1` to prevent arithmetic overflow at very small terminal sizes.
-
-## See Also
-
-- [agent.md](agent.md) - AgentLoop that processes TUI commands
-- [bus.md](bus.md) - GlobalEventBus and event types
-- [session.md](session.md) - Session storage
-- `architecture/tui.md` - Detailed TUI development guide
+- [agent.md](agent.md) — AgentLoop that processes TUI commands
+- [bus.md](bus.md) — GlobalEventBus and event types
+- [session.md](session.md) — Session storage

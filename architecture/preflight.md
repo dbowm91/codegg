@@ -1,40 +1,54 @@
 # Preflight Module
 
-Harness-side eggsact preflight integration for automatic validation before mutating operations.
+Harness-side eggsact preflight integration for automatic validation
+before mutating operations. Preflight calls never appear as model-facing
+tool calls.
 
-## Overview
+## Purpose
 
-**Location**: `src/preflight/`
-
-**Key Responsibilities**:
 - Validate edits, config writes, and shell commands before execution
 - Surface severity-classified findings (Block/Warn/Annotate)
 - Integrate with the eggsact deterministic tool substrate
-- Operate as harness-internal — never exposed as model-facing tool calls
+- Operate as harness-internal only — never exposed as model-facing tools
 
-**Config**: `[preflight]` section in opencode.json (schema: `PreflightConfig` in `crates/codegg-config/src/schema.rs`)
-
-## Module Structure
+## Where It Lives
 
 ```
 src/preflight/
 ├── mod.rs          # Re-exports, module doc
 └── service.rs      # PreflightService, types, tests
+
+crates/codegg-config/src/schema.rs  # PreflightConfig schema
+src/tool/integrated_config.rs       # PreflightRuntimeConfig resolution
 ```
 
-## Types
+## How It Works
 
-### PreflightSeverity
+`PreflightService` wraps an `EggsactRuntime` with
+`audience = "harness"` and a `PreflightPolicy`. Each check method
+(e.g., `check_text_replace`, `check_json_valid`) calls an eggsact tool
+via `call_json()` directly, bypassing `ToolRegistry` to avoid recursive
+tool execution.
+
+The two-tier parsing approach:
+1. **Structured fields first**: Read `result`, `findings`, `warnings`,
+   `error`, `error_type` from `EggsactCallResult`
+2. **String parsing fallback**: If structured fields absent, parse
+   `output` text for patterns
+
+## Key Types & APIs
+
+### PreflightSeverity (`src/preflight/service.rs:14-21`)
 
 ```rust
 pub enum PreflightSeverity {
-    Block,     // Deterministic violation — operation would be incorrect or unsafe
-    Warn,      // Likely issue — should be surfaced but may not block
+    Block,     // Deterministic violation — incorrect or unsafe operation
+    Warn,      // Likely issue — surfaced but may not block
     Annotate,  // Informational — logs/provenance only
 }
 ```
 
-### PreflightLocation
+### PreflightLocation (`src/preflight/service.rs:24-29`)
 
 ```rust
 pub struct PreflightLocation {
@@ -44,9 +58,7 @@ pub struct PreflightLocation {
 }
 ```
 
-### PreflightFinding
-
-A structured finding from a preflight check:
+### PreflightFinding (`src/preflight/service.rs:32-39`)
 
 ```rust
 pub struct PreflightFinding {
@@ -58,9 +70,7 @@ pub struct PreflightFinding {
 }
 ```
 
-### PreflightDecision
-
-The service's decision after running checks:
+### PreflightDecision (`src/preflight/service.rs:42-86`)
 
 ```rust
 pub enum PreflightDecision {
@@ -72,39 +82,43 @@ pub enum PreflightDecision {
 
 Methods: `is_blocked()`, `has_warnings()`, `findings()`, `summary()`.
 
-### PreflightPolicy
-
-Controls preflight behavior:
+### PreflightPolicy (`src/preflight/service.rs:89-178`)
 
 ```rust
 pub struct PreflightPolicy {
     pub enabled: bool,
-    pub mode: PreflightMode,        // off | observe | warn | block_on_definite
-    pub patch: bool,                 // edit/replace preflights
-    pub config: bool,                // config write preflights
-    pub shell: bool,                 // shell command preflights
-    pub unicode: bool,               // unicode/identifier safety
+    pub mode: PreflightMode,
+    pub patch: bool,
+    pub config: bool,
+    pub shell: bool,
+    pub unicode: bool,
     pub log_findings: bool,
     pub model_visible_findings: bool,
 }
 ```
 
+Key methods:
+- `should_block(severity)` — returns `true` only when mode is
+  `BlockOnDefinite` and severity is `Block`
+- `should_surface()` — returns `true` when enabled and
+  `model_visible_findings` is on
+- `from_config(config: &PreflightConfig)` — fills defaults for missing
+  fields
+
 Default: enabled, mode `Warn`, all categories on.
 
-`should_block(severity)` returns `true` only when mode is `BlockOnDefinite` and severity is `Block`.
-
-### PreflightMode
+### PreflightMode (`src/preflight/service.rs:110-121`)
 
 ```rust
 pub enum PreflightMode {
     Off,             // No checks
     Observe,         // Log findings, never alter behavior
     Warn,            // Surface warnings, never block
-    BlockOnDefinite, // Block on deterministic failures; warn on likely issues
+    BlockOnDefinite, // Block on deterministic failures
 }
 ```
 
-### PreflightService
+### PreflightService (`src/preflight/service.rs:181-548`)
 
 ```rust
 pub struct PreflightService {
@@ -114,22 +128,37 @@ pub struct PreflightService {
 ```
 
 Constructors:
-- `PreflightService::new(policy)` — creates a fresh `EggsactRuntime` with `audience = "harness"`
-- `PreflightService::with_runtime(runtime, policy)` — shares an existing runtime (testing/shared use)
+- `new(policy)` — creates fresh `EggsactRuntime` with
+  `audience = "harness"` and `max_output_chars: 8_000`
+- `with_runtime(runtime, policy)` — shares existing runtime (testing)
 
-Check methods:
-- `check_text_replace(text, old, new)` → edit/replace preflight
-- `check_json_valid(text)` → JSON validation
-- `check_toml_valid(text)` → TOML validation
-- `check_config(text)` → auto-detected config format validation
-- `check_command(command)` → shell command risk analysis
-- `check_text_security(text)` → unicode/confusable/hidden-char inspection
+Check methods (all return `PreflightDecision`):
+- `check_text_replace(text, old, new)` — edit/replace preflight
+- `check_json_valid(text)` — JSON validation
+- `check_toml_valid(text)` — TOML validation
+- `check_config(text)` — auto-detected config format validation
+- `check_command(command)` — shell command risk analysis
+- `check_text_security(text)` — unicode/confusable/hidden-char inspection
 
-All methods return `PreflightDecision`. On eggsact failure, they return `Allow` (fail-open) with a debug log.
+All methods are `async`. On eggsact failure, they return `Allow`
+(fail-open) with a debug log.
 
-## Policy Configuration
+Parse methods (public for testing):
+- `parse_replace_check_result(result) -> PreflightDecision`
+- `parse_command_result(result) -> PreflightDecision`
+- `parse_text_security_result(result) -> PreflightDecision`
 
-Config schema in `crates/codegg-config/src/schema.rs`:
+### Helper Functions
+
+- `structured_error_message(result, fallback_prefix)` — extracts error
+  from structured fields, falls back to truncated output
+- `structured_location(result)` — extracts `PreflightLocation` from
+  structured `line`/`column`/`file`/`path` fields
+- `parse_match_count(output)` — parses "match_count: N" from text output
+
+## Configuration Surface
+
+### Schema (`[preflight]` in opencode.json)
 
 ```json
 {
@@ -146,11 +175,22 @@ Config schema in `crates/codegg-config/src/schema.rs`:
 }
 ```
 
-All fields are `Option<T>` with sensible defaults. `PreflightPolicy::from_config()` fills defaults for missing fields. The `mode` field is an enum (`off`, `observe`, `warn`, `block_on_definite`) and is validated at deserialization time.
+All fields are `Option<T>` with sensible defaults.
+`PreflightPolicy::from_config()` fills defaults for missing fields.
+The `mode` field is an enum validated at deserialization time.
+
+### Runtime Config Resolution
+
+`PreflightRuntimeConfig` is resolved by
+`integrated_config::resolve_preflight_config()` in
+`src/tool/integrated_config.rs`. The resolved config includes a
+`profile` field (always `"codegg_core"`) for the `/tool-backends`
+report.
 
 ## Integration Points
 
-The preflight service is designed to be called by mutating tools **before** executing their primary operation. Current integration points:
+The preflight service is called by mutating tools **before** executing
+their primary operation. Current integration points:
 
 | Tool | Check Method | What It Validates |
 |------|-------------|-------------------|
@@ -159,65 +199,66 @@ The preflight service is designed to be called by mutating tools **before** exec
 | `bash` | `check_command` | Shell command risk patterns |
 | All tools | `check_text_security` | Unicode confusables, hidden chars |
 
-Tool integration is opt-in. Each tool calls the relevant check method and acts on the `PreflightDecision`:
+Tool integration is opt-in. Each tool calls the relevant check method
+and acts on the `PreflightDecision`:
 - `Block` in `BlockOnDefinite` mode → tool returns error
-- `Warn` → findings are appended to tool output (if `model_visible_findings` is on)
+- `Warn` → findings appended to tool output (if `model_visible_findings`)
 - `Allow` → proceed normally
 
 ## How Findings Are Surfaced
 
-1. **Logging**: If `log_findings` is enabled, findings are logged at appropriate levels (WARN for Block, INFO for Warn, DEBUG for Annotate)
-2. **Tool output**: If `model_visible_findings` is enabled, `PreflightDecision::summary()` is appended to the tool's output string
-3. **Blocking**: Only in `BlockOnDefinite` mode with `Block` severity findings
+1. **Logging**: If `log_findings` enabled, findings logged at appropriate
+   levels (WARN for Block, INFO for Warn, DEBUG for Annotate)
+2. **Tool output**: If `model_visible_findings` enabled,
+   `PreflightDecision::summary()` appended to tool output string
+3. **Blocking**: Only in `BlockOnDefinite` mode with `Block` severity
+
+## Invariants & Gotchas
+
+- **Fail-open**: Eggsact failures return `Allow` — preflight never
+  prevents execution due to its own errors
+- **No recursion**: `PreflightService` calls `EggsactRuntime` directly,
+  bypassing `ToolRegistry` entirely
+- **Separate audience**: Constructed with `audience = "harness"` vs
+  `"model"` for model-facing tools
+- **Not a tool**: `PreflightService` is never registered in any registry
+- **`check_text_security` blocks at Warn, not Block**: Even when verdict
+  is "block", findings get `PreflightSeverity::Warn` severity — Unicode
+  issues default to warn behavior, not block
+- **Default `max_output_chars` for harness is 8,000** (vs 12,000 for
+  model audience)
 
 ## Relationship to Deterministic Tools
 
-The preflight module and the deterministic tools (`src/tool/deterministic.rs`) both use the eggsact runtime but serve different purposes:
-
 | Aspect | Deterministic Tools | Preflight |
 |--------|-------------------|-----------|
-| Visibility | Model-facing (registered in ToolRegistry) | Harness-internal (not in ToolRegistry) |
-| Purpose | Expose eggsact capabilities to the model | Validate before tool execution |
+| Visibility | Model-facing (in ToolRegistry) | Harness-internal (not in ToolRegistry) |
+| Purpose | Expose eggsact capabilities to model | Validate before tool execution |
 | Interface | `Tool::execute()` via ToolRegistry | `PreflightService::check_*()` methods |
-| Audience | `model` | `harness` |
-| Error handling | Returns ToolError | Returns `Allow` (fail-open) |
+| Audience | `"model"` | `"harness"` |
+| Error handling | Returns `ToolError` | Returns `Allow` (fail-open) |
 
-## Avoiding Recursive Tool Pollution
+## Testing
 
-The preflight service avoids tool execution cycles through:
+```bash
+cargo test -p codegg --lib preflight::service    # unit tests
+```
 
-1. **Direct runtime usage**: Calls `EggsactRuntime::call_json()` directly, bypassing `ToolRegistry` entirely
-2. **Separate audience**: Constructed with `audience = "harness"` (vs `"model"` for model-facing tools)
-3. **No tool registration**: `PreflightService` is not a `Tool` and is never registered in any registry
-4. **Fail-open**: Eggsact failures return `Allow` — preflight never prevents execution due to its own errors
-
-## Structured Parsing
-
-Preflight check methods use a two-tier approach:
-
-1. **Structured fields first**: Read `result`, `findings`, `warnings`, `error`, `error_type` from `EggsactCallResult` — these are typed JSON values from the eggsact response. Helper functions `structured_error_message()` and `structured_location()` extract common patterns (error text, line/column/file location).
-2. **String parsing fallback**: If structured fields are absent or incomplete, fall back to parsing the `output` text for patterns like `"match_count: N"`, `"verdict: block"`, `"risk: high"`.
-
-This ensures correct behavior as eggsact evolves its response format, while maintaining backward compatibility.
-
-## Validation
-
-`PreflightConfig::validate()` in `crates/codegg-config/src/schema.rs` performs forward-compatibility checks. Since `PreflightMode` is an enum, deserialization always produces a valid variant; the validation block is a placeholder for future extensibility.
-
-## Tests
-
-Unit tests in `src/preflight/service.rs` cover:
-- Default policy assertions
+Unit tests cover:
+- Default policy assertions (`policy_default_is_warn`)
 - `should_block` behavior across modes
-- Decision helper methods (`is_blocked`, `has_warnings`, `summary`)
+- Decision helpers (`is_blocked`, `has_warnings`, `summary`)
 - `parse_match_count` for text_replace_check output
-- String truncation via `truncate_utf8_safe`
-- Structured-field parsing (synthetic `EggsactCallResult` with `result`/`findings`/`warnings`)
-- `structured_error_message` and `structured_location` helper functions
-- Fallback to string parsing when structured fields are absent
+- Truncation via `truncate_utf8_safe`
+- Structured-field parsing (synthetic `EggsactCallResult` with
+  `result`/`findings`/`warnings`)
+- `structured_error_message` and `structured_location` helpers
+- Fallback to string parsing when structured fields absent
+- `parse_replace_check_result` with structured fields
 
-## See Also
+## Related Docs
 
-- [tool.md](tool.md) — Deterministic tools (eggsact) and tool system
+- [tool.md](tool.md) — Deterministic tools and tool system
+- [deterministic_tools.md](deterministic_tools.md) — Eggsact tools
 - `crates/codegg-config/src/schema.rs` — `PreflightConfig` schema
-- `src/eggsact/adapter.rs` — EggsactRuntime used by preflight
+- `src/eggsact/adapter.rs` — `EggsactRuntime` used by preflight

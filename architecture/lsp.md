@@ -365,14 +365,15 @@ Tracks open documents so they can be replayed after a server restart.
 
 ```rust
 pub struct OpenDocumentRegistry {
-    documents: HashMap<String, OpenDocumentSnapshot>,
+    documents: Arc<RwLock<HashMap<String, HashMap<Url, OpenDocumentSnapshot>>>>,
 }
 
 pub struct OpenDocumentSnapshot {
-    pub uri: String,
+    pub uri: Url,
     pub language_id: String,
     pub version: i32,
     pub text: String,
+    pub dirty: bool,
 }
 ```
 
@@ -784,7 +785,7 @@ uniform `Vec<LocationLink>`. `normalize_workspace_symbol_response`
 collapses `WorkspaceSymbolResponse::Flat` and `::Nested` (with
 URI-only `WorkspaceLocation` entries surfacing as empty range) into
 a uniform `Vec<SymbolInformation>`. Both are pure functions in
-`crates/egglsp/src/operations.rs`.
+`crates/egglsp/src/operations/navigation.rs`.
 
 ### diagnostics.rs - Diagnostics Collection
 
@@ -1289,7 +1290,7 @@ Phase 11 centralizes tier, workflow, risk, budget, and stale-evidence decisions 
 
 | Type | Purpose |
 |------|---------|
-| `LspContextPolicy` | Central policy struct holding tier, workflow, risk, budget, stale/unavailable policies, feature flags, and lifecycle state |
+| `LspContextPolicy` | Central policy struct holding tier, workflow, risk, budget, stale/unavailable policies, feature flags (`include_cross_file`, `include_hierarchy`, `include_previews`), `token_budget_hint`, `max_context_bytes`, and lifecycle state |
 | `StaleEvidencePolicy` | Controls handling of stale diagnostics/context: `IncludeWithWarning` (default), `OmitStale`, `RequireFresh` |
 | `LspUnavailablePolicy` | Controls behavior when LSP server is unavailable: `NoteOnly` (default), `Omit`, `FailWhenRequired` |
 | `LspTaskRisk` | Risk classification: `Normal` (default), `Low`, `High`, `SecuritySensitive` |
@@ -2305,6 +2306,8 @@ pub struct LspCapabilitySnapshot {
     // Phase 4: split diagnostics into advertised push/pull.
     pub supports_push_diagnostics: bool,
     pub supports_pull_diagnostics: bool,
+    // Observed from actual publishDiagnostics notifications.
+    pub observed_push_diagnostics: bool,
     // Legacy alias: true when either push or pull is advertised.
     pub supports_diagnostics: bool,
     pub supports_document_symbols: bool,
@@ -2385,6 +2388,7 @@ pub struct LspCapabilityDetails {
     pub completion_trigger_characters: Vec<String>,
     pub signature_trigger_characters: Vec<String>,
     pub semantic_token_legend: Option<SemanticTokenLegendSnapshot>,
+    pub position_encoding: Option<PositionEncoding>,
 }
 
 pub struct SemanticTokenLegendSnapshot {
@@ -2580,7 +2584,10 @@ pub struct SemanticContextRequest {
     pub max_diagnostics: usize,
     pub call_depth: u8,
     pub include_overlay: bool,
+    pub overlay_content: Option<String>,
     pub include_source_actions: bool,
+    pub include_call_hierarchy: bool,
+    pub include_type_hierarchy: bool,
     pub include_definitions: bool,
     pub include_references: bool,
     pub excerpt_radius: u32,

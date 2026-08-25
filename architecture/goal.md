@@ -1,25 +1,70 @@
 # Goal Module Architecture
 
-## Overview
+The `goal` module implements a Codex-style long-horizon goal runtime
+with budget enforcement, TUI-rendered status, and autonomous
+continuation. Goals are the durable, multi-session planning surface —
+distinct from in-flight todos.
 
-The `goal` module (`src/goal/`) implements a Codex-style long-horizon goal runtime with budget enforcement, TUI-rendered status, and autonomous continuation. Goals are the durable, multi-session planning surface — distinct from in-flight todos.
+## Purpose
 
-## Module Structure
+Provide a structured way for the agent to track long-running objectives
+across sessions, enforce resource budgets, and autonomously continue
+work until the goal is complete or budget is exhausted.
+
+## Where It Lives
+
+| Component | Location |
+|-----------|----------|
+| Core types, store, runtime | `crates/codegg-core/src/goal/` |
+| Model-facing tools | `src/tool/goal.rs` |
+| TUI slash commands | `src/tui/commands/` (`/goal *`) |
+| DB schema | `crates/codegg-core/src/session/schema.rs` (migration v16) |
+
+### Module Structure
 
 ```
-src/goal/
-├── mod.rs          # Module root, re-exports GoalRuntimeOutcome
+crates/codegg-core/src/goal/
+├── mod.rs          # Re-exports
 ├── model.rs        # Goal, GoalStatus, GoalBudget, GoalUsage structs
 ├── store.rs        # GoalStore: SQLite persistence, budget accounting
 ├── runtime.rs      # GoalWallClock, should_continue, continuation prompts
-├── tool.rs         # Tool definitions: goal_set, goal_update_progress, goal_request_completion
 ├── render.rs       # Goal rendering helpers for TUI
 └── checkpoint.rs   # Session checkpoint integration for goals
 ```
 
-## Key Types
+## How It Works
 
-### Goal (`model.rs`)
+### Goal Lifecycle
+
+1. User creates a goal via `/goal set <objective>`.
+2. `GoalStore::create_active()` pauses any existing active goal for the
+   session and inserts a new one with `Active` status.
+3. Each turn, `account_for_turn()` advances usage counters (tokens,
+   tool calls, turns, wall-clock).
+4. `should_continue()` checks budget axes and returns a
+   `ContinuationDecision`. If active with budget remaining, a
+   continuation prompt is queued.
+5. `maybe_continue_goal()` loops up to 32 iterations, re-accounting
+   after each continuation.
+6. Budget exhaustion → `BudgetLimited` status + wrap-up prompt.
+7. `goal_request_completion` → evidence-based transition to `Complete`.
+
+### Budget Enforcement
+
+`GoalStore::increment_usage()` atomically advances counters and checks
+breaches via `first_budget_breach()`. On breach, status transitions to
+`BudgetLimited`. `/goal budget raise` calls `set_budget()` which
+revives `BudgetLimited` → `Active` if the new budget is sufficient.
+
+### Wall-Clock Accounting
+
+`GoalWallClock` tracks time via `Instant::now()`. The delta since the
+last tick is added to `usage.wallclock_secs` and persisted in SQLite,
+surviving session restarts.
+
+## Key Types & APIs
+
+### Goal (`crates/codegg-core/src/goal/model.rs:51`)
 
 ```rust
 pub struct Goal {
@@ -29,6 +74,8 @@ pub struct Goal {
     pub title: String,
     pub objective: String,
     pub status: GoalStatus,
+    pub plan_path: Option<String>,
+    pub checkpoint_path: Option<String>,
     pub current_phase: Option<String>,
     pub progress_summary: String,
     pub next_action: Option<String>,
@@ -36,40 +83,36 @@ pub struct Goal {
     pub open_questions: Vec<String>,
     pub budget: GoalBudget,
     pub usage: GoalUsage,
-    // timestamps: created_at, updated_at, started_at, completed_at
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
 }
 ```
 
-### GoalStatus
+### GoalStatus (`:6`)
 
-```rust
-pub enum GoalStatus {
-    Active,        // Agent is actively working
-    Paused,        // User paused via /goal pause
-    AwaitingUser,  // Blocked on user input
-    BudgetLimited, // Budget axis exhausted — agent wraps up
-    Complete,      // Goal met (requires evidence)
-    Failed,        // Goal failed
-    Cancelled,     // User cancelled
-}
-```
+`Active`, `Paused`, `AwaitingUser`, `BudgetLimited`, `Complete`,
+`Failed`, `Cancelled`.
 
-### GoalBudget (`model.rs`)
+`is_terminal()` (:112) returns true for `Complete | Failed | Cancelled |
+BudgetLimited`. `is_active()` (:123) returns true only for `Active`.
 
-Four enforcement axes (all optional):
+### GoalBudget (`:18`)
 
 ```rust
 pub struct GoalBudget {
     pub max_turns: Option<i64>,
     pub max_model_tokens: Option<i64>,
     pub max_tool_calls: Option<i64>,
-    pub max_wallclock_secs: Option<i64>,  // seconds, durable across sessions
+    pub max_wallclock_secs: Option<i64>,
 }
 ```
 
-### GoalUsage (`model.rs`)
+All axes are optional. Budget is checked in priority order: tokens →
+tool calls → turns → wall-clock.
 
-Tracks cumulative usage (persisted in SQLite):
+### GoalUsage (`:34`)
 
 ```rust
 pub struct GoalUsage {
@@ -77,13 +120,35 @@ pub struct GoalUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub tool_calls: i64,
-    pub wallclock_secs: i64,  // durable across sessions
+    pub wallclock_secs: i64,
 }
 ```
 
-## GoalRuntimeOutcome (`runtime.rs`)
+### GoalProgressUpdate (`:78`)
 
-Returned by `account_for_turn()` after advancing usage:
+```rust
+pub struct GoalProgressUpdate {
+    pub current_phase: Option<String>,
+    pub progress_summary: Option<String>,
+    pub next_action: Option<String>,
+    pub completed_items: Vec<String>,
+    pub remaining_items: Vec<String>,
+    pub open_questions: Vec<String>,
+}
+```
+
+### CompletionRequest (`:88`)
+
+```rust
+pub struct CompletionRequest {
+    pub evidence: String,
+    pub files_changed: Vec<String>,
+    pub tests_run: Vec<String>,
+    pub remaining_risks: Vec<String>,
+}
+```
+
+### GoalRuntimeOutcome (`crates/codegg-core/src/goal/runtime.rs:55`)
 
 ```rust
 pub enum GoalRuntimeOutcome {
@@ -93,90 +158,78 @@ pub enum GoalRuntimeOutcome {
 }
 ```
 
-## ContinuationDecision (`runtime.rs`)
-
-Returned by `should_continue()` / `should_continue_for_session()`:
+### ContinuationDecision (`runtime.rs:146`)
 
 ```rust
 pub struct ContinuationDecision {
     pub should_continue: bool,
     pub reason: String,
-    pub prompt: Option<String>,  // continuation or wrap-up prompt
+    pub prompt: Option<String>,
 }
 ```
 
-## AgentLoop Integration (`agent/loop.rs`)
+### GoalStore (`crates/codegg-core/src/goal/store.rs:56`)
 
-The agent loop holds two goal-related fields:
+SQLite-backed. Key methods:
 
-```rust
-pub goal_store: Option<Arc<GoalStore>>,
-pub goal_wall_clock: Mutex<GoalWallClock>,
-```
+| Method | Line | Description |
+|--------|------|-------------|
+| `create_active(...)` | :157 | Pause existing, insert new Active goal |
+| `active_for_session(session_id)` | :209 | Fetch active/awaiting/budget-limited goal |
+| `get(id)` | :222 | Fetch by ID |
+| `update_status(id, status)` | :231 | Transition status |
+| `clear_active_for_session(sid)` | :261 | Cancel all active goals for session |
+| `update_progress(id, update)` | :278 | Advance phase/next-action/open_questions |
+| `increment_usage(...)` | :363 | Atomic usage advance + budget check |
+| `enforce_budget(id)` | :424 | Check budget without advancing |
+| `set_budget(id, budget)` | :440 | Replace budget, revive if BudgetLimited |
+| `latest_paused_for_session(sid)` | :469 | Fetch latest paused goal |
 
-### Turn Lifecycle
+### GoalUsageUpdate (`store.rs:11`)
 
-1. **Stream completes** → `ChatEvent::Finish { usage }` captured; per-turn `input_tokens`/`output_tokens` stored on `AgentLoopState`.
-2. **Publish finished** → `publish_agent_finished()` emits `AgentFinished`.
-3. **Account** → `account_goal_for_turn()` computes wall-clock delta, calls `runtime::account_for_turn()`, returns `GoalRuntimeOutcome`.
-4. **Continue?** → `maybe_continue_goal()` calls `should_continue_for_session()` in a loop (max 32 iterations):
-   - `Continue` → queue `build_continuation_prompt()` via `follow_up_tx`, drain, re-account.
-   - `BudgetLimited` → queue `build_budget_wrap_up_prompt()`, drain once, stop.
-   - Terminal / no goal → exit.
-
-### Per-Turn Accounting Deltas
-
-The loop keeps cumulative hard-limit counters separate from the deltas awaiting
-goal persistence. Each provider response contributes its input/output usage to
-`unaccounted_input_tokens` and `unaccounted_output_tokens`; tool calls likewise
-contribute to `unaccounted_tool_calls` while `tool_call_count` remains
-cumulative. A successful `account_for_turn()` clears these deltas. Storage
-failure retains them for retry rather than silently losing or double-counting
-work.
-
-## GoalStore (`store.rs`)
-
-SQLite-backed goal storage:
-
-- `create_goal()` → insert with Active status
-- `active_for_session()` → fetch active goal for a session
-- `increment_usage()` → atomic budget check + usage advance; transitions to `BudgetLimited` if axis exceeded; returns `Option<GoalUsageUpdate>`
-- `set_budget()` → replace budget; revives `BudgetLimited` → `Active` if new budget is high enough
-- `update_progress()` → advance phase/next-action/open_questions
-- `request_completion()` → evidence-based transition to `Complete`
-
-### GoalUsageUpdate
+Returned by `increment_usage()`:
 
 ```rust
 pub struct GoalUsageUpdate {
-    pub goal_id: String,
-    pub old_status: GoalStatus,
-    pub new_status: GoalStatus,
-    pub breached_axis: Option<String>,
+    pub usage: GoalUsage,
+    pub budget: GoalBudget,
+    pub budget_limited: bool,
+    pub reason: Option<String>,
 }
 ```
 
-## TUI Integration
+### Model-Facing Tools (`src/tool/goal.rs`)
 
-### Status Bar (`tui/components/status_bar.rs`)
+| Tool | Struct | Description |
+|------|--------|-------------|
+| `goal_get` | `GoalGetTool` (:9) | Get current active goal |
+| `goal_update_progress` | `GoalUpdateProgressTool` (:71) | Update progress |
+| `goal_request_completion` | `GoalRequestCompletionTool` (:187) | Request completion with evidence |
 
-The `StatusBarWidget` renders a goal line in the status bar when `active_goal` is set:
+**Note**: There is no `goal_set` tool. Goals are created via TUI
+`/goal set` commands which call `GoalStore::create_active()` directly.
+
+### Checkpoint System (`crates/codegg-core/src/goal/checkpoint.rs`)
+
+- `create_checkpoint_file()` (:9) — creates `.codegg/goals/{id}.checkpoint.md`
+- `read_checkpoint_excerpt()` (:85) — read with truncation
+- `append_checkpoint_update()` (:103) — append progress updates
+
+### Render Helpers (`crates/codegg-core/src/goal/render.rs`)
+
+- `render_goal_context()` (:5) — full goal context for system prompt
+- `render_goal_status()` (:52) — one-line status summary
+
+## Configuration Surface
+
+No dedicated config section. Goals are always available. The model
+receives instructions via `goal_and_todos_contract()` in the system
+prompt.
+
+### TUI Slash Commands
 
 ```
-[active] Ship codex-style goals  !tok 1.2K/20K turns 2/10 calls 5/50 !wall 12s/600s
-```
-
-- `!` prefix appears on any axis that's at or over the limit.
-- Formatted by `format_goal_status_line(&GoalSnapshot)` in `tui/app/mod.rs`.
-
-### Sidebar
-
-`App::set_active_goal()` stores a `GoalSnapshot` on the `App` struct. The sidebar renders it when present.
-
-### Slash Commands
-
-```text
-/goal set <objective>        # Create a new goal
+/goal set <objective>        # Create new goal
 /goal show                   # Show active goal details
 /goal pause                  # Pause active goal
 /goal resume                 # Resume paused goal
@@ -190,37 +243,36 @@ The `StatusBarWidget` renders a goal line in the status bar when `active_goal` i
 
 Budget axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
 
-### AppEvent Wiring
+## Invariants & Gotchas
 
-| Event | Source | TUI Handler |
-|-------|--------|-------------|
-| `GoalUpdated` | GoalStore mutations | Updates `app.active_goal` |
-| `GoalUsageUpdated` | `account_for_turn` | Updates usage on `app.active_goal` |
-| `GoalBudgetLimited` | `GoalStore::increment_usage` | Shows budget-limited toast |
-| `GoalCompleted` | `goal_request_completion` | Clears active goal, shows toast |
+- `create_active()` **pauses** any existing active/awaiting/budget-
+  limited goal for the session before creating the new one.
+- `increment_usage()` only advances if goal `is_active()`. Terminal
+  goals silently skip accounting.
+- `maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per run to
+  prevent infinite loops.
+- `GoalRequestCompletionTool` requires either `tests_run` or
+  `remaining_risks` to be non-empty (safety gate against un-evidenced
+  completion).
+- `BudgetLimited` is treated as terminal by `is_terminal()` — the agent
+  cannot auto-continue. The user must raise the budget to resume.
+- Wall-clock seconds are persisted in SQLite and survive session
+  restarts. The clock resets after each accounting tick.
+- Unaccounted deltas (`unaccounted_input_tokens`, etc.) are retained on
+  storage failure rather than lost or double-counted.
 
-## System Prompt Steering
+## DB Schema
 
-The `goal_and_todos_contract()` in `agent/prompt.rs` instructs the model:
+Defined in `crates/codegg-core/src/session/schema.rs` migration v16.
+Indexes on `(session_id, status)` and `(project_id, status)`.
 
-- **In-flight planning**: use the `todo` tool for single-step tasks the user can check off.
-- **Long-horizon planning**: use `goal_set` / `goal_update_progress` / `goal_request_completion` for multi-session work.
-- **Completion evidence**: must include concrete commands run, files changed, tests passing, and `remaining_risks`.
+## Testing
 
-## Design Decisions
+```bash
+cargo test -p codegg-core -- goal
+```
 
-### Goals vs. Todos (Two Separate Surfaces)
+## Related Docs
 
-Goals are long-horizon, multi-session, durable, and autonomous. Todos are in-flight, per-turn, and ephemeral. They form a hierarchy: a goal spans many sessions; each session may have todos that are steps toward the goal.
-
-### Budget Enforcement
-
-Budget axes are checked atomically in `GoalStore::increment_usage()`. When any axis is exceeded, the goal transitions to `BudgetLimited` and the agent receives a wrap-up prompt on the next turn. The user can raise the budget with `/goal budget raise`, which revives the goal to `Active`.
-
-### Wall-Clock Accounting
-
-`GoalWallClock` tracks time since the last accounting tick. The delta is computed from `Instant::now()` and added to `usage.wallclock_secs`. The clock is reset after each accounting tick to avoid stale leaks. The value is persisted in SQLite so it survives session restarts.
-
-### Continuation Loop Safety
-
-`maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per `run()` invocation to prevent infinite loops. The runtime's `should_continue()` checks all budget axes and terminal statuses on every iteration.
+- [agent.md](agent.md) — AgentLoop integration
+- `src/tool/goal.rs` — model-facing tool implementations

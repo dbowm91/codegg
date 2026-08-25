@@ -1,63 +1,88 @@
 # Test Runner Module
 
-The `test_runner` module provides test command resolution, output parsing, report formatting, streaming process execution for supervised test runs, and a bounded previous-failures index for automatic reruns.
+The `test_runner` module provides test command resolution, output parsing,
+report formatting, streaming process execution for supervised test runs,
+and a bounded previous-failures index for automatic reruns.
 
-## Overview
+## Purpose
 
-**Location**: `src/test_runner/`
+Supervised test execution with structured output parsing,
+process-group-aware timeout handling, lifecycle event publishing,
+and a bounded previous-failures index. The module is the domain
+authority for test-run semantics; callers reach it exclusively
+through the scheduler.
 
-**Files**:
+## Where It Lives
+
+`src/test_runner/` (10 files)
+
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Re-exports |
-| `types.rs` | Core types with serde derives |
-| `resolve.rs` | Command resolver |
-| `custom.rs` | Shared custom command allowlist |
+| `types.rs` | Core types: enums, structs, `TestEventSink` trait, lifecycle snapshots |
+| `resolve.rs` | Command resolver: maps `TestScope` → `ResolvedTestCommand` |
+| `custom.rs` | Shared custom command allowlist (12 entries, argv-prefix bounded) |
 | `parse.rs` | Line-by-line output parser with ANSI escape stripping |
-| `report.rs` | Text formatter |
+| `report.rs` | Text formatter: `format_test_report()` |
 | `runner.rs` | Streaming runner with process-group-aware log capture |
-| `index.rs` | Bounded previous-failures index (Phase 06) |
-| `bus_sink.rs` | `BusEventSink` — bridges `TestEventSink` trait to `GlobalEventBus` |
-| `projection.rs` | `test_report_to_projection()` — converts `TestReport` to `ProjectionResult` (Phase 03) |
+| `index.rs` | Bounded previous-failures index (legacy, superseded by RunStore) |
+| `bus_sink.rs` | `BusEventSink` — bridges `TestEventSink` to `GlobalEventBus` |
+| `projection.rs` | `test_report_to_projection()` + `compute_test_delta()` |
 
-**Key Responsibilities**:
-- Resolve `TestScope` into platform-specific shell commands
-- Spawn and supervise test processes with streaming stdout/stderr capture
-- Parse stdout/stderr into structured results with failure-class taxonomy
-- Capture raw logs to `.codegg/test-runs/` directory
-- Classify exit codes, panics, compile errors, and pytest failures
-- Format `TestReport` into bounded, stable, model-facing text
-- Maintain a bounded previous-failures index for automatic reruns
-- Publish lifecycle events (`TestRunStarted`, `TestRunProgress`, `TestRunCompleted`) to `GlobalEventBus` for remote client visibility via the core protocol
+## How It Works
 
-**Phase**: 4 (Failure Extraction and Report Quality)
-**Projection Adapter**: Phase 03 (`projection.rs`)
+1. **Resolution**: `resolve_test_command()` maps `TestScope` to a concrete argv + cwd.
+   Auto scope detects Rust (Cargo.toml) or Python (pyproject.toml / pytest.ini / tests/*.py).
+   `Changed` scope is currently a fallback to `Auto` with a prefixed label.
+2. **Custom validation**: `validate_custom_command()` enforces the 12-entry allowlist
+   via argv-token-bounded prefix matching. Shell metacharacters, command substitution,
+   quoting, and bidi Unicode control characters are all rejected.
+3. **Defense-in-depth**: The resolver re-runs the strict validator before producing
+   `ResolvedTestCommand.argv` — even if a presentation-boundary caller forgets to
+   validate, the runner still rejects injection attempts.
+4. **Execution**: `run_resolved_test()` spawns a tokio process via
+   `Command::new(argv[0]).args(&argv[1..])` — never via shell. On Unix, the child is
+   placed in its own session/process group via `setsid()` so timeout kills target the
+   entire tree using `libc::kill(-pgid, SIGKILL)`.
+5. **Supervision**: A `tokio::select!` loop enforces wall-clock timeout (default 300s),
+   no-output stall timeout (default 120s), and emits throttled progress events through
+   the `TestEventSink`.
+6. **Parsing**: stdout/stderr lines are fed to `TestParseState` via `Arc<Mutex<>>`.
+   ANSI escape sequences are stripped before pattern matching.
+7. **Reporting**: `build_report()` classifies exit codes, panics, compile errors,
+   and pytest failures into `FailureClass`. `format_test_report()` produces bounded
+   model-facing text.
+8. **Persistence**: `persist_to_run_store()` writes to RunStore (authoritative) and
+   `append_to_index()` writes to `.codegg/test-runs/index.json` (legacy, deprecated).
+9. **Event publishing**: `BusEventSink` bridges `TestEventSink` → `GlobalEventBus` →
+   `CoreEvent::TestRun*` for remote client visibility.
 
-## Key Types
+### Scheduler integration
 
-### FailureClass
+All production model-facing test execution flows through the scheduler:
 
-```rust
-pub enum FailureClass {
-    Passed,
-    RustTestFailure,
-    RustPanic,
-    RustCompileError,
-    RustDoctestFailure,
-    PytestFailure,
-    PytestError,
-    PytestCollectionError,
-    NonzeroExit,
-    TimeoutWallClock,
-    TimeoutNoOutput,
-    SpawnError,
-    UnknownFailure,
-}
-```
+- `TestJobExecutor` (`src/scheduler/executors.rs:68`) implements `JobExecutor` for `JobKind::Test`.
+  It constructs a `TestScope::BashDispatch(argv)` from the job payload and delegates to
+  `resolve_and_run_test()`.
+- `src/tool/test.rs` submits jobs via `JobSubmissionService` and waits for completion.
+- `src/tool/bash.rs` submits planner-validated `TestScope::BashDispatch` jobs.
+- `src/tui/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits.
+- The scheduler owns admission and attempt lifecycle; TestRunner remains the domain
+  authority for framework discovery, stall handling, reports, artifacts, and RunStore
+  persistence.
 
-Implements `Display` with snake_case strings. Has `from_str()` and `as_str()` helpers.
+## Key Types & APIs
 
-### TestScope
+### FailureClass (`types.rs:44-59`)
+
+13 variants: `Passed`, `RustTestFailure`, `RustPanic`, `RustCompileError`,
+`RustDoctestFailure`, `PytestFailure`, `PytestError`, `PytestCollectionError`,
+`NonzeroExit`, `TimeoutWallClock`, `TimeoutNoOutput`, `SpawnError`, `UnknownFailure`.
+
+Implements `Display` with snake_case strings. Has `from_display_str()` and `as_str()`.
+Implements `Hash` for use in `HashSet`-based dedup (projection delta).
+
+### TestScope (`types.rs:5-19`)
 
 ```rust
 pub enum TestScope {
@@ -68,45 +93,26 @@ pub enum TestScope {
     File(PathBuf),
     PreviousFailures,
     CustomCommand(String),
-    BashDispatch(Vec<String>),
+    BashDispatch(Vec<String>),  // pre-validated argv from BashTool
 }
 ```
 
-`BashDispatch` is a pre-validated argv from BashTool's active routing dispatcher. The argv has already passed the planner's classification and validation, so the test-runner safety validator does NOT re-run (which would reject non-allowlisted test commands). Handled in `src/test_runner/resolve.rs:60-65`.
+`BashDispatch` is a pre-validated argv from BashTool's active routing dispatcher.
+The test-runner safety validator does NOT re-run for BashDispatch.
 
-### TestLanguage
+### TestLanguage (`types.rs:22-26`)
 
-```rust
-pub enum TestLanguage {
-    Rust,
-    Python,
-    Generic,
-}
-```
+`Rust | Python | Generic`
 
-### TestStatus
+### TestStatus (`types.rs:29-35`)
 
-```rust
-pub enum TestStatus {
-    Passed,
-    Failed,
-    TimedOut,
-    Cancelled,
-    Error,
-}
-```
+`Passed | Failed | TimedOut | Cancelled | Error`
 
-### TimeoutKind
+### TimeoutKind (`types.rs:38-42`)
 
-```rust
-pub enum TimeoutKind {
-    WallClock,
-    NoOutput,
-    NoProgress,
-}
-```
+`WallClock | NoOutput | NoProgress`
 
-### TestRunRequest
+### TestRunRequest (`types.rs:121-128`)
 
 ```rust
 pub struct TestRunRequest {
@@ -119,7 +125,7 @@ pub struct TestRunRequest {
 }
 ```
 
-### ResolvedTestCommand
+### ResolvedTestCommand (`types.rs:131-136`)
 
 ```rust
 pub struct ResolvedTestCommand {
@@ -130,7 +136,7 @@ pub struct ResolvedTestCommand {
 }
 ```
 
-### TestFailure
+### TestFailure (`types.rs:138-146`)
 
 ```rust
 pub struct TestFailure {
@@ -142,7 +148,7 @@ pub struct TestFailure {
 }
 ```
 
-### TestTimeout
+### TestTimeout (`types.rs:148-153`)
 
 ```rust
 pub struct TestTimeout {
@@ -152,7 +158,7 @@ pub struct TestTimeout {
 }
 ```
 
-### TestReport
+### TestReport (`types.rs:156-173`)
 
 ```rust
 pub struct TestReport {
@@ -173,71 +179,27 @@ pub struct TestReport {
 }
 ```
 
-## Canonical Delegation Entry Point
-
-### DelegatedTestRun
+### TestEventSink trait (`types.rs:204-208`)
 
 ```rust
-// src/test_runner/runner.rs:258-270
-pub struct DelegatedTestRun {
-    pub report: TestReport,
-    pub run_id: Option<RunId>,
+pub trait TestEventSink: Send + Sync {
+    fn started(&self, snapshot: TestRunStartedSnapshot);
+    fn progress(&self, snapshot: TestRunProgressSnapshot);
+    fn completed(&self, snapshot: TestRunCompletedSnapshot);
 }
 ```
 
-Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some` when the canonical TestRunner successfully began a `RunKind::Test` record; `None` when no record could be begun or no `RunStore` was provided. This is the **record-ownership contract**: callers suppress duplicate persistence only when `run_id` is present, and retain the delegated result when it is absent.
+Snapshot types carry `session_id`, `job_id`, and event-specific fields.
 
-```rust
-impl DelegatedTestRun {
-    pub fn into_report(self) -> TestReport { self.report }
-    pub fn report(&self) -> &TestReport { &self.report }
-}
-```
+### DelegatedTestRun (`runner.rs:260-272`)
 
-### persist_to_run_store
+Returned by `run_resolved_test` and `resolve_and_run_test`. The `run_id` is `Some`
+when the canonical TestRunner successfully began a `RunKind::Test` record; `None`
+when no record could be begun or no `RunStore` was provided. This is the
+**record-ownership contract**: callers suppress duplicate persistence only when
+`run_id` is present.
 
-`persist_to_run_store` in `src/test_runner/runner.rs:622` now returns `Option<RunId>` — `Some` after `begin_run` yields the canonical run identity, `None` when beginning the record fails (logged, non-fatal). Artifact and completion writes remain best-effort.
-
-### Callers
-
-Daemon callers submit a typed durable `JobKind::Test` through
-`JobSubmissionService`. `TestJobExecutor` is the only production adapter that
-invokes `resolve_and_run_test` / `run_resolved_test`; it calls `.into_report()`
-to project the canonical `TestReport` and preserves the returned `run_id`.
-
-- `src/tool/test.rs` submits and waits through the scheduler
-- `src/tool/bash.rs` submits planner-validated `TestScope::BashDispatch` jobs
-- `src/tui/commands/test.rs` submits through `CoreRequest::JobSubmit` and waits
-- Internal tests in `src/test_runner/runner.rs` may call the subsystem directly
-
-The scheduler owns admission and attempt lifecycle; TestRunner remains the
-domain authority for framework discovery, stall handling, reports, artifacts,
-and RunStore persistence. Active daemon dispatch failure is returned to the
-caller and never retried through raw shell.
-
-```bash
-cargo test -p codegg --lib tool::bash
-```
-
-## Resolver API
-
-### resolve_test_command
-
-```rust
-pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestCommand, TestResolveError>
-```
-
-Resolves a `TestScope` into a concrete command (`argv` + `cwd`). For `Auto` scope, detects language via `detect_language_for_auto`.
-
-### Helper functions
-
-```rust
-pub fn has_cargo_manifest(workdir: &Path) -> bool
-pub fn has_python_test_markers(workdir: &Path) -> bool
-pub fn detect_language_for_auto(workdir: &Path) -> Result<TestLanguage, TestResolveError>
-```
-
-### TestResolveError
+### TestResolveError (`resolve.rs:11-34`)
 
 ```rust
 pub enum TestResolveError {
@@ -245,6 +207,7 @@ pub enum TestResolveError {
     MissingPackageName,
     MissingFilePath,
     EmptyCustomCommand,
+    CustomCommandInvalid(CustomCommandValidationError),
     AmbiguousEcosystem,
     UnsupportedEcosystem(String),
     UnsupportedScopeForEcosystem { scope: &'static str, language: TestLanguage },
@@ -252,209 +215,23 @@ pub enum TestResolveError {
 }
 ```
 
-### TestIndexError
+### TestRunError (`runner.rs:30-58`)
 
 ```rust
-pub enum TestIndexError {
-    IndexMissing(PathBuf),
-    IndexUnreadable(PathBuf, io::Error),
-    IndexMalformed(PathBuf, serde_json::Error),
-    NoPreviousFailures(String),
-    CommandInvalid(String),
+pub enum TestRunError {
+    Resolve(TestResolveError),
+    LogDir(io::Error),
+    Spawn(io::Error),
+    StdoutPipe(io::Error),
+    StderrPipe(io::Error),
+    LogWrite(io::Error),
+    ProcessWait(String),
+    EmptyCommand,
+    InvalidRequest(String),
 }
 ```
 
-## Custom Command Allowlist
-
-The `custom.rs` module defines the shared allowlist used by both the model-facing `test` tool and the `/test` slash command. The allowlist is **argv-prefix based**, NOT raw-string-prefix based. Each entry is a sequence of argv tokens; a custom command is accepted only if it tokenizes into an argv vector whose prefix matches one of the allowed `argv_prefix` sequences exactly.
-
-```rust
-pub struct AllowedTestCommand {
-    pub label: &'static str,
-    pub argv_prefix: &'static [&'static str],
-}
-
-pub const CUSTOM_COMMAND_ALLOWLIST: &[AllowedTestCommand] = &[
-    AllowedTestCommand { label: "cargo test",     argv_prefix: &["cargo", "test"] },
-    AllowedTestCommand { label: "cargo nextest",  argv_prefix: &["cargo", "nextest"] },
-    AllowedTestCommand { label: "pytest",         argv_prefix: &["pytest"] },
-    AllowedTestCommand { label: "uv run pytest",  argv_prefix: &["uv", "run", "pytest"] },
-    AllowedTestCommand { label: "go test",        argv_prefix: &["go", "test"] },
-    AllowedTestCommand { label: "zig build test", argv_prefix: &["zig", "build", "test"] },
-    AllowedTestCommand { label: "make test",      argv_prefix: &["make", "test"] },
-    AllowedTestCommand { label: "make check",     argv_prefix: &["make", "check"] },
-    AllowedTestCommand { label: "npm test",       argv_prefix: &["npm", "test"] },
-    AllowedTestCommand { label: "pnpm test",      argv_prefix: &["pnpm", "test"] },
-    AllowedTestCommand { label: "yarn test",      argv_prefix: &["yarn", "test"] },
-    AllowedTestCommand { label: "bun test",       argv_prefix: &["bun", "test"] },
-];
-
-pub fn validate_custom_command(cmd: &str)
-    -> Result<ValidatedCustomCommand, CustomCommandValidationError>
-
-pub fn is_allowed_custom_command(cmd: &str) -> bool
-```
-
-### Validation contract
-
-The strict validator enforces these invariants on every custom command string:
-
-1. **Reject empty / whitespace-only input** — returns `Empty`.
-2. **Reject forbidden shell syntax** — returns `ForbiddenShellSyntax` if the input contains any of:
-   - Shell control operators: `;`, `&&`, `||`, `&`, `|`, `>`, `<`
-   - Command substitution: `` ` ``, `$(`, `${`
-   - Quoting: `'`, `"`, `\`
-   - Grouping / redirection: `(`, `)`, `{`, `}`, `[`, `]`
-   - Globbing: `*`, `?`
-   - Expansion / history: `~`, `#`, `!`
-   - Newlines, carriage returns, NUL bytes, and other ASCII control characters
-   - Bidirectional Unicode control characters (U+200E–U+200F, U+202A–U+202E, U+2066–U+2069)
-3. **Tokenize as whitespace-separated argv** — quote handling is intentionally absent. If a user wants to pass a literal space, they must use a different scope.
-4. **Match the token prefix against the allowlist** — argv-token-bounded match, so `pytestevil` is NOT a hit for `pytest` and `cargo testify` is NOT a hit for `cargo test`.
-5. **Return the validated argv vector** — the validator returns a `ValidatedCustomCommand { argv, label }` ready for direct `Command::new(argv[0]).args(&argv[1..])` execution.
-
-### Defense-in-depth re-validation
-
-Both the model-facing `test` tool and the TUI `/test` slash command call `validate_custom_command` at the presentation boundary. As a defense-in-depth measure, the resolver (`src/test_runner/resolve.rs::resolve_validated_custom_command`) **also** re-runs the strict validator before producing `ResolvedTestCommand.argv`. The resolver never accepts raw text into argv — even if a caller forgets to validate, the resolver still rejects shell metacharacters, redirection, command substitution, and allowlist-prefix smuggling.
-
-### What is NOT supported
-
-- Quoted arguments with embedded spaces (`-- 'name with space'`)
-- Glob patterns (`--tests-*`)
-- Tilde expansion (`~/tmp`)
-- Environment variable references (`${HOME}`, `$VAR`)
-- Shell history expansion (`!`)
-- Pipes, redirections, backgrounding, subshells
-- Anything that isn't a plain whitespace-separated argv vector
-
-This is the intended behavior. Custom scope means "allowlisted test command with ordinary arguments," not arbitrary shell syntax after an allowlisted prefix. If you need shell semantics, do not use the test runner — use the bash tool directly.
-
-## Previous-Failures Index (Phase 06)
-
-> **RunStore is the authoritative persistence layer for test runs.** The legacy `.codegg/test-runs/index.json` is retained for backward compatibility with `TestScope::PreviousFailures` and TUI commands that read the index directly. The legacy index is deprecated and will be removed once `PreviousFailures` reads from RunStore directly.
-
-The `index.rs` module maintains a bounded, local index of recent test runs so that the `PreviousFailures` scope can automatically find and rerun the most recent failing test command.
-
-### Index file location
-
-```
-.codegg/test-runs/index.json
-```
-
-### Key types
-
-```rust
-pub struct TestRunIndex {
-    pub version: u32,           // always 1
-    pub updated_at: String,     // RFC3339 timestamp
-    pub runs: Vec<TestRunIndexEntry>,
-}
-
-pub struct TestRunIndexEntry {
-    pub run_id: String,         // directory name (e.g. "20260708T123456Z-abc12345")
-    pub created_at: String,     // RFC3339 timestamp
-    pub status: TestStatus,
-    pub failure_class: FailureClass,
-    pub language: String,       // "rust", "python", "go", etc.
-    pub scope_label: String,
-    pub cwd: PathBuf,
-    pub argv: Vec<String>,
-    pub summary: String,        // truncated to MAX_SUMMARY_BYTES (1000)
-    pub failures: Vec<TestFailureIndexEntry>,
-    pub log_dir: PathBuf,
-    pub stdout_log: Option<PathBuf>,
-    pub stderr_log: Option<PathBuf>,
-    pub report_json: Option<PathBuf>,
-}
-
-pub struct TestFailureIndexEntry {
-    pub name: Option<String>,
-    pub file: Option<String>,
-    pub line: Option<u32>,
-    pub message_preview: String, // truncated to MAX_MESSAGE_PREVIEW_BYTES (500)
-    pub failure_class: FailureClass,
-}
-```
-
-### Constants
-
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `MAX_INDEX_ENTRIES` | 100 | Max runs retained in the index |
-| `MAX_FAILURE_ENTRIES_PER_RUN` | 10 | Max failures captured per run entry |
-| `MAX_MESSAGE_PREVIEW_BYTES` | 500 | Truncation limit for failure messages |
-| `MAX_SUMMARY_BYTES` | 1000 | Truncation limit for run summaries |
-
-### Writing
-
-After every test run completes, `runner.rs` calls `append_to_index()` which:
-
-1. Loads the existing index (or creates a new one if missing/malformed)
-2. Appends a new `TestRunIndexEntry` built from the `TestReport`
-3. Bounds the index to `MAX_INDEX_ENTRIES` (keeps newest entries)
-4. Writes atomically via `.tmp` + rename
-
-A static `OnceLock<Mutex<()>>` serializes concurrent writes in-process.
-
-### Resolution
-
-`resolve_previous_failures()` in `resolve.rs`:
-
-1. Loads the index from `.codegg/test-runs/index.json`
-2. Scans entries newest-first for the first "actionable" failure (status = `Failed` or `TimedOut`)
-3. Validates the entry's cwd exists and is within the request workdir
-4. Validates argv is non-empty and argv[0] is from a known test runner
-5. Returns `ResolvedTestCommand` with `scope_label: "previous-failures:{run_id}"`
-
-### Safety
-
-- `validate_indexed_rerun_command()` rejects empty argv, empty tokens, cwd outside workdir, and unrecognized argv[0]
-- Only `Failed` and `TimedOut` entries are actionable — `Passed`, `Cancelled`, and `Error` entries are skipped
-- `truncate_utf8()` ensures stored summaries and failure messages respect byte limits without splitting UTF-8 char boundaries
-
-## Protocol Event Integration (Phase 07)
-
-The test runner publishes lifecycle events to the `GlobalEventBus` via the `BusEventSink` implementation (`src/test_runner/bus_sink.rs`). This bridges the `TestEventSink` trait to the core protocol so remote clients (WebSocket, stdio) can observe test runs.
-
-### BusEventSink
-
-```rust
-pub struct BusEventSink;
-
-impl TestEventSink for BusEventSink {
-    fn started(&self, snapshot: TestRunStartedSnapshot);
-    fn progress(&self, snapshot: TestRunProgressSnapshot);
-    fn completed(&self, snapshot: TestRunCompletedSnapshot);
-}
-```
-
-Each method publishes the corresponding `AppEvent::TestRun*` variant to `GlobalEventBus::publish()`.
-
-### Event flow
-
-1. `resolve_and_run_test()` calls `BusEventSink::started()` / `progress()` / `completed()` at lifecycle boundaries
-2. `GlobalEventBus` delivers `AppEvent::TestRun*` to subscribers
-3. `map_app_event_to_core_event()` in `src/core/mod.rs` converts to `CoreEvent::TestRun*`
-4. `bridge_app_event()` in `src/core/daemon.rs` wraps in `EventEnvelope` and sends to remote clients
-
-### Protocol wire events
-
-| AppEvent | CoreEvent | Wire type string |
-|----------|-----------|------------------|
-| `TestRunStarted` | `TestRunStarted` | `"test_run_started"` |
-| `TestRunProgress` | `TestRunProgress` | `"test_run_progress"` |
-| `TestRunCompleted` | `TestRunCompleted` | `"test_run_completed"` |
-
-The TUI handler (`src/tui/commands/test.rs`) and tool handler (`src/tool/test.rs`) both pass `Some(&BusEventSink)` to `resolve_and_run_test()`.
-
-```bash
-cargo test -p codegg-protocol -- core_event_test_run
-cargo test -p codegg --lib core::tests::test_run
-```
-
-## Parser API
-
-### TestParseState
+### TestParseState (`parse.rs:20-30`)
 
 ```rust
 pub struct TestParseState {
@@ -472,188 +249,154 @@ pub struct TestParseState {
 ### Free functions
 
 ```rust
+// resolve.rs
+pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestCommand>
+pub fn has_cargo_manifest(workdir: &Path) -> bool
+pub fn has_python_test_markers(workdir: &Path) -> bool
+pub fn detect_language_for_auto(workdir: &Path) -> Result<TestLanguage>
+
+// runner.rs
+pub async fn resolve_and_run_test(...) -> Result<DelegatedTestRun, TestRunError>
+pub async fn run_resolved_test(...) -> Result<DelegatedTestRun, TestRunError>
+
+// parse.rs
 pub fn ingest_stdout_line(state: &mut TestParseState, line: &str)
 pub fn ingest_stderr_line(state: &mut TestParseState, line: &str)
-pub fn failure_class_summary(failures: &[TestFailure], compile_errors: &[TestFailure]) -> FailureClass
-```
+pub fn failure_class_summary(
+    failures: &[TestFailure],
+    compile_errors: &[TestFailure],
+) -> FailureClass
 
-Parses test output line-by-line. Lines are first stripped of ANSI escape sequences (CSI codes) before pattern matching, ensuring color-enabled test output is parsed correctly. Recognizes:
-
-- **Rust**: `running N tests`, `test ... ok/FAILED`, `panicked at`, `error[E`, `--> file:line:col` (compile error location), doctest failures (`test file - func (line N) ... FAILED`)
-- **Python/pytest**: `collected N items`, `PASSED/FAILED/ERROR`, `ERROR collecting`, `E   message`
-- **Panic extraction**: Extracts message, file, and line from `panicked at 'msg', file:line:col` and `panicked at 'msg' (file:line)` formats. Handles messages containing commas, colons, and backticks.
-- **Compile error extraction**: Extracts error code (e.g. `E0432`), message, file:line from `error[E0432]: msg` and `--> file:line:col` lines.
-- **Pytest distinction**: `ERROR` lines with `::` are `PytestError`. Lines with `ERROR` but no `::` are `PytestCollectionError`. Lines with `FAILED` are `PytestFailure`.
-- **`failure_class_summary`**: Returns the most severe failure class from a list of failures.
-
-## Runner API
-
-### TestRunError
-
-```rust
-pub enum TestRunError {
-    Resolve(TestResolveError),
-    LogDir(io::Error),
-    Spawn(io::Error),
-    StdoutPipe(io::Error),
-    StderrPipe(io::Error),
-    LogWrite(io::Error),
-    ProcessWait(String),
-    EmptyCommand,
-    InvalidRequest(String),
-}
-```
-
-### resolve_and_run_test
-
-```rust
-pub async fn resolve_and_run_test(request: TestRunRequest) -> Result<TestReport, TestRunError>
-```
-
-Convenience wrapper: resolves the request, then delegates to `run_resolved_test`.
-
-### run_resolved_test
-
-```rust
-pub async fn run_resolved_test(
-    request: &TestRunRequest,
-    resolved: ResolvedTestCommand,
-) -> Result<TestReport, TestRunError>
-```
-
-Spawns a tokio process with piped stdout/stderr and reads lines concurrently via `BufReader`. **Both generated commands and validated custom commands are executed as direct `argv` via `Command::new(argv[0]).args(&argv[1..])` — never via a shell.** Raw bytes are written to log files. Decoded lines are fed to `TestParseState` via `Arc<Mutex<>>`. A `tokio::select!` supervisor enforces wall-clock timeout (default 300s) and no-output/stall timeout (default 120s). On completion, classifies exit code and builds `TestReport` with `FailureClass` from parsed results.
-
-#### Process-group cleanup (Unix only)
-
-On Unix, the child is placed in its own session/process group via `setsid()` in `pre_exec`, so that timeout kills target the entire process tree using `libc::kill(-pgid, SIGKILL)`, preventing grandchild process leaks. The `setsid()` call and the negative-`pgid` kill are both `#[cfg(unix)]` gated.
-
-**Non-Unix fallback**: On non-Unix targets, `spawn_child` skips the `setsid()` step, and `kill_child` falls back to `child.kill().await`, which only kills the direct child — grandchildren can outlive the timeout. This is a known limitation. Cross-platform process-tree cleanup is not implemented.
-
-## Log Directory Layout
-
-Logs are written to `.codegg/test-runs/<utc-timestamp>-<short-uuid>/`:
-
-```
-.codegg/test-runs/
-  20260708T123456Z-a1b2c3/
-    stdout.log      # raw stdout bytes
-    stderr.log      # raw stderr bytes
-    report.json     # serialized TestReport
-```
-
-## Formatter API
-
-```rust
+// report.rs
 pub fn format_test_report(report: &TestReport) -> String
-```
+pub fn format_test_report_with_cap(report: &TestReport, max_report_bytes: usize) -> String
 
-Formats a `TestReport` into a bounded, stable, model-facing string with these sections:
-
-```
-Test run <passed|failed|timed out|errored>.
-
-Command:
-<command>
-
-Duration:
-<duration>
-
-Exit code:
-<exit code or unavailable>
-
-Failure class:
-<class>
-
-Summary:
-<one short paragraph>
-
-Primary failures:
-1. <test/file/line/message>
-...
-
-Logs:
-stdout: <path>
-stderr: <path>
-report: <path>
-```
-
-**Bounds**:
-- Max primary failures displayed: 5 (extra omitted with note)
-- Max failure message bytes: 2000 (truncated with `...`)
-- Max timeout excerpt bytes: 2000
-- Total report controlled by `max_report_bytes`
-
-Empty sections are suppressed. Full logs always available under `.codegg/test-runs/`.
-
-## Projection Adapter (Phase 03)
-
-```rust
+// projection.rs
 pub fn test_report_to_projection(report: &TestReport) -> ProjectionResult
+pub fn test_report_to_projection_with_delta(
+    report: &TestReport,
+    previous: Option<&TestReport>,
+) -> ProjectionResult
+pub fn compute_test_delta(current: &TestReport, previous: &TestReport) -> TestDelta
 ```
 
-Converts a structured `TestReport` into a `ProjectionResult` for the shell-output projection pipeline. This avoids re-parsing raw logs — the report is already structured.
+## Configuration Surface
 
-### Mapping
+### Runner constants (`runner.rs:24-28`)
 
-| `TestReport` field | `ProjectionResult` field |
-|---------------------|--------------------------|
-| `status` (Passed/Failed/TimedOut/Error) | `text` (formatted report body), `projector` = `"test-report"`, `kind` = `Structured`, `exactness` = `Exact` |
-| `failures[].name` | Lines in `text` with failure details (max 20 displayed) |
-| `failures[].failure_class` | `warnings` (failure class labels for non-passed runs) |
-| `output_truncated` | `warnings` includes truncation notice |
-| `previous_run_id` | `warnings` includes rerun source label |
-| `summary` | Included in `text` body |
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DEFAULT_TIMEOUT_SECS` | 300 | Wall-clock timeout |
+| `DEFAULT_STALL_TIMEOUT_SECS` | 120 | No-output stall timeout |
+| `DEFAULT_MAX_REPORT_BYTES` | 20,000 | Report body cap |
+| `STALL_CHECK_INTERVAL` | 5s | Polling interval for stall detection |
+| `GRACEFUL_KILL_TIMEOUT` | 3s | Wait after SIGKILL before reporting |
 
-The adapter does NOT apply redaction (handled at `ProjectionSelector::project()` level). Sets `RedactionState::NotApplied`.
+### Formatter constants (`report.rs:3-8`)
 
-### Bounds
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `MAX_DISPLAY_FAILURES` | 5 | Primary failures shown in report |
+| `MAX_FAILURE_MESSAGE_BYTES` | 2000 | Truncation limit per failure message |
+| `MAX_TIMEOUT_EXCERPT_BYTES` | 2000 | Truncation limit for timeout last_output |
+| `DEFAULT_MAX_REPORT_BYTES` | 20,000 | Total report body cap |
 
-- Max failures displayed: 20 (extra omitted with count)
-- Max failure message bytes: 2000 (truncated with `...`)
-- Max timeout excerpt bytes: 2000
+### Index constants (`index.rs:13-17`)
 
-```bash
-cargo test -p codegg --lib test_runner::projection
-```
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `INDEX_VERSION` | 1 | Schema version |
+| `MAX_INDEX_ENTRIES` | 100 | Max runs retained |
+| `MAX_FAILURE_ENTRIES_PER_RUN` | 10 | Max failures per run entry |
+| `MAX_MESSAGE_PREVIEW_BYTES` | 500 | Truncation for failure messages in index |
+| `MAX_SUMMARY_BYTES` | 1000 | Truncation for summaries in index |
 
-## Tests
+### Language detection (`resolve.rs`)
 
-118+ parser + formatter + runner + custom-allowlist + index + projection + bypass-regression tests:
-- 11 resolver tests (auto rust, auto python, mixed ambiguity, package, file, changed fallback, custom command tokenization, forbidden-shell-syntax rejection, unsupported-command rejection, empty mapping, prefix-collision rejection)
-- 30+ custom command validator tests (allowed argv prefixes, disallowed commands, empty/whitespace, allowlist invariants, semicolon/`&&`/`||`/`|`/`>`/`<` suffix rejection, `$(...)` and `${...}` substitution rejection, backtick substitution, newline/CR rejection, `&` backgrounding, leading-disallowed rejection, prefix-collision rejection for `pytestevil`/`cargo testify`/`make testcase`, quoted-argument rejection, glob metacharacter rejection, tilde/`#` rejection, history `!` rejection, NUL and other control characters, bidi Unicode control rejection, `is_allowed_custom_command` wrapper agreement)
-- 22 parser tests (rust count, ok/failed, panic file/line, assertion message with file:line:col, compile error code, compile error location, doctest failure, pytest collected, pytest failed, pytest file, pytest assertion, pytest collection error, pytest error vs failure, ANSI stripping for rust/pytest/compile-error lines)
-- 10 formatter tests (stable sections, passed suppression, timeout details, failure limit, max bytes, log paths, truncation note, error status, compile error display)
-- 13+ runner tests (pass, fail, wall-clock timeout, stall timeout, empty command, zero timeout, log layout, UTF-8 truncation, summary building, parser failures for nonzero exit, timeout excerpt, sink present, sink absent, custom-tokenized argv path, timeout-after-kill)
-- 18 index tests (load missing, load malformed, append creates file, bounds entries, truncation, newest actionable failure selected, non-actionable skipped, cwd validation, argv validation, empty argv rejected, empty token rejected, cwd outside workdir rejected, unknown argv[0] rejected, language detection, UTF-8 boundary handling)
-- 11 projection adapter tests (passed/failed/timeout/error projections, output_bytes matching, truncation warnings, many-failures warning, previous-failures rerun source, redaction state, no omitted ranges, compile error class preservation)
-- 14 `AsyncUiRequestState` tests covering stale completion protection for `/test` and other dialog async paths (`new_is_idle`, `begin_increments_and_sets_loading`, `begin_clears_previous_error`, `finish_returns_true_for_current`, `finish_returns_false_for_stale`, `finish_returns_false_when_cancelled`, `cancel_increments_and_clears_loading`, `fail_stores_error_for_current`, `fail_ignores_stale`, `fail_ignores_cancelled`, `clear_loading_does_not_affect_request_id`, `default_matches_new`, `begin_after_cancel_resets_cancelled`, `multiple_lifecycle_cycles`)
+- **Rust**: `workdir.join("Cargo.toml").exists()`
+- **Python**: `pyproject.toml`, `pytest.ini`, `tox.ini`, `noxfile.py`,
+  or `tests/` directory containing `.py` files
+- **Ambiguous**: both Rust and Python markers → `AmbiguousEcosystem` error
+
+## Invariants & Gotchas
+
+### Shell execution
+
+**Never via shell.** Both generated and custom commands execute as direct argv via
+`Command::new(argv[0]).args(&argv[1..])`. The custom validator rejects shell
+metacharacters (`;`, `&&`, `||`, `|`, `>`, `<`, backticks, `$()`, `${}`, quotes,
+globs, tilde, `#`, `!`, control characters, bidi Unicode) and enforces
+argv-token-bounded prefix matching (so `pytestevil` does NOT match `pytest`).
+
+### Process-group cleanup (Unix only)
+
+On Unix, the child is placed in its own session/process group via `setsid()`
+in `pre_exec` (`runner.rs:290-297`). Timeout kills target the entire process
+tree using `libc::kill(-pgid, SIGKILL)` (`runner.rs:478-486`).
+
+**Non-Unix fallback**: `spawn_child` skips `setsid()`, and `kill_child` falls
+back to `child.kill().await`, which only kills the direct child. Grandchildren
+can outlive the timeout. This is a known limitation.
+
+### Previous-failures index (legacy)
+
+The legacy `.codegg/test-runs/index.json` is retained for backward compatibility.
+RunStore is the authoritative persistence layer. The legacy index is deprecated
+and will be removed once `PreviousFailures` reads from RunStore directly.
+
+Writing is serialized via `OnceLock<tokio::sync::Mutex<()>>` (`index.rs:112`).
+Atomic writes use `.tmp` + rename (`index.rs:149-160`).
+
+### Stale completion protection
+
+The TUI `/test` command uses `AsyncUiRequestState` for stale-completion protection.
+Each `/test` invocation calls `begin()` to allocate a monotonically increasing
+request ID; `finish(request_id)` returns `false` (silently dropping the result)
+if the request has been superseded.
+
+### Record-ownership contract
+
+`DelegatedTestRun.run_id` is `Some` when the runner successfully began a RunStore
+record. Callers check `run_id` to suppress duplicate persistence. The runner calls
+`ownership_for_outcome()` with `PlannedBackend::TestRunner` and
+`ActualBackend::TestRunner` — BashTool must NOT persist its own record.
+
+### Validation re-run
+
+The resolver (`resolve_validated_custom_command` at `resolve.rs:229-237`) re-runs
+the strict validator as defense-in-depth. Empty input is mapped to the legacy
+`EmptyCustomCommand` variant so existing callers keep working.
+
+## Testing
+
+Narrowest run:
 
 ```bash
 cargo test -p codegg --lib test_runner
 ```
 
-## Model-Facing Tool Integration
-
-The `test` tool (`src/tool/test.rs`) wraps the test runner for model consumption:
-
-- **Tool name**: `test`
-- **Category**: `ShellExec` (conservative permission gating)
-- **Input**: JSON with `scope` (required), plus optional `package`, `path`, `command`, `workdir`, `timeout`, `stall_timeout`
-- **Output**: Compact text report via `format_test_report()`
-- **Custom commands**: Validated via `custom.rs::validate_custom_command`. Only argv-token-prefix matches against the 12-entry allowlist pass; shell metacharacters, redirection, pipes, command substitution, newlines, and prefix collisions are rejected. The validator returns the validated argv vector — both generated and custom commands execute via direct `Command::new(argv[0]).args(&argv[1..])` with no shell interpretation.
-- **Defense-in-depth**: The resolver re-runs the strict validator before producing argv, so even if a presentation-boundary caller forgets to validate, the runner still rejects shell-injection attempts.
-- **Failing tests**: Return success tool result with failure report; only infrastructure failures return `ToolError`
-- **Provenance**: Native backend, `test_runner` implementation, `LocalTrusted`
-- **No LLM involvement**: The test tool runs the resolved command directly via the supervised runner. No LLM call is made to interpret, summarize, or augment the output. The compact report is produced deterministically by `format_test_report()`.
-
-The tool is registered in `ToolRegistry::with_options()` and categorized in `tool_category_for_name()`.
+Submodule targeting:
 
 ```bash
-cargo test -p codegg --lib tool::test
+cargo test -p codegg --lib test_runner::custom    # 30+ tests
+cargo test -p codegg --lib test_runner::parse      # 22 tests
+cargo test -p codegg --lib test_runner::report     # 10 tests
+cargo test -p codegg --lib test_runner::runner     # 13+ tests
+cargo test -p codegg --lib test_runner::index      # 18 tests
+cargo test -p codegg --lib test_runner::projection # 11 tests
+cargo test -p codegg --lib test_runner::resolve    # 11 tests
 ```
 
-The TUI `/test` slash command (`src/tui/commands/test.rs`) shares the same `validate_custom_command` function — there is exactly one source of truth for the validation contract.
+Integration test suites:
 
-### Stale completion protection
+```bash
+cargo test -p codegg-protocol -- core_event_test_run
+cargo test -p codegg --lib core::tests::test_run
+```
 
-The TUI `/test` command uses `AsyncUiRequestState` (`src/tui/app/state/async_request.rs`) for stale-completion protection. Each `/test` invocation calls `begin()` to allocate a monotonically increasing request ID; when the result comes back, `finish(request_id)` returns `false` (silently dropping the result) if the request has been superseded or cancelled. This guarantees that a slow `/test custom cargo test` from an earlier invocation cannot overwrite the UI state of a newer `/test` invocation.
+## Related Docs
+
+- `architecture/command_intent.md` — how commands are classified and routed
+- `architecture/scheduler.md` — scheduler admission and attempt lifecycle
+- `architecture/human_shell.md` — projection pipeline
+- `architecture/tool_programs.md` — tool program execution (separate subsystem)

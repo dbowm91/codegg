@@ -2,11 +2,34 @@
 
 The command planner maps classified intents to execution backends, generates permission requests, and selects projection/RTK policies. This is the second stage of the command intent pipeline (classify → **plan** → route).
 
-## Source
+## Purpose
 
-`src/command_intent/plan.rs` (re-exported via `src/command_planner.rs`)
+Transform a `CommandIntent` into a `CommandPlan` that specifies the execution backend, projector route, RTK policy, timeout, and permission requests.
 
-## Core Types
+## Where It Lives
+
+- `src/command_intent/plan.rs` — real logic (all types and functions)
+- `src/command_planner.rs` — re-export shim (5 lines)
+
+## How It Works
+
+```
+  CommandIntent
+        │
+        ▼
+  plan_execution(intent)
+        │
+        ├── select_backend()        → ExecutionBackend
+        ├── generate_permission_requests() → Vec<CommandPermissionRequest>
+        ├── select_projector()      → ProjectorRoute
+        ├── select_rtk_policy()     → PlanRtkPolicy
+        └── select_timeout()        → Option<u64>
+        │
+        ▼
+  CommandPlan
+```
+
+## Key Types & APIs
 
 ### `ExecutionBackend`
 
@@ -20,28 +43,27 @@ pub enum ExecutionBackend {
     Git { request: GitExecutionRequest },
     Reject { reason: String },
 }
-
-pub struct NativeCommand {
-    pub executable: String,
-    pub argv: Vec<String>,
-}
 ```
 
 `NativeCommand` is lossless for the supported UTF-8 command representation:
 the executable and each argument remain separate strings through planning and
 managed execution. The current durable/protocol boundary does not represent
-arbitrary non-UTF-8 Unix argv/path bytes; such compatibility is deferred rather
-than silently treated as lossless.
+arbitrary non-UTF-8 Unix argv/path bytes.
 
-`GitExecutionRequest` carries a typed git operation (from codegg-git's parser), the raw argv, the command origin, and a risk set — replacing the former `NativeTool { "egggit" }` (for reads) and `GitMutating { "git", argv }` (for mutations) with a unified backend. All git commands — both reads and mutations — now plan through `ExecutionBackend::Git`.
+`GitExecutionRequest` carries a typed git operation (from codegg-git's parser),
+the raw argv, the command origin, and a risk set — replacing the former
+`NativeTool { "egggit" }` (for reads) and `GitMutating { "git", argv }` (for
+mutations) with a unified backend. All git commands — both reads and mutations
+— now plan through `ExecutionBackend::Git`.
 
-Methods: `label()` → `&str`, `is_executable()` → `bool`.
+Methods: `label()` → `&str`, `is_executable()` → `bool`,
+`as_git_request()` → `Option<&GitExecutionRequest>`.
 
 ### `PythonModeGuess`
 
 `Analyze`, `Transform`, `Verify`, `Unknown` — guessed from intent kind.
 
-### `ProjectorRoute` (9 variants)
+### `ProjectorRoute` (10 variants)
 
 | Variant | Used for |
 |---------|----------|
@@ -61,7 +83,11 @@ Methods: `label()` → `&str`, `is_executable()` → `bool`.
 ```rust
 pub enum PlanRtkPolicy {
     Disabled,
-    Eligible { min_raw_bytes: usize, preserve_exact_spans: Vec<ProjectionSpanKind>, goal: CompressionGoal },
+    Eligible {
+        min_raw_bytes: usize,
+        preserve_exact_spans: Vec<ProjectionSpanKind>,
+        goal: CompressionGoal,
+    },
     RequiredForPromotion,
 }
 ```
@@ -96,33 +122,51 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 |------------|---------|-------------|
 | Test | `TestRunner { validated_command }` | command string validated |
 | PythonAnalyze/Transform/Verify | `PythonScript { script, mode_guess }` | command string |
-| GitReadOnly | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
-| GitMutating (safe) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
-| GitMutating (dangerous) | `Git { request }` | `parsed_argv` (typed operation + risk from codegg-git) |
+| GitReadOnly | `Git { request }` | `parsed_argv` (typed op + risk) |
+| GitMutating (safe) | `Git { request }` | `parsed_argv` (typed op + risk) |
+| GitMutating (dangerous) | `Git { request }` | `parsed_argv` (typed op + risk) |
 | SearchReadOnly, FileRead | `ManagedArgv { command, cwd }` | typed `parsed_argv` only |
 | Build, Lint, Format | `ManagedArgv { command, cwd }` | typed `parsed_argv` only |
 | FileWrite, FileEdit, RawShell | `RawShell { command }` | command string |
 | Rejected | `Reject { reason }` | n/a |
 
-All git commands — reads, safe mutations, and dangerous mutations — plan through the unified `ExecutionBackend::Git` backend. The `GitExecutionRequest` carries the typed operation, argv, origin, and risk set produced by codegg-git's parser, enabling downstream routing to handle git operations uniformly.
+All git commands — reads, safe mutations, and dangerous mutations — plan
+through the unified `ExecutionBackend::Git` backend. The `GitExecutionRequest`
+carries the typed operation, argv, origin, and risk set produced by codegg-git's
+parser, enabling downstream routing to handle git operations uniformly.
 
-**Routing caveat (polish-pass finding, closed by Track U):** The plan-level backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash.rs:75-90` historically returned `None` for `CommandIntentKind::GitMutating`, meaning bash-translated simple git mutations planned as `Git` but dispatched as `RawShell`. As of Track U, bash git mutations route through `dispatch_to_git` → `GitMutationExecutor` (sharing env policy, snapshot/delta, and RunStore parity with the native tool) when the `route_git_local_mutation` gate is enabled. The default remains `Off` so existing user-visible behavior is unchanged unless the user opts in.
+**Routing caveat (polish-pass finding, closed by Track U):** The plan-level
+backend is `Git`, but `intent_kind_to_family()` in `src/tool/bash.rs:109`
+historically returned `None` for `CommandIntentKind::GitMutating`, meaning
+bash-translated simple git mutations planned as `Git` but dispatched as
+`RawShell`. As of Track U, bash git mutations route through
+`dispatch_to_git` → `GitMutationExecutor` (sharing env policy, snapshot/delta,
+and RunStore parity with the native tool) when the `route_git_local_mutation`
+gate is enabled. The default remains `Off` so existing user-visible behavior
+is unchanged unless the user opts in.
 
-`ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser and preserve the executable separately from its arguments. Missing typed argv is rejected; it is never reconstructed from a display string or whitespace splitting. `RawShell` is selected only by the classifier's explicit shell route.
+`ManagedArgv` backends use `intent.parsed_argv` from the shell shape parser
+and preserve the executable separately from its arguments. Missing typed argv
+is rejected; it is never reconstructed from a display string or whitespace
+splitting. `RawShell` is selected only by the classifier's explicit shell route.
 
 ### `validate_for_active_routing()`
 
-Validates a `CommandPlan` before active routing dispatch. All 7 checks must pass:
+Validates a `CommandPlan` before active routing dispatch. All 7 checks must
+pass (defined in `plan.rs:431`):
 
-1. **SimpleArgv shape** — `intent.parsed_argv` must be `Some` (no complex shell)
+1. **SimpleArgv shape** — `intent.parsed_argv` must be `Some`
 2. **High confidence** — `intent.confidence` must be `High`
 3. **Non-RawShell/Reject backend** — backend must be a structured type
 4. **Non-Critical risk** — `intent.risk.level` must not be `Critical`
-5. **No DestructiveFileMutation** — risk capabilities must not include `DestructiveFileMutation`
-6. **No OutsideWorkspace** — risk capabilities must not include `OutsideWorkspace`
-7. **No pending permissions** — all permission requests must be pre-resolved (no `Ask` defaults in active mode)
+5. **No DestructiveFileMutation** — risk capabilities must not include
+   `DestructiveFileMutation`
+6. **No OutsideWorkspace** — risk capabilities must not include
+   `OutsideWorkspace`
+7. **No pending permissions** — all permission requests must be pre-resolved
 
-Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed validation falls back to raw shell execution.
+Returns `Ok(())` if all checks pass, `Err(reason)` otherwise. Failed validation
+falls back to raw shell execution.
 
 ### Projector Selection
 
@@ -139,11 +183,11 @@ Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed va
 
 ### RTK Policy
 
-- Test: Eligible (4096 min, preserve failure names/paths/line numbers)
-- git diff: Eligible (2048 min, preserve diff hunks/file paths/line numbers)
-- Python: Eligible (2048 min, preserve compiler errors/file paths/line numbers)
-- RawShell: Eligible (4096 min, reduce tokens)
-- SearchReadOnly: Eligible (4096 min, reduce tokens)
+- Test: Eligible (4096 min, preserve TestFailureNames/FilePaths/LineNumbers)
+- git diff: Eligible (2048 min, preserve DiffHunks/FilePaths/LineNumbers)
+- Python: Eligible (2048 min, preserve CompilerErrors/FilePaths/LineNumbers)
+- RawShell: Eligible (4096 min, preserve FilePaths/LineNumbers)
+- SearchReadOnly: Eligible (4096 min, preserve FilePaths)
 - All others: Disabled
 
 ### Timeouts
@@ -161,7 +205,10 @@ Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed va
 
 ### Permission Generation
 
-`generate_permission_requests()` maps each `ExecutionCapability` in the intent's risk assessment to a `CommandPermissionRequest` with a context-aware default decision (`Allow`/`Ask`/`Deny`). Reject backends produce no permissions.
+`generate_permission_requests()` maps each `ExecutionCapability` in the
+intent's risk assessment to a `CommandPermissionRequest` with a context-aware
+default decision (`Allow`/`Ask`/`Deny`). Reject backends produce no
+permissions.
 
 | Capability | Default | Rationale |
 |------------|---------|-----------|
@@ -170,27 +217,42 @@ Returns `Ok(CommandPlan)` if all checks pass, `Err(reason)` otherwise. Failed va
 | `EnvAccess` | `Allow` | Environment reads are expected |
 | `ContextPromotion` | `Allow` | Output promotion is a user action |
 | `Network` | `Ask` | Network access needs user consent |
-| `WriteWorkspace` | `Ask` for writing formatters, `Allow` for read-only formatters, `Ask` otherwise | `cargo fmt --check`, `prettier --check` auto-allowed; writing formatters ask; other writes ask |
-| `GitMutation` | `Allow` for `git add` only, `Ask` otherwise | Only `git add` is safe to auto-allow; commit/checkout/switch/restore/stash push all ask (may run hooks or overwrite worktree) |
+| `WriteWorkspace` | `Ask` for writing formatters, `Allow` for read-only formatters, `Ask` otherwise | `cargo fmt --check`, `prettier --check` auto-allowed; writing formatters ask |
+| `GitMutation` | `Allow` for `git add` only, `Ask` otherwise | Only `git add` is safe to auto-allow |
 | `DependencyInstall` | `Deny` | Package installs mutate global state |
 | `OutsideWorkspace` | `Deny` | Access outside workspace is unsafe |
 | `DestructiveFileMutation` | `Deny` | Destructive operations are blocked |
 
-The `is_formatter_command()` helper checks the intent kind (Format) and command text for `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt`. The `is_read_only_formatter()` helper detects `--check`, `--diff`, and `checkfmt` in the command string. The `is_safe_git_subcommand()` helper checks parsed argv for the single safe subcommand: `git add`.
+The `is_formatter_command()` helper checks the intent kind (Format) and command
+text for `cargo fmt`, `prettier`, `black`, `isort`, `rustfmt`.
+The `is_read_only_formatter()` helper detects `--check`, `--diff`, and
+`checkfmt` in the command string.
+The `is_safe_git_subcommand()` helper walks past simple global options
+(`-C <path>`, etc.) to find the subcommand; only `git add` is auto-allowed.
 
 ## Re-exports
 
 `src/command_planner.rs` re-exports everything from `command_intent::plan`:
 ```rust
 pub use crate::command_intent::plan::{
-    plan_execution, CommandPermissionRequest, CommandPlan, CompressionGoal, ExecutionBackend,
-    PermissionDefault, PlanRtkPolicy, ProjectionSpanKind, ProjectorRoute, PythonModeGuess,
+    plan_execution, CommandPermissionRequest, CommandPlan, CompressionGoal,
+    ExecutionBackend, GitExecutionRequest, NativeCommand, PermissionDefault,
+    PlanRtkPolicy, ProjectionSpanKind, ProjectorRoute, PythonModeGuess,
 };
 ```
 
-This remains an internal-crate compatibility surface for existing callers. New
+This is an internal-crate compatibility surface for existing callers. New
 production code imports the canonical planning types directly from
-`command_intent::plan`; it is not a second planner or ownership boundary.
+`command_intent::plan`.
+
+## Invariants & Gotchas
+
+- `ManagedArgv` backends require `parsed_argv` — missing typed argv results in
+  `Reject`, never whitespace splitting of the command string.
+- Git commands that fail the typed parser produce `Reject` (not `RawShell`),
+  preventing accidental shell interpretation of display strings.
+- `validate_for_active_routing()` requires all 7 checks to pass; a single
+  failure causes the command to fall back to raw shell execution.
 
 ## Tests
 
@@ -198,4 +260,6 @@ production code imports the canonical planning types directly from
 cargo test -p codegg --lib command_intent
 ```
 
-Includes 21 new routing/validation tests for `validate_for_active_routing()` and `GitMutating` backend selection.
+Includes routing/validation tests for `validate_for_active_routing()`,
+`GitMutating` backend selection, `git_operation_family()` mapping, and
+permission generation for git subcommands.

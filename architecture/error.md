@@ -1,265 +1,234 @@
 # Error Module
 
-The `error` module provides centralized error handling using `thiserror`.
+The error module provides centralized error handling using `thiserror`.
 
-## Overview
+## Purpose
 
-**Location**: `src/error.rs`
+Centralized error enum (`AppError`) with per-domain sub-errors, error
+context propagation via `From` trait implementations, HTTP status mapping
+for server responses, and retryability determination for resilience
+patterns.
 
-**Key Responsibilities**:
-- Unified error enum (`AppError`)
-- Error context propagation via `From` trait implementations
-- HTTP status mapping for server responses
-- Retryability determination for resilience patterns
+## Where It Lives
 
-> **Note:** `ProviderError` and `StorageError` are re-exported from
-> `codegg_providers::error` in `src/error.rs`.
+- **Canonical source**: `crates/codegg-core/src/error.rs` — defines
+  `AppError` and all domain error enums except `ConfigError` (which wraps
+  `codegg_config::ConfigError`).
+- **Root re-export + server wrappers**: `src/error.rs` — re-exports
+  `codegg_core::error::*` and adds `AxumAppError` / `AxumServerRuntimeError`
+  behind `#[cfg(feature = "server")]`.
 
-## AppError Enum
+> **Note:** `ProviderError` and `StorageError` originate in
+> `codegg_providers::error` and are re-exported into `codegg_core::error`
+> via `pub use codegg_providers::error::{ProviderError, StorageError};`.
+
+## How It Works
+
+All domain error types live in `crates/codegg-core/src/error.rs`. The
+`AppError` enum wraps each domain error via `#[from]` so the `?` operator
+can convert automatically. The root `src/error.rs` re-exports everything
+and adds axum-specific newtype wrappers that implement `IntoResponse`.
+
+The `IntoResponse` implementation maps each `AppError` variant to an HTTP
+status code. Server errors (5xx) are logged at `error` level; client
+errors (4xx) at `warn`. Response bodies use canonical reason phrases
+without leaking internal details.
+
+## Key Types & APIs
+
+### AppError (`crates/codegg-core/src/error.rs:5`)
 
 ```rust
 #[derive(Error, Debug)]
 pub enum AppError {
-    #[error("config error: {0}")]
-    Config(#[from] ConfigError),
-
-    #[error("storage error: {0}")]
-    Storage(#[from] StorageError),
-
-    #[error("provider error: {0}")]
-    Provider(#[from] ProviderError),
-
-    #[error("agent error: {0}")]
-    Agent(#[from] AgentError),
-
-    #[error("tool error: {0}")]
-    Tool(#[from] ToolError),
-
-    #[error("permission error: {0}")]
-    Permission(#[from] PermissionError),
-
-    #[error("mcp error: {0}")]
-    Mcp(#[from] McpError),
-
-    #[error("plugin error: {0}")]
-    Plugin(#[from] PluginError),
-
-    #[error("lsp error: {0}")]
-    Lsp(#[from] LspError),
-
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("http error: {0}")]
-    Http(#[from] reqwest::Error),
-
-    #[error("general error: {0}")]
-    Other(#[from] anyhow::Error),
-
-    #[error("worktree error: {0}")]
+    Config(ConfigError),        // #[from]
+    Storage(StorageError),      // #[from]
+    Provider(ProviderError),    // #[from]
+    Agent(AgentError),          // #[from]
+    Tool(ToolError),            // #[from]
+    Permission(PermissionError),// #[from]
+    Mcp(McpError),              // #[from]
+    Plugin(PluginError),        // #[from]
+    Lsp(LspError),              // #[from]
+    Io(std::io::Error),         // #[from]
+    Json(serde_json::Error),    // #[from]
+    Http(reqwest::Error),       // #[from]
+    Other(anyhow::Error),       // #[from]
     Worktree(String),
-
-    #[error("upgrade error: {0}")]
     Upgrade(String),
-
-    #[error("clipboard error: {0}")]
     Clipboard(String),
-
-    #[error("tui error: {0}")]
     Tui(String),
+    RunStore(RunStoreError),    // #[from]
 }
 ```
 
-## Error Categories
+### ConfigError (`crates/codegg-core/src/error.rs:62`)
 
-### ProviderError
+Wraps `codegg_config::ConfigError` with an explicit `From` impl (line 80).
+Variants: `NotFound`, `Invalid`, `Parse`, `Merge`, `Watch`.
 
-```rust
-#[derive(Error, Debug)]
-pub enum ProviderError {
-    #[error("provider not found: {0}")]
-    NotFound(String),
+### ProviderError (re-exported from `codegg_providers::error`)
 
-    #[error("api error: {code}: {message}")]
-    Api { code: String, message: String, url: String },
+Variants: `NotFound`, `Api { code, message, url }`, `Stream`, `RateLimit`,
+`Auth`, `ModelNotFound`, `Timeout`, `CircuitOpen`.
 
-    #[error("stream error: {0}")]
-    Stream(String),
+Constructors: `api()` (empty URL), `api_with_url()`. `is_retryable()`
+returns `true` for `RateLimit`, `Timeout`, `Stream`, `CircuitOpen`, `Auth`.
 
-    #[error("rate limit exceeded")]
-    RateLimit,
+### ToolError (`crates/codegg-core/src/error.rs:119`)
 
-    #[error("authentication failed: {0}")]
-    Auth(String),
+Variants: `NotFound`, `Execution`, `Timeout`, `Permission`, `Format`,
+`Disabled`, `Io`, `Network`. `is_retryable()` for `Io`, `Network`, `Timeout`.
 
-    #[error("model not found: {0}")]
-    ModelNotFound(String),
+### PermissionError (`crates/codegg-core/src/error.rs:167`)
 
-    #[error("timeout: {0}")]
-    Timeout(String),
+Variants: `Denied { tool, path }`, `Check`.
 
-    #[error("circuit breaker open: {0}")]
-    CircuitOpen(String),
-}
+### McpError (`crates/codegg-core/src/error.rs:176`)
 
-impl ProviderError {
-    pub fn api(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self::Api { code: code.into(), message: message.into(), url: String::new() }
-    }
+Variants: `Connection`, `Server`, `ToolCall`, `OAuth`, `Encryption`,
+`Timeout`. `is_retryable()` for `Connection`, `Server`, `ToolCall`,
+`OAuth`, `Timeout`. `Encryption` is intentionally NOT retryable.
 
-    pub fn api_with_url(code: impl Into<String>, message: impl Into<String>, url: impl Into<String>) -> Self {
-        Self::Api { code: code.into(), message: message.into(), url: url.into() }
-    }
+### LspError (`crates/codegg-core/src/error.rs:271`)
 
-    // Note: api() sets url to String::new() (empty). Use api_with_url() when URL is available.
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ProviderError::RateLimit
-                | ProviderError::Timeout(_)
-                | ProviderError::Stream(_)
-                | ProviderError::CircuitOpen(_)
-                | ProviderError::Auth(_)
-        )
-    }
-}
-```
+Variants: `ServerNotFound`, `DownloadFailed`, `LaunchFailed`,
+`NotInitialized`, `RequestFailed`, `RequestTimeout`, `UnsupportedLanguage`,
+`Io`, `Json`, `UnsupportedSourceAction`, `CommandOnlySourceAction`,
+`NoEditForSourceAction`, `AmbiguousSourceAction`, `CommandOnlyCodeAction`,
+`Unsupported(LspUnavailable)`.
 
-### ToolError
+`is_retryable()` for `DownloadFailed`, `LaunchFailed`, `RequestFailed`,
+`RequestTimeout`, `Io`.
 
-```rust
-#[derive(Error, Debug)]
-pub enum ToolError {
-    #[error("tool not found: {0}")]
-    NotFound(String),
+Note: `egglsp::LspError` has additional variants (`UnsupportedEdit`,
+`PathOutsideRoot`, `Utf16Position`, `OverlappingEdits`, `Protocol`,
+`WriterClosed`, `InitializationCancelled`, `ServerRestarted`,
+`ServerUnavailable`, `ServerDegraded`, `InvalidConfig`) that are
+collapsed into `RequestFailed` by the `From` conversion (line 210).
 
-    #[error("tool execution failed: {0}")]
-    Execution(String),
+### PluginError (`crates/codegg-core/src/error.rs:335`)
 
-    #[error("tool timeout: {0}")]
-    Timeout(String),
+Variants: `NotFound`, `LoadFailed`, `HookFailed`, `InstallFailed`,
+`InvalidManifest`.
 
-    #[error("permission denied: {0}")]
-    Permission(String),
+### ServerRuntimeError (`crates/codegg-core/src/error.rs:353`)
 
-    #[error("tool formatting failed: {0}")]
-    Format(String),
+Variants: `Bind`, `Shutdown`, `WebSocket`, `Rpc`, `Auth`.
 
-    #[error("tool disabled: {0}")]
-    Disabled(String),
+### ClientError (`crates/codegg-core/src/error.rs:371`)
 
-    #[error("I/O error: {0}")]
-    Io(String),
+Variants: `Connection`, `Unreachable`, `Rpc`, `WebSocket`, `Auth`.
 
-    #[error("network error: {0}")]
-    Network(String),
-}
+### RunStoreError (`crates/codegg-core/src/error.rs:389`)
 
-impl ToolError {
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            ToolError::Io(_) | ToolError::Network(_) | ToolError::Timeout(_)
-        )
-    }
-}
-```
+Variants: `Io`, `Json`, `NotFound`, `PathTraversal`, `IntegrityViolation`,
+`RetentionError`, `ConcurrentWrite`.
 
-### PermissionError
+### AgentError (`crates/codegg-core/src/error.rs:110`)
 
-```rust
-#[derive(Error, Debug)]
-pub enum PermissionError {
-    #[error("permission denied for {tool} on {path}")]
-    Denied { tool: String, path: String },
+Variants: `NotFound`, `Invalid`.
 
-    #[error("permission check failed: {0}")]
-    Check(String),
-}
-```
+### AxumAppError (`src/error.rs:16`)
 
-### Other Error Types
+Newtype wrapper for `AppError` implementing `IntoResponse`. Also has `From`
+impls for `StorageError`, `std::io::Error`, `serde_json::Error`,
+`anyhow::Error`, and `reqwest::Error` so `?` works directly in axum
+handlers.
 
-- **ConfigError**: NotFound, Invalid, Parse, Merge, Watch
-- **StorageError**: Database, Migration, NotFound, LlmOperation, Import, Export
-- **AgentError**: NotFound, Invalid
-- **McpError**: Connection, Server, ToolCall, OAuth, Encryption, Timeout
+### AxumServerRuntimeError (`src/error.rs:171`)
 
-impl McpError {
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            McpError::Connection(_) | McpError::Server(_) | McpError::ToolCall(_) | McpError::OAuth(_) | McpError::Timeout(_)
-        )
-    }
-}
-// Note: McpError::Encryption is NOT retryable (distinct from Connection/Server/ToolCall/OAuth/Timeout).
-// This is intentional because encryption failures typically require manual intervention.
+Newtype wrapper for `ServerRuntimeError` implementing `IntoResponse`.
 
-- **LspError**: ServerNotFound, DownloadFailed, LaunchFailed, NotInitialized, RequestFailed, RequestTimeout, UnsupportedLanguage, Io, Json, UnsupportedEdit, PathOutsideRoot, Utf16Position, OverlappingEdits, UnsupportedSourceAction, CommandOnlySourceAction, NoEditForSourceAction, AmbiguousSourceAction
+## Configuration Surface
 
-impl LspError {
-    pub fn is_retryable(&self) -> bool {
-        matches!(
-            self,
-            LspError::DownloadFailed(_) | LspError::LaunchFailed(_) | LspError::RequestFailed(_) | LspError::RequestTimeout(_) | LspError::Io(_)
-        )
-    }
-}
-- **PluginError**: NotFound, LoadFailed, HookFailed, InstallFailed, InvalidManifest
-- **ClientError**: Connection, Unreachable, Rpc, WebSocket, Auth (client-side)
-- **ServerRuntimeError**: Bind, Shutdown, WebSocket, Rpc, Auth (server-side)
+None. Error types are determined by the codebase, not configuration.
 
-## Key Conversions
+## Invariants & Gotchas
 
-| From | To | Notes |
-|------|-----|-------|
-| `sqlx::Error` | `StorageError::Database` | Database errors |
-| `reqwest::Error` | `ProviderError::Api` | HTTP failures; reqwest `.url()` extracts endpoint |
-| `CircuitError::Open` | `ProviderError::CircuitOpen` | Circuit breaker integration |
-| `String` / `&str` | `ProviderError::Api` | `api()` (empty URL) or `api_with_url()` constructors |
+- **Orphan rule**: `AppError` lives in `codegg-core` but `IntoResponse`
+  is implemented in root `src/error.rs` via newtype wrappers because axum
+  is a forbidden dependency of `codegg-core`.
+- **ConfigError bridge**: `codegg_config::ConfigError` is converted to
+  `codegg_core::error::ConfigError` via explicit `From` impl (line 80),
+  not a direct `#[from]` on `AppError`.
+- **McpError::Encryption not retryable**: Intentional; encryption failures
+  require manual intervention.
+- **ProviderError::api()** sets `url` to empty string. Use
+  `api_with_url()` when the URL is available.
+- **LspError variant collapse**: Several `egglsp::LspError` variants are
+  collapsed into `LspError::RequestFailed` by the `From` conversion.
+  Callers see less granularity than the LSP crate provides.
 
-## HTTP Status Mapping (Server Feature)
+## HTTP Status Mapping (`src/error.rs:63-147`)
 
-The `IntoResponse` implementation maps errors to appropriate HTTP status codes:
+| Error Type | Status |
+|------------|--------|
+| Config::NotFound | 404 |
+| Config::Invalid/Parse/Merge | 400 |
+| Config::Watch | 500 |
+| Storage::NotFound | 404 |
+| Storage::Database/Migration/Import/Export/LlmOperation | 500 |
+| Provider::Auth | 401 |
+| Provider::RateLimit | 429 |
+| Provider::Timeout | 504 |
+| Provider::NotFound/ModelNotFound | 404 |
+| Provider::Api/Stream/CircuitOpen | 502 |
+| Agent::NotFound | 404 |
+| Agent::Invalid | 400 |
+| Tool::NotFound | 404 |
+| Tool::Permission / Permission::Denied | 403 |
+| Tool::Timeout | 504 |
+| Tool::Disabled | 403 |
+| Tool::Execution/Format/Io/Network | 502 |
+| Permission::Check | 500 |
+| Mcp::OAuth | 401 |
+| Mcp::Timeout | 504 |
+| Mcp::Connection/Server/ToolCall/Encryption | 502 |
+| Plugin::NotFound | 404 |
+| Plugin::InvalidManifest | 400 |
+| Plugin::LoadFailed/HookFailed/InstallFailed | 500 |
+| Lsp::ServerNotFound | 404 |
+| Lsp::UnsupportedLanguage | 400 |
+| Lsp::NotInitialized | 409 |
+| Lsp::RequestTimeout/DownloadFailed/LaunchFailed/RequestFailed + source action errors + CommandOnlyCodeAction + Unsupported | 502 |
+| Lsp::Io/Json | 500 |
+| Json | 400 |
+| Http | upstream status or 502 |
+| Io/Other/Worktree/Upgrade/Clipboard/Tui/RunStore | 500 |
 
-| Error Type | Status Code |
-|------------|-------------|
-| ConfigError::NotFound | 404 |
-| ConfigError::Watch | 500 |
-| StorageError::Import | 500 |
-| StorageError::Export | 500 |
-| StorageError::NotFound | 404 |
-| StorageError::Database/Migration/LlmOperation | 500 |
-| ProviderError::Auth | 401 |
-| ProviderError::RateLimit | 429 |
-| ProviderError::Timeout | 504 |
-| ProviderError::NotFound/ModelNotFound | 404 |
-| ProviderError::Api/Stream/CircuitOpen | 502 |
-| ToolError::NotFound | 404 |
-| ToolError::Permission | 403 |
-| ToolError::Timeout | 504 |
-| ToolError::Disabled | 403 |
-| ToolError::Execution/Format/Io/Network | 502 |
-| McpError::OAuth | 401 |
-| McpError::Timeout | 504 |
-| McpError::Connection/Server/ToolCall/Encryption | 502 |
-| PluginError::NotFound | 404 |
-| PluginError::InvalidManifest | 400 |
-| PluginError::LoadFailed/HookFailed/InstallFailed | 500 |
-
-**ServerRuntimeError IntoResponse** (`src/error.rs:475-501`):
+**ServerRuntimeError IntoResponse** (`src/error.rs:181-206`):
 
 | Status | Variants |
 |--------|----------|
 | 401 | `Auth` |
 | 500 | `Bind`, `Shutdown`, `WebSocket`, `Rpc` |
 
-## See Also
+## Key Conversions
 
-- `resilience/` - Circuit breaker patterns
-- `exec/` - Exec mode error classification
-- `provider/` - Provider retry logic using `is_retryable()`
+| From | To | Notes |
+|------|-----|-------|
+| `codegg_config::ConfigError` | `ConfigError` | Explicit `From` impl |
+| `codegg_config::AppError` | `AppError` | Matches Config/Io/Other |
+| `sqlx::Error` | `StorageError::Database` | Via `codegg-providers` |
+| `reqwest::Error` | `ProviderError::Api` | HTTP failures; `.url()` extracts endpoint |
+| `CircuitError::Open` | `ProviderError::CircuitOpen` | Circuit breaker integration |
+| `egglsp::LspError` | `LspError` | Several variants collapsed to `RequestFailed` |
+| `eggsentry::EggsecError` | `ToolError` | Io/FileTooLarge/Join mapped |
+
+## Testing
+
+```bash
+cargo test -p codegg --features server -- error::tests
+```
+
+Tests verify: HTTP status mapping for each error family, canonical reason
+phrases in response bodies, no secret leakage in error messages, and
+`ServerRuntimeError` status mapping.
+
+## Related Docs
+
+- `architecture/core.md` — root `src/error.rs` rationale and boundary
+- `resilience/` — Circuit breaker patterns using `is_retryable()`
+- `exec/` — Exec mode error classification
+- `provider/` — Provider retry logic using `is_retryable()`

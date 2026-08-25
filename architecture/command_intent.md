@@ -2,21 +2,50 @@
 
 Command intent classification analyzes shell commands to determine their family, risk level, execution capabilities, and context policy. This is the first stage of the command intent pipeline (classify → plan → route).
 
-## Source
+## Purpose
 
-`src/command_intent/mod.rs` (with `shell_shape.rs` and `plan.rs` submodules)
+Classify shell commands into typed intent families, assess risk, and produce a `CommandIntent` that downstream planner and routing stages consume.
+
+## Where It Lives
+
+- `src/command_intent/mod.rs` — classification logic and types
+- `src/command_intent/shell_shape.rs` — POSIX-aware shell word parser
+- `src/command_intent/plan.rs` — execution planning (re-exported via `src/command_planner.rs`)
+
+## How It Works
+
+```
+  raw command string
+        │
+        ▼
+  parse_shell_words() ─── Empty ──→ Rejected
+        │
+        ▼
+  SimpleArgv(argv)        ComplexShell { reasons } ──→ RawShell (Low)
+        │
+        ▼
+  looks_like_test?  ─yes→ classify_test()
+  looks_like_python? yes→ classify_python()
+  looks_like_git?   ─yes→ classify_git()       ← codegg-git typed parser
+  looks_like_file_read? → classify_file_read()
+  looks_like_search? ─yes→ classify_search()
+  looks_like_build?  ─yes→ classify_build()
+        │
+        ▼ (no match)
+  RawShell (Low confidence, unclassified)
+```
 
 ## Core Types
 
-### `CommandIntentKind` (16 variants)
+### `CommandIntentKind` (15 variants)
 
 | Variant | Description |
 |---------|-------------|
-| `Test` | Test execution commands (cargo test, pytest, go test, npm test, etc.) |
+| `Test` | Test execution (cargo test, pytest, go test, npm test, etc.) |
 | `GitReadOnly` | Read-only git (status, diff, log, show, branch, remote, stash list, tag) |
 | `GitMutating` | Git mutations (commit, push, reset, clean, etc.) |
-| `SearchReadOnly` | Search/list/read (rg, grep, find, ls, tree, cat, head, tail, wc) |
-| `FileRead` | File reading (cat, less, more, head, tail, type) |
+| `SearchReadOnly` | Search/list/read (rg, grep, fd, find, ls, pwd, wc) |
+| `FileRead` | File reading (cat, less, more, head, tail) |
 | `FileWrite` | File writing |
 | `FileEdit` | File editing |
 | `Build` | Build commands (cargo build/check/clippy/fmt/run, make, cmake, npm run) |
@@ -31,8 +60,13 @@ Command intent classification analyzes shell commands to determine their family,
 ### Supporting Enums
 
 ```rust
-pub enum CommandSource { AgentTool, HumanShell, TestRunner, PythonScript, Unknown }
-pub enum CommandOrigin { BashTool, TestSlashCommand, HumanShellBang, HumanShellDoubleBang, PythonScripting, DirectExecution }
+pub enum CommandSource {
+    AgentTool, HumanShell, TestRunner, PythonScript, Unknown
+}
+pub enum CommandOrigin {
+    BashTool, TestSlashCommand, HumanShellBang,
+    HumanShellDoubleBang, PythonScripting, DirectExecution
+}
 pub enum IntentConfidence { High, Medium, Low, Unknown }
 pub enum RiskLevel { Safe, Low, Medium, High, Critical }
 pub enum ContextPolicy { ProjectToModel, LocalOnly, StoreOnly, Promote }
@@ -40,7 +74,9 @@ pub enum ContextPolicy { ProjectToModel, LocalOnly, StoreOnly, Promote }
 
 ### `ExecutionCapability` (10 variants)
 
-`ReadWorkspace`, `WriteWorkspace`, `Subprocess`, `Network`, `EnvAccess`, `DependencyInstall`, `OutsideWorkspace`, `DestructiveFileMutation`, `GitMutation`, `ContextPromotion`
+`ReadWorkspace`, `WriteWorkspace`, `Subprocess`, `Network`, `EnvAccess`,
+`DependencyInstall`, `OutsideWorkspace`, `DestructiveFileMutation`,
+`GitMutation`, `ContextPromotion`
 
 ### `RiskAssessment`
 
@@ -52,7 +88,10 @@ pub struct RiskAssessment {
 }
 ```
 
-Constructors: `safe()`, `low(reason)`, `medium(reason)`, `high(reason)` (backward-compat), plus specific constructors: `read_only(reason)` (no Subprocess), `raw_shell(reason)` (with Subprocess), `managed_process(reason)` (no Subprocess), `git_mutation(reason)` (with GitMutation), `destructive(reason)` (with DestructiveFileMutation).
+Constructors: `safe()`, `low(reason)`, `medium(reason)`, `high(reason)`,
+plus specific: `read_only(reason)` (no Subprocess), `raw_shell(reason)` (with
+Subprocess), `managed_process(reason)` (no Subprocess), `git_mutation(reason)`
+(with GitMutation), `destructive(reason)` (with DestructiveFileMutation).
 
 ### `CommandIntent`
 
@@ -68,22 +107,31 @@ pub struct CommandIntent {
 }
 ```
 
-`parsed_argv` is populated for all simple argv-shaped commands. `None` for complex shell commands where argv parsing failed or was not applicable.
+`parsed_argv` is populated for all simple argv-shaped commands. `None` for
+complex shell commands where argv parsing failed or was not applicable.
 
 Methods:
-- `is_safe_for_model_context()` — true when risk is Safe/Low AND context is ProjectToModel/Promote
+- `is_safe_for_model_context()` — true when risk is Safe/Low AND context is
+  ProjectToModel/Promote
 - `requires_permission()` — true when risk is Medium/High/Critical
 
-Permission defaults for each `ExecutionCapability` are defined in the command planner's `generate_permission_requests()` — see [command_planner.md](command_planner.md#permission-generation).
+Permission defaults for each `ExecutionCapability` are defined in the command
+planner's `generate_permission_requests()` — see
+[command_planner.md](command_planner.md#permission-generation).
 
 ## Classification
 
 ```rust
 pub fn classify_command(command: &str) -> CommandIntent
-pub fn classify_command_with_context(command: &str, ctx: &CommandIntentContext) -> CommandIntent
+pub fn classify_command_with_context(
+    command: &str, ctx: &CommandIntentContext
+) -> CommandIntent
 ```
 
-`classify_command()` is a backward-compatible wrapper that calls `classify_command_with_context` with a default context (uses process cwd). For workspace-aware path checks, use `classify_command_with_context` with a `CommandIntentContext` containing the workspace root.
+`classify_command()` is a backward-compatible wrapper that calls
+`classify_command_with_context` with a default context (uses process cwd).
+For workspace-aware path checks, use `classify_command_with_context` with a
+`CommandIntentContext` containing the workspace root.
 
 ```rust
 pub struct CommandIntentContext {
@@ -92,54 +140,90 @@ pub struct CommandIntentContext {
 }
 ```
 
-Classification is now driven by **shell shape parsing** (`src/command_intent/shell_shape.rs`):
-
-1. Parse command into `ShellShape` via `parse_shell_words()`
-2. `Empty` → `Rejected`
-3. `ComplexShell { reasons }` → `RawShell` (Low confidence, medium risk)
-4. `SimpleArgv(argv)` → pattern-match on first token through `looks_like_*` / `classify_*` helpers
-
 ### ShellShape Parsing
 
-`parse_shell_words()` is a POSIX-aware state machine that handles:
+`parse_shell_words()` (`src/command_intent/shell_shape.rs`) is a
+POSIX-aware state machine that handles:
 - Single quotes (no escape processing inside)
 - Double quotes (with `\"` and `\\` escapes)
 - Backslash escapes outside quotes
-- Detection of shell complexity: pipes, semicolons, `&&`/`||`, background, redirection, command substitution, variable expansion, heredocs, globs, tilde, env assignments, unbalanced quotes
+- Detection of shell complexity: pipes, semicolons, `&&`/`||`, background,
+  redirection, command substitution, variable expansion, heredocs, globs,
+  tilde, env assignments, unbalanced quotes
 
-Commands classified as `ComplexShell` are routed to `RawShell` — this prevents `cargo test && rm -rf .` from routing to the test runner.
+Commands classified as `ComplexShell` are routed to `RawShell` — this
+prevents `cargo test && rm -rf .` from routing to the test runner.
 
 ### Pattern Recognition
 
-Classification uses `looks_like_*` / `classify_*` helper pairs. Key patterns:
+Classification uses `looks_like_*` / `classify_*` helper pairs. The order
+is: Test → Python → Git → FileRead → Search → Build → RawShell fallback.
 
-- **Test**: `cargo test`, `cargo nextest`, `pytest`, `uv run pytest`, `go test`, `npm/pnpm/yarn/bun test`, `make test/check`
-- **Python**: `python`, `python3`, `uv run python/pytest`, `pytest`, `.py` suffix
-- **Git readonly**: `status`, `diff`, `log`, `show` (always read-only); `branch`, `tag`, `remote`, `stash` (read-only only for specific forms — see git classification below)
-- **Search**: `rg`, `grep`, `find`, `ls`, `tree`, `wc` (with destructive-flag and outside-workspace rejection)
-- **File read**: `cat`, `less`, `more`, `head`, `tail` (with outside-workspace rejection)
-- **Build**: `cargo build/check/clippy/fmt/run`, `make`, `cmake`, `npm/pnpm run`
+Key patterns:
+- **Test**: `cargo test`, `cargo nextest`, `pytest`, `uv run pytest`, `go test`,
+  `npm/pnpm/yarn/bun test`, `make test/check`
+- **Python**: `python`, `python3`, `uv run python/pytest`, `pytest`
+- **Git readonly**: `status`, `diff`, `log`, `show` (always read-only);
+  `branch`, `tag`, `remote`, `stash` (read-only only for specific forms)
+- **Search**: `rg`, `grep`, `fd`, `find`, `ls`, `pwd`, `wc`
+  (with destructive-flag and outside-workspace rejection)
+- **File read**: `cat`, `less`, `more`, `head`, `tail`
+  (with outside-workspace rejection)
+- **Build**: `cargo build/check/clippy/fmt/run`, `make`, `cmake`,
+  `npm/pnpm run`
 
 ### Git Classification
 
-`classify_git()` delegates to **codegg-git's typed parser** (`crates/codegg-git`) for accurate risk assessment. The parser parses git argv into a structured `GitOperation` with typed subcommands, flags, and argument positions, enabling precise read-only vs. mutating classification without string-prefix heuristics.
+`classify_git()` delegates to **codegg-git's typed parser** (`crates/codegg-git`)
+for accurate risk assessment. The parser parses git argv into a structured
+`GitOperation` with typed subcommands, flags, and argument positions, enabling
+precise read-only vs. mutating classification without string-prefix heuristics.
 
-When the typed parser fails (unknown subcommand, malformed argv, or parse error), classification **falls back to lightweight heuristics** — first-token matching on known subcommands with conservative risk assignment (falls through to `RawShell` for unrecognized forms).
+When the typed parser fails (unknown subcommand, malformed argv, or parse
+error), classification **falls back to lightweight heuristics** — first-token
+matching on known subcommands with conservative risk assignment (falls through
+to `RawShell` for unrecognized forms).
 
-Known mutating operations identified by the typed parser include: `add`, `commit`, `stash` (non-list forms), `branch` (create/delete/rename), `tag` (create/delete), `remote` (add/remove/rename/set-url), `push`, `pull`, `reset`, `clean`, `checkout` (branch switching), `switch`, `restore`, `merge`, `rebase`, `cherry-pick`, `revert`. Risk levels are derived from the operation type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
+**Important typed parser behavior:** The typed parser may classify some
+commands differently than the heuristic fallback. For example, `git remote -v`
+and `git remote show origin` are classified as `GitMutating` by the typed
+parser (treats `-v`/`show` as unrecognized sub-subcommands), even though the
+heuristic would treat them as read-only. Tests at
+`src/command_intent/mod.rs:1348-1364` document these cases. Similarly,
+`git branch --contains HEAD` and `git branch --merged main` are classified as
+`GitMutating` by the typed parser because `--contains`/`--merged` are treated
+as unhandled flags, making the positional arg look like a branch to create.
 
-**Polish-pass provenance parity:** The execution-origin matrix in `tests/git_execution_origin_matrix.rs` (19 tests, rows 1-10) asserts that every origin — native typed read/mutation, native raw git subcommand, Bash simple git read/mutation, managed git argv fallback, raw shell with `|`/`&&`/`;`, TUI git action, daemon git action, replay/rerun — has consistent planned backend, env policy, redaction boundary, and RunStore ownership. Row 5 documents the Bash simple git mutation gap: it classifies as `GitMutating` but dispatches as `RawShell` (see [command_planner.md routing caveat](command_planner.md#planning)).
+Known mutating operations identified by the typed parser include: `add`,
+`commit`, `stash` (non-list forms), `branch` (create/delete/rename), `tag`
+(create/delete), `remote` (add/remove/rename/set-url), `push`, `pull`,
+`reset`, `clean`, `checkout` (branch switching), `switch`, `restore`, `merge`,
+`rebase`, `cherry-pick`, `revert`. Risk levels are derived from the operation
+type and flags (e.g., `--hard` on `reset`, `-f` on `clean`).
+
+**Polish-pass provenance parity:** The execution-origin matrix in
+`tests/git_execution_origin_matrix.rs` (19 tests, rows 1-10) asserts that
+every origin — native typed read/mutation, native raw git subcommand, Bash
+simple git read/mutation, managed git argv fallback, raw shell with
+`|`/`&&`/`;`, TUI git action, daemon git action, replay/rerun — has
+consistent planned backend, env policy, redaction boundary, and RunStore
+ownership. Row 5 documents the Bash simple git mutation gap: it classifies
+as `GitMutating` but dispatches as `RawShell` (see
+[command_planner.md routing caveat](command_planner.md#planning)).
 
 ### Search/read Classification
 
-- `find -exec`, `-delete`, `-ok`, `-execdir` → rejected from safe search (falls through to RawShell)
-- Absolute outside-workspace path arguments → rejected from safe search and file-read
+- `find -exec`, `-delete`, `-ok`, `-execdir` → rejected from safe search
+  (falls through to RawShell)
+- Absolute outside-workspace path arguments → rejected from safe search
+  and file-read
 - `which`/`whereis` → NOT classified as file reads (fall through to RawShell)
 
 ## Integration
 
 `classify_command()` is called by:
-- `BashTool::execute()` in `src/tool/bash.rs` — attaches routing metadata when `CommandIntentConfig` is set
+- `BashTool::execute()` in `src/tool/bash.rs:1671` — attaches routing
+  metadata when `CommandIntentConfig` is set
 
 ### CommandIntentMode
 
@@ -151,13 +235,15 @@ backward-compatible alias for `Active`; new configuration should use `Active`.
 
 ### CommandIntentFamily
 
-`CommandIntentFamily` enum with 10 variants, used for per-family active routing config:
+`CommandIntentFamily` enum with 10 variants, used for per-family active
+routing config (defined in `crates/codegg-config/src/schema.rs:2904`):
 
 ```rust
 pub enum CommandIntentFamily {
     Tests,
     GitRead,
-    GitLocalMutation,   // add, commit, branch, checkout, restore, stash, merge/rebase/cherry-pick/revert (no --force/network)
+    GitLocalMutation,   // add, commit, branch, checkout, restore, stash,
+                        // merge/rebase/cherry-pick/revert (no --force/network)
     GitNetwork,         // fetch, pull, push, remote add/remove/set-url, config
     GitDestructive,     // reset --hard, clean -fdx, push --force
     Search,
@@ -178,15 +264,25 @@ pub enum RouteLevel {
 }
 ```
 
-Per-family fields in `CommandIntentConfig`:
+Per-family fields in `CommandIntentConfig`
+(`crates/codegg-config/src/schema.rs:2741`):
+- `route_tests: Option<RouteLevel>` — Test family
+- `route_git_read: Option<RouteLevel>` — Git read-only family
+- `route_search: Option<RouteLevel>` — Search/list/read family
+- `route_python: Option<RouteLevel>` — Python family
 - `route_build: Option<RouteLevel>` — Build family (cargo build/check)
 - `route_lint: Option<RouteLevel>` — Lint family (cargo clippy, mypy, pyright, tsc)
 - `route_format: Option<RouteLevel>` — Format family (cargo fmt, prettier, black)
-- `route_git_local_mutation: Option<RouteLevel>` — Git local mutation family (add, commit, branch, checkout, restore, stash, merge/rebase/cherry-pick without --force/network). Default `None`.
-- `route_git_network: Option<RouteLevel>` — Git network family (fetch, pull, push, remote add/remove/set-url, config). Default `None`.
-- `route_git_destructive: Option<RouteLevel>` — Git destructive family (reset --hard, clean -fdx, push --force). Default `None`.
+- `route_git_local_mutation: Option<RouteLevel>` — Git local mutation family.
+  Default `None`.
+- `route_git_network: Option<RouteLevel>` — Git network family. Default `None`.
+- `route_git_destructive: Option<RouteLevel>` — Git destructive family.
+  Default `None`.
 
-`is_active_for_family(family)` returns true when the family's `RouteLevel` is `Active`. `family_level(family)` returns the effective `RouteLevel` for a family (family-specific overrides fall back to global mode).
+`is_active_for_family(family)` returns true when global mode is Active AND
+the family's `RouteLevel` is `Active`. `family_level(family)` returns the
+effective `RouteLevel` for a family (family-specific overrides fall back to
+global mode: Active mode → `Active`, Observe mode → `Observe`).
 
 ### Build/Lint/Format Classification
 
@@ -197,7 +293,23 @@ Expanded classification for build-adjacent families:
 - **Format**: `cargo fmt`, `prettier`, `black`
 - **Typecheck** is folded into Lint (mypy, pyright, tsc are all static analysis)
 
-Package managers (`npm install`, `pip install`, `cargo install`, etc.) are **NOT** classified as Build — they fall through to `RawShell`. This is a safety boundary: package installs mutate global state and should not be auto-routed.
+Package managers (`npm install`, `pip install`, `cargo install`, etc.) are
+**NOT** classified as Build — they fall through to `RawShell`. This is a
+safety boundary: package installs mutate global state and should not be
+auto-routed.
+
+## Invariants & Gotchas
+
+- The typed parser (`codegg_git::parse_git_argv`) is the authoritative
+  classifier for git commands. It may disagree with the heuristic fallback
+  (e.g., `git remote -v` → Mutating via typed parser, ReadOnly via heuristic).
+- Classification order matters: `pytest` matches Test (checked first) before
+  Python.
+- `ComplexShell` commands always become `RawShell` — even if the first token
+  looks like a known family. This prevents `cargo test && rm -rf .` from
+  routing to the test runner.
+- `parsed_argv` is `None` for `ComplexShell` and `Rejected` commands, which
+  causes `validate_for_active_routing()` to reject them.
 
 ## Tests
 
@@ -205,14 +317,30 @@ Package managers (`npm install`, `pip install`, `cargo install`, etc.) are **NOT
 cargo test -p codegg --lib command_intent
 ```
 
-Tests cover: general classification, shell shape parsing (quoted args, operators, complex shell detection), git read-only/mutating classification (branch/tag/remote forms), search/read rejection (find -exec, outside-workspace, which/whereis), build/lint/format/typecheck family classification, package manager safety boundary, parsed argv round-trips, and cross-module classify→plan→route integration.
+Tests cover: general classification, shell shape parsing (quoted args,
+operators, complex shell detection), git read-only/mutating classification
+(branch/tag/remote forms), search/read rejection (find -exec,
+outside-workspace, which/whereis), build/lint/format/typecheck family
+classification, package manager safety boundary, parsed argv round-trips,
+and cross-module classify→plan→route integration.
 
 ### Track U family split
 
-The original monolithic `CommandIntentFamily::GitMutating` family was split into three independent families so each can be gated independently via its own `RouteLevel`:
+The original monolithic `CommandIntentFamily::GitMutating` family was split
+into three independent families so each can be gated independently via its
+own `RouteLevel`:
 
-- **`GitLocalMutation`** — `add`, `commit`, `branch`, `checkout`, `restore`, `stash push/pop`, `merge`/`rebase`/`cherry-pick`/`revert` (no `--force`, no network). Gated by `route_git_local_mutation`.
-- **`GitNetwork`** — `fetch`, `pull`, `push`, `remote add/remove/set-url`, `config`. Gated by `route_git_network`.
-- **`GitDestructive`** — `reset --hard`, `clean -fdx`, `push --force`. Gated by `route_git_destructive`.
+- **`GitLocalMutation`** — `add`, `commit`, `branch`, `checkout`, `restore`,
+  `stash push/pop`, `merge`/`rebase`/`cherry-pick`/`revert` (no `--force`,
+  no network). Gated by `route_git_local_mutation`.
+- **`GitNetwork`** — `fetch`, `pull`, `push`, `remote add/remove/set-url`,
+  `config`. Gated by `route_git_network`.
+- **`GitDestructive`** — `reset --hard`, `clean -fdx`, `push --force`.
+  Gated by `route_git_destructive`.
 
-The `git_operation_family()` resolver in `src/command_intent/plan.rs` maps `GitOperation` variants to the appropriate family via risk precedence: `Destructive > Network > Read > LocalMutation`. This replaces the former `intent_kind_to_family()` mapping that returned `None` for `GitMutating`, which caused bash-translated simple git mutations to fall back to raw shell even when active routing was enabled.
+The `git_operation_family()` resolver in `src/command_intent/plan.rs:286`
+maps `GitOperation` variants to the appropriate family via risk precedence:
+`Destructive > Network > Read > LocalMutation`. This replaces the former
+`intent_kind_to_family()` mapping that returned `None` for `GitMutating`,
+which caused bash-translated simple git mutations to fall back to raw shell
+even when active routing was enabled.

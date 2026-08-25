@@ -1,19 +1,29 @@
 # Deterministic Tools (eggsact)
 
-In-process deterministic correctness utilities backed by the `eggsact` crate. These provide compile-time-guaranteed validation, comparison, and inspection operations that never call external services.
+In-process deterministic correctness utilities backed by the `eggsact`
+crate (external dependency). These provide compile-time-guaranteed
+validation, comparison, and inspection operations that never call
+external services.
 
-## Overview
+## Purpose
 
-**Location**: `src/tool/deterministic.rs` (wrapper), `src/eggsact/adapter.rs` (runtime)
-
-**Key Responsibilities**:
 - Provide deterministic text comparison, diffing, and validation
 - Offer config format validation (JSON, TOML)
-- Perform security-oriented text inspection (hidden chars, confusables, prompt injection)
+- Perform security-oriented text inspection (hidden chars, confusables,
+  prompt injection)
 - Support harness-side preflight checks before mutating operations
 - All operations are pure functions — no I/O, no network, no side effects
 
-## Architecture
+## Where It Lives
+
+```
+src/tool/deterministic.rs      # EggsactTool wrapper, build_eggsact_tools()
+src/eggsact/adapter.rs         # EggsactRuntime wrapping eggsact::agent::ToolRegistry
+src/tool/integrated_config.rs  # DeterministicToolsRuntimeConfig resolution
+src/preflight/service.rs       # PreflightService (same runtime, harness audience)
+```
+
+## How It Works
 
 ```
 ToolRegistry
@@ -27,9 +37,85 @@ ToolRegistry
                     └── same runtime, different audience ("harness")
 ```
 
-The eggsact runtime is shared between model-facing deterministic tools and harness-internal preflight checks. The `audience` parameter distinguishes them:
+The eggsact runtime is shared between model-facing deterministic tools
+and harness-internal preflight checks. The `audience` parameter
+distinguishes them:
 - `"model"` — tool calls visible to the model (registered in ToolRegistry)
 - `"harness"` — internal preflight calls (never appear as tool calls)
+
+## Key Types & APIs
+
+### EggsactRuntime (`src/eggsact/adapter.rs:88-145`)
+
+```rust
+pub struct EggsactRuntime {
+    registry: eggsact::agent::ToolRegistry,
+    config: EggsactConfig,
+}
+```
+
+- `new(config: EggsactConfig) -> Result<Self, ToolError>` — fallible
+- `call_json(tool, args) -> Result<EggsactCallResult, ToolError>`
+- `has_tool(tool) -> bool`
+- `config() -> &EggsactConfig`
+
+### EggsactConfig (`src/eggsact/adapter.rs:68-85`)
+
+```rust
+pub struct EggsactConfig {
+    pub profile: String,         // default "codegg_core"
+    pub audience: String,        // default "model"
+    pub max_output_chars: usize, // default 12_000
+}
+```
+
+### EggsactCallResult (`src/eggsact/adapter.rs:148-164`)
+
+```rust
+pub struct EggsactCallResult {
+    pub output: String,
+    pub success: bool,
+    pub elapsed_ms: u64,
+    pub truncated: bool,
+    pub machine_code: Option<String>,
+    pub result: Option<serde_json::Value>,
+    pub findings: Option<serde_json::Value>,
+    pub warnings: Option<serde_json::Value>,
+    pub error_type: Option<String>,
+    pub error: Option<String>,
+}
+```
+
+Structured fields (`result`, `findings`, `warnings`) are populated from
+eggsact `ToolResponse` when available.
+
+### EggsactTool (`src/tool/deterministic.rs:17-91`)
+
+Generic wrapper mapping a Codegg tool name to an eggsact tool name.
+Implements `Tool` trait. Both `execute()` and `execute_structured()`
+delegate to `EggsactRuntime::call_json()`.
+
+### build_eggsact_tools (`src/tool/deterministic.rs:106-288`)
+
+```rust
+pub fn build_eggsact_tools(runtime: Arc<EggsactRuntime>)
+    -> (Vec<EggsactTool>, Vec<EggsactTool>)
+```
+
+Returns `(always_visible, deferred)`. Caller decides registration order
+in `ToolRegistry::with_options`.
+
+### truncate_utf8_safe (`src/eggsact/adapter.rs:18-57`)
+
+```rust
+pub fn truncate_utf8_safe(input: &str, max_chars: usize, marker: &str)
+    -> TruncatedText
+```
+
+UTF-8-safe truncation without splitting multibyte sequences. Marker is
+appended after truncation when it fits within the cap; when the marker
+alone meets or exceeds the limit, it is omitted and output is hard-capped
+to `max_chars`.
 
 ## Trust and Provenance
 
@@ -44,17 +130,15 @@ ToolProvenance {
 }
 ```
 
-This reflects that eggsact operations are deterministic, have no side effects, and run entirely in-process.
-
 ## Tool Catalog
 
 ### Always-Visible Tools (8)
 
-These tools are exposed to the model via `expose_in_definitions = true`:
+Exposed to the model via `expose_in_definitions = true`:
 
 | Tool | Description | Category |
 |------|-------------|----------|
-| `text_equal` | Compare two strings for equality under various modes (raw, normalized, casefolded, trimmed) | ReadOnly |
+| `text_equal` | Compare two strings under various modes (raw, normalized, casefolded, trimmed) | ReadOnly |
 | `text_diff_explain` | Explain why two strings differ with Unicode-aware span analysis | ReadOnly |
 | `text_replace_check` | Check whether a text replacement would apply cleanly before editing | ReadOnly |
 | `validate_json` | Validate JSON syntax and report precise parse errors with line/column | ReadOnly |
@@ -65,7 +149,7 @@ These tools are exposed to the model via `expose_in_definitions = true`:
 
 ### Deferred / Contextual Tools (5)
 
-These tools are discoverable via `tool_search` but not shown by default:
+Discoverable via `tool_search` but not shown by default:
 
 | Tool | Description |
 |------|-------------|
@@ -75,7 +159,9 @@ These tools are discoverable via `tool_search` but not shown by default:
 | `structured_data_compare` | Compare structured config/data output (JSON) |
 | `text_fingerprint` | Compute a deterministic SHA-256 fingerprint of text |
 
-Deferred tools use `expose_in_definitions = false` and `defer_loading = true`. They are registered in the ToolCatalog but not sent to the model in tool definitions. The model can discover them via `tool_search`.
+Deferred tools use `expose_in_definitions = false` and
+`defer_loading = true`. They are registered in the ToolCatalog but not
+sent to the model in tool definitions.
 
 ## Registration Flow
 
@@ -93,9 +179,11 @@ EggsactRuntime::new(config)
 ```
 
 Key points:
-- `EggsactRuntime::new()` is fallible — if it fails, deterministic tools are silently skipped
-- Registration happens in `ToolRegistry::with_options()` (the authoritative constructor)
-- The runtime is constructed from `DeterministicToolsRuntimeConfig` resolved by `integrated_config::resolve_integrated_config()`
+- `EggsactRuntime::new()` is fallible — if it fails, deterministic
+  tools are silently skipped
+- Registration happens in `ToolRegistry::with_options()`
+- The runtime is constructed from `DeterministicToolsRuntimeConfig`
+  resolved by `integrated_config::resolve_integrated_config()`
 
 ## Configuration
 
@@ -105,125 +193,75 @@ Key points:
 [deterministic_tools]
 enabled = true                    # master switch
 backend = "native"                # "native" | "disabled"
-profile = "codegg_core"           # eggsact profile: "codegg_core" | "codegg_core_min" | "default" | "full"
+profile = "codegg_core"           # "codegg_core" | "codegg_core_min" | "default" | "full"
 model_audience = "model"          # audience for model-facing tools
 harness_audience = "harness"      # audience for preflight checks
 expose_expert_tools = false       # expose deferred tools to model
-max_output_chars = 12000          # truncation limit for tool output (1..1_000_000)
+max_output_chars = 12000          # truncation limit (1..1_000_000)
 ```
 
 ### Validation
 
-`DeterministicToolsConfig::validate()` in `crates/codegg-config/src/schema.rs` checks:
-
+`DeterministicToolsConfig::validate()` in `crates/codegg-config/src/schema.rs`
+checks:
 - `backend` must be `"native"` or `"disabled"`
-- `profile` must be one of `"codegg_core"`, `"codegg_core_min"`, `"default"`, `"full"`
+- `profile` must be one of the four known profiles
 - `model_audience` must be `"model"` or `"harness"`
 - `harness_audience` must be `"harness"` or `"model"`
 - `max_output_chars` must be > 0 and <= 1,000,000
 
-Unknown profiles emit a warning and are canonicalized to `"codegg_core"` at resolve time (`integrated_config::resolve_deterministic_config()`).
+Unknown profiles emit a warning and are canonicalized to `"codegg_core"`
+at resolve time (`integrated_config::resolve_deterministic_config()`).
 
 ### Profile Selection
 
-The `profile` field controls which eggsact tools are available:
 - `codegg_core` — curated subset for code analysis (default)
 - `codegg_core_min` — minimal subset
 - `default` — eggsact's default profile
 - `full` — all available eggsact tools
 
-### Runtime Config Resolution
+## Invariants & Gotchas
 
-`DeterministicToolsRuntimeConfig` is resolved from the schema by `integrated_config::resolve_integrated_config()` in `src/tool/integrated_config.rs`. The resolved config is passed through `ToolRegistryOptions` to `with_options()`.
-
-Unknown profile names are detected and canonicalized to `"codegg_core"` with a warning log. This prevents runtime failures from typos in profile names.
+- `EggsactRuntime::new()` is fallible — deterministic tools are
+  **silently skipped** on failure, not registered as disabled stubs
+- All deterministic tools are `ToolCategory::ReadOnly` — they never
+  trigger permission prompts
+- The runtime is shared between model tools and preflight; the
+  `audience` parameter distinguishes them
+- Eggsact runtime defaults: profile `"codegg_core"`, audience `"model"`,
+  `max_output_chars` 12,000
+- The harness audience uses a separate `EggsactRuntime` instance
+  (constructed by `PreflightService::new()`)
 
 ## Integration with Preflight
 
-The deterministic tools and the preflight system share the same eggsact runtime but serve different purposes:
-
 | Aspect | Deterministic Tools | Preflight |
 |--------|-------------------|-----------|
-| Visibility | Model-facing (registered in ToolRegistry) | Harness-internal (not in ToolRegistry) |
-| Purpose | Expose eggsact capabilities to the model | Validate before tool execution |
-| Interface | `Tool::execute()` via ToolRegistry | `PreflightService::check_*()` methods |
+| Visibility | Model-facing (in ToolRegistry) | Harness-internal (not in ToolRegistry) |
+| Purpose | Expose eggsact to model | Validate before tool execution |
+| Interface | `Tool::execute()` via registry | `PreflightService::check_*()` methods |
 | Audience | `"model"` | `"harness"` |
 | Error handling | Returns `ToolError` | Returns `Allow` (fail-open) |
 
-The preflight service (`src/preflight/service.rs`) calls `EggsactRuntime::call_json()` directly, bypassing the ToolRegistry to avoid recursive tool execution.
+## Testing
 
-## EggsactCallResult
-
-`EggsactCallResult` (`src/eggsact/adapter.rs`) is the return type of `EggsactRuntime::call_json()`. It carries structured data from eggsact tool responses:
-
-```rust
-pub struct EggsactCallResult {
-    pub output: String,                    // formatted text output (truncated)
-    pub success: bool,                     // whether the tool call succeeded
-    pub elapsed_ms: u64,                   // wall-clock time
-    pub truncated: bool,                   // whether output was truncated
-    pub machine_code: Option<String>,      // machine-readable error code
-    pub result: Option<serde_json::Value>, // structured result (match count, verdict, etc.)
-    pub findings: Option<serde_json::Value>, // structured findings array
-    pub warnings: Option<serde_json::Value>, // warnings array
-    pub error_type: Option<String>,        // error type if tool returned error
-    pub error: Option<String>,             // error message if tool returned error
-}
+```bash
+cargo test -p codegg --lib tool::deterministic    # EggsactTool unit tests
+cargo test -p codegg --lib eggsact::adapter       # Runtime, truncate, provenance
+cargo test -p codegg --lib tool::integrated_config # Config resolution
 ```
 
-The structured fields (`result`, `findings`, `warnings`) are populated from the eggsact `ToolResponse` when available. Preflight parsing methods use these fields first, falling back to string parsing of `output` only when structured data is absent.
+Unit tests cover: `format_response`, `to_structured_result`,
+`EggsactConfig` defaults, `truncate_utf8_safe` (multibyte boundaries,
+empty markers, hard-cap enforcement).
 
-## truncate_utf8_safe
+Integration tests cover: all 8 always-visible tools, all 5 deferred
+tools with real eggsact calls, provenance tagging, audience filtering,
+output truncation, structured fields, and deferred-tool discoverability.
 
-`truncate_utf8_safe()` (`src/eggsact/adapter.rs`) is a shared helper that truncates a string to at most `max_chars` characters without splitting multibyte UTF-8 sequences. Returns a `TruncatedText` struct with `text` and `truncated` fields.
+## Related Docs
 
-If a `marker` (e.g. `"..."`) is provided, it is appended after truncation. The marker's character count is subtracted from the budget when it fits; when the marker alone meets or exceeds the limit, it is omitted and output is truncated to `max_chars` directly (hard cap — output never exceeds `max_chars`).
-
-Used by both the eggsact adapter (for tool output) and the preflight service (for finding summaries).
-
-## Tests
-
-### Unit Tests
-- `format_response` — response formatting
-- `to_structured_result` — structured result conversion
-- `EggsactConfig` defaults
-- `truncate_utf8_safe` — multibyte boundary safety, empty markers, hard-cap enforcement, edge cases
-
-### Integration Tests
-- All 8 always-visible tools with real eggsact calls
-- All 5 deferred tools with real eggsact calls
-- Provenance tagging (backend, implementation, trust)
-- Audience filtering (model vs harness)
-- Output truncation at `max_output_chars`
-- Deferred tools not in default definitions but discoverable via `tool_search`
-- `EggsactCallResult` structured fields (`result`, `findings`, `warnings`, `error_type`, `error`)
-
-### Test Matrix (Phase 7)
-- **Eggsact adapter**: Unit tests for formatting, conversion, defaults, structured fields, truncation. Integration tests for all tools, provenance, audience, truncation.
-- **Harness preflight**: Integration tests for all check methods with real eggsact calls. Policy mode tests for off/observe/warn/block_on_definite. Tests for structured-field-first parsing with string-parsing fallback.
-- **Tool registry**: Tests verifying deferred tools are hidden, descriptions imply no mutation, disabled backend hides wrappers.
-- **Validation**: `DeterministicToolsConfig::validate()` for invalid backend, unknown profile, invalid audiences, zero/max output chars. `PreflightConfig::validate()` forward-compatibility checks.
-
-## File Structure
-
-```
-src/tool/
-├── deterministic.rs      # EggsactTool wrapper, build_eggsact_tools()
-├── mod.rs                # Registration in with_options()
-└── integrated_config.rs  # DeterministicToolsRuntimeConfig resolution
-
-src/eggsact/
-├── mod.rs                # Re-exports
-└── adapter.rs            # EggsactRuntime wrapping eggsact::agent::ToolRegistry
-
-src/preflight/
-├── mod.rs                # Re-exports
-└── service.rs            # PreflightService using same runtime
-```
-
-## See Also
-
-- [tool.md](tool.md) — Tool registry, registration flow, ToolCategory
+- [tool.md](tool.md) — Tool registry, registration, ToolCategory
 - [preflight.md](preflight.md) — Harness-side preflight integration
-- [native_crates.md](native_crates.md) — Eggsact crate boundary and provenance model
-- `crates/codegg-config/src/schema.rs` — `DeterministicToolsConfig` schema
+- [native_crates.md](native_crates.md) — Eggsact crate boundary
+- `crates/codegg-config/src/schema.rs` — `DeterministicToolsConfig`

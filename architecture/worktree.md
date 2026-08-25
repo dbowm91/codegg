@@ -1,122 +1,143 @@
 # Worktree Module
 
-The `worktree` module provides Git worktree management. The read-only `list_worktrees` operation is delegated to the `egggit` workspace crate (`crates/egggit/src/worktree.rs`); mutating operations (`create_worktree`, `remove_worktree`) remain in codegg core under the permission flow.
+Git worktree management — listing, creating, and removing worktrees,
+plus hardening for subprocess environments.
 
-## Overview
+## Purpose
 
-**Location**: `src/worktree/` (mutating ops) and `crates/egggit/src/worktree.rs` (read-only listing)
+Provides a thin API over `git worktree` operations. Read-only listing
+delegates to `egggit`; mutating operations (add/remove) use hardened
+`std::process::Command` subprocesses with a security-enforced
+environment policy shared with the root crate's `GitMutationExecutor`.
 
-**Key Responsibilities**:
-- List git worktrees (delegated to `egggit::worktree::list_worktrees` — async)
-- Create new worktrees (codegg-side, sync via `std::process::Command`)
-- Remove worktrees (codegg-side, sync)
-- Find git root (walks up directory tree looking for `.git`)
-- Check if a directory is a git worktree
+## Where It Lives
 
-## Key Functions
+| Layer | Path | Role |
+|-------|------|------|
+| Core facade | `crates/codegg-core/src/worktree.rs` | Public API: `list_worktrees`, `create_worktree`, `remove_worktree`, `find_git_root`, `is_git_worktree`, `is_git_file` |
+| Read-only engine | `crates/egggit/src/worktree.rs` | Async `list_worktrees` (porcelain parser), `find_git_root`, `is_git_file`, `is_git_worktree` |
+| Root re-export | `src/lib.rs:12` | `pub use codegg_core::worktree;` |
+| Mutation executor | `src/git_mutations.rs` | All other git mutations (worktree add/remove are in codegg-core) |
 
-### list_worktrees()
+The `src/worktree/` directory referenced in older docs **does not exist**.
+All worktree code lives in codegg-core, re-exported for root-crate callers.
 
-```rust
-pub async fn list_worktrees(git_root: &Path) -> Result<Vec<Worktree>, AppError>
-```
+## How It Works
 
-Async since the [native crate extraction](native_crates.md); it
-delegates to `egggit::worktree::list_worktrees` and wraps the result
-in the legacy `Worktree` shape used by codegg callers (TUI, server
-routes, core daemon). Integration tests use `#[tokio::test]`.
+### Read-only path
 
-### create_worktree()
+`list_worktrees` is async. It spawns `git worktree list --porcelain` via
+`egggit::worktree::list_worktrees`, parses the porcelain output into
+`WorktreeInfo` structs, and wraps them in the legacy `Worktree` shape.
 
-```rust
-pub fn create_worktree(
-    git_root: &Path,
-    path: &Path,
-    branch: &str,
-    create_branch: bool,
-) -> Result<(), AppError>
-```
+Current-worktree detection uses canonicalized path comparison against
+the provided `git_root`, including symlink-safe resolution.
 
-Creates a new worktree. If `create_branch` is true, passes `-b` to create a new branch.
+### Mutating path
 
-### remove_worktree()
+`create_worktree` and `remove_worktree` are synchronous, building a
+`std::process::Command` via `hardened_git_command`. This helper:
 
-```rust
-pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), AppError>
-```
+1. Clears the process environment (`env_clear()`)
+2. Restores only variables in the canonical allowlist
+   (`codegg_git::process_policy::ALLOWED_ENV_VARS`)
+3. Strips command-bearing variables
+   (`codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS`)
+4. Pins `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `PAGER=cat`
+5. Pins `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`
+6. Strips `EDITOR`, `VISUAL`
+7. Sets `GPG_TTY=""`
 
-Removes a worktree via `git worktree remove`. Pass `force=true` to use the `--force` flag, which removes a worktree even if it has untracked or modified files.
+The canonical policy lists live in `codegg-git` and are re-exported
+from codegg-core as `POLICY_ALLOWED_ENV_VARS` / `POLICY_ALWAYS_STRIPPED_ENV_VARS`.
 
-### find_git_root()
+### Utility functions
 
-```rust
-pub fn find_git_root(start: &Path) -> Option<PathBuf>
-```
+- `find_git_root(start)` — walks up the directory tree looking for `.git`
+  directory or `.git` file (worktree pointer). Returns `None` if no git
+  root found.
+- `is_git_worktree(dir)` — returns `true` only when `dir/.git` exists
+  AND is a file starting with `gitdir:`. Regular repos with `.git`
+  directories return `false`.
+- `is_git_file(git_path)` — checks if a `.git` path is a worktree
+  pointer file.
 
-Walks up the directory tree looking for `.git` directory or `.git` file (which indicates a worktree). Returns the path containing the `.git` entry.
+## Key Types & APIs
 
-### is_git_worktree()
-
-```rust
-pub fn is_git_worktree(dir: &Path) -> bool
-```
-
-Checks if a directory is a Git worktree by detecting a `.git` file with `gitdir:` prefix. Returns `true` if the directory is a worktree, `false` otherwise (including regular git repos with `.git` directories).
-
-### is_git_file()
-
-```rust
-pub fn is_git_file(git_path: &Path) -> bool
-```
-
-Checks if a `.git` path is a file (indicating a worktree) rather than a directory. Returns `true` if the file exists and starts with `gitdir:`.
-
-## Data Structures
-
+### Worktree (codegg-core:16)
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Worktree {
-    pub path: String,          // Worktree directory path
-    pub branch: String,        // Branch name (empty if detached), "refs/heads/" stripped
-    pub is_current: bool,      // True if this is the current worktree
-    pub is_detached: bool,     // True if HEAD is detached
+    pub path: String,
+    pub branch: String,
+    pub is_current: bool,
+    pub is_detached: bool,
 }
 ```
 
-Note: `is_locked` and `is_main` shown in some older docs are **not implemented**.
+Note: `is_locked` and `is_main` are **not implemented**.
 
-## Usage
+### WorktreeInfo (egggit:5)
+Internal type in egggit. Converted to legacy `Worktree` via
+`into_legacy()` at codegg-core:24.
 
+### Public functions (codegg-core)
+
+| Function | Line | Signature |
+|----------|------|-----------|
+| `list_worktrees` | :33 | `async fn(git_root: &Path) -> Result<Vec<Worktree>, AppError>` |
+| `create_worktree` | :40 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
+| `remove_worktree` | :68 | `fn(git_root, path, force) -> Result<(), AppError>` |
+| `find_git_root` | :120 | `fn(start: &Path) -> Option<PathBuf>` |
+| `is_git_file` | :124 | `fn(git_path: &Path) -> bool` |
+| `is_git_worktree` | :128 | `fn(dir: &Path) -> bool` |
+| `hardened_git_command` | :98 | `fn(args, git_root) -> Command` (private) |
+
+### Policy re-exports (codegg-core:11-14)
 ```rust
-use crate::worktree::{list_worktrees, create_worktree, remove_worktree, find_git_root, is_git_worktree, Worktree};
-
-// Find the git root for a directory
-if let Some(git_root) = find_git_root(&some_path) {
-    // List all worktrees
-    let worktrees = list_worktrees(&git_root)?;
-    for wt in worktrees {
-        println!("{} - {} (current: {})", wt.path, wt.branch, wt.is_current);
-    }
-
-    // Create a new worktree
-    create_worktree(&git_root, &Path::new("/path/to/new"), "feature-branch", true)?;
-
-    // Remove a worktree (force=false)
-    remove_worktree(&git_root, &Path::new("/path/to/new"), false)?;
-
-    // Or force removal even with untracked/modified files
-    remove_worktree(&git_root, &Path::new("/path/to/new"), true)?;
-
-    // Check if a directory is a worktree
-    if is_git_worktree(&Path::new("/some/dir")) {
-        println!("This is a worktree!");
-    }
-}
+pub use codegg_git::process_policy::{
+    ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
+    ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
+};
 ```
 
-## See Also
+## Consumers
 
-- [tool.md](tool.md) - Git operations tool
-- `src/worktree/mod.rs` - Contains `is_git_file()` at line 172, `is_git_worktree()` at line 180
-- `src/server/routes/workspace.rs` - Uses `is_git_worktree()` for workspace detection
-- `src/server/routes/project.rs` - Uses `find_git_root()` for project git root discovery
+| Location | How Used |
+|----------|----------|
+| `src/core/daemon.rs:3747,4977` | `find_git_root` + `list_worktrees` for workspace/project discovery |
+| `src/tui/app/mod.rs:5880` | `/worktree` command handler |
+| `src/tui/commands/git_sidebar.rs:113` | Git sidebar worktree listing |
+| `src/tui/commands/tasks.rs:550` | `start_worktree_list` async task |
+| `src/tool/git.rs:964` | Git tool `worktree` subcommand |
+| `src/agent/turn_runtime.rs:782` | `find_git_root` for workspace root resolution |
+
+## Invariants & Gotchas
+
+- **Shared env policy**: `hardened_git_command` and `GitEnvPolicy::apply`
+  both consume `codegg_git::process_policy` constants. A drift-guard
+  test (`worktree_uses_canonical_policy`) ensures codegg-core stays
+  synchronized with the canonical source.
+- **Sync vs async**: `create_worktree`/`remove_worktree` are synchronous
+  (blocking `std::process::Command`); `list_worktrees` is async
+  (`tokio::task::spawn_blocking`).
+- **No permission flow**: Worktree add/remove are not gated by the
+  permission system. They are only called from TUI command handlers
+  where the user has already initiated the action.
+
+## Testing
+
+```bash
+cargo test -p codegg-core worktree         # core unit tests
+cargo test --test worktree                  # integration tests (11 tests)
+```
+
+Integration tests cover: struct creation, detached state, find_git_root,
+list_worktrees (current/detached detection), create+remove round-trip,
+is_git_worktree/is_git_file edge cases, and symlink detection.
+
+## Related Docs
+
+- [git.md](git.md) — Git execution architecture
+- `architecture/command_intent.md` — Git command classification
+- `crates/codegg-git/src/process_policy.rs` — Canonical env policy

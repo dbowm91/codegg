@@ -1,30 +1,49 @@
 # Hooks Module
 
-The `hooks` module provides a lifecycle event system for running custom scripts at key points in the agent loop execution.
+The `hooks` module provides two separate lifecycle event systems:
+user-defined shell command hooks and WASM plugin hooks.
 
-## Overview
+## Purpose
 
-**Location**: `src/hooks/`
+Allow users and plugins to run code at key points in the agent loop:
+before/after tool execution, session start/end, and agent start/end.
+Shell hooks are config-driven external commands; plugin hooks are
+WASM-invoked and can block execution.
 
-**Key Responsibilities**:
-- Register and manage shell command hooks
-- Execute hooks at lifecycle events
-- Two distinct hook systems: shell command hooks and WASM plugin hooks
+## Where It Lives
 
-## Two Hook Systems
+| System | Location |
+|--------|----------|
+| Shell command hooks | `src/hooks/mod.rs` (single file) |
+| Plugin hooks | `src/plugin/hooks.rs` |
 
-This codebase has **two separate hook systems**:
+## How It Works
 
-1. **`src/hooks/mod.rs`** - Shell Command Hooks (user-defined external commands)
-2. **`src/plugin/hooks.rs`** - WASM Plugin Hooks (plugin-based extensibility)
+### Shell Command Hooks
 
----
+1. Config entries in `[[hooks.*]]` TOML arrays are parsed by
+   `HookRegistry::from_config()`.
+2. Each entry becomes a `ShellCommandHook` that spawns `sh -c <command>`.
+3. The environment is cleared (`env_clear()`), then `PATH` and
+   `CODEGG_*` context variables are set.
+4. Hooks run via `HookRegistry::run_hooks()` which collects errors
+   without early-return.
+5. Shell hooks **never block** execution — they are fire-and-forget.
 
-# Shell Command Hooks
+### Plugin Hooks
 
-## HookEvent Enum
+1. WASM plugins register for `HookType` variants via their manifest.
+2. Plugin hooks **can block** execution (`ToolExecuteBefore`,
+   `SessionCompacting`).
+3. Returns `HookResult` with `blocked`, `output`, `error`, and `effects`
+   fields.
+
+## Key Types & APIs
+
+### Shell Command Hooks (`src/hooks/mod.rs`)
 
 ```rust
+// :15
 pub enum HookEvent {
     PreToolExecute,
     PostToolExecute,
@@ -33,13 +52,8 @@ pub enum HookEvent {
     AgentStart,
     AgentEnd,
 }
-```
 
-**Note**: `PreAgentRun` and `PostAgentRun` events do not exist in this codebase.
-
-## HookContext
-
-```rust
+// :55
 pub struct HookContext {
     pub event: HookEvent,
     pub session_id: Option<String>,
@@ -48,57 +62,53 @@ pub struct HookContext {
     pub tool_result: Option<String>,
     pub timestamp: i64,
 }
-```
 
-## HookRegistry
-
-```rust
-pub struct HookRegistry {
-    hooks: HashMap<HookEvent, Vec<Box<dyn Hook>>>,
-}
-
+// :89
 pub trait Hook: Send + Sync {
     async fn execute(&self, ctx: &HookContext) -> Result<(), AppError>;
 }
-```
 
-### Hook Execution
-
-```rust
-impl HookRegistry {
-    pub async fn run_hooks(&self, event: HookEvent, ctx: &HookContext) -> Vec<AppError> {
-        // Executes all hooks for an event
-        // Errors are collected and returned, not early-returned
-    }
-}
-```
-
-### ShellCommandHook
-
-```rust
+// :94
 pub struct ShellCommandHook {
     pub command: String,
-    pub timeout: Duration,
+    pub timeout: Duration,  // default 30s
     pub event: HookEvent,
 }
 
-impl ShellCommandHook {
-    pub fn new(command: String, timeout_secs: Option<u64>, event: HookEvent) -> Self;
-}
-
-impl Hook for ShellCommandHook {
-    async fn execute(&self, ctx: &HookContext) -> Result<(), AppError> {
-        // Spawns `sh -c <command>` with CODEGG_* env vars
-        // Default timeout: 30 seconds
-        // Uses user's actual PATH from environment
-        // Error messages include event name for debugging
-    }
+// :151
+pub struct HookRegistry {
+    hooks: HashMap<HookEvent, Vec<Box<dyn Hook>>>,
 }
 ```
 
-## Hook Configuration
+`HookRegistry::from_config()` (:167) builds from `HookConfigEntry` list.
+`HookRegistry::run_hooks()` (:193) executes all hooks for an event,
+collecting errors.
 
-**Note**: `InlineScript` hook type existed in earlier versions but is now **deprecated and non-functional**. It is retained in the codebase to ensure enum exhaustiveness but is ignored at runtime. Use `shell_command` hooks instead.
+### Plugin Hooks (`src/plugin/hooks.rs`)
+
+```rust
+// :6
+pub enum HookType {
+    Auth, Provider, ToolDefinition,
+    ToolExecuteBefore,    // CAN BLOCK
+    ToolExecuteAfter,
+    ChatParams, ChatHeaders, Event, Config,
+    ShellEnv, TextComplete,
+    SessionCompacting,    // CAN BLOCK
+    MessagesTransform,
+}
+
+// :92
+pub struct HookResult {
+    pub output: serde_json::Value,
+    pub blocked: bool,
+    pub error: Option<String>,
+    pub effects: Vec<crate::protocol::ui::UiEffect>,
+}
+```
+
+## Configuration Surface
 
 ```toml
 [hooks]
@@ -109,115 +119,43 @@ event = "pre_tool_execute"
 type = "shell_command"
 command = "echo"
 timeout_secs = 10
-
-[[hooks.post_tool_execute]]
-event = "post_tool_execute"
-type = "shell_command"
-command = "echo 'Tool executed'"
-timeout_secs = 10
 ```
 
-## Environment Variables
+`InlineScript` hook type is deprecated and silently skipped at runtime.
 
-Hooks receive context via environment variables:
+### Environment Variables Passed to Shell Hooks
 
 | Variable | Description |
 |----------|-------------|
-| `CODEGG_HOOK_EVENT` | Current hook event name |
+| `CODEGG_HOOK_EVENT` | Event name (`pre_tool_execute`, etc.) |
 | `CODEGG_SESSION_ID` | Current session ID |
-| `CODEGG_TOOL_NAME` | Tool being executed (PreToolExecute/PostToolExecute only) |
-| `CODEGG_TOOL_ARGUMENTS` | Tool arguments JSON (PreToolExecute/PostToolExecute only) |
+| `CODEGG_TOOL_NAME` | Tool name (Pre/PostToolExecute only) |
+| `CODEGG_TOOL_ARGUMENTS` | Tool args JSON (Pre/PostToolExecute only) |
 | `CODEGG_TOOL_RESULT` | Tool result (PostToolExecute only) |
 | `CODEGG_TIMESTAMP` | Unix timestamp |
-| `PATH` | User's actual PATH from environment |
+| `PATH` | User's PATH (sole inherited env var) |
 
----
+## Invariants & Gotchas
 
-# Plugin Hooks (WASM)
+- `env_clear()` means hooks inherit **nothing** from the parent process
+  except the explicitly set vars and `PATH`.
+- Shell hook errors are collected, not propagated. A failing hook does
+  not abort the agent loop.
+- `AgentEnd` hooks do NOT run on stream errors (the loop breaks before
+  reaching them).
+- `SessionEnd` hooks run after the loop exits.
+- Plugin hooks have a 5-second timeout per hook. Shell hooks default to
+  30s (configurable via `timeout_secs`).
+- Plugin hook errors include the plugin_id prefix:
+  `{plugin_id}: hook timeout: ...`
 
-**Location**: `src/plugin/hooks.rs`
+## Testing
 
-## HookType Enum
-
-```rust
-pub enum HookType {
-    Auth,
-    Provider,
-    ToolDefinition,
-    ToolExecuteBefore,    // CAN BLOCK execution
-    ToolExecuteAfter,
-    ChatParams,
-    ChatHeaders,
-    Event,
-    Config,
-    ShellEnv,
-    TextComplete,
-    SessionCompacting,    // CAN BLOCK compaction
-    MessagesTransform,
-}
+```bash
+cargo test -p codegg -- hooks
 ```
 
-**Note**: `HookType::as_str()` returns dot notation (e.g., `tool.execute.before`) for plugin manifest compatibility.
+## Related Docs
 
-## HookResult
-
-```rust
-pub struct HookResult {
-    pub output: serde_json::Value,
-    pub blocked: bool,        // Can prevent execution
-    pub error: Option<String>,
-}
-
-impl HookResult {
-    pub fn ok(output: serde_json::Value) -> Self;
-    pub fn blocked() -> Self;
-    pub fn error(msg: impl Into<String>) -> Self;
-}
-```
-
----
-
-# Integration Points
-
-## Shell Command Hooks in AgentLoop
-
-| Location | Event | Can Block? |
-|----------|-------|-----------|
-| `before agent loop starts` (`loop.rs`) | `SessionStart` | No |
-| `before agent processing` (`loop.rs`) | `AgentStart` | No |
-| `before tool execution` (`loop.rs`) | `PreToolExecute` | No |
-| `after tool execution` (`loop.rs`) | `PostToolExecute` | No |
-| `after agent processing` (`loop.rs`) | `AgentEnd` | No |
-| `before session ends` (`loop.rs`) | `SessionEnd` | No |
-
-**Important**: Stream errors break the loop. `SessionEnd` hooks run after loop exit. `AgentEnd` hooks do NOT run on stream errors since they are inside the loop that is broken.
-
-## Plugin Hooks in AgentLoop
-
-| Location | Event | Can Block? |
-|----------|-------|-----------|
-| `before tool execution` (`loop.rs`) | `ToolExecuteBefore` | **Yes** |
-| `after tool execution` (`loop.rs`) | `ToolExecuteAfter` | No |
-| `during session compaction` (`loop.rs`) | `SessionCompacting` | **Yes** |
-
----
-
-# Key Differences from Plugin Hooks
-
-| Feature | Shell Command Hooks | Plugin Hooks |
-|---------|--------------------|--------------|
-| Source | User config | WASM plugins |
-| Implementation | `src/hooks/mod.rs` | `src/plugin/hooks.rs` |
-| Hook trait | `Hook` trait | `HookType` enum |
-| Blocking | Never | `ToolExecuteBefore`, `SessionCompacting` |
-| Return type | `Vec<AppError>` | `HookResult` |
-| Configuration | TOML config | Plugin manifest |
-| Timeout | 30s default (configurable) | 5s per hook |
-| Error format | Includes event name | Includes plugin_id: `{plugin_id}: hook timeout: hook execution timed out` |
-
----
-
-# See Also
-
-- [agent.md](agent.md) - AgentLoop integration
-- [plugin.md](plugin.md) - WASM plugin hooks
+- [agent.md](agent.md) — AgentLoop integration points
+- [plugin.md](plugin.md) — WASM plugin hooks

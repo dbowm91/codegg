@@ -1,491 +1,198 @@
 # Server Module
 
-The `server` module provides HTTP server functionality for remote TUI connections and is feature-gated under the `server` feature flag.
+## Purpose
 
-## Overview
+Axum-based HTTP/WebSocket server providing remote TUI connections, REST
+API, SSE event streaming, and the CoreFrame protocol. Feature-gated
+under `server`.
 
-**Location**: `src/server/`
+## Where It Lives
 
-**Key Responsibilities**:
-- Axum-based HTTP server with WebSocket support for remote TUI connections
-- REST API endpoints for sessions, config, MCP servers, files, projects, and workspaces
-- Server-Sent Events (SSE) for real-time event streaming
-- Token-based authentication with development-friendly fallback
-- Rate limiting for both HTTP requests and WebSocket connections
-- mDNS service discovery for local network server detection
+| Path | Role |
+|------|------|
+| `src/server/mod.rs` | Re-exports `run_server`, `MdnsService`, `ServerState` |
+| `src/server/http.rs` | Router setup, middleware stack, `run_server()` |
+| `src/server/ws.rs` | WebSocket handlers (`/ws`, `/tui`, `/core`) |
+| `src/server/state.rs` | `ServerState`, `WsRateLimiter` |
+| `src/server/rpc.rs` | JSON-RPC 2.0 request/response types |
+| `src/server/scope.rs` | Scope resolution for project context |
+| `src/server/mdns.rs` | mDNS service discovery |
+| `src/server/middleware/auth.rs` | Token auth middleware |
+| `src/server/routes/` | REST route handlers (13 modules) |
 
-**Requires**: `server` feature flag
+## How It Works
 
-## Architecture
-
-```
-server/
-├── mod.rs           # Module exports, re-exports run_server, MdnsService, ServerState
-├── http.rs         # Main server setup, Axum router configuration, middleware stack
-├── ws.rs           # WebSocket handlers (/ws, /core, and /tui)
-├── state.rs        # ServerState and WsRateLimiter shared state
-├── rpc.rs          # JSON-RPC request/response types
-├── mdns.rs         # mDNS service discovery implementation
-├── middleware/
-│   └── auth.rs     # Token authentication middleware
-└── routes/
-    ├── mod.rs      # Route module exports
-    ├── health.rs   # /health endpoint (no auth required)
-    ├── event.rs    # SSE event streaming at /api/event
-    ├── session.rs  # Session CRUD operations
-    ├── config.rs   # Config retrieval (API keys redacted)
-    ├── mcp.rs      # MCP server status listing
-    ├── permission.rs # Permission response handling
-    ├── question.rs # Question response handling
-    ├── provider.rs # Provider listing
-    ├── tool.rs     # Tool listing
-    ├── file.rs     # File operations with path sanitization
-    ├── project.rs  # Project management
-    └── workspace.rs # Workspace management
-```
-
-## Entry Point
-
-The server is started via `run_server()` in `http.rs`:
+### Entry Point
 
 ```rust
-pub async fn run_server(host: &str, port: u16) -> Result<(), ServerRuntimeError>
+// src/server/http.rs:170
+pub async fn run_server(
+    host: &str,
+    port: u16,
+    daemon: Option<Arc<CoreDaemon>>,
+) -> Result<(), ServerRuntimeError>
 ```
 
-**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. The server's catalog and request scope are daemon-owned; standalone mode does not make the HTTP server's process cwd a project identity.
+Requires `--standalone-core` to construct its own daemon. Without it,
+exits with an actionable error rather than silently creating a second
+core that defeats the singleton invariant.
 
-This function:
-1. Initializes the SQLite database pool
-2. Loads configuration from `Config::load()`
-3. Connects to all configured MCP servers
-4. Creates `ServerState` with shared resources
-5. Builds the Axum router with middleware stack
-6. Binds to the specified address and starts serving
+### Middleware Stack (outermost first)
 
-## HTTP Server Setup (http.rs)
+1. **Auth** (`middleware/auth.rs`) — Bearer token from `Authorization`
+   header. Resolution: `CODEGG_SERVER_TOKEN` env → `server.token` config.
+   When no token resolves and auth is not explicitly disabled, **requests
+   are rejected** (fail-closed). Set `CODEGG_SERVER_AUTH_DISABLED=1` to
+   bypass.
 
-### Middleware Stack
+2. **Rate Limit** — 100 requests / 60s window per IP. Returns 429 with
+   `Retry-After` and `X-RateLimit-*` headers. Key map capped at 10,000
+   entries with eviction.
 
-The Axum router applies middleware in this order (outermost first):
+3. **Security Headers** — `X-Content-Type-Options: nosniff`,
+   `X-Frame-Options: DENY`, `Strict-Transport-Security: max-age=31536000`.
 
-1. **Authentication Middleware** (`auth_middleware`)
-   - Validates Bearer token from `Authorization` header
-   - Checks env vars `CODEGG_SERVER_AUTH_DISABLED` and `CODEGG_SERVER_TOKEN`
-   - Falls back to `server.token` from config
-   - **Allows requests when no token is configured** (development-friendly)
+4. **CORS** — Configurable via `[server.cors]` origins. Defaults:
+   `http://localhost:3000`, `http://127.0.0.1:3000`. Methods: GET, POST,
+   DELETE.
 
-2. **Rate Limit Middleware** (`rate_limit_middleware`)
-   - 100 requests per 60-second window per IP address
-   - Returns 429 with `Retry-After`, `X-RateLimit-*` headers
+5. **Compression** — gzip + brotli. Skips compression for 401, 403, 404,
+   422, 500, 502, 503 responses.
 
-3. **Security Headers** (via `SetResponseHeaderLayer`)
-   - `X-Content-Type-Options: nosniff`
-   - `X-Frame-Options: DENY`
-   - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
-
-4. **CORS Layer**
-   - Configurable origins from `[server.cors]`
-   - Defaults to `http://localhost:3000` and `http://127.0.0.1:3000`
-   - Allows GET, POST, DELETE methods
-
-5. **Compression Layer**
-   - gzip and brotli compression
-   - Skips compression for 401, 403, 404, 422, 500, 502, 503 responses
-
-6. **Trace Layer** (for request logging)
+6. **Trace** — Request logging.
 
 ### Router Structure
 
 ```
-Router::new()
-├── /health (GET) -> health_check  # No auth, no rate limit
-└── /api (nested)
-    ├── GET  /api/sessions
-    ├── POST /api/sessions
-    ├── GET  /api/sessions/:id
-    ├── DELETE /api/sessions/:id/archive
-    ├── POST /api/sessions/:id/fork
-    ├── POST /api/sessions/:id/share
-    ├── POST /api/sessions/:id/unshare
-    ├── POST /api/sessions/:id/revert
-    ├── POST /api/sessions/:id/unrevert
-    ├── GET  /api/sessions/:id/messages
-    ├── GET  /api/config
-    ├── GET  /api/mcp
-    ├── GET  /api/event            # SSE stream
-    ├── GET  /api/question/:session_id
-    ├── POST /api/question/:session_id
-    ├── GET  /api/permission/:session_id
-    ├── POST /api/permission/:session_id/submit
-    ├── GET  /api/providers
-    ├── GET  /api/tools
-    ├── GET  /api/file/read?path=
-    ├── GET  /api/file/list?path=
-    ├── POST /api/file/write
-    ├── DELETE /api/file/delete
-    ├── GET  /api/project
-    ├── POST /api/project
-    ├── GET  /api/project/list
-    ├── GET  /api/projects                 # bounded catalog list
-    ├── GET  /api/projects/:id             # explicit project get
-    ├── POST /api/projects/:id/archive
-    ├── POST /api/projects/:id/restore
-    ├── GET  /api/workspace
-    ├── POST /api/workspace
-    ├── GET  /api/workspace/list
-    ├── GET  /ws                   # Deprecated bounded JSON-RPC WebSocket
-    ├── GET  /core                 # CoreFrame WebSocket
-    └── GET  /tui                  # TuiMessage protocol WebSocket
+/health (GET)              — no auth, no rate limit
+/api
+  ├── /sessions            — CRUD, fork, share, unshare, revert
+  ├── /config              — config (API keys redacted)
+  ├── /mcp                 — MCP server listing
+  ├── /event               — SSE stream from GlobalEventBus
+  ├── /question/:sid       — pending questions
+  ├── /permission/:sid     — pending permissions
+  ├── /providers           — provider listing
+  ├── /tools               — tool listing
+  ├── /file/{read,list,write,delete}  — file ops
+  ├── /project, /projects  — project management
+  └── /workspace           — workspace management
+/ws                        — deprecated JSON-RPC WebSocket
+/tui                       — TuiMessage protocol WebSocket
+/core                      — CoreFrame protocol WebSocket
 ```
-
-## WebSocket Handling (ws.rs)
 
 ### WebSocket Endpoints
 
-#### `/ws` - Deprecated JSON-RPC Interface
+#### `/tui` — TuiMessage Protocol
 
-`/ws` is retained only for bounded legacy compatibility. Its outbound queue
-has a finite 256-message capacity; serialization or queue overflow closes the
-connection instead of silently accumulating responses. New clients should use
-`/core` or `/tui`.
+Primary WebSocket for remote TUI. Bidirectional `TuiMessage` traffic
+with `#[serde(tag = "type")]` JSON serialization.
 
-Used for lightweight RPC operations. Handles JSON-RPC 2.0 requests:
+**Client → Server**: `Input`, `KeyDown`, `MouseClick`, `Resize`,
+`Resume`, `RequestSnapshot`, `PermissionResponse`, `QuestionResponse`,
+`SessionInfo`, `ProjectionCapabilities`, `ProjectionSubscribe`,
+`ProjectionResume`, `ProjectionAck`, `ProjectionUnsubscribe`.
 
-**Request format:**
-```json
-{"jsonrpc": "2.0", "id": 1, "method": "sessions.list", "params": {}}
-```
+**Server → Client**: `EventEnvelope` (sequence-tagged for replay),
+`TextDelta`, `StateSnapshot`, `ToolCallStarted`, `ToolResult`,
+`PermissionPending`, `QuestionPending`, `SessionInfo`, `SessionEnded`,
+`Error`, `ResyncRequired`.
 
-**Supported methods:**
-| Method | Description |
-|--------|-------------|
-| `sessions.list` | List last 50 sessions |
-| `sessions.get` | Get session by ID (requires `id` param) |
-| `sessions.create` | Create session (requires `directory` param) |
-| `providers.list` | List all registered providers |
-| `tools.list` | List all registered tools |
+`RenderFrame` is unsupported — returns `Error` with code
+`unsupported_render_frame`.
 
-**Response format:**
-```json
-{"jsonrpc": "2.0", "id": 1, "result": {"sessions": [...]}, "error": null}
-```
+**Inbound size limits**: 4 MiB message, 4 MiB frame (`ws.rs:36-37`).
+**Outbound queue**: 256-entry bounded channel (`WS_OUTBOUND_QUEUE_CAPACITY`).
 
-#### `/tui` - TuiMessage Protocol
+#### `/ws` — Deprecated JSON-RPC
 
-The primary WebSocket for remote TUI communication. Handles bidirectional TuiMessage traffic.
+Retained for bounded legacy compatibility. 256-message outbound capacity.
+Supported methods: `sessions.list`, `sessions.get`, `sessions.create`,
+`providers.list`, `tools.list`.
 
-**Client → Server Messages:**
-| Message | Fields | Purpose |
-|---------|--------|---------|
-| `Input` | `text: String` | User text input |
-| `KeyDown` | `key: String`, `modifiers: Vec<String>` | Keyboard events |
-| `MouseClick` | `x: u16`, `y: u16` | Mouse click events |
-| `Resize` | `w: u16`, `h: u16` | Terminal resize |
-| `Resume` | `from_event_seq: u64` | Client resume request for replay |
-| `RequestSnapshot` | - | Request a full state snapshot from the daemon |
-| `PermissionResponse` | `id: String`, `choice: String` | Permission decision (allow/deny/always_allow/always_deny) |
-| `QuestionResponse` | `id: String`, `answers: serde_json::Value` | Question answers |
-| `SessionInfo` | `id: String`, `model: String` | Session metadata announcement |
+#### `/core` — CoreFrame Protocol
 
-Projection-primary `/tui` connections first send `ProjectionCapabilities` and
-then use the typed lifecycle surface: `ProjectionSubscribe`,
-`ProjectionResume` (with a `ProjectionCursor`), `ProjectionAck`,
-`ProjectionUnsubscribe`, `ProjectionSubscriptionStatus`, and bounded
-`ProjectionArtifactListRequest` / `ProjectionArtifactReadRequest` operations.
-The server replies with typed snapshot, replay, resync, acknowledgement,
-unsubscribe, status, artifact, and compatibility-diagnostic messages. A
-projection resync may have `subscription_id: null` when the cursor cannot be
-bound; transports must never synthesize an ID.
+For non-TUI clients. Negotiates `ClientHello` → `ServerHello`, carries
+typed request/response/event/projection/subscription-filter frames.
 
-**Server → Client Messages:**
-| Message | Fields | Purpose |
-|---------|--------|---------|
-| `EventEnvelope` | `event_seq: u64`, `payload: Box<TuiMessage>` | Sequence-tagged wrapper for replay |
-| `TextDelta` | `delta: String` | Streaming text output |
-| `RenderFrame` | `content: String` | ❌ unsupported — returns `Error` with code `unsupported_render_frame` |
-| `StateSnapshot` | `snapshot: RemoteTuiStateSnapshot` | Full state snapshot for remote rendering |
-| `ToolCallStarted` | `tool_name`, `tool_id`, `arguments` | Tool execution started |
-| `ToolResult` | `tool_id`, `output`, `success` | Tool execution completed |
-| `PermissionPending` | `id`, `tool`, `path` | Pending permission request |
-| `QuestionPending` | `id`, `questions: Vec<QuestionSpec>` | Pending question request |
-| `SessionInfo` | `id`, `model` | Session metadata |
-| `SessionEnded` | `stop_reason: String` | Agent finished |
-| `Error` | `message: String` | Error message |
-| `ResyncRequired` | `reason`, `pending_permissions`, `pending_questions` | Client sync required |
+### Projection Transport
 
-**Important Implementation Detail**: The server uses `TuiMessage::ResyncRequired` variant directly when serializing (not raw JSON). See `ws.rs` WebSocket handler for the implementation.
+Connection-local across all WebSocket adapters. Each connection owns a
+bounded registry of `ProjectionSubscriptionId` values with cursor,
+retention floor, forwarder task, and cancellation token.
 
-#### `/core` - CoreFrame Protocol
+- **Queue**: 256 entries. Raw compatibility traffic is lower priority.
+- **Lagged**: Sends `ResyncRequired` with pending permissions/questions.
+- **Critical writer path**: One-shot receipt + 500ms timeout per
+  projection snapshot/replay/resync/ack/unsubscribe.
+- **Caps**: 32 projection subscriptions, 8 artifact reads, 32
+  diagnostics per connection.
 
-`/core` is the remote core protocol used by non-TUI clients. It negotiates a
-`ClientHello`, returns a daemon-issued `ServerHello`, and carries typed request,
-response, event, projection, and subscription-filter frames. Projection
-responses use the same bounded critical writer path as `/tui`; a projection
-subscription is not activated until its initial response receipt succeeds.
-
-### Auth Validation
-
-Both WebSocket endpoints share `validate_ws_auth()`:
-
-Secret-bearing provider provisioning is narrower than ordinary authenticated
-WebSocket traffic. `CoreRequest::EggpoolConnectionCreate` is rejected by the
-remote core WebSocket because the transport is not the local trusted IPC
-boundary used by the TUI. Clients may use the secret-free status, list, and
-model operations after a local create completes.
-1. Check `CODEGG_SERVER_AUTH_DISABLED` env var - skip auth if set
-2. Extract Bearer token from Authorization header
-3. Compare against `CODEGG_SERVER_TOKEN` env var using constant-time comparison
-4. Return 401 Unauthorized if validation fails
-
-## Projection transport ownership and queueing
-
-Projection live delivery is connection-local across the Unix socket, `/core`,
-and `/tui` WebSocket adapters. Each connection owns a bounded registry of
-daemon-issued `ProjectionSubscriptionId` values, the authoritative descriptor
-(including the persisted `ProjectionStreamId`), cursor, retention floor,
-forwarder task, reconnect generation, and cancellation token. The transport
-calls `take_subscription_receiver` exactly once; no daemon-wide event
-broadcast is allowed to carry `ProjectionStreamEvent`.
-
-WebSocket control/live messages use a bounded queue of 256 entries. Raw
-compatibility traffic has its own bounded queue and is lower priority than
-projection control/live traffic. A full projection queue marks that
-subscription `SubscriberLagged`, sends typed resync when possible, stops the
-forwarder, and does not advance acknowledgements. Connections are capped at
-32 projection subscriptions, 8 concurrent artifact reads, and 32 diagnostics.
-
-Projection snapshot, replay, resync, acknowledgement, unsubscribe, status,
-and artifact responses use a critical writer path. The bounded queue send is
-followed by a one-shot writer receipt and a 500 ms timeout, with cancellation
-and writer-close failures reported to the operation. A receiver stays in
-`Initializing` until the receipt succeeds; every failed critical delivery
-rolls back the connection owner and issues a daemon unsubscribe. Live
-forwarders wait on the resulting ready permit, so a live projection event
-cannot precede its canonical initial response.
-
-Raw compatibility delivery is connection-local: `/tui` uses its selected
-`SessionInfo` session and `/core` applies the same filter to replay and live
-events. Projection-primary connections suppress raw session mutation events.
-Only an explicit allowlist of safe global events may cross a raw compatibility
-filter.
-
-Disconnect, unsubscribe, capability downgrade, and server shutdown cancel and
-await owned forwarders, then issue daemon-owned unsubscribe requests. Replay
-history remains durable. Legacy `Resume { from_event_seq }` remains available
-only for raw compatibility clients; projection-primary clients use the
-stream-scoped cursor operation.
-
-**Lagged Event Handling:**
-- If `GlobalEventBus` receiver lags, server sends `ResyncRequired` with `reason: Some("lagged".to_string())`
-- Pending permissions and questions are retrieved from `PermissionRegistry::pending_permission_ids()` and `QuestionRegistry::pending_question_ids()`
-
-## ServerState (state.rs)
+### ServerState
 
 ```rust
-#[derive(Clone)]
+// src/server/state.rs:106
 pub struct ServerState {
-    pub pool: SqlitePool,                 // SQLite connection pool
-    pub mcp_service: Arc<RwLock<McpService>>, // MCP server connections
-    pub config: Config,                   // Full configuration
-    pub ws_rate_limiter: Arc<WsRateLimiter>,  // Shared WebSocket rate limiter
-    pub daemon: Option<Arc<CoreDaemon>>,  // Daemon handle for daemon-connected mode
-    pub projection_lifecycle_seam: ProjectionLifecycleSeam, // Connection-adapter lifecycle seam (no-op default)
-    // Test-only seams (production leaves these None):
+    pub pool: SqlitePool,
+    pub mcp_service: Arc<RwLock<McpService>>,
+    pub config: Config,
+    pub ws_rate_limiter: Arc<WsRateLimiter>,
+    pub daemon: Option<Arc<CoreDaemon>>,
+    pub projection_lifecycle_seam: ProjectionLifecycleSeam,
+    // Test-only seams (production: None):
     pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
     pub probe_factory: Option<ConnectionProbeFactory>,
     pub transport_test_config: Option<ProjectionTransportTestConfig>,
 }
 ```
 
-`ServerState` does not own a current project. Project and workspace IDs arrive
-in requests and are validated by the daemon's `ProjectContextResolver`.
-Directory fields retained for compatibility are locators only: they must map
-to one active resolved binding, and ambiguous or missing mappings return a
-typed context error. File and workspace mutation routes use the explicit
-resolved workspace root and cannot use process cwd as a fallback.
+`ServerState` does not own a current project. Project/workspace scope
+arrives in requests and is validated by the daemon's
+`ProjectContextResolver`.
 
-**Shared Rate Limiter for WebSocket:**
-```rust
-pub struct WsRateLimiter {
-    cache: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
-    max_requests: usize,  // 100
-    window: Duration,     // 60 seconds
-}
-```
-
-**FromRef implementations** allow `ServerState` to be used with Axum's `State` extractor for routes that need `SqlitePool`, `Arc<RwLock<McpService>>`, or `Config`.
-
-## Auth Middleware (middleware/auth.rs)
-
-The auth middleware has specific behavior based on configuration:
+### mDNS Discovery
 
 ```rust
-pub async fn auth_middleware(
-    State(state): State<ServerState>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    // Check 1: CODEGG_SERVER_AUTH_DISABLED env var
-    let auth_disabled = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_ok();
-    if auth_disabled {
-        return Ok(next.run(request).await);
-    }
-
-    // Check 2: CODEGG_SERVER_TOKEN env var
-    // Check 3: server.token config field
-    let expected_token = std::env::var("CODEGG_SERVER_TOKEN").ok().or_else(|| {
-        state.config.server.as_ref().and_then(|s| s.token.clone())
-    });
-
-    match expected_token {
-        Some(expected) => {
-            // Validate Bearer token with constant-time comparison
-            let token = auth_header.and_then(|h| h.strip_prefix("Bearer "));
-            match token {
-                Some(provided) if validate_token(provided, &expected) => Ok(next.run(request).await),
-                _ => Err(StatusCode::UNAUTHORIZED),
-            }
-        }
-        None => {
-            // IMPORTANT: When no token is configured, requests are ALLOWED
-            // This is intentional for development mode
-            Ok(next.run(request).await)
-        }
-    }
-}
-```
-
-**Security Note**: When `CODEGG_SERVER_AUTH_DISABLED` is set or no token is configured, all requests are permitted. This is development-friendly but should be reviewed for production deployments.
-
-## mDNS Service Discovery (mdns.rs)
-
-Provides automatic server discovery on local networks via mDNS:
-
-```rust
-pub struct MdnsService {
-    running: Arc<AtomicBool>,
-    socket: Arc<Mutex<Option<Arc<UdpSocket>>>>,
-    service_name: String,   // "_opencode._tcp.local."
-    port: u16,
-    domain: String,         // "local." default
-}
-
-impl MdnsService {
-    pub fn new(port: u16, domain: Option<String>) -> Self;
-    pub async fn start(&self) -> Result<(), String>;
-    pub fn stop(&self);
-    pub fn is_running(&self) -> bool;
-}
-```
-
-**Service Advertisement:**
-- Service type: `_opencode._tcp.local.`
-- Multicast address: `224.0.0.251:5353`
-- Hostname: `codegg.{domain}` (default `codegg.local.`)
-- TXT record includes port number
-
-**Service Discovery:**
-```rust
+// src/server/mdns.rs
+pub struct MdnsService { ... }
 pub async fn discover_services(timeout_ms: u64) -> Vec<String>
 ```
-Returns vector of `host:port` strings for discovered servers.
 
-**Implementation Details:**
-- Uses raw socket with `SO_REUSEADDR`
-- Joins multicast group `224.0.0.251`
-- Handles mDNS query parsing with DNS label compression support
-- Returns service instances found within timeout
+Service type: `_opencode._tcp.local.` on multicast `224.0.0.251:5353`.
 
-## REST API Routes
+## Key Types & APIs
 
-### Session Routes (routes/session.rs)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/sessions` | List last 50 sessions |
-| POST | `/api/sessions` | Create session |
-| GET | `/api/sessions/:id` | Get session by ID |
-| DELETE | `/api/sessions/:id/archive` | Archive session |
-| POST | `/api/sessions/:id/fork` | Fork session |
-| POST | `/api/sessions/:id/share` | Make session shareable |
-| POST | `/api/sessions/:id/unshare` | Remove sharing |
-| POST | `/api/sessions/:id/revert` | Revert to message |
-| POST | `/api/sessions/:id/unrevert` | Undo revert |
-| GET | `/api/sessions/:id/messages` | List messages (redacted) |
-
-### Event Routes (routes/event.rs)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/event` | SSE event stream from GlobalEventBus |
-
-SSE handler includes:
-- 15-second heartbeat to keep connection alive
-- Event filtering by type
-- JSON serialization of `AppEvent` types
-
-### Permission/Question Routes
-
-**Permission (routes/permission.rs):**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/permission/:session_id` | Get pending permissions |
-| POST | `/api/permission/:session_id/submit` | Submit permission response |
-
-**Question (routes/question.rs):**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/question/:session_id` | Get pending questions |
-| POST | `/api/question/:session_id` | Submit question answer |
-
-**Important**: Both `PermissionRegistry` and `QuestionRegistry` do NOT store `session_id` in their keys. Keys are in format `{tool_call_id}-{tool_name}`, so `get_pending_*` functions cannot properly filter by session. They return empty lists when session_id is provided.
-
-### File Routes (routes/file.rs)
-
-File operations include path sanitization to prevent directory traversal:
+### Error Handling
 
 ```rust
-pub fn sanitize_path(root: &str, requested: &str) -> Result<PathBuf, AppError>
+// src/error.rs (behind #[cfg(feature = "server")])
+pub enum ServerRuntimeError {
+    Bind(String),
+    Shutdown(String),
+    WebSocket(String),
+    Rpc(String),
+    Auth(String),
+}
 ```
 
-**Security measures:**
-1. Joins root and requested path
-2. Checks for symlinks via `check_path_for_symlinks()`
-3. Canonicalizes and verifies result starts with root
-4. For non-existent paths, manually resolves `..` components
-5. Returns error if path escapes root directory
+| Error | HTTP Status |
+|-------|-------------|
+| `Auth` | 401 |
+| Others | 500 |
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/file/read?path=` | Read file content |
-| GET | `/api/file/list?path=` | List directory entries |
-| POST | `/api/file/write` | Write file (creates parents) |
-| DELETE | `/api/file/delete` | Delete file |
+### Rate Limiters
 
-### Project/Workspace Routes
+Two independent rate limiters with bounded key maps:
 
-**Project (routes/project.rs):**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/project` | Get current project info |
-| POST | `/api/project` | Create project |
-| GET | `/api/project/list` | List all projects |
-| GET | `/api/projects` | List bounded catalog summaries |
-| GET | `/api/projects/:id` | Get one explicit project |
-| POST | `/api/projects/:id/archive` | Archive one project logically |
-| POST | `/api/projects/:id/restore` | Restore one project |
+- **HTTP**: `RateLimiter` in `http.rs` — 100 req/60s, keyed by IP
+- **WebSocket**: `WsRateLimiter` in `state.rs` — 100 req/60s, keyed by
+  session/connection. Capped at 10,000 keys with eviction.
 
-**Workspace (routes/workspace.rs):**
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/workspace` | Get current workspace info |
-| POST | `/api/workspace` | Create workspace |
-| GET | `/api/workspace/list` | List workspaces (includes git worktrees) |
+## Configuration Surface
 
-## Configuration
-
-**Config schema (`src/config/schema.rs`):**
 ```toml
+# config.toml
 [server]
 host = "0.0.0.0"
 port = 8080
@@ -496,62 +203,48 @@ origins = ["http://localhost:3000"]
 ```
 
 **Environment variables:**
+
 | Variable | Purpose |
 |----------|---------|
 | `CODEGG_SERVER_TOKEN` | Auth token (overrides config) |
 | `CODEGG_SERVER_AUTH_DISABLED` | Disable auth entirely |
 
-## Error Handling
+## Invariants & Gotchas
 
-**ServerRuntimeError enum:**
-```rust
-pub enum ServerRuntimeError {
-    #[error("server bind failed: {0}")]
-    Bind(String),
+- **Fail-closed auth**: When token auth is enabled (the default) but no
+  token resolves from env or config, both HTTP and WebSocket reject all
+  requests. The server logs a warning at startup.
+- **Singleton daemon**: The server requires `--standalone-core`. Without
+  it, the server exits with an actionable error.
+- **No default project**: `ServerState` carries no project identity.
+  Project/workspace IDs arrive in requests.
+- **WebSocket inbound caps**: 4 MiB message/frame limits prevent memory
+  pressure from oversized frames.
+- **Projection ownership**: Each connection owns its subscriptions.
+  No daemon-wide event broadcast carries `ProjectionStreamEvent`.
+- **`/ws` is deprecated**: New clients should use `/tui` or `/core`.
+  Its outbound queue is finite (256); overflow closes the connection.
+- **`RenderFrame` unsupported**: Both `/tui` and remote clients see
+  `Error { code: "unsupported_render_frame" }`.
 
-    #[error("server shutdown error: {0}")]
-    Shutdown(String),
+## Testing
 
-    #[error("websocket error: {0}")]
-    WebSocket(String),
+```bash
+# Server crate (feature-gated)
+cargo test -p codegg --features server
 
-    #[error("rpc error: {0}")]
-    Rpc(String),
+# WebSocket integration
+cargo test --test tui_render
 
-    #[error("authentication failed: {0}")]
-    Auth(String),
-}
+# Static guards (after changes)
+python3 scripts/check_websocket_bounds.py
+python3 scripts/check_projection_transport_isolation.py
+python3 scripts/check_projection_transport_lifecycle.py
 ```
 
-**HTTP status mapping:**
-| Error | Status Code |
-|-------|-------------|
-| `Auth` | 401 Unauthorized |
-| `Bind` | 500 Internal Server Error |
-| `Shutdown` | 500 Internal Server Error |
-| `WebSocket` | 500 Internal Server Error |
-| `Rpc` | 500 Internal Server Error |
+## Related Docs
 
-## Client Timeouts
-
-- **Health check timeout**: 10 seconds (HTTP client `connect_timeout` in `src/client/sdk.rs`)
-- **WebSocket connection timeout**: 30 seconds (tungstenite `connect_async` timeout in `src/client/attach.rs`)
-
-These timeouts are configured client-side.
-
-## See Also
-
-- [client.md](client.md) - Remote TUI client, WebSocket connection, resume handshake
-- [protocol.md](protocol.md) - CoreRequest/CoreResponse and TuiMessage protocol envelopes
-- [bus.md](bus.md) - GlobalEventBus, PermissionRegistry, QuestionRegistry
-- `architecture/server.md` - Implementation guide
-## Project-scoped compatibility
-
-Project routes source IDs, workspace summaries, session counts, and health
-from `ProjectCatalog` and canonical binding tables. New requests carry
-explicit project/workspace scope. The old single-project routes remain only as
-compatibility adapters: a supplied locator is resolved uniquely through the
-context resolver, never interpreted as a project ID, and never allowed to
-silently switch to another project. Project list/get and lifecycle operations
-are also available through the native CoreFrame WebSocket protocol, with the
-project-catalog capability advertised during handshake.
+- [client.md](client.md) — remote TUI client
+- [protocol.md](protocol.md) — CoreRequest/CoreResponse, TuiMessage
+- [bus.md](bus.md) — GlobalEventBus, PermissionRegistry
+- `architecture/server.md` — implementation guide

@@ -1,299 +1,190 @@
 # Session Module Architecture
 
-## Overview
+## Purpose
 
-## Selected provider-connection lifecycle
+The session module handles SQLite-backed persistence for AI coding
+conversations: creation, retrieval, search, fork, import/export,
+analytics, checkpoints, and event journaling. It also provides
+provider-connection lifecycle selection, legacy model-string resolution,
+and a derived TUI session state reconstructed from typed events.
 
-Session selection remains an explicit connection ID plus model ID. Disable,
-tombstone, missing credentials, stale health, and removed models are surfaced
-as lifecycle diagnostics and never trigger fallback to another connection.
-`SessionLifecycleGet` provides the current state, health timestamp, selected
-model, and bounded removed-model list.
+## Where It Lives
 
-The session module (`src/session/`) handles session storage, retrieval, and management for AI coding conversations. Sessions track conversation history, metadata, and analytics, enabling sessions to be archived, resumed, forked, and shared across CLI invocations.
-
-```
-src/session/
-├── mod.rs          # Public exports, constants, JSON parsing helpers
-├── schema.rs       # Database migrations (15 versions)
-├── store.rs        # SessionStore, TodoStore, MessageStore, PartStore, PermissionStore, UsageStore
-├── models.rs       # Session, CreateSession, UpdateSession, SessionAnalytics, UsageRecord, TodoItem
-├── message.rs      # Message, MessageData, Part, PartInfo, PartData (Text/Reasoning/ToolCall/Image/File)
-├── checkpoint.rs  # CheckpointStore, Checkpoint, WorkingFile, checksum utilities
-├── import.rs      # SessionImport types, validate_import_size, redact_for_export
-├── row.rs          # Database row types (SessionRow, MessageRow, PartRow, TodoRow, PermissionRow)
-└── status.rs       # SessionStatus enum, SessionState struct
-```
-
----
-
-## Database Schema
-
-### Tables
-
-#### `project`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| worktree | TEXT | NOT NULL |
-| vcs | TEXT | |
-| name | TEXT | |
-| icon_url | TEXT | |
-| icon_color | TEXT | |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-| time_initialized | INTEGER | |
-| sandboxes | TEXT | NOT NULL |
-
-#### `session`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| project_id | TEXT | NOT NULL, FOREIGN KEY -> project(id) ON DELETE CASCADE |
-| workspace_id | TEXT | |
-| parent_id | TEXT | |
-| slug | TEXT | NOT NULL |
-| directory | TEXT | NOT NULL |
-| title | TEXT | NOT NULL |
-| version | TEXT | NOT NULL |
-| share_url | TEXT | |
-| summary_additions | INTEGER | |
-| summary_deletions | INTEGER | |
-| summary_files | INTEGER | |
-| summary_diffs | TEXT | |
-| revert | TEXT | |
-| permission | TEXT | |
-| tags | TEXT | |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-| time_compacting | INTEGER | |
-| time_archived | INTEGER | |
-| time_deleted | INTEGER | DEFAULT NULL |
-
-### Typed identity compatibility
-
-`codegg-core::identity::SessionBinding` is the in-memory relation for
-`Session -> ProjectId + WorkspaceId`. Schema migration v25 adds the durable
-`session_project_binding` table with typed-ID validation at hydration,
-status/provenance, and an optimistic-concurrency revision. The `project_id`,
-`workspace_id`, and `directory` columns remain string-backed compatibility
-projections; path-valued `project_id` strings are never reinterpreted as
-canonical IDs.
-
-#### `message`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| session_id | TEXT | NOT NULL, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-| data | TEXT | NOT NULL (JSON serialized MessageData) |
-
-#### `part`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| message_id | TEXT | NOT NULL, FOREIGN KEY -> message(id) ON DELETE CASCADE |
-| session_id | TEXT | NOT NULL |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-| data | TEXT | NOT NULL (JSON serialized PartData) |
-| part_type | TEXT | GENERATED ALWAYS AS (json_extract(data, '$.type')) STORED |
-
-#### `todo`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| session_id | TEXT | NOT NULL, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| content | TEXT | NOT NULL |
-| status | TEXT | NOT NULL |
-| priority | TEXT | NOT NULL |
-| position | INTEGER | NOT NULL, PRIMARY KEY (session_id, position) |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-
-#### `permission`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| project_id | TEXT | PRIMARY KEY, FOREIGN KEY -> project(id) ON DELETE CASCADE |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-| data | TEXT | NOT NULL (JSON) |
-
-#### `session_share`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| session_id | TEXT | PRIMARY KEY, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| id | TEXT | NOT NULL |
-| secret | TEXT | NOT NULL |
-| url | TEXT | NOT NULL |
-| share_expires_at | INTEGER | |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-
-#### `cached_models`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| provider | TEXT | NOT NULL |
-| name | TEXT | NOT NULL |
-| context_window | INTEGER | |
-| max_output_tokens | INTEGER | |
-| supports_tools | INTEGER | NOT NULL DEFAULT 1 |
-| supports_vision | INTEGER | NOT NULL DEFAULT 0 |
-| fetched_at | INTEGER | NOT NULL |
-
-#### `task`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | INTEGER | PRIMARY KEY |
-| parent_id | TEXT | |
-| session_id | TEXT | NOT NULL |
-| description | TEXT | NOT NULL |
-| prompt | TEXT | NOT NULL |
-| agent | TEXT | NOT NULL |
-| status | TEXT | NOT NULL |
-| result | TEXT | |
-| denied_tools | TEXT | |
-| allowed_paths | TEXT | |
-| time_created | INTEGER | NOT NULL |
-| time_updated | INTEGER | NOT NULL |
-
-#### `checkpoints`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| session_id | TEXT | NOT NULL, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| timestamp | INTEGER | NOT NULL |
-| state | TEXT | NOT NULL (JSON serialized Checkpoint) |
-
-#### `snapshot`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| session_id | TEXT | NOT NULL, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| created_at | INTEGER | NOT NULL |
-| label | TEXT | |
-| data | TEXT | NOT NULL |
-
-#### `usage`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | TEXT | PRIMARY KEY |
-| session_id | TEXT | NOT NULL, FOREIGN KEY -> session(id) ON DELETE CASCADE |
-| provider | TEXT | NOT NULL |
-| model | TEXT | NOT NULL |
-| input_tokens | INTEGER | NOT NULL |
-| output_tokens | INTEGER | NOT NULL |
-| cached_tokens | INTEGER | NOT NULL DEFAULT 0 |
-| cost_usd | REAL | NOT NULL |
-| timestamp | INTEGER | NOT NULL |
-
-#### `migration_version`
-| Column | Type | Constraints |
-|--------|------|-------------|
-| id | INTEGER | PRIMARY KEY CHECK (id = 1) |
-| version | INTEGER | NOT NULL DEFAULT 0 |
-
-### Indexes
-
-| Index Name | Table | Columns |
-|------------|-------|---------|
-| session_project_idx | session | project_id |
-| session_workspace_idx | session | workspace_id |
-| session_parent_idx | session | parent_id |
-| session_title_idx | session | title |
-| session_slug_idx | session | slug |
-| session_time_updated_idx | session | time_updated |
-| session_tags_idx | session | tags |
-| session_project_archived_idx | session | project_id, time_archived |
-| idx_session_directory | session | directory |
-| todo_session_idx | todo | session_id |
-| message_session_time_created_id_idx | message | session_id, time_created, id |
-| part_message_id_id_idx | part | message_id, id |
-| part_session_idx | part | session_id |
-| part_type_idx | part | part_type |
-| task_session_idx | task | session_id |
-| task_parent_idx | task | parent_id |
-| checkpoint_session_idx | checkpoints | session_id |
-| snapshot_session_idx | snapshot | session_id |
-| usage_session_idx | usage | session_id |
-| permission_time_idx | permission | time_created, time_updated |
-| cached_models_provider_idx | cached_models | provider |
-
-**Note**: Index names are defined by migrations. For example, `session_project_idx` is created in migration v1, `session_title_idx` and `session_slug_idx` in v2, etc.
-
----
-
-## Migration System
-
-The migration system resides in `src/session/schema.rs` and implements a sequential migration pattern with transaction support.
-
-### Migration Flow
+All source is in `crates/codegg-core/src/session/`:
 
 ```
-migrate() -> reads version -> for each version N not applied:
-    migrate_and_record(N) -> calls migrate_vN() in transaction
-                            -> updates migration_version table
+session/
+├── mod.rs               # Public re-exports, constants, JSON helpers
+├── schema.rs            # Database migrations (v1–v35), all in sqlx
+├── store.rs             # SessionStore, TodoStore, MessageStore,
+│                        # PartStore, PermissionStore, UsageStore,
+│                        # EventStore
+├── models.rs            # Session, CreateSession, UpdateSession,
+│                        # SessionAnalytics, UsageRecord, TodoItem,
+│                        # PermissionEntry, LegacyResolution
+├── message.rs           # Message, MessageData, Part, PartInfo,
+│                        # PartData, ToolStatus
+├── checkpoint.rs        # CheckpointStore, Checkpoint, WorkingFile,
+│                        # SHA-256 checksum utilities
+├── import.rs            # SessionImport types, validate_import_size,
+│                        # redact_for_export
+├── row.rs               # SessionRow, MessageRow, PartRow, TodoRow,
+│                        # PermissionRow — sqlx FromRow conversions
+├── status.rs            # SessionStatus enum, SessionState struct
+├── events.rs            # 20 typed SessionEvent variants, EventMeta,
+│                        # ToolRisk, ToolCallStatus, PlanItemStatus
+├── state.rs             # TuiSessionState — derived from events
+├── selection_catalog.rs # Read-only model/health catalog helpers
+└── legacy_resolution.rs # Legacy provider/model string resolver
 ```
 
-1. `migrate()` checks current version from `migration_version` table
-2. Iterates through versions 1..N sequentially, calling `migrate_and_record()` for each unapplied version
-3. `migrate_and_record()` wraps each migration in a transaction:
-   - BEGIN IMMEDIATE
-   - Execute migration
-   - Update migration_version
-   - COMMIT on success, ROLLBACK on failure
+## How It Works
 
-### Migration Versions
+### Database Schema
 
-| Version | Changes |
-|---------|---------|
-| **v1** | Creates `project`, `session`, `message`, `part`, `todo`, `permission`, `session_share` tables and initial indexes |
-| **v2** | Adds `session_title_idx`, `session_slug_idx` |
-| **v3** | Creates `cached_models` table |
-| **v4** | Adds `session_time_updated_idx` |
-| **v5** | Adds `share_expires_at` column to `session_share` |
-| **v6** | Adds `permission_time_idx`, `session_project_archived_idx` |
-| **v7** | Adds `tags` column to `session`, creates `session_tags_idx` |
-| **v8** | Adds generated `part_type` column to `part`, creates `part_type_idx` |
-| **v9** | Creates `task` table |
-| **v10** | Creates `checkpoints` table |
-| **v11** | Adds `idx_session_directory` index |
-| **v12** | Adds `time_deleted` column to `session` (soft delete support) |
-| **v13** | Creates `snapshot` table |
-| **v14** | Adds `allowed_paths` column to `task` |
-| **v15** | Creates `usage` table for token/cost tracking |
-| **v16** | Creates `goal` table (goal lifecycle tracking) |
-| **v17** | Creates `session_events` table (event journal) |
-| **v18** | Creates `research_run` table (research artifact metadata) |
-| **v19** | Creates `user_preferences` table (theme/model persistence) |
-| **v20** | Creates `core_event_log` table (daemon core event sequence) |
-| **v21** | Creates `notification_history` table (TUI notification backlog) |
-| **v22** | Creates `workspace` table, adds `workspace_id` column to `session`, creates `idx_session_workspace_repair` index. Phase 2 single-daemon plan: workspace registry + execution context binding. Existing sessions are lazily resolved by canonicalizing their `directory` into a `workspace` record.
+The schema is managed by `schema.rs` which contains **35 sequential
+migrations** (v1–v35), each wrapped in an explicit `BEGIN IMMEDIATE`
+transaction. The `migration_version` table tracks the current version.
+On startup, `migrate()` checks the version and runs all unapplied
+migrations in order.
 
-> **Phase 2 — Workspace Binding.** `project_id` and `directory` remain as
-> compatibility fields. New daemon code MUST read `workspace_id` for
-> workspace-scoped queries; unbound sessions (`workspace_id IS NULL`) are
-> rejected at `TurnSubmit`/`AgentSelect`/`ModelSelect` until rebound via
-> `CoreRequest::WorkspaceRegister`. See
-> [`architecture/core.md`](core.md) for `ExecutionContext` semantics and
-> `crates/codegg-core/src/workspace.rs`
-> for the full contract.
+Migrations create and evolve **52+ CREATE TABLE statements** across
+these table groups:
 
----
+**Core session tables (v1):**
+`project`, `session`, `message`, `part`, `todo`, `permission`,
+`session_share`
 
-## Data Models
+**Supporting tables (v3–v15):**
+`cached_models` (v3), `task` (v9), `checkpoints` (v10),
+`snapshot` (v13), `usage` (v15)
 
-### Session Struct (`src/session/models.rs:6-28`)
+**Goal and event tables (v16–v21):**
+`goal` (v16), `session_events` (v17), `research_run` (v18),
+`user_preferences` (v19), `core_event_log` (v20),
+`notification_history` (v21)
+
+**Workspace and identity (v22, v25):**
+`workspace` (v22), `logical_project`, `repository`,
+`project_repository`, `workspace_project_binding`,
+`session_project_binding`, `identity_diagnostic` (v25)
+
+**Provider connections (v24, v26, v27, v31):**
+`provider_connections` (v24), `provider_provisioning`,
+`provider_connection_health`, `provider_connection_models` (v26),
+session selection columns (v27), lifecycle/reference/tombstone/audit
+tables (v31)
+
+**Durable jobs (v23):**
+`job`, `job_attempt`, `job_dependency`, `schedule`,
+`schedule_occurrence`
+
+**Tool Programs (v33–v35):**
+`tool_program`, `tool_program_call` (v33),
+`tool_program_notification` (v34), nullable lineage columns on `job`
+(v35)
+
+**Projections (v32):**
+`projection_stream`, `projection_event`, `projection_checkpoint`
+
+**Discovery (v28–v29):**
+`project_locator`, `project_health`,
+`legacy_catalog_association_marker` (v28), `discovery_root`,
+`discovery_scan`, `discovery_observation` (v29)
+
+**Runtime assets (v30):**
+`runtime_asset_refresh`
+
+### Column additions to session table
+
+The `session` table gains columns across multiple migrations:
+v12 adds `time_deleted`, v22 adds `workspace_id`, v27 adds
+`provider_connection_id`, `provider_connection_revision`,
+`model_catalog_revision`, `selected_model_id`, `agent`, `model`.
+
+### Session Columns constant
+
+The `SESSION_COLUMNS` constant (`session/mod.rs:39`) includes all 22
+session columns including the v27 provider connection selection fields.
+Qualified queries use `SESSION_COLUMNS_QUALIFIED` (`session/mod.rs:46`).
+
+### Session Lifecycle
+
+1. **Creation**: `SessionStore::create()` generates a UUID, creates
+   the project row if missing, inserts the session with slug.
+2. **Canonical binding**: `create_with_binding()` atomically creates
+   a session with its `session_project_binding` row in one transaction.
+3. **Fork**: Copies messages/parts/todos with new IDs, preserves
+   parent_id and workspace binding.
+4. **Revert**: Truncates messages after a pivot point, saves removed
+   messages/parts as JSON in `session.revert`.
+5. **Soft delete**: Sets `time_deleted`; queries filter `IS NULL`.
+6. **Archive**: Sets `time_archived`; `list()` excludes archived;
+   `list_all()` includes them.
+7. **Share**: Generates a 7-day share URL (configurable via
+   `CODEGG_SHARE_DURATION_DAYS`) with a random token.
+
+### Event System
+
+`EventStore` (`session/store.rs:2598`) persists typed `SessionEvent`
+variants into the `session_events` table. Events are:
+- `GoalSet`, `PlanUpdated`, `PlanItemUpdated`
+- `AgentMessage`, `UserMessage`
+- `ToolCallStarted`, `ToolCallFinished`
+- `ToolProgramNotification` (with semantic equality for crash recovery)
+- `PermissionRequested`, `PermissionResolved`
+- `FileChanged`, `TestRunStarted`, `TestRunFinished`
+- `ContextCompacted`, `ModelRouted`
+- `SubagentStarted`, `SubagentFinished`
+- `FindingRaised`, `CheckpointCreated`, `SessionExported`
+
+`EventStore::append_idempotent()` provides exactly-once semantics.
+ToolProgramNotification events use `semantic_equals()` which ignores
+`meta.created_at` (stamped on crash recovery) while requiring all
+identity and content fields to match.
+
+### TUI Session State
+
+`TuiSessionState` (`session/state.rs:111`) is a fully derived
+in-memory representation reconstructed from events via
+`from_events()`. It tracks: goal, plan, active/recent tool calls
+(capped at 50), changed files, test state, context state, model state,
+findings, and subagent summaries.
+
+`TestState` transitions to `Stale` when a `FileChanged` event arrives
+after a `Passed` state (but not after `Failed`).
+
+### Provider Connection Lifecycle
+
+`SessionLifecycleGet` provides the current state, health timestamp,
+selected model, and bounded removed-model list. Disable, tombstone,
+missing credentials, stale health, and removed models are surfaced as
+lifecycle diagnostics and never trigger fallback to another connection.
+
+### Legacy Resolution
+
+`legacy_resolution.rs` resolves a legacy `provider/model` string
+against the durable connection catalog. It is deterministic,
+non-fallbacking, and read-only. Outcomes:
+- `Unset` — empty string
+- `Resolved` — single active match
+- `UnresolvedLegacyProvider` — no match
+- `AmbiguousLegacyProvider` — multiple matches
+- `DisabledLegacyConnection` — match is disabled/tombstoned/error
+- `MissingCredentialLegacyConnection` — match lacks credential
+
+## Key Types & APIs
+
+### Session (`session/models.rs:6`)
 
 ```rust
 pub struct Session {
     pub id: String,
-    pub project_id: String,
+    pub project_id: String,          // legacy string projection
     pub workspace_id: Option<String>,
     pub parent_id: Option<String>,
     pub slug: String,
-    pub directory: String,
+    pub directory: String,           // filesystem locator, not a project ID
     pub title: String,
     pub version: String,
     pub share_url: Option<String>,
@@ -304,6 +195,13 @@ pub struct Session {
     pub revert: Option<serde_json::Value>,
     pub permission: Option<serde_json::Value>,
     pub tags: Vec<String>,
+    // Provider Connections Milestone 3 fields:
+    pub provider_connection_id: Option<String>,
+    pub provider_connection_revision: Option<u64>,
+    pub model_catalog_revision: Option<String>,
+    pub selected_model_id: Option<String>,
+    pub agent: Option<String>,        // legacy, not authoritative
+    pub model: Option<String>,        // legacy "provider/model"
     pub time_created: i64,
     pub time_updated: i64,
     pub time_compacting: Option<i64>,
@@ -312,363 +210,176 @@ pub struct Session {
 }
 ```
 
-### Message Hierarchy
+### SessionStore (`session/store.rs:48`)
 
-```
-Message
-├── id: String
-├── session_id: String
-├── time_created: i64
-├── time_updated: i64
-└── data: MessageData
-    ├── id: String (default "")
-    ├── session_id: String (default "")
-    ├── message_id: String (default "")
-    └── parts: Vec<PartInfo>
-                ├── id: String
-                ├── session_id: String
-                ├── message_id: String
-                └── data: PartData (enum)
-```
+| Method | Line | Description |
+|--------|------|-------------|
+| `create(CreateSession)` | 61 | Create with auto UUID |
+| `create_with_id(id, input)` | 68 | Stable ID for imports |
+| `create_with_binding(input, pid, wid, src)` | 164 | Atomic session + binding |
+| `create_from_template(template, pid, dir)` | 303 | From config template |
+| `get(id)` | 326 | Get by ID (excludes soft-deleted) |
+| `list(pid, limit)` | 338 | Active sessions, paginated |
+| `list_with_offset(pid, limit, offset)` | 371 | Offset-based pagination |
+| `list_all(pid, limit)` | 437 | Includes archived, excludes deleted |
+| `list_all_with_offset(pid, limit, offset)` | 469 | Offset-based for all |
+| `list_by_canonical_project(pid, limit)` | 345 | Via session_project_binding |
+| `list_all_sessions(limit)` | 448 | Cross-project (import tooling) |
+| `list_deleted(pid)` | 1067 | Soft-deleted sessions |
+| `search(pid, query)` | 502 | LIKE title/slug/directory |
+| `search_all(pid, query)` | 523 | Also searches message content |
+| `find_by_tag(pid, tag)` | 545 | JSON tag matching |
+| `all_tags(pid)` | 564 | Tags with counts |
+| `session_count(pid)` | 390 | Active session count |
+| `message_count(sid)` | 401 | Messages in session |
+| `message_counts(sids)` | 410 | Batch message counts |
+| `export_session(sid)` | 587 | Full JSON export |
+| `import_session(data, new_pid)` | 668 | Import with ID remapping |
+| `import_session_with_binding(data, pid, wid, src)` | 678 | Import + binding |
+| `update(id, UpdateSession)` | 949 | Partial update (COALESCE) |
+| `delete(id)` | 1031 | Soft delete |
+| `soft_delete(id)` | 1036 | Set time_deleted |
+| `restore(id)` | 1052 | Clear time_deleted |
+| `set_tags(id, tags)` | 1079 | Replace tags |
+| `fork(id)` | 1097 | Copy with new IDs |
+| `archive(id)` | 1315 | Set time_archived |
+| `unarchive(id)` | 1331 | Clear time_archived |
+| `share_session(sid)` | 1627 | Generate share URL (7-day) |
+| `unshare_session(sid)` | 1699 | Remove share |
+| `revert_to_message(sid, mid)` | 1374 | Truncate + save revert |
+| `unrevert_session(sid)` | 1730 | Restore from revert state |
+| `generate_summary(provider, sid)` | 1525 | LLM summary |
+| `generate_title(provider, sid)` | 1561 | LLM title |
+| `get_analytics(pid)` | 1862 | Aggregate statistics |
+| `children(id)` | 1362 | Child sessions |
+| `set_share_url(id, url)` | 1346 | Direct share URL set |
 
-### PartData Enum (`src/session/message.rs:36-59`)
+### TodoStore (`session/store.rs:1917`)
 
+Methods: `list`, `set`, `add`, `update`, `remove`, `clear`
+
+### MessageStore (`session/store.rs:2122`)
+
+Methods: `create`, `create_with_id`, `get`, `list`, `count`,
+`update`, `delete`
+
+### PartStore (`session/store.rs:2258`)
+
+Methods: `create`, `get`, `list_by_message`, `list_by_session`,
+`update`, `delete`
+
+### PermissionStore (`session/store.rs:2376`)
+
+Methods: `get`, `upsert`, `delete`
+
+### UsageStore (`session/store.rs:2441`)
+
+Methods: `insert`, `get_session_usage`, `get_all_usage`,
+`get_session_cost_summary`
+
+### EventStore (`session/store.rs:2598`)
+
+Methods: `append`, `append_idempotent`, `list_for_session`,
+`has_event`, `confirm_existing`
+
+### CheckpointStore (`session/checkpoint.rs:48`)
+
+Methods: `save`, `load`, `load_latest`, `list`, `delete`,
+`delete_all`, `has_checkpoint`
+
+### Data Models
+
+**MessageData** (`session/message.rs:13`):
 ```rust
-pub enum PartData {
-    Text {
-        text: String,
-    },
-    Reasoning {
-        reasoning: String,
-    },
-    ToolCall {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-        output: Option<String>,
-        status: ToolStatus,
-    },
-    Image {
-        url: String,
-    },
-    File {
-        path: String,
-        content: String,
-    },
-}
-```
-
-**ToolStatus** (`src/session/message.rs:61-69`):
-- `Pending` (default)
-- `Running`
-- `Completed`
-- `Error`
-
-### Part Struct (`src/session/message.rs:72-79`)
-
-```rust
-pub struct Part {
+pub struct MessageData {
     pub id: String,
-    pub message_id: String,
     pub session_id: String,
-    pub time_created: i64,
-    pub time_updated: i64,
-    pub data: serde_json::Value,  // RawPartData serialized
+    pub message_id: String,     // renamed "messageID"
+    pub parts: Vec<PartInfo>,
 }
 ```
 
-The `Part.data` field stores raw JSON (not parsed PartData) and is parsed lazily via `parse_json_field()`.
+**PartData** (`session/message.rs:38`):
+`Text`, `Reasoning`, `ToolCall`, `Image`, `File`
 
----
+**ToolStatus** (`session/message.rs:63`):
+`Pending` (default), `Running`, `Completed`, `Error`
 
-## Stores
-
-### SessionStore (`src/session/store.rs:44-1548`)
-
-Primary store for session CRUD operations.
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `create(CreateSession) -> Session` | Create new session with auto-generated slug |
-| `get(&str) -> Option<Session>` | Get session by ID |
-| `list(project_id, limit) -> Vec<Session>` | List active sessions (non-archived, non-deleted) |
-| `list_with_offset(project_id, limit, offset) -> Vec<Session>` | Paginated session listing |
-| `list_all(project_id, limit: Option<usize>) -> Vec<Session>` | List all non-deleted sessions |
-| `list_all_with_offset(project_id, limit, offset) -> Vec<Session>` | Paginated listing of all non-deleted sessions |
-| `list_deleted(project_id) -> Vec<Session>` | List soft-deleted sessions (time_deleted IS NOT NULL) |
-| `create_from_template(template, project_id, directory) -> Session` | Create session from a SessionTemplate |
-| `set_tags(id, tags) -> Session` | Set tags on a session |
-| `session_count(project_id) -> usize` | Count active sessions |
-| `message_count(session_id) -> usize` | Count messages in session |
-| `message_counts(session_ids) -> HashMap` | Batch message count |
-| `search(project_id, query) -> Vec<Session>` | Search by title/slug/directory |
-| `search_all(project_id, query) -> Vec<Session>` | Search including message content |
-| `find_by_tag(project_id, tag) -> Vec<Session>` | Filter sessions by tag |
-| `all_tags(project_id) -> Vec<String>` | Get all tags with counts |
-| `export_session(session_id) -> Value JSON` | Full session export (messages, parts, todos) |
-| `import_session(data, new_project_id) -> Session` | Import from JSON |
-| `update(id, UpdateSession) -> Session` | Update session fields |
-| `delete(id)` | Hard delete |
-| `soft_delete(id) -> Session` | Set time_deleted |
-| `restore(id) -> Session` | Clear time_deleted |
-| `fork(id) -> Session` | Create forked session with copy of messages/parts/todos |
-| `archive(id) -> Session` | Set time_archived |
-| `unarchive(id) -> Session` | Clear time_archived |
-| `share_session(session_id) -> Session` | Generate share URL (7 days default) |
-| `unshare_session(session_id) -> Session` | Remove share URL |
-| `revert_to_message(session_id, message_id) -> Session` | Truncate to message_id, save revert state |
-| `unrevert_session(session_id) -> Session` | Restore from revert state |
-| `generate_summary(provider, session_id) -> Session` | LLM-generated summary |
-| `generate_title(provider, session_id) -> Session` | LLM-generated title |
-| `get_analytics(project_id) -> SessionAnalytics` | Aggregate statistics |
-| `children(id) -> Vec<Session>` | Child sessions |
-
-### TodoStore (`src/session/store.rs:1550-1753`)
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `list(session_id) -> Vec<TodoItem>` | List ordered by position |
-| `set(session_id, items) -> Vec<TodoItem>` | Replace all todos |
-| `add(session_id, item) -> TodoItem` | Append at end |
-| `update(session_id, position, item) -> Vec<TodoItem>` | Update single item |
-| `remove(session_id, position) -> Vec<TodoItem>` | Remove and reorder |
-| `clear(session_id)` | Delete all todos |
-
-### MessageStore (`src/session/store.rs:1755-1878`)
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `create(session_id, data) -> Message` | Insert with UUID |
-| `get(session_id, id) -> Option<Message>` | Get by ID |
-| `list(session_id) -> Vec<Message>` | Ordered by time_created, id |
-| `count(session_id) -> usize` | Count messages |
-| `update(session_id, id, data) -> Message` | Update data and time_updated |
-| `delete(session_id, id)` | Delete message |
-
-### PartStore (`src/session/store.rs:1880-1996`)
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `create(message_id, session_id, data) -> Part` | Insert with UUID |
-| `get(id) -> Option<Part>` | Get by ID |
-| `list_by_message(message_id) -> Vec<Part>` | Parts for a message |
-| `list_by_session(session_id) -> Vec<Part>` | All parts for session |
-| `update(id, data) -> Part` | Update data and time_updated |
-| `delete(id)` | Delete part |
-
-### PermissionStore (`src/session/store.rs:1998-2061`)
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `get(project_id) -> Option<PermissionEntry>` | Get by project |
-| `upsert(project_id, data) -> PermissionEntry` | Insert or update |
-| `delete(project_id)` | Delete permission |
-
-### UsageStore (`src/session/store.rs:2063-2192`)
-
-**Key Methods:**
-| Method | Description |
-|--------|-------------|
-| `insert(record)` | Record usage |
-| `get_session_usage(session_id) -> Vec<UsageRecord>` | All usage for session |
-| `get_all_usage(limit) -> Vec<UsageRecord>` | All usage records |
-| `get_session_cost_summary(session_id) -> (i64, i64, i64, f64)` | (input_tokens, output_tokens, cached_tokens, cost_usd) |
-
----
-
-## Checkpoint Mechanism (`src/session/checkpoint.rs`)
-
-### Checkpoint Struct
-
-```rust
-pub struct Checkpoint {
-    pub id: String,
-    pub timestamp: i64,
-    pub session_id: String,
-    pub provider: String,
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub completed_steps: Vec<String>,
-    pub working_files: Vec<WorkingFile>,
-}
-
-pub struct WorkingFile {
-    pub path: String,
-    pub checksum: String,       // SHA-256
-    pub pre_state: Option<String>,
-}
-```
-
-### CheckpointStore Methods
-
-| Method | Description |
-|--------|-------------|
-| `save(checkpoint)` | Insert or replace |
-| `load(id) -> Option<Checkpoint>` | Load by ID |
-| `load_latest(session_id) -> Option<Checkpoint>` | Most recent checkpoint |
-| `list(session_id) -> Vec<Checkpoint>` | All checkpoints, newest first |
-| `delete(id)` | Delete single checkpoint |
-| `delete_all(session_id)` | Delete all for session |
-| `has_checkpoint(session_id) -> bool` | Check if any exist |
-
-### Checksum Utilities
-
-```rust
-pub fn compute_checksum(content: &str) -> String  // SHA-256 hex
-pub fn create_working_file(path: &str, pre_state: Option<String>) -> Option<WorkingFile>
-pub fn verify_file(path: &str, expected_checksum: &str) -> bool
-```
-
----
-
-## Import/Export Flow
-
-### Export (`SessionStore::export_session`)
-
-1. Fetch session record
-2. Fetch all messages ordered by time_created, id
-3. Fetch all parts ordered by time_created, id
-4. Fetch all todos ordered by position
-5. Apply `redact_for_export()` to all message/part data
-6. Return JSON: `{ session, messages, parts, todos }`
-
-### Import (`SessionStore::import_session`)
-
-1. `validate_import_size()` - check message/part count and total size limits
-2. Deserialize to `SessionImport` type
-3. Create transaction
-4. Insert session with new UUID
-5. Build ID mapping (old IDs -> new UUIDs)
-6. Insert messages with remapped IDs
-7. Insert parts with remapped message IDs
-8. Insert todos with sequential positions
-9. Commit transaction
-
-### Size Limits (`src/session/import.rs:68-70`)
-
-```rust
-const MAX_IMPORT_MESSAGES: usize = 100_000;
-const MAX_IMPORT_PARTS: usize = 500_000;
-const MAX_TOTAL_IMPORT_BYTES: usize = 500 * 1024 * 1024;  // 500MB
-```
-
-### Redaction (`redact_for_export`)
-
-For `tool_call` parts with sensitive tool names (`bash`, `write`, `read`, `edit`, `replace`, `multiedit`, `tail`, `git`, `webfetch`, `apply_patch`):
-- Redact `input` field contents
-- Redact `output` field if present
-- Redact specific keys: `command`, `path`, `content`, `text`, `pattern`, `replacement`, `old_string`, `new_string`, `url`, `patch`
-
----
-
-## Analytics and Usage Tracking
-
-### SessionStore::get_analytics
-
-Returns `SessionAnalytics`:
+**SessionAnalytics** (`session/models.rs:159`):
 ```rust
 pub struct SessionAnalytics {
     pub total_sessions: u64,
     pub total_messages: u64,
-    pub total_tool_calls: u64,          // Parts with part_type = 'tool_call'
-    pub avg_session_duration_ms: u64,   // AVG(time_updated - time_created)
+    pub total_tool_calls: u64,
+    pub avg_session_duration_ms: u64,
 }
 ```
 
-### UsageStore
+**UsageRecord** (`session/models.rs:193`):
+`id`, `session_id`, `provider`, `model`, `input_tokens`,
+`output_tokens`, `cached_tokens`, `cost_usd`, `timestamp`
 
-Records per-request token usage and cost:
-```rust
-pub struct UsageRecord {
-    pub id: String,
-    pub session_id: String,
-    pub provider: String,
-    pub model: String,
-    pub input_tokens: i64,
-    pub output_tokens: i64,
-    pub cached_tokens: i64,
-    pub cost_usd: f64,
-    pub timestamp: i64,
-}
+## Configuration Surface
+
+- `CODEGG_SHARE_DURATION_DAYS` env var overrides the 7-day share
+  expiry (parsed at `session/store.rs:1629`)
+- Import size limits (`session/import.rs:68-70`):
+  `MAX_IMPORT_MESSAGES = 100_000`, `MAX_IMPORT_PARTS = 500_000`,
+  `MAX_TOTAL_IMPORT_BYTES = 500 MB`
+
+## Invariants & Gotchas
+
+1. **ID generation**: `uuid::Uuid::new_v4()` for all entities.
+   Timestamps are Unix milliseconds (`Utc::now().timestamp_millis()`).
+2. **Foreign keys**: `ON DELETE CASCADE` for session-related tables.
+3. **Soft delete**: Queries filter `time_deleted IS NULL`. The `delete()`
+   method is an alias for `soft_delete()`, not a hard delete.
+4. **Partial updates**: `COALESCE(?, field)` pattern allows selective
+   updates; passing `None` leaves the field unchanged.
+5. **Fork copies with redaction**: Forked messages/parts are run through
+   `redact_for_export()` before insertion — sensitive tool_call data
+   is stripped.
+6. **Revert state**: Removed messages/parts are stored as JSON in
+   `session.revert` for potential restoration via `unrevert_session()`.
+7. **Canonical binding required**: Executable sessions need a resolved
+   project/workspace binding via `session_project_binding`. Legacy
+   directory strings become executable only when they resolve to one
+   existing active binding.
+8. **ToolProgramNotification semantic equality**: `meta.created_at` is
+   ignored during conflict reconciliation because crash recovery stamps
+   a fresh timestamp. All other fields must match exactly.
+9. **Test state staleness**: `TestState::Passed` transitions to `Stale`
+   on any `FileChanged` event. `TestState::Failed` does not go stale.
+10. **Message/Part ordering**: All queries use `ORDER BY time_created
+    ASC, id ASC` for deterministic ordering.
+11. **Slug generation**: Lowercase, alphanumeric only, spaces → hyphens,
+    fallback "untitled".
+12. **Redact tool names**: `bash`, `write`, `read`, `edit`, `replace`,
+    `multiedit`, `terminal`, `git`, `webfetch`, `apply_patch` — input
+    and output are redacted on export. Specific keys (`command`, `path`,
+    `content`, etc.) are individually redacted within the input object.
+    Note: the code uses `terminal`, not `tail` as some docs claim.
+
+## Testing
+
+Narrowest test targets:
+```bash
+cargo test -p codegg-core --lib session          # session unit tests
+cargo test -p codegg-core --lib session::message  # message model tests
+cargo test -p codegg-core --lib session::events   # event tests
+cargo test -p codegg-core --lib session::state    # TUI state tests
+cargo test -p codegg-core --test session_crud     # integration CRUD
+cargo test -p codegg-core --lib session::legacy_resolution
+cargo test -p codegg-core --lib session::store::event_store_idempotency_tests
 ```
 
----
+## Related Docs
 
-## Session Status (`src/session/status.rs`)
-
-### SessionStatus Enum
-
-```rust
-pub enum SessionStatus {
-    Idle,        // Default
-    Busy,
-    Error,
-    Compacting,
-    Exporting,
-}
-```
-
-### SessionState Struct
-
-```rust
-pub struct SessionState {
-    pub status: SessionStatus,
-    pub started_at: Option<SystemTime>,
-    pub last_activity: Option<SystemTime>,
-    pub turn_count: usize,
-    pub token_in: usize,
-    pub token_out: usize,
-    pub error_message: Option<String>,
-}
-```
-
----
-
-## Row Types (`src/session/row.rs`)
-
-Database rows implement `sqlx::FromRow` and convert to domain models:
-
-| Row Type | Domain Model | Conversion |
-|----------|--------------|------------|
-| SessionRow | Session | `From<SessionRow>` - parses tags, summary_diffs, revert, permission JSON |
-| MessageRow | Message | `TryFrom<MessageRow>` - parses data JSON |
-| PartRow | Part | `From<PartRow>` - uses `parse_json_field()` for error-tolerant parsing |
-| TodoRow | TodoItem | `From<TodoRow>` |
-| PermissionRow | PermissionEntry | `From<PermissionRow>` |
-
----
-
-## Key Implementation Notes
-
-1. **ID Generation**: Uses `uuid::Uuid::new_v4().to_string()` for all entity IDs
-
-2. **Slug Generation** (`generate_slug`): Lowercase, alphanumeric only, spaces -> hyphens
-
-3. **Timestamps**: All stored as Unix milliseconds (`Utc::now().timestamp_millis()`)
-
-4. **Foreign Key Behavior**: `ON DELETE CASCADE` for session-related tables
-
-5. **Soft Delete**: Sessions use `time_deleted` column; queries filter by `IS NULL`
-
-6. **Partial Updates**: Uses `COALESCE(?, field_name)` pattern to allow selective updates
-
-7. **Fork Operations**: Creates full copy of messages/parts/todos with new IDs, preserves parent_id reference
-
-8. **Revert State**: Stores removed messages/parts as JSON in `session.revert` field for potential restoration
-
-9. **Checkpoints**: Store complete session state including provider/model info and working file checksums
-
-10. **Message/Part Ordering**: All queries use `ORDER BY time_created ASC, id ASC` for deterministic ordering
-## Canonical session binding
-
-Executable sessions require a resolved project/workspace binding. Creation and
-template creation use the atomic `SessionStore::create_with_binding` path;
-forks copy the canonical binding inside their transaction. Existing rows remain
-loadable, but a legacy directory can become executable only when it resolves to
-one existing active binding. Otherwise the daemon returns a bounded
-`project_context_required`-class diagnostic.
+- [storage.md](storage.md) — Database initialization, connection
+  pooling, `DaemonPaths`
+- [workspace_services.md](workspace_services.md) — Workspace-local
+  run store, catalog migration
+- [core.md](core.md) — `ExecutionContext`, workspace binding semantics
+- `crates/codegg-core/src/identity.rs` — Typed project/session
+  bindings
+- `crates/codegg-core/src/workspace.rs` — Workspace registry

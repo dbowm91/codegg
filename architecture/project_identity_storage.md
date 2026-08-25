@@ -80,6 +80,7 @@ cargo test --test storage_migrations
 python3 scripts/check_identity_path_usage.py
 python3 scripts/check_identity_path_usage.py --fixture scripts/fixtures/identity_path_usage/path_derived.rs  # expected rejection
 ```
+
 ## Context resolution and session writes
 
 New daemon/server session writes use `SessionStore::create_with_binding`, which

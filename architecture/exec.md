@@ -2,17 +2,49 @@
 
 The `exec` module provides non-interactive execution mode for CI/CD pipelines.
 
-## Overview
+## Purpose
 
-**Location**: `src/exec.rs`
+Run a headless agent turn from a JSON prompt, returning structured results
+for CI/CD integration. Accepts input via stdin or `--json` flag, outputs
+JSON or plain text to stdout.
 
-**Key Responsibilities**:
-- JSON input/output for CI/CD
-- Headless agent execution
-- Structured result output
-- Error classification with distinct error codes
+## Where It Lives
 
-## Key Types
+`src/exec.rs` (single file, ~298 lines)
+
+## How It Works
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                        stdin                             │
+│  { "prompt": "fix bug in foo.rs", "model": "provider/.. │
+│    "agent": "build" }                                    │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│                     ExecMode::run()                      │
+│                                                          │
+│  1. Load Config (errors → CONFIG_ERROR)                 │
+│  2. Resolve provider + model                            │
+│  3. Resolve agent by name                               │
+│  4. Bootstrap search backend (MCP)                      │
+│  5. Build ToolRegistry                                  │
+│  6. Create AgentLoop (headless, no TUI)                 │
+│  7. Run agent turn, collect events                      │
+│  8. Extract result, tools used, token count             │
+└─────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+┌─────────────────────────────────────────────────────────┐
+│                       stdout                            │
+│  { "success": true, "result": "Fixed bug...",           │
+│    "toolsUsed": ["read", "edit", "bash"],                │
+│    "tokensUsed": 12500, "durationMs": 45000 }           │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Key Types & APIs
 
 ### ExecInput
 
@@ -22,7 +54,7 @@ The `exec` module provides non-interactive execution mode for CI/CD pipelines.
 pub struct ExecInput {
     pub prompt: String,           // Task description
     pub model: Option<String>,    // Override model (provider/model-name format)
-    pub agent: Option<String>,    // Agent name to use (defaults to "build")
+    pub agent: Option<String>,    // Agent name (defaults to "build")
 }
 ```
 
@@ -42,33 +74,25 @@ pub struct ExecOutput {
 }
 ```
 
-## Execution Flow
+Constructors: `ExecOutput::success(result, tools_used, tokens_used, duration_ms)`
+and `ExecOutput::error(error, code)`.
 
+### ExecMode
+
+```rust
+pub struct ExecMode {
+    quiet: bool,
+    json_output: bool,
+    session_id: Option<String>,
+}
 ```
-┌─────────────────────────────────────────────────────────┐
-│                        stdin                             │
-│  { "prompt": "fix bug in foo.rs", "model": "anthropic/.. │
-│    "agent": "build" }                                    │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                     ExecMode::run()                      │
-│                                                          │
-│  1. Load Config (errors become CONFIG_ERROR)            │
-│  2. Initialize AgentLoop (no TUI)                      │
-│  3. Run agent with task                                 │
-│  4. Capture results                                     │
-└─────────────────────────────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────┐
-│                       stdout                            │
-│  { "success": true, "result": "Fixed bug...",           │
-│    "toolsUsed": ["read", "edit", "bash"],                │
-│    "tokensUsed": 12500, "durationMs": 45000 }           │
-└─────────────────────────────────────────────────────────┘
-```
+
+`ExecMode::new(quiet, json_output, session_id)` constructs the mode.
+
+Key methods:
+- `run(input: ExecInput) -> Result<ExecOutput, AppError>` — execute the turn
+- `print_output(output: &ExecOutput)` — format output (JSON or plain text)
+- `exit_code(output: &ExecOutput) -> i32` — 0 for success, 1 for failure
 
 ## Usage
 
@@ -79,10 +103,10 @@ pub struct ExecOutput {
 echo '{"prompt": "write tests for calculator", "model": "anthropic/claude-sonnet-4-20250514"}' \
   | codegg exec
 
-# Or with files
-codegg exec --file input.json > output.json
-
 # With JSON output flag
+echo '{"prompt": "fix the bug"}' | codegg exec --json-output
+
+# Inline JSON
 codegg exec --json '{"prompt": "fix the bug"}' --json-output
 ```
 
@@ -101,7 +125,7 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 ```json
 {
   "success": true,
-  "result": "Successfully refactored auth module to use JWT RS256 tokens. Changes made to auth/token.rs, auth/middleware.rs, and auth/types.rs",
+  "result": "Successfully refactored auth module to use JWT RS256 tokens...",
   "toolsUsed": ["read", "edit", "bash", "grep"],
   "tokensUsed": 12500,
   "durationMs": 45000
@@ -113,18 +137,16 @@ codegg exec --json '{"prompt": "fix the bug"}' --json-output
 ```json
 {
   "success": false,
-  "error": "Permission denied: Tool 'bash' denied by permissions (1234ms)",
+  "error": "Permission denied: ... (1234ms)",
   "code": "PERMISSION_ERROR"
 }
 ```
-
-Note: Error messages include execution duration in milliseconds for debugging purposes.
 
 ## Error Codes
 
 | Code | Description |
 |------|-------------|
-| `PERMISSION_ERROR` | Tool permission denied |
+| `PERMISSION_ERROR` | Permission denied |
 | `AUTH_ERROR` | Authentication failed (invalid API key) |
 | `RATE_LIMIT` | Rate limit exceeded |
 | `TIMEOUT` | Request timed out |
@@ -136,11 +158,12 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 | `IO_ERROR` | I/O error |
 | `CONFIG_ERROR` | Configuration error |
 | `STORAGE_ERROR` | Storage error |
+| `RUN_STORE_ERROR` | Run store error |
 | `TOOL_NOT_FOUND` | Tool not found |
 | `TOOL_TIMEOUT` | Tool timeout |
 | `TOOL_PERMISSION` | Tool permission denied |
 | `TOOL_DISABLED` | Tool disabled |
-| `TOOL_ERROR` | Generic tool error |
+| `TOOL_ERROR` | Tool execution error |
 | `MCP_ERROR` | MCP error |
 | `LSP_ERROR` | LSP error |
 | `PLUGIN_ERROR` | Plugin error |
@@ -153,6 +176,9 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 | `CLIPBOARD_ERROR` | Clipboard error |
 | `TUI_ERROR` | TUI error |
 
+Error codes are produced by `classify_error()` (`src/exec.rs:204-272`) which
+maps `AppError` variants to `(code, message)` tuples.
+
 ## Exit Codes
 
 | Code | Meaning |
@@ -160,21 +186,37 @@ Note: Error messages include execution duration in milliseconds for debugging pu
 | 0 | Success |
 | 1 | Execution failed |
 
-## Implementation Details
+## Configuration Surface
 
-### Session ID
-If a `session_id` is provided via `ExecMode::new()`, it will be used. Otherwise, a new UUID is generated.
+- Model override: `input.model` in `ExecInput` (format: `provider/model-name`)
+- Agent override: `input.agent` in `ExecInput` (defaults to `"build"`)
+- Session ID: `ExecMode::new()` parameter or auto-generated UUID
+- JSON output: `ExecMode::new()` `json_output` flag
+- Quiet mode: `ExecMode::new()` `quiet` flag suppresses stderr diagnostics
 
-### Question Channel
-`loop_instance.setup_question_channel_for_exec()` is called to enable question tool handling. This method calls `setup_question_channel_impl(true)`, which sets `question_rx = Some(rx)`, meaning exec mode DOES wait for questions with a 300-second timeout. The `setup_question_channel()` (non-exec version) at `src/agent/loop.rs:784` is dead code — never called.
+## Invariants & Gotchas
 
-### Config Loading
-Config is loaded via `Config::load()` and errors are properly returned as `CONFIG_ERROR` rather than silently using defaults.
+- **MCP service is bootstrapped**: `bootstrap_search_backend()` is called
+  before the agent loop starts. The search backend (eggsearch by default)
+  is available in exec mode.
+- **ToolRegistry uses session config**: `ToolRegistry::with_config(&config)`
+  builds the full tool registry from config.
+- **Question channel**: `setup_question_channel_for_exec()` is called,
+  enabling question tool handling with a 300-second timeout.
+- **Model parsing**: `parse_model()` splits on `/` — if no `/` is present,
+  the provider defaults to `"openai"`.
+- **Error messages include duration**: The error output format is
+  `"{msg}: {error} ({duration}ms)"`.
+- **No fallback on agent failure**: If the agent loop returns an error,
+  it is classified and returned as `ExecOutput::error()`. There is no retry.
 
-### MCP Service
-Currently `mcp_service` is hardcoded to `None`, meaning MCP tools are not available in exec mode.
+## Testing
 
-## See Also
+```bash
+cargo test -p codegg --lib exec
+```
 
-- [agent.md](agent.md) - AgentLoop used for execution
-- [exec.md](exec.md) - Exec-mode guidance
+## Related Docs
+
+- [agent.md](agent.md) — AgentLoop used for execution
+- [tool.md](tool.md) — ToolRegistry construction

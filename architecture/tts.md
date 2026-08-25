@@ -1,43 +1,65 @@
 # TTS Module
 
-The `tts` module provides text-to-speech functionality.
+Text-to-speech output for CodeGG using the macOS `say` command.
 
-## Overview
+## Purpose
 
-**Location**: `src/tts/`
+Provides local speech synthesis for agent turn output. In embedded mode the
+TTS engine lives in the TUI process; in remote-core mode TTS requests route
+through the daemon's `NotificationRouter` / `AudioArbiter`.
 
-**Key Responsibilities**:
-- Text-to-speech output
-- Platform-specific implementation (macOS-only)
+## Where It Lives
 
-## Key Types
+- `src/tts/mod.rs` — engine implementation
+- `src/tui/app/state/ui.rs:82-93` — TUI state fields (`tts`, `tts_enabled`, `tts_via_daemon`)
+- `src/tui/app/mod.rs:9820-9921` — TUI integration (`toggle_tts`, `stop_tts`, daemon routing)
+- `src/tui/runtime/app_events.rs:313-325` — auto-stop on agent finished
+- `src/tui/command.rs:176-178` — `/tts` slash command registration
 
-### Tts
+## How It Works
+
+### Embedded Mode (default)
+
+The `Tts` struct owns a `Mutex<AtomicBool>` speaking flag. `speak()` spawns
+`tokio::process::Command::new("say")` with the text as an argument and waits
+for completion. `stop()` uses `pkill say` to terminate the child process.
+
+### Remote-Core Mode
+
+When `AppMode::RemoteCore` is active, `tts_via_daemon` is set to `true`
+(`src/tui/app/mod.rs:1378`). Toggle and stop operations route through
+`CoreClient` using `CoreRequest::NotificationSpeak` instead of local
+`say` invocation. The daemon's `AudioArbiter` handles playback.
+
+### Agent Finished Auto-Stop
+
+On `AgentFinished`, the TUI checks if TTS is speaking and (in embedded
+mode only) calls `tts.stop()` to prevent leftover speech
+(`src/tui/runtime/app_events.rs:313-325`).
+
+## Key Types & APIs
+
+### Tts (`src/tts/mod.rs:22`)
 
 ```rust
 pub struct Tts {
-    speaking: std::sync::Mutex<std::sync::atomic::AtomicBool>,  // Thread-safe interior mutability
-}
-
-impl Clone for Tts { /* Uses Mutex for thread-safe cloning */ }
-
-impl Default for Tts { /* Delegates to new() */ }
-
-impl Tts {
-    pub fn new() -> Self;
-    pub fn init(&mut self, provider: TtsProvider) -> Result<(), AppError>;  // Only handles TtsProvider::None
-    pub async fn speak(&self, text: &str) -> Result<(), AppError>;  // Validates non-empty text
-    pub async fn stop(&self) -> Result<(), AppError>;  // Uses `pkill say` on macOS
-    pub fn is_speaking(&self) -> bool;  // Returns current speaking state
+    speaking: Mutex<std::sync::atomic::AtomicBool>,
 }
 ```
 
-**Notes**:
-- `speak()` validates that `text` is non-empty, returning `Err(AppError::Io(...))` for empty strings
-- `stop()` first checks if speaking, returns `Ok(())` early if not; otherwise uses `pkill say` on macOS to terminate ongoing speech
-- `is_speaking()` returns `bool` (not `Result<bool, AppError>`)
+Methods:
 
-### TtsEngine Trait
+| Method | Signature | Notes |
+|--------|-----------|-------|
+| `new()` | `-> Self` | Speaking flag starts `false` |
+| `init()` | `fn(&mut self, TtsProvider)` | Only handles `TtsProvider::None` (no-op) |
+| `speak()` | `async fn(&self, &str)` | Validates non-empty; spawns `say`; sets flag |
+| `stop()` | `async fn(&self) -> Result<(), AppError>` | Early return if not speaking; `pkill say` |
+| `is_speaking()` | `fn(&self) -> bool` | Reads atomic flag |
+
+`Clone` is implemented: clones the atomic flag value (not the process).
+
+### TtsEngine Trait (`src/tts/mod.rs:16`)
 
 ```rust
 #[async_trait]
@@ -48,70 +70,38 @@ pub trait TtsEngine: Send + Sync {
 }
 ```
 
-### TtsProvider
+`Tts` implements `TtsEngine` (delegates to inherent methods).
+
+### TtsProvider (`src/tts/mod.rs:9`)
 
 ```rust
-#[derive(Debug, Default)]
-pub enum TtsProvider {
-    #[default]
-    None,  // Currently only supported provider
-}
+pub enum TtsProvider { None }
 ```
 
-## Platform Support
+Only variant. The enum exists as a placeholder for future provider expansion.
 
-### macOS
+## Configuration Surface
 
-Uses the built-in `say` command via `tokio::process::Command`:
+There is no `[tts]` config section. TTS has no voice, rate, or provider
+configuration options. State is managed in-memory:
 
-```rust
-pub async fn speak(&self, text: &str) -> Result<(), AppError> {
-    self.speaking.store(true, Ordering::SeqCst);
-    let output = tokio::process::Command::new("say")
-        .arg(text)
-        .output()
-        .await
-        .map_err(AppError::Io)?;
-    self.speaking.store(false, Ordering::SeqCst);
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        tracing::warn!("say command failed: {}", stderr);
-        return Err(AppError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("say command failed: {}", stderr),
-        )));
-    }
-    Ok(())
-}
-```
+- `UiState.tts_enabled` — toggle state
+- `UiState.tts_via_daemon` — routes through daemon in remote mode
+- `UiState.tts` — the `Tts` engine instance
 
-**Note**: Currently hardcoded to macOS `say` command. Cross-platform support not yet implemented.
+## Invariants & Gotchas
 
-## Error Handling
-
-When `say` fails, `speak()` returns `Err(AppError::Io(...))` with the stderr message. Callers should handle these errors appropriately.
-
-## Configuration
-
-The TTS module has **no configuration integration**. There is no `[tts]` config section in the codebase.
-
-- `init()` only handles `TtsProvider::None` (a no-op)
-- TTS enabled state is managed in-memory in the UI layer (`tts_enabled` in `UiState`)
-- No config options for voice, rate, or provider selection
-
-## TUI Integration
-
-TTS is integrated into the TUI with the following behaviors:
-
-- **Auto-stop on AgentFinished**: When the agent finishes a turn, the TUI automatically calls `tts.stop()` if TTS is currently speaking (prevents leftover speech from a completed turn).
-- **Toggle via `/tts` command**: The `/tts` slash command (alias: `/voice`) toggles TTS on/off. When enabled, it speaks the currently selected message text. When disabled, it stops playback.
-- **Keybindings**: `Ctrl+Y` toggles TTS, `Ctrl+Shift+Y` stops TTS playback.
-- **State management**: TTS enabled state is tracked in `UiState.tts_enabled` and the `Tts` instance lives in `UiState.tts`.
-
-```rust
-let tts = Tts::new();
-tts.speak("Task completed successfully").await?;
-```
+- **macOS-only**: hardcoded to `say` command. Cross-platform not implemented.
+- **`pkill say` is blunt**: stops ALL `say` processes, not just the one
+  spawned by CodeGG.
+- **Speaking flag reset on spawn failure**: if `tokio::process::Command`
+  fails to spawn, the flag is cleared in the error path
+  (`src/tts/mod.rs:73-78`).
+- **No daemon TTS when embedded**: `tts_via_daemon` is `false` in embedded
+  mode; the TUI always speaks locally.
+- **Auto-stop skips remote mode**: the `AgentFinished` handler only calls
+  local `tts.stop()` when NOT in `RemoteCore` mode
+  (`src/tui/runtime/app_events.rs:316-318`).
 
 ## Keybindings
 
@@ -120,7 +110,9 @@ tts.speak("Task completed successfully").await?;
 | `Ctrl+Y` | Toggle TTS (speak selected message) |
 | `Ctrl+Shift+Y` | Stop TTS playback |
 
-## See Also
+Slash command: `/tts` (alias `/voice`).
 
-- [tts.md](tts.md) - TTS with UI integration details
-- [tui.md](tui.md) - TUI notifications that could trigger TTS
+## Related Docs
+
+- [tui.md](tui.md) — TUI integration details
+- [server.md](server.md) — daemon `NotificationRouter` for remote TTS

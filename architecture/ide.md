@@ -1,185 +1,228 @@
 # IDE Module
 
-The `ide` module provides integration with VS Code and JetBrains IDEs for diff viewing and detection.
+The IDE module provides VS Code and JetBrains detection, diff viewing, and
+an MCP server that exposes diff capabilities to IDE extensions.
 
-## Overview
+## Purpose
 
-**Location**: `src/ide/`
+Detect the host IDE, open native diff viewers with file content (or line
+ranges), and serve IDE integration tools over MCP stdio or Unix socket
+transport.
 
-**Key Responsibilities**:
-- IDE detection (VS Code, JetBrains)
-- Opening diff views in IDEs
-- Unified and side-by-side diff generation
+## Where It Lives
 
-## Key Functions
+| Artifact | Path |
+|----------|------|
+| Detection + diff | `src/ide/mod.rs` (473 lines) |
+| MCP server | `src/mcp/ide_server.rs` (424 lines) |
 
-### is_vscode()
+## How It Works
 
-```rust
-pub fn is_vscode() -> bool {
-    std::env::var("VSCODE_IPC_HOOK").is_ok()
-        || std::env::var("VSCODE_INJECTED_ENVIRONMENT").is_ok()
-        || std::env::var("TERM_PROGRAM").is_ok_and(|v| v == "vscode")
-}
-```
+### IDE Detection
 
-### is_jetbrains()
+Three public functions check environment variables:
 
-```rust
-pub fn is_jetbrains() -> bool {
-    std::env::var("JETBRAINS_REMOTE").is_ok()
-        || std::env::var("JB_PRODUCT_READINESS").is_ok()
-        || std::env::var("IDEA_INITIAL_DIRECTORY").is_ok()
-        || std::env::var("WEBCLBROWSER_HOST").is_ok()
-}
-```
+**`is_vscode()`** (`src/ide/mod.rs:83`):
+- `VSCODE_IPC_HOOK` set
+- `VSCODE_INJECTED_ENVIRONMENT` set
+- `TERM_PROGRAM` equals `"vscode"`
 
-### is_ide()
+**`is_jetbrains()`** (`src/ide/mod.rs:89`):
+- `JETBRAINS_REMOTE` set
+- `JB_PRODUCT_READINESS` set
+- `IDEA_INITIAL_DIRECTORY` set
+- `WEBCLBROWSER_HOST` set
 
-```rust
-pub fn is_ide() -> bool {
-    is_vscode() || is_jetbrains()
-}
-```
+**`is_ide()`** (`src/ide/mod.rs:96`): Returns `is_vscode() || is_jetbrains()`.
 
-### open_diff()
+### Diff Viewing
 
-```rust
-pub fn open_diff(
-    _original: &str,
-    _modified: &str,
-    original_lines: Option<(usize, usize)>,
-    modified_lines: Option<(usize, usize)>,
-) -> Result<(), String>
-```
+**`open_diff()`** (`src/ide/mod.rs:100`):
+1. Reads both files from disk.
+2. Applies line-range slicing if `original_lines` or `modified_lines` are
+   provided (1-indexed, inclusive end).
+3. Dispatches to `open_diff_vscode()`, `open_diff_jetbrains()`, or
+   `open_diff_generic()` based on detection.
 
-Opens the IDE's diff viewer with two files. When line ranges are provided, the content is sliced before opening in the IDE. Uses temp files for JetBrains and VS Code diffs.
+**VS Code** (`open_diff_vscode`, line 134):
+- Writes content to temp files with `codegg_original_`/`codegg_modified_`
+  prefixes.
+- Flushes and drops file handles before invoking `code --diff`.
+- Uses `run_command_with_timeout()` with a 30-second deadline.
 
-### generate_unified_diff()
+**JetBrains** (`open_diff_jetbrains`, line 188):
+- Same temp file pattern.
+- Tool resolution: `$JETBRAINS_TOOL` env var → `/opt/intellij/bin/idea.sh`
+  → `/usr/local/bin/idea` → Windows `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
+  → `idea` in PATH.
+- Invokes `<tool> diff <original> <modified>`.
 
-```rust
-pub fn generate_unified_diff(old: &str, new: &str, path: &str) -> String
-```
+**Generic fallback** (`open_diff_generic`, line 270):
+- Searches PATH for `code`, `code.exe`, `code.cmd`, `idea`, `idea.bat`,
+  `idea.cmd`.
+- Tries VS Code first; if that fails, tries IntelliJ.
+- Returns `"no IDE diff tool found"` if neither is available.
 
-Generates a unified diff string (--- a/path, +++ b/path format).
+### Temp File Safety
 
-### generate_side_by_side()
+**`TempFilesGuard`** (`src/ide/mod.rs:46`): Implements `Drop` to remove
+temp files on scope exit, including panics.
 
-```rust
-pub fn generate_side_by_side(old: &str, new: &str, path: &str) -> String
-```
+**`register_panic_cleanup()`** (`src/ide/mod.rs:68`): Registers a
+one-time panic hook that removes all `codegg_*` temp files from the
+system temp directory.
 
-Generates a side-by-side diff view with ANSI color codes.
+### Diff Generators
 
-## VS Code Integration
+**`generate_unified_diff()`** (`src/ide/mod.rs:392`):
+Produces `--- a/path` / `+++ b/path` unified diff format. Returns
+`"(no changes)"` when no differences exist.
 
-Uses VS Code's `--diff` CLI argument with temporary files. Files are flushed and temp file handles are **released AFTER IDE invocation** to ensure content is visible. Uses `run_command_with_timeout()` which returns `Result<(), String>` with error details:
+**`generate_side_by_side()`** (`src/ide/mod.rs:420`):
+Produces ANSI-colored side-by-side diff with grouped operations (context
+of 3 lines).
 
-```rust
-let mut original_file = original_temp.as_file();
-original_file.write_all(original_content.as_bytes())?;
-original_file.flush()?;
-guard.add(original_temp.path().to_owned());
-guard.add(modified_temp.path().to_owned());
+### Command Execution
 
-drop(original_temp);  // Release file handle AFTER IDE invocation
-drop(modified_temp);
-
-run_command_with_timeout("code", &[
-    "--diff",
-    original_path.to_string_lossy().as_ref(),
-    modified_path.to_string_lossy().as_ref(),
-])?;
-```
-
-### TempFilesGuard
-
-The `TempFilesGuard` struct implements `Drop` to automatically clean up temp files when the guard goes out of scope. This ensures temp files are cleaned up even if the IDE command fails or panics occur.
-
-### register_panic_cleanup
-
-The private `register_panic_cleanup()` function registers a panic hook that cleans up any leftover `codegg_*` temp files in the system temp directory if the process crashes. It uses `std::sync::Once` to ensure the hook is only registered once.
-
-Note: `run_command_with_timeout()` handles errors internally and returns descriptive strings like `"code failed (exit 1)"`.
-
-## JetBrains Integration
-
-Uses JetBrains `idea` or `idea.sh` CLI with `diff` subcommand. Supports:
-- `$JETBRAINS_TOOL` environment variable override
-- Unix paths: `/opt/intellij/bin/idea.sh`, `/usr/local/bin/idea`
-- Windows: `%PROGRAMFILES%\JetBrains\<product>\bin\idea.bat`
-- Falls back to `idea` in PATH
-
-## Generic Fallback (No IDE Detected)
-
-When no IDE is detected, `open_diff_generic()` searches PATH using `std::env::split_paths()` for `code` or `idea` binaries. Unlike IDE-specific handlers that use the original file paths, the generic fallback creates temporary files with the content (applying line range slicing if provided) and passes those to the IDE.
+**`run_command_with_timeout()`** (`src/ide/mod.rs:10`):
+Spawns a process, polls with `try_wait()` every 50ms, returns
+`Ok(())` on success or `Err(format)` on failure/timeout. Timeout is
+30 seconds (`IDE_COMMAND_TIMEOUT`, line 8).
 
 ## MCP IdeServer (`src/mcp/ide_server.rs`)
 
-The `IdeServer` struct provides MCP server functionality for IDE communication with two transport modes:
+The `IdeServer` struct provides MCP server functionality for IDE
+communication.
 
-### `run_stdio()` - Standard I/O Transport (lines 78-119)
-
-Uses tokio async I/O for stdio-based communication:
+### Structure
 
 ```rust
-pub async fn run_stdio(&self) -> Result<(), McpError> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    let stdin = BufReader::new(tokio::io::stdin());
-    let mut stdout = tokio::io::stdout();
-    let mut lines = stdin.lines();
-    let mut input = String::new();
-
-    let mut initialized = false;
-
-    loop {
-        input.clear();
-        let read_result = lines.next_line().await;
-        match read_result {
-            Ok(Some(line)) => input = line,
-            Ok(None) | Err(_) => break,
-        }
-
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Ok(request) = serde_json::from_str::<JsonRpcRequest>(trimmed) {
-            let response = self.handle_request(request, &mut initialized).await;
-            // ... send JSON response
-        }
-    }
-
-    Ok(())
+pub struct IdeServer {                    // line 50
+    tools: HashMap<String, ToolHandler>,  // registered tool handlers
+    pending: PendingRequests,             // in-flight request tracking
+    shutdown: Arc<Mutex<bool>>,           // shutdown flag
+    shutdown_notify: Arc<Notify>,         // shutdown signal
 }
 ```
 
-### `run_socket()` - Unix Socket Transport (lines 121-144)
+### Transport Modes
 
-Uses Unix socket for network-based communication:
+**`run_stdio()`** (line 79):
+Reads JSON-RPC frames from stdin line-by-line via `BufReader`. Writes
+responses to stdout. Manages an `initialized` flag; all methods except
+`initialize` are rejected until initialized.
 
-```rust
-pub async fn run_socket(&self, socket_path: &str) -> Result<(), McpError> {
-    let listener = UnixListener::bind(socket_path)?;
-    loop {
-        tokio::select! {
-            biased;
-            _ = self.shutdown_notify.notified() => break,
-            result = listener.accept() => {
-                // Handle incoming connections
-            }
-        }
-    }
+**`clone_for_connection()`** (line 123):
+Creates a clone sharing `tools`, `pending`, `shutdown`, and
+`shutdown_notify` via `Arc`. Used for per-connection state in socket mode.
+
+**`handle_connection()`** (line 133):
+Processes JSON-RPC requests on a `UnixStream` connection. Uses
+`BufReader` for line-based reading.
+
+Note: `run_socket()` is described in some references but is **not
+implemented** in the current code. Only `run_stdio()` is available.
+
+### MCP Protocol
+
+The server implements the MCP protocol (version `2024-11-05`):
+
+| Method | Behavior |
+|--------|----------|
+| `initialize` | Returns server info (`codegg-ide` v0.1.0) and capabilities |
+| `notifications/initialized` | Acknowledged (no-op) |
+| `tools/list` | Returns registered tools with schemas |
+| `tools/call` | Dispatches to tool handler by name |
+| anything else | Returns method-not-found error |
+
+### Registered Tools
+
+**`openDiff`** (line 318):
+Opens the native IDE diff viewer. Schema:
+
+```json
+{
+  "original": "string (file path or @file#L1-L99 syntax)",
+  "modified": "string (file path or @file#L1-L99 syntax)"
 }
 ```
 
-The `run_socket()` method uses async I/O via tokio's `UnixListener`, allowing multiple IDE connections. Each connection is handled in a spawned task via `handle_connection()` and `clone_for_connection()`:
+Both `original` and `modified` are required.
 
-- `clone_for_connection()` (lines 146-153): Creates a clone of the IdeServer for each connection, sharing the `tools`, `pending`, `shutdown`, and `shutdown_notify` fields via Arc
-- `handle_connection()` (lines 155-194): Handles JSON-RPC requests on a UnixStream connection, using BufReader for line-based reading and writing JSON responses
+**`parse_file_reference()`** (line 372):
+Parses the `@file#L1-L99` syntax:
+- `path@file#start-end` → path + line range
+- `path@file` → path only
+- `path` → path only
+- Empty line spec defaults to `(1, usize::MAX)`
 
-## See Also
+### Shutdown
 
-- [tui.md](tui.md) - TUI that displays diffs
-- [mcp.md](mcp.md) - MCP client/server system including IdeServer
+`shutdown()` (line 300) sets the shutdown flag and notifies the shutdown
+signal. In stdio mode, the loop breaks on EOF.
+
+## Key Types & APIs
+
+| Type / Function | Location | Purpose |
+|----------------|----------|---------|
+| `is_vscode()` | `src/ide/mod.rs:83` | Detect VS Code via env vars |
+| `is_jetbrains()` | `src/ide/mod.rs:89` | Detect JetBrains via env vars |
+| `is_ide()` | `src/ide/mod.rs:96` | Detect any supported IDE |
+| `open_diff()` | `src/ide/mod.rs:100` | Open IDE diff viewer with optional line ranges |
+| `generate_unified_diff()` | `src/ide/mod.rs:392` | Generate unified diff string |
+| `generate_side_by_side()` | `src/ide/mod.rs:420` | Generate ANSI side-by-side diff |
+| `run_command_with_timeout()` | `src/ide/mod.rs:10` | Spawn process with 30s timeout |
+| `TempFilesGuard` | `src/ide/mod.rs:46` | RAII guard for temp file cleanup |
+| `IdeServer` | `src/mcp/ide_server.rs:50` | MCP server for IDE integration |
+| `IdeServer::run_stdio()` | `src/mcp/ide_server.rs:79` | Run MCP over stdio |
+| `IdeServer::handle_connection()` | `src/mcp/ide_server.rs:133` | Handle a Unix socket connection |
+| `IdeServer::shutdown()` | `src/mcp/ide_server.rs:300` | Signal shutdown |
+| `open_diff_handler()` | `src/mcp/ide_server.rs:345` | MCP tool handler for openDiff |
+| `parse_file_reference()` | `src/mcp/ide_server.rs:372` | Parse `@file#L1-L99` syntax |
+
+## Configuration Surface
+
+| Constant | Value | Location |
+|----------|-------|----------|
+| `IDE_COMMAND_TIMEOUT` | 30 seconds | `src/ide/mod.rs:8` |
+
+No config file keys. IDE detection is purely environment-variable-based.
+The MCP server exposes no configuration beyond transport selection.
+
+## Invariants & Gotchas
+
+- **Temp files are flushed and handles dropped before IDE invocation**: This
+  ensures content is visible to the IDE process. The `TempFilesGuard`
+  provides cleanup on normal exit and panics.
+- **Line ranges are 1-indexed, inclusive end**: `open_diff()` converts to
+  0-indexed internally (`start.saturating_sub(1)`).
+- **Generic fallback tries VS Code first**: If both `code` and `idea` are
+  in PATH, VS Code gets priority.
+- **JetBrains tool resolution is platform-aware**: Checks `$JETBRAINS_TOOL`,
+  hardcoded Unix paths, Windows `PROGRAMFILES`, then PATH.
+- **`run_socket()` is not implemented**: The current code only supports
+  stdio transport. Socket mode is referenced in docs but absent from the
+  implementation.
+- **MCP server requires `initialize` first**: All other methods return
+  error -32002 until initialized.
+- **`openDiff` is synchronous**: The tool handler blocks until the IDE
+  command completes or times out.
+
+## Testing
+
+```bash
+cargo test -p codegg --lib ide           # IDE detection and diff tests
+cargo test -p codegg --lib mcp::ide_server  # MCP server tests (if any)
+```
+
+Inline tests (`src/ide/mod.rs:444-473`):
+- `test_vscode_detection` — verifies `is_vscode()` returns false in test env
+- `test_jetbrains_detection` — verifies `is_jetbrains()` returns false
+- `test_no_changes` — unified diff with identical input
+- `test_with_changes` — unified diff with changed lines
+
+## Related Docs
+
+- [mcp.md](mcp.md) — MCP client/server system
+- [tui.md](tui.md) — TUI that may display diffs
+- [tool.md](tool.md) — Tool registry including IDE tools

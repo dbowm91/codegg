@@ -1,48 +1,53 @@
 # Upgrade Module
 
-The `upgrade` module provides self-upgrade functionality via GitHub releases.
+Self-upgrade functionality via GitHub releases.
 
-## Overview
+## Purpose
 
-**Location**: `src/upgrade/`
+Checks the GitHub releases API for a newer version and prints manual
+install instructions. The `upgrade()` function can perform the install
+but is not wired to the CLI.
 
-**Key Responsibilities**:
-- Check for updates via GitHub API (queries `https://api.github.com/repos/dbowm91/codegg/releases/latest`)
-- Run installer script via `curl -fsSL https://codegg.ai/install.sh`
+## Where It Lives
 
-## CLI Command Behavior
+- `src/upgrade/mod.rs` — version check and upgrade logic
+- `src/main.rs:1016-1035` — `cmd_upgrade()` CLI handler
 
-The `codegg upgrade` command **only checks and reports** - it does not automatically perform the upgrade:
+## How It Works
 
-1. Queries GitHub API for latest release tag
-2. Compares with current version (`VERSION` from `CARGO_PKG_VERSION`)
-3. If newer version available, prints instructions to manually install via:
-   ```bash
-   curl -fsSL https://codegg.ai/install.sh
-   ```
+### CLI Command (`codegg upgrade`)
 
-The actual `upgrade()` function exists in `src/upgrade/mod.rs` but is **not called** by the CLI command.
+`cmd_upgrade()` in `src/main.rs:1016` calls `upgrade::check_for_updates()`,
+compares with `CARGO_PKG_VERSION`, and prints manual install instructions:
 
-## Configuration
-
-### autoupdate
-
-The `autoupdate` config setting exists but is **not currently wired to the upgrade module**:
-
-```rust
-pub enum AutoupdateConfig {
-    Bool(bool),        // true/false for automatic updates
-    Notify(String),    // notify with custom message
-}
+```
+curl -fsSL https://codegg.ai/install.sh
 ```
 
-Default: `true` (but not implemented)
+It does **not** call `upgrade()`.
 
-This config field is loaded and stored in `Config.autoupdate` but the upgrade module does not read it. The upgrade module only performs version checking when the CLI command is run.
+### Version Check
 
-## Key Types
+`check_for_updates()` sends a GET to
+`https://api.github.com/repos/dbowm91/codegg/releases/latest`
+with a 10-second timeout. Parses `tag_name`, strips leading `v`,
+and compares with the compiled `VERSION`.
 
-### VersionInfo
+### Install Function (defined, not called)
+
+`upgrade()` validates semver, then runs:
+
+```
+curl -fsSL https://codegg.ai/install.sh
+```
+
+with `INSTALL_VERSION=v{latest}` in a sanitized environment
+(`env_clear()` + only `PATH`). Uses `std::process::Command`
+(blocking, not async).
+
+## Key Types & APIs
+
+### VersionInfo (`src/upgrade/mod.rs:7`)
 
 ```rust
 pub struct VersionInfo {
@@ -52,95 +57,46 @@ pub struct VersionInfo {
 }
 ```
 
-## Key Functions
+### Functions
 
-### current_version()
+| Function | Signature | Notes |
+|----------|-----------|-------|
+| `current_version()` | `fn() -> String` | Returns `CARGO_PKG_VERSION` |
+| `check_for_updates()` | `async fn() -> Result<VersionInfo, AppError>` | GitHub API query |
+| `upgrade()` | `async fn() -> Result<String, AppError>` | Defined but not called by CLI |
+
+## Configuration Surface
+
+### autoupdate (`opencode.json`)
 
 ```rust
-pub fn current_version() -> String {
-    VERSION.to_string()
+pub enum AutoupdateConfig {
+    Bool(bool),
+    Notify(String),
 }
 ```
 
-### check_for_updates()
+Default: `Bool(true)`. Defined in `codegg-config` schema
+(`crates/codegg-config/src/schema.rs:192`), loaded into
+`Config.autoupdate` (`schema.rs:217`). **Not wired to the
+upgrade module** — the config is loaded and stored but never
+read by `check_for_updates()` or `upgrade()`.
 
-```rust
-pub async fn check_for_updates() -> Result<VersionInfo, AppError> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| AppError::Upgrade(e.to_string()))?;
+## Invariants & Gotchas
 
-    let resp = client
-        .get("https://api.github.com/repos/dbowm91/codegg/releases/latest")
-        .header("User-Agent", "codegg")
-        .send()
-        .await
-        .map_err(|e| AppError::Upgrade(format!("request failed: {e}")))?;
+- **CLI is check-only**: `codegg upgrade` never modifies the binary.
+- **`upgrade()` is dead code**: defined in `src/upgrade/mod.rs:57` but
+  not invoked from any CLI path.
+- **`autoupdate` config is inert**: exists in schema with default `true`
+  but the upgrade module does not read it. Background auto-upgrade is
+  not implemented.
+- **Blocking `std::process::Command` in async**: `upgrade()` uses
+  blocking `curl` subprocess inside an `async fn`. This is acceptable
+  because the function is not called.
+- **Version comparison is exact string match**: `l != VERSION` — does
+  not use semver ordering. Two different strings always trigger
+  `needs_update: true`.
 
-    if !resp.status().is_success() {
-        return Err(AppError::Upgrade(format!(
-            "GitHub API returned {}",
-            resp.status()
-        )));
-    }
+## Related Docs
 
-    let json: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Upgrade(format!("failed to parse response: {e}")))?;
-
-    let latest = json
-        .get("tag_name")
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim_start_matches('v').to_string());
-
-    let needs_update = latest.as_ref().map(|l| l != VERSION).unwrap_or(false);
-
-    Ok(VersionInfo {
-        current: VERSION.to_string(),
-        latest,
-        needs_update,
-    })
-}
-```
-
-### upgrade() (defined but not called)
-
-```rust
-pub async fn upgrade() -> Result<String, AppError> {
-    let info = check_for_updates().await?;
-    if !info.needs_update {
-        return Ok(format!("Already on latest version ({})", info.current));
-    }
-
-    let latest = info.latest.ok_or_else(|| AppError::Upgrade("no latest version found".to_string()))?;
-
-    semver::Version::parse(&latest)
-        .map_err(|_| AppError::Upgrade(format!("invalid semver version: {}", latest)))?;
-
-    let target = format!("v{latest}");
-
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", "https://codegg.ai/install.sh"])
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("INSTALL_VERSION", &target)
-        .output()
-        .map_err(|e| AppError::Upgrade(format!("failed to run installer: {e}")))?;
-
-    if !output.status.success() {
-        return Err(AppError::Upgrade(
-            String::from_utf8_lossy(&output.stderr).to_string(),
-        ));
-    }
-
-    Ok(format!("Upgraded to {latest}"))
-}
-```
-
-**Note**: This function is defined but not invoked by the CLI. The CLI only reports version info without performing the actual upgrade.
-
-## See Also
-
-- [config.md](config.md) - Configuration (`autoupdate` field defined but not wired to upgrade module)
+- [config.md](config.md) — `autoupdate` field (defined but not wired)

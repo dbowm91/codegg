@@ -1,35 +1,123 @@
 # Storage Module
 
-The `storage` module handles SQLite database initialization and connection pooling.
+## Purpose
 
-## Overview
+The `storage` module provides SQLite database initialization, connection
+pooling, WAL configuration, and the platform-resolved path layout for
+the user-scoped daemon catalog. It also hosts the `UserPreferences`
+key/value store backed by `user_preferences` table.
 
-## Provider connection lifecycle migration
+## Where It Lives
 
-Storage layout 31 adds lifecycle projection, reference, tombstone, and audit
-tables. The historical three-state provider column remains a compatibility
-projection; the additive lifecycle table is authoritative for extended states.
-Tombstones preserve identity and endpoint history, while the reference table
-is authoritative for purge blockers. Credential material remains outside
-SQLite.
+```
+crates/codegg-core/src/storage/
+├── mod.rs          # Database wrapper, init functions, pragmas,
+│                   # STORAGE_LAYOUT_VERSION, deprecated init()
+├── paths.rs        # DaemonPaths — single source of truth for
+│                   # catalog and asset paths
+└── preferences.rs  # UserPreferences — persistent key/value store
+```
 
-**Location**: `crates/codegg-core/src/storage/`
+## How It Works
 
-**Key Responsibilities**:
-- Database initialization
-- Connection pooling
-- WAL mode configuration
-- Running migrations (delegated to session module)
+### Database Initialization
 
-## Key Types
+There are **four** entry points for getting a `SqlitePool`:
 
-### Database
+| Function | Path | Purpose |
+|----------|------|---------|
+| `init_daemon_catalog(paths)` | `catalog_db_path()` | User-scoped daemon catalog, no migrations |
+| `init_migrated_daemon_catalog(paths)` | Same as above | Runs migrations on a single-connection bootstrap pool, closes it, then opens the normal catalog pool |
+| `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db` | Legacy project-local store for backward compat |
+| `init_pool_at(db_path)` | Caller-supplied path | Generic pool at an arbitrary path |
+| `init(project_dir)` (deprecated) | Empty → config dir; non-empty → legacy | Retained for tests; new code MUST NOT use |
+
+`init_migrated_daemon_catalog` is the **production daemon bootstrap
+authority**. It creates a single-connection pool for migration, runs
+all schema migrations, closes the migration pool, then opens the normal
+10-connection pool via `init_daemon_catalog`.
+
+### Path Layout (`DaemonPaths`)
+
+`DaemonPaths` (`storage/paths.rs:20`) is the single source of truth.
+Defaults follow OS conventions with fallbacks:
+
+| Platform | Data root | Config root |
+|----------|-----------|-------------|
+| macOS | `~/Library/Application Support/codegg/` | `~/Library/Application Support/codegg/` |
+| Linux | `$XDG_DATA_HOME/codegg/` or `~/.local/share/codegg/` | `$XDG_CONFIG_HOME/codegg/` or `~/.config/codegg/` |
+| Fallback | `~/.codegg/` | `~/.config/codegg/` |
+
+Override via `CODEGG_DATA_HOME` env var (data root only).
 
 ```rust
-pub struct Database {
-    pool: SqlitePool,
+pub struct DaemonPaths {
+    pub data_root: Option<PathBuf>,   // override or platform default
+    pub config_root: Option<PathBuf>, // override or platform default
 }
+```
 
+Key derived paths:
+- `catalog_db_path()` → `<data_root>/codegg.db`
+- `catalog_db_wal_path()` → `<data_root>/codegg.db-wal`
+- `agents_dir()` → `<config_root>/agents/`
+- `credentials_path()` → `<config_root>/credentials.json`
+- `workspace_local_artifact_root(ws)` → `<ws>/.codegg/`
+
+### SQLite Configuration
+
+Applied in `connect_and_configure()` (`storage/mod.rs:214`) as a
+single batched query:
+
+| Pragma | Value | Purpose |
+|--------|-------|---------|
+| `journal_mode` | `WAL` | Write-Ahead Logging for concurrency |
+| `wal_autocheckpoint` | `1000` | Checkpoint every 1000 pages |
+| `busy_timeout` | `5000` | 5s timeout on busy |
+| `synchronous` | `NORMAL` | Balanced performance/safety |
+| `mmap_size` | `268435456` | 256MB memory-mapped I/O |
+| `cache_size` | `-2000` | 2MB page cache |
+| `temp_store` | `MEMORY` | Temp tables in RAM |
+| `foreign_keys` | `ON` | FK enforcement |
+
+### Connection Pool
+
+`connect_and_configure()` creates the pool via `SqlitePoolOptions`:
+- Normal pools: `max_connections(10)`, `acquire_timeout(30s)`
+- Migration pools: `max_connections(1)`
+
+### Database Wrapper
+
+```rust
+pub struct Database { pool: SqlitePool }
+```
+
+Methods:
+- `new(path)` — Open + migrate + WAL checkpoint + background integrity
+  check (5s delay)
+- `pool()` — Borrow the underlying `SqlitePool`
+- `migrate()` — Re-run schema migrations (idempotent)
+- `health_check()` — `SELECT 1`
+- `close()` — WAL checkpoint + pool shutdown
+
+### WAL Checkpoint and Integrity
+
+`Database::new()` triggers:
+1. `try_checkpoint_wal()` — non-fatal WAL checkpoint
+2. `spawn_background_integrity_check()` — `PRAGMA quick_check` after
+   5s delay
+
+### STORAGE_LAYOUT_VERSION
+
+`STORAGE_LAYOUT_VERSION = 35` (`storage/mod.rs:39`) is exported and
+referenced from `MigrationMarker.storage_layout_version` for the
+migration tooling that imports legacy project databases.
+
+## Key Types & APIs
+
+### Database (`storage/mod.rs:41`)
+
+```rust
 impl Database {
     pub async fn new(path: &str) -> Result<Self, StorageError>;
     pub fn pool(&self) -> &SqlitePool;
@@ -39,196 +127,118 @@ impl Database {
 }
 ```
 
-**Note**: The `Database` struct is a simple wrapper around `SqlitePool`. Most code uses `init()` directly to get the pool.
-
-## Initialization
+### DaemonPaths (`storage/paths.rs:20`)
 
 ```rust
-pub async fn init_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError>
-pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths) -> Result<SqlitePool, StorageError>
-pub async fn init_legacy_project_store(project_root: &Path) -> Result<SqlitePool, StorageError>
-pub async fn init_pool_at(db_path: &Path) -> Result<SqlitePool, StorageError>
-
-#[deprecated]
-pub async fn init(project_dir: &str) -> Result<SqlitePool, StorageError>
-```
-
-Note: `init_daemon_catalog`, `init_legacy_project_store`, and
-`init_pool_at` all call `connect_and_configure()` directly and return a
-bare `SqlitePool` (not a `Database` struct). Production daemon startup uses
-`init_migrated_daemon_catalog`, which runs current schema migrations on a
-single-connection bootstrap pool, closes it, and then opens the normal
-catalog pool. The `Database` struct is a separate wrapper used when you need
-`health_check()` or `migrate()` methods. `init` is retained as a deprecated
-wrapper that routes to one of the new entry points based on whether
-`project_dir` is empty or a real directory; new code MUST NOT use it.
-
-**Path Resolution (Phase 3 split)**:
-
-| Entry point | Database path |
-|-------------|---------------|
-| `init_daemon_catalog(paths)` | `paths.catalog_db_path()` — `~/Library/Application Support/codegg/codegg.db` on macOS, `$XDG_DATA_HOME/codegg/codegg.db` on Linux. |
-| `init_migrated_daemon_catalog(paths)` | Same user-scoped catalog path, after applying all current migrations; production daemon bootstrap authority. |
-| `init_legacy_project_store(root)` | `<root>/.codegg/sessions.db`. |
-| `init(project_dir)` (deprecated) | Empty → user config directory + `codegg/sessions.db`. Non-empty → legacy project store. |
-
-`STORAGE_LAYOUT_VERSION = 35` is exported from `storage::mod` and is
-referenced from `MigrationMarker.storage_layout_version` so the
-migration tooling can report which layout a legacy database was
-imported under.
-
-Runtime-asset provenance is additive and path-free. Run manifests may carry
-an optional generation, snapshot fingerprint, and activated-skill digest list
-through `RunAssetProvenance`; older JSON records omit the field and continue
-to deserialize. Snapshot bodies and local resource paths are never persisted
-in the run store. The refresh table remains the restart authority for the
-last published generation/fingerprint, while unchanged workspace assets are
-reconstructed from explicit context.
-
-`DaemonPaths` (in `crates/codegg-core/src/storage/paths.rs`) is the
-single source of truth for catalog and asset paths:
-
-```rust
-pub struct DaemonPaths {
-    pub data_root: Option<PathBuf>,
-    pub config_root: Option<PathBuf>,
-}
-
 impl DaemonPaths {
-    pub fn default() -> Self;                                 // platform-default
-    pub fn with_overrides(data_root, config_root) -> Self;    // explicit overrides
+    pub fn default() -> Self;
+    pub fn with_overrides(data_root, config_root) -> Self;
     pub fn data_root(&self) -> PathBuf;
     pub fn config_root(&self) -> PathBuf;
     pub fn catalog_db_path(&self) -> PathBuf;
     pub fn catalog_db_wal_path(&self) -> PathBuf;
     pub fn agents_dir(&self) -> PathBuf;
     pub fn credentials_path(&self) -> PathBuf;
-    pub fn workspace_local_artifact_root(&self, workspace_root: &Path) -> PathBuf;
+    pub fn workspace_local_artifact_root(&self, ws: &Path) -> PathBuf;
 }
 ```
 
-## SQLite Configuration
-
-Applied pragmas (batched in single query):
-
-```sql
-PRAGMA journal_mode=WAL;
-PRAGMA wal_autocheckpoint = 1000;
-PRAGMA busy_timeout=5000;
-PRAGMA synchronous = NORMAL;
-PRAGMA mmap_size = 268435456;  -- 256MB memory-mapped I/O
-PRAGMA cache_size = -2000;     -- 2MB cache
-PRAGMA temp_store = MEMORY;
-PRAGMA foreign_keys = ON;
-```
-
-| Pragma | Value | Purpose |
-|--------|-------|---------|
-| `journal_mode` | `WAL` | Write-Ahead Logging for better concurrency |
-| `wal_autocheckpoint` | `1000` | Checkpoint every 1000 pages |
-| `busy_timeout` | `5000` | 5 second timeout when database is busy |
-| `synchronous` | `NORMAL` | Balanced performance/safety |
-| `mmap_size` | `268435456` | 256MB memory-mapped I/O |
-| `cache_size` | `-2000` | 2MB cache |
-| `temp_store` | `MEMORY` | Temp tables stored in memory |
-| `foreign_keys` | `ON` | Foreign key enforcement enabled |
-
-## Connection Pool
-
-Uses `sqlx::SqlitePool` with:
-- Hardcoded max connections of 10
-- `acquire_timeout(Duration::from_secs(30))` for connection acquisition timeout
-
-## Additional Methods
-
-### health_check()
+### UserPreferences (`storage/preferences.rs:25`)
 
 ```rust
-pub async fn health_check(&self) -> Result<(), StorageError>
+impl UserPreferences {
+    pub fn new(pool: SqlitePool) -> Self;
+    pub async fn get(&self, key: &str) -> Result<Option<String>>;
+    pub async fn set(&self, key: &str, value: &str) -> Result<()>;
+    pub async fn delete(&self, key: &str) -> Result<u64>;
+    pub async fn updated_at(&self, key: &str) -> Result<Option<i64>>;
+}
 ```
 
-Verifies database connectivity by executing `SELECT 1`. Returns `Ok(())` if healthy, or `StorageError::Database` on failure.
+Known keys:
+- `KEY_THEME_ACTIVE` = `"theme.active"` — active theme id
+- `KEY_MODEL_LAST_USED` = `"model.last_used"` — last-used model id
 
-### close()
+### Init Functions (`storage/mod.rs`)
 
 ```rust
-pub async fn close(self)
+pub async fn init_daemon_catalog(paths: &DaemonPaths)
+    -> Result<SqlitePool, StorageError>;
+pub async fn init_migrated_daemon_catalog(paths: &DaemonPaths)
+    -> Result<SqlitePool, StorageError>;
+pub async fn init_legacy_project_store(project_root: &Path)
+    -> Result<SqlitePool, StorageError>;
+pub async fn init_pool_at(db_path: &Path)
+    -> Result<SqlitePool, StorageError>;
+#[deprecated] pub async fn init(project_dir: &str)
+    -> Result<SqlitePool, StorageError>;
 ```
 
-Gracefully closes the connection pool using async pool shutdown. The `self` parameter consumes the struct to ensure cleanup happens exactly once.
+## Configuration Surface
 
-## Migrations
+- `CODEGG_DATA_HOME` env var overrides the default data root in
+  `DaemonPaths::default_data_root()` (`storage/paths.rs:41`)
 
-Migrations are implemented in `src/session/schema.rs`, not in the storage module itself. The storage module calls `session::schema::migrate()` during initialization.
+## Invariants & Gotchas
 
-Migration versions v1-v35 are supported, covering:
-- v1: Initial schema (project, session, message, part, todo, permission, session_share tables)
-- v2: Additional indexes
-- v3: cached_models table
-- v4-v6: Additional indexes
-- v7: session.tags column
-- v8: part.part_type generated column
-- v9: task table
-- v10: checkpoints table
-- v11: Additional indexes
-- v12: session.time_deleted column
-- v13: snapshot table
-- v14: task.allowed_paths column
-- v15: Creates `usage` table for token/cost tracking
-- v16: Creates `goal` table (goal lifecycle tracking)
-- v17: Creates `session_events` table (event journal)
-- v18: Creates `research_run` table (research artifact metadata)
-- v19: Creates `user_preferences` table (theme/model persistence)
-- v20: Creates `core_event_log` table (daemon core event sequence)
-- v21: Creates `notification_history` table (TUI notification backlog)
-- v22: Creates `workspace` table, adds `workspace_id` column to `session`, creates `idx_session_workspace_repair` index (Phase 2 single-daemon plan: workspace registry + execution context binding).
-- v23 (storage layout marker, not a session migration): the catalog
-  schema itself moves from `<workspace>/.codegg/sessions.db` to a
-  user-scoped location. The catalog gains a `migration_marker` table
-  written by `crates/codegg-core/src/migration.rs`. Legacy project
-  databases are imported into the catalog via
-  `migrate_legacy_project_database(catalog_pool, registry, project_root)`.
-  See [`workspace_services.md`](workspace_services.md) for the full
-  contract.
-- v24 creates the additive `provider_connections` table, its
-  scope/lifecycle/revision indexes, and the uniqueness constraint used by the
-  daemon-owned durable connection store. The row stores only an opaque
-  reference and a non-secret credential-store locator; it never stores
-  resolved credentials. The migration is idempotent and does not probe
-  providers or import ambiguous legacy configuration.
-- v25 creates the additive canonical logical-project and repository authority:
-  `logical_project`, `repository`, `project_repository`,
-  `workspace_project_binding`, `session_project_binding`, and
-  `identity_diagnostic`, with typed-ID foreign-key relations, status/revision
-  constraints, and lookup indexes. It does not rewrite the historical
-  `project` or session compatibility fields.
-- v26 creates additive daemon-owned provider provisioning, health, and model
-  catalog tables. Provisioning rows contain operation, endpoint, scope, and
-  opaque credential locators only; health is revisioned and bounded model
-  metadata is keyed by connection and revision. No API key, ciphertext, or
-  authorization header is stored. Startup/first-use reconciliation marks
-  stale staged/probing operations failed and removes only their owned
-  credential records.
-- v28 adds `project_locator`, `project_health`, and
-  `legacy_catalog_association_marker` tables and five columns to
-  `logical_project` (`archived_at`, `description`, `tags`,
-  `registration_source`, `time_last_opened`) for the project catalog layer.
-- v29 adds bounded discovery metadata tables: `discovery_root`,
-  `discovery_scan`, and `discovery_observation`. Scan rows record only bounded
-  counts, lifecycle, generation, and diagnostics; observations record canonical
-  locators, optional lineage keys, typed status, and catalog/workspace links.
-  The last completed generation remains authoritative when a scan fails or is
-  cancelled. Retention may prune old runs/observations but never catalog rows.
-- v30 adds bounded runtime-asset refresh provenance for restart/operator
-  continuity; snapshot bodies remain reconstructible from explicit context.
-- v31 adds provider lifecycle, reference, tombstone, and audit tables while
-  retaining the historical provider state as a compatibility projection.
-- v32 adds durable session/project projection streams, events, and checkpoints.
-- v33–v34 add the durable Tool Program domain and terminal notification claims.
-- v35 adds nullable typed lineage columns and an index for Tool Program child
-  jobs; existing rows remain compatible.
+1. **Single daemon invariant**: The catalog database is user-scoped,
+   not project-scoped. Exactly one daemon owns it per OS user.
+2. **Migration pool isolation**: `init_migrated_daemon_catalog` uses a
+   single-connection pool for migration, closes it, then opens the
+   normal pool. This prevents self-deadlocking during bootstrap.
+3. **init() is deprecated**: `init(project_dir)` routes to either the
+   user config directory or a legacy project store. New code MUST NOT
+   use it.
+4. **init_daemon_catalog vs init_migrated_daemon_catalog**: The former
+   returns a pool without running migrations. The latter is the
+   production bootstrap path.
+5. **init_pool_at creates directories**: It calls `create_dir_all` and
+   checks for read-only directories before connecting.
+6. **Integrity check is non-fatal**: `spawn_background_integrity_check`
+   logs warnings but does not fail startup.
+7. **Pool max connections is 10**: Hardcoded in `connect_and_configure`.
+   Migration pools use `max_connections(1)`.
+8. **Catalog DB vs workspace-local artifacts**: The catalog owns
+   sessions, jobs, notification history. Workspace-local artifacts
+   (run store data) live under `<workspace>/.codegg/runs/`.
 
-## See Also
+## Migrations (Storage Layout Context)
 
-- [session.md](session.md) - Uses storage for session data
-- [schema.rs](../crates/codegg-core/src/session/schema.rs) - Migration implementation
+Migrations are implemented in `session/schema.rs`, not in the storage
+module. The storage module calls `session::schema::migrate()` during
+initialization.
+
+Key storage-layout migrations:
+- **v22**: Workspace table, `session.workspace_id` column — Phase 2
+  workspace registry
+- **v23**: Durable jobs tables — Phase 4 job orchestration
+- **v24**: `provider_connections` — daemon-owned connection metadata
+- **v25**: Canonical project/repository authority — additive identity
+  tables
+- **v26**: Provider provisioning, health, model catalog
+- **v27**: Session selection columns (connection ID, revision, model)
+- **v28**: Project catalog tables (locators, health, legacy markers)
+- **v29**: Discovery roots, scans, observations
+- **v30**: Runtime asset refresh provenance
+- **v31**: Provider lifecycle, reference, tombstone, audit
+- **v32**: Projection streams, events, checkpoints
+- **v33–v34**: Tool Program domain, notification claims
+- **v35**: Nullable typed lineage columns for child jobs
+
+## Testing
+
+```bash
+cargo test -p codegg-core --lib storage
+cargo test -p codegg-core --lib storage::paths
+cargo test -p codegg-core --lib storage::preferences
+cargo test -p codegg-core --test storage_migrations
+```
+
+## Related Docs
+
+- [session.md](session.md) — Schema migrations, session tables
+- [workspace_services.md](workspace_services.md) — Workspace-local
+  run store, catalog migration
+- `crates/codegg-core/src/migration.rs` — Legacy database import
+  tooling
+- `crates/codegg-core/src/jobs/` — Durable job store (v23+)

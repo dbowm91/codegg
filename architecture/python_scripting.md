@@ -1,51 +1,106 @@
 # Python Scripting
 
-First-class Python script execution with risk analysis, three execution modes, OS-level sandbox enforcement, and async subprocess management.
+First-class Python script execution with AST-first risk analysis, three execution
+modes, OS-level sandbox enforcement (Landlock on Linux), and managed-process
+subprocess management.
 
-## Source
+## Purpose
 
-`src/python_script/` (8 files) — sole canonical module. The legacy `src/python_scripting.rs` has been removed.
+Provide a sandboxed, policy-gated Python execution surface for the model-facing
+`python_script` tool and BashTool's active Python routing. Scripts are statically
+analyzed for risk, executed through the scheduler, and their outputs are projected
+safely. The module is the domain authority for Python execution semantics.
 
-## Module Structure
+## Where It Lives
+
+`src/python_script/` (9 files)
 
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Module root, re-exports, integration tests |
-| `types.rs` | Core types: `PythonExecutionMode`, `PythonScriptSource`, `PythonCapabilityEnvelope`, `PythonRiskLevel`, `PythonRiskAssessment`, `PythonRiskScanner`, `PythonScriptRequest`, `PythonRunStatus`, `PythonRunResult`, `PythonCapabilityProfile`, `ExecutableRule`, `SandboxRequirement`, `SandboxBackend`, `CapabilityViolation`, `PythonPolicyDecision` |
+| `types.rs` | Core types: modes, requests, risk, profiles, sandbox, policy |
 | `analyze.rs` | AST-first risk analyzer with string-scanning fallback |
-| `sandbox.rs` | `resolve_policy()`, `validate_subprocess_invocation()`, `derive_envelope()`, `check_compatibility()` |
+| `sandbox.rs` | `resolve_policy()`, `check_compatibility()`, `derive_envelope()` |
 | `snapshot.rs` | `WorkspaceSnapshot::capture(root)` and `diff()` for change detection |
-| `executor.rs` | `execute_python_script(request)` — validates, runs risk analysis, enforces capabilities, captures snapshots, executes with timeout, generates diffs |
-| `projection.rs` | `project_python_run(result)` — formats run results into model-facing markdown |
-| `tool.rs` | `PythonScriptTool` — `Tool` trait impl for model-facing Python execution |
+| `executor.rs` | `execute_python_script_with_cancellation()` — full pipeline |
+| `projection.rs` | `project_python_run()`, `PythonProjector` impl |
+| `tool.rs` | `PythonScriptTool`, `DelegatedPythonRun`, RunStore helpers |
+| `source_store.rs` | Content-addressed source store at `.codegg/python_sources/` |
 
-## Core Types
+## How It Works
 
-### `PythonExecutionMode`
+1. **Risk analysis**: `analyze_python_risk()` spawns `python3 -I` with the script
+   piped via stdin to an inline AST scanner. The scanner walks the Python AST to
+   extract imports, function calls, and risk indicators. It builds alias maps to
+   resolve `import subprocess as sp; sp.run(...)` through their aliases. Falls back
+   to string scanning if Python is unavailable or parsing fails.
+2. **Policy resolution**: `resolve_policy()` runs risk analysis, builds a capability
+   profile via `PythonCapabilityProfile::from_mode_risk_and_context()`, cross-checks
+   risk against profile for violations, resolves the enforcement backend (Landlock on
+   supported Linux, PortableFallback elsewhere), and produces a `PythonPolicyDecision`.
+3. **Pre-execution check**: Denied capabilities block execution before any child
+   process is spawned. Legacy `derive_envelope()` + `check_compatibility()` run for
+   backward compatibility.
+4. **Script materialization**: Script is written to a temp file under
+   `.codegg/python_runs/` with a drop guard for cleanup.
+5. **Snapshot**: Pre-execution file contents are captured for diff generation.
+6. **Execution**: The script runs through `ManagedProcessService` with:
+   - Wall-clock timeout (default 60s for Analyze/Transform, 300s for Verify)
+   - Minimal environment isolation via `python_environment_policy()` (allows PATH,
+     HOME, LANG, LC_ALL, VIRTUAL_ENV, PYTHONPATH, DYLD_LIBRARY_PATH)
+   - Cancellation token support
+   - On Linux with Landlock: the parent sends a bounded launch spec to
+     `codegg-sandbox-helper`; the helper applies ABI-aware landlock rules, verifies
+     `FullyEnforced` and `no_new_privs`, then `exec`s Python.
+   - Portable fallback: env clearing + cwd containment + snapshot-based post-hoc
+     change detection.
+7. **Post-execution snapshot and diff**:
+   - Analyze/Verify: any file change is a policy violation → exit code -2
+   - Transform: file changes are allowed and reported; textual diff generated
+8. **RunStore persistence**: `begin_python_run()` → `write_python_run_artifacts()` →
+   `complete_python_run()` for the canonical RunStore lifecycle.
 
-| Mode | Description | Timeout |
-|------|-------------|---------|
-| `Analyze` | Read-only analysis | 60s |
-| `Transform` | Mutating transformation | 60s |
-| `Verify` | Test/verification | 300s |
+### Scheduler integration
 
-### `PythonScriptRequest`
+All production model-facing Python execution flows through the scheduler:
+
+- `PythonJobExecutor` (`src/scheduler/executors.rs:492`) implements `JobExecutor`
+  for `JobKind::Python`. It validates source digest, begins a RunStore record,
+  invokes `execute_python_script_with_cancellation()`, persists artifacts, and
+  completes the record.
+- `PythonScriptTool::execute()` submits through `JobSubmissionService` when the
+  scheduler is enabled. When disabled, returns `ToolError::Disabled` (fail-closed).
+- `BashTool::dispatch_to_python_script` calls `execute_and_persist_python_script()`
+  (test-only helper; production path goes through the scheduler).
+
+## Key Types & APIs
+
+### PythonExecutionMode (`types.rs:259-267`)
+
+| Mode | Description | Default Timeout | Subprocess | Writes |
+|------|-------------|----------------|------------|--------|
+| `Analyze` | Read-only analysis | 60s | Denied | Denied |
+| `Transform` | Mutating transformation | 60s | Denied | Allowed (workspace) |
+| `Verify` | Test/verification | 300s | Allowed (allowlisted) | Denied |
+
+### PythonScriptRequest (`types.rs:474-484`)
 
 ```rust
 pub struct PythonScriptRequest {
     pub code: String,
     pub mode: PythonExecutionMode,
     pub cwd: PathBuf,
+    pub workspace_root: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
     pub session_id: Option<String>,
     pub intent: Option<String>,
-    pub workspace_root: Option<PathBuf>,
 }
 ```
 
-`workspace_root` provides the authoritative workspace boundary for CWD containment checks. When set, CWD must be inside this root. Falls back to process cwd when `None`.
+`workspace_root` provides the authoritative workspace boundary for CWD containment.
+Falls back to process cwd when `None`.
 
-### `PythonRiskAssessment`
+### PythonRiskAssessment (`types.rs:437-449`)
 
 ```rust
 pub struct PythonRiskAssessment {
@@ -63,9 +118,86 @@ pub struct PythonRiskAssessment {
 }
 ```
 
-`PythonRiskScanner` enum: `Ast` | `Fallback` — indicates which analysis backend produced the result.
+`PythonRiskScanner`: `Ast | Fallback` — which analysis backend produced the result.
 
-### `PythonRunResult`
+### PythonRiskLevel (`types.rs:418-424`)
+
+`Safe | Low | Medium | High`
+
+Priority: destructive_ops > subprocess/network > file_io/dynamic_exec/dep_install > safe.
+
+### PythonCapabilityProfile (`types.rs:65-86`)
+
+```rust
+pub struct PythonCapabilityProfile {
+    pub mode: PythonExecutionMode,
+    pub read_roots: Vec<PathBuf>,
+    pub write_roots: Vec<PathBuf>,
+    pub allow_subprocess: bool,
+    pub allowed_subprocesses: Vec<ExecutableRule>,
+    pub allow_network: bool,
+    pub allow_env: Vec<String>,
+    pub allow_dependency_install: bool,
+    pub allow_destructive_fs: bool,
+    pub sandbox_requirement: SandboxRequirement,
+}
+```
+
+Constructors: `analyze(workspace_root)`, `transform(workspace_root)`,
+`verify(workspace_root)`, `from_mode_risk_and_context(mode, workspace_root, risk)`.
+Risk analysis can only narrow capabilities, never widen.
+
+### ExecutableRule (`types.rs:19-27`)
+
+Controls which subprocess binaries are allowed in Verify mode:
+
+```rust
+pub struct ExecutableRule {
+    pub command: String,
+    pub arg_prefixes: Vec<String>,
+    pub reason: String,
+}
+```
+
+Default Verify rules: `cargo`, `cargo-test`, `pytest`, `python3 -m pytest`,
+`go test`, `make test`, `make build`.
+
+### PythonCapabilityEnvelope (`types.rs:310-421`)
+
+Legacy capability envelope (backward compat). Fields: `read_workspace`,
+`write_workspace`, `read_outside_workspace`, `write_outside_workspace`, `subprocess`,
+`network`, `env_access`, `dependency_install`, `destructive_fs`.
+
+### PythonPolicyDecision (`types.rs:239-256`)
+
+```rust
+pub struct PythonPolicyDecision {
+    pub profile: PythonCapabilityProfile,
+    pub denied: Vec<CapabilityViolation>,
+    pub warnings: Vec<String>,
+    pub enforcement_backend: SandboxBackend,
+    pub os_filesystem_isolation: bool,
+    pub os_network_isolation: bool,
+    pub outcome: Option<SandboxOutcome>,
+}
+```
+
+### SandboxBackend (`types.rs:182-190`)
+
+`Landlock | PortableFallback | None`
+
+### SandboxOutcome (`types.rs:204-219`)
+
+```rust
+pub enum SandboxOutcome {
+    Enforced { backend: SandboxBackend, abi: u32 },
+    Fallback { backend: SandboxBackend, reason: String },
+    Disabled,
+    Failed { kind: SandboxFailureKind, reason: String },
+}
+```
+
+### PythonRunResult (`types.rs:519-566`)
 
 ```rust
 pub struct PythonRunResult {
@@ -84,343 +216,238 @@ pub struct PythonRunResult {
     pub stdout_label: Option<String>,
     pub stderr_label: Option<String>,
     pub diff_label: Option<String>,
-}
-```
-
-Labels are pseudo-local run identifiers, not registered in any artifact store. They are not expandable via `context_read` or other tools.
-
-`PythonRunResult` also carries enforcement evidence fields (all `#[serde(default)]`):
-```rust
-pub policy_decision: Option<PythonPolicyDecision>,
-pub denied_capabilities: Vec<String>,
-pub os_filesystem_isolation: bool,
-pub os_network_isolation: bool,
-pub effective_read_roots: Vec<PathBuf>,
-pub effective_write_roots: Vec<PathBuf>,
-pub allowed_subprocesses: Vec<ExecutableRule>,
-pub enforcement_warnings: Vec<String>,
-```
-
-### `PythonCapabilityProfile`
-
-Determines allowed filesystem roots, subprocess rules, and sandbox requirements per execution mode and risk level:
-
-```rust
-pub struct PythonCapabilityProfile {
-    pub mode: PythonExecutionMode,
-    pub read_roots: Vec<PathBuf>,
-    pub write_roots: Vec<PathBuf>,
-    pub allow_subprocess: bool,
-    pub allowed_subprocesses: Vec<ExecutableRule>,
-    pub allow_network: bool,
-    pub allow_env: bool,
-    pub allow_dependency_install: bool,
-    pub allow_destructive_fs: bool,
-    pub sandbox_requirement: SandboxRequirement,
-}
-```
-
-Constructors: `analyze()`, `transform()`, `verify()`, `from_mode_risk_and_context()`.
-
-### `ExecutableRule`
-
-Controls which subprocess binaries are allowed in Verify mode:
-
-```rust
-pub struct ExecutableRule {
-    pub command: String,
-    pub arg_prefixes: Vec<String>,
-    pub reason: String,
-}
-```
-
-Default rules for Verify mode: `python3 -m pytest`, `python3 -m unittest`, `cargo test`, `cargo build`, `cargo check`.
-
-### `SandboxBackend`
-
-`Landlock` (Linux only, OS-level filesystem isolation), `PortableFallback` (env_clear + cwd containment + snapshot detection), or `None`.
-
-### `PythonPolicyDecision`
-
-```rust
-pub struct PythonPolicyDecision {
-    pub profile: PythonCapabilityProfile,
-    pub denied: Vec<CapabilityViolation>,
-    pub warnings: Vec<String>,
-    pub enforcement_backend: SandboxBackend,
+    // Enforcement evidence (Phase 06)
+    pub policy_decision: Option<PythonPolicyDecision>,
+    pub denied_capabilities: Vec<String>,
     pub os_filesystem_isolation: bool,
     pub os_network_isolation: bool,
+    pub effective_read_roots: Vec<PathBuf>,
+    pub effective_write_roots: Vec<PathBuf>,
+    pub allowed_subprocesses: Vec<ExecutableRule>,
+    pub enforcement_warnings: Vec<String>,
 }
 ```
 
-## Risk Analysis
+Labels are pseudo-local run identifiers, not registered in any artifact store.
+
+### DelegatedPythonRun (`tool.rs:16-28`)
 
 ```rust
-pub fn analyze_python_risk(code: &str) -> PythonRiskAssessment
-```
-
-**AST-first analysis**: Spawns `python3 -I` with the script piped via stdin to an inline AST scanner. The scanner walks the Python AST tree to extract imports, function calls, and risk indicators. It builds alias maps to resolve `import subprocess as sp; sp.run(...)` and `from subprocess import run; run(...)` forms through their aliases. Falls back to string scanning if Python is unavailable or parsing fails.
-
-Detection targets:
-- **High**: destructive ops (`shutil.rmtree`, `os.remove`, `os.unlink`, `chmod`, etc.)
-- **Medium**: subprocess calls, network access
-- **Low**: file I/O, dynamic execution (`eval`/`exec`/`compile`), suspicious imports
-- **Safe**: no risk indicators
-
-Priority: destructive_ops > subprocess/network > file_io > safe.
-
-## Capability Enforcement
-
-### Policy Resolution
-
-```rust
-pub fn resolve_policy(
-    mode: PythonExecutionMode,
-    code: &str,
-    workspace_root: Option<&Path>,
-) -> PythonPolicyDecision
-```
-
-Full enforcement pipeline:
-1. Run AST risk analysis (`analyze_python_risk`)
-2. Build capability profile via `PythonCapabilityProfile::from_mode_risk_and_context()`
-3. Cross-check risk against profile for violations
-4. Resolve enforcement backend (Landlock on supported Linux, PortableFallback elsewhere)
-5. Produce `PythonPolicyDecision` with denied capabilities, warnings, and backend info
-
-### Legacy Enforcement (backward compat)
-
-```rust
-pub fn check_compatibility(mode: PythonExecutionMode, code: &str) -> Vec<String>
-pub fn derive_envelope(mode: PythonExecutionMode, code: &str) -> (PythonCapabilityEnvelope, PythonRiskAssessment)
-```
-
-The executor runs both `resolve_policy()` (new) and `derive_envelope()` (legacy) for backward compatibility.
-
-Default envelopes per mode:
-- `Analyze()`: read_workspace only
-- `Transform()`: read + write workspace
-- `Verify()`: read workspace + subprocess
-
-`from_mode_and_risk(mode, risk)` denies capabilities flagged by risk analysis. Capability checks distinguish file reads from file writes:
-- `has_file_read` with `read_workspace`
-- `has_file_write` with `write_workspace`
-- destructive ops with `destructive_fs`
-
-Analyze mode allows workspace reads but denies writes. Transform mode allows non-destructive workspace writes. Verify mode allows subprocess but denies writes.
-
-## Execution Pipeline
-
-```rust
-pub async fn execute_python_script(request: &PythonScriptRequest) -> PythonRunResult
-```
-
-Flow:
-1. Compute script body SHA-256 hash for reproducibility tracking
-2. Validate script length against `MAX_SCRIPT_LENGTH` (500KB)
-3. Validate CWD (must exist, must be directory, must be inside workspace root when provided)
-4. **Policy resolution**: `resolve_policy()` determines capability profile, denied capabilities, and enforcement backend
-5. **Pre-execution capability check**: blocks scripts with denied capabilities before any child process is spawned
-6. Legacy `derive_envelope()` + `check_compatibility()` run for backward compat evidence
-7. Materialize script to temp file (under `.codegg/python_runs/`)
-8. **Pre-execution snapshot** for ALL modes (Analyze, Transform, Verify)
-9. Capture pre-execution file contents for diff generation
-10. Find python interpreter (`VIRTUAL_ENV` > `python3` > `python`)
-11. Execute with timeout, **minimal environment isolation** (`.env_clear()` + selective restore), and the selected filesystem policy:
-    - **Linux with Landlock**: the parent sends a bounded launch spec to `codegg-sandbox-helper`; the helper uses ABI-aware `landlock` crate rights, applies every workspace/runtime rule, verifies `FullyEnforced` and `no_new_privs`, reports the effective ABI, then `exec`s Python. Read-only mode grants workspace/runtime reads; Transform grants writes only to the workspace root.
-    - **Portable fallback**: env_clear + cwd containment + snapshot-based post-hoc change detection, explicitly reported as a fallback rather than Landlock.
-    - Sandbox setup failure is terminal for that launch; Python code is not started after a failed helper setup.
-12. **Post-execution snapshot and diff** for ALL modes:
-    - Analyze/Verify: any file change is a policy violation → run failed with exit code -2
-    - Transform: file changes are allowed and reported; textual diff generated
-13. Generate artifact handles (`python_run://<id>/stdout`, `stderr`, `diff`)
-14. Return `PythonRunResult` with all fields populated including enforcement evidence
-
-Constants: `DEFAULT_TIMEOUT_SECS = 60`, `MAX_SCRIPT_LENGTH = 500_000`.
-
-## Transform Mode Diff Generation
-
-Transform mode captures pre-execution file contents and generates a human-readable textual diff showing:
-- Modified files: `--- a/<path>` / `+++ b/<path>` with truncated old/new content
-- New files: `--- /dev/null` / `+++ b/<path>` with truncated content
-- Deleted files: `--- a/<path>` / `+++ /dev/null` with truncated old content
-
-Per-file content capped at 4000 chars.
-
-## Integration
-
-Python scripts are routed from the command intent pipeline:
-1. `classify_command()` classifies python commands as `PythonAnalyze|Transform|Verify`
-2. `plan_execution()` maps to `ExecutionBackend::PythonScript`
-3. `resolve_routing()` maps to `RoutingDecision::RouteToPythonScripting`
-
-Registered in `src/tool/mod.rs` via `registry.register(PythonScriptTool)` in `with_options()`.
-
-## Scheduler-Owned Execution (Milestone 001)
-
-All production model-facing Python execution is now scheduler-owned. The scheduler is the sole admission authority; no production path executes Python directly outside scheduler authority.
-
-### Source Input Contract
-
-Before job creation, the script source is validated and its SHA-256 digest is computed. The job payload carries:
-- `source: Option<String>` — inline source body (for scripts under 200KB)
-- `source_hash: Option<String>` — SHA-256 hex digest, required when source is present
-- `mode`, `cwd`, `timeout_secs` — execution parameters
-
-Content-addressed source persistence is available via `PythonSourceStore` (`src/python_script/source_store.rs`) for restart recovery. Source is stored at `<workspace>/.codegg/python_sources/<sha256>.py` with atomic writes.
-
-### PythonJobExecutor
-
-`PythonJobExecutor` implements `JobExecutor` for `JobKind::Python`:
-- Validates source reference and digest before launch
-- Begins a `RunKind::Python` RunStore record before execution
-- Invokes `execute_python_script` with cancellation support via `tokio::select!`
-- Maps process cancellation, timeout, sandbox denial, and spawn failure to distinct executor status classes
-- Records heartbeat/progress at execution start and completion
-- Persists stdout, stderr, diff, and enforcement evidence as RunStore artifacts
-- Registered in `register_default_executors()` alongside Test, ManagedArgv, and Subagent executors
-
-### Tool Migration
-
-Both `PythonScriptTool` and `BashTool`'s active Python routing submit through `JobSubmissionService` when the scheduler is enabled:
-- Deterministic submission keys derived from source hash ensure idempotency
-- Tools wait via `scheduler.wait_for_completion()` for the execution to finish
-- When the scheduler is disabled, tools return `ToolError::Disabled` (fail-closed — no direct execution fallback)
-- Transform mode uses `IdempotencyClass::NonIdempotent`; Analyze/Verify use `SafeRepeat`
-
-### Cancellation
-
-Cancellation propagates through `CancellationToken` wired into the executor context:
-- Pre-launch cancellation: job is cancelled before any process is spawned
-- During execution: `tokio::select!` races the cancellation token against `execute_python_script`
-- Post-cancellation: RunStore record is finalized with cancelled status, permits are released
-
-### Recovery
-
-Daemon-generation recovery marks interrupted Python attempts as `Interrupted`. Read-only modes (Analyze/Verify) may be requeued per `RecoveryPolicy`; Transform defaults to non-retryable.
-
-## Canonical Delegation Entry Point
-
-### DelegatedPythonRun
-
-```rust
-// src/python_script/tool.rs:16-19
 pub struct DelegatedPythonRun {
     pub result: PythonRunResult,
     pub run_id: Option<RunId>,
 }
 ```
 
-The `run_id` is `Some` when the canonical Python subsystem successfully began a `RunKind::Python` record; `None` when no record could be begun or no `RunStore` was provided. This is the **record-ownership contract**: callers inspect `run_id` to determine whether to suppress duplicate persistence, while retaining the delegated result when it is absent.
+The `run_id` is `Some` when the canonical Python subsystem successfully began a
+`RunKind::Python` record; `None` when no record could be begun or no `RunStore`
+was provided. Record-ownership contract: callers inspect `run_id` to determine
+whether to suppress duplicate persistence.
+
+### PythonSourceStore (`source_store.rs`)
+
+Content-addressed store at `<workspace>/.codegg/python_sources/<sha256>.py`.
+Persists, retrieves, and cleans up source files. Atomic writes via temp-file + rename.
+Rejects symlinks, path traversal, oversized input (>2 MiB), and invalid UTF-8.
 
 ```rust
-impl DelegatedPythonRun {
-    pub fn into_result(self) -> PythonRunResult { self.result }
-    pub fn result(&self) -> &PythonRunResult { &self.result }
-}
+pub fn persist(&self, source: &str) -> Result<PythonSourceRef, PythonSourceError>
+pub fn retrieve(&self, reference: &PythonSourceRef) -> Result<String, PythonSourceError>
+pub fn remove(&self, reference: &PythonSourceRef)
+pub fn cleanup_orphans(&self, active_digests: &[&str]) -> usize
 ```
 
-### execute_and_persist_python_script
+`INLINE_SOURCE_MAX_BYTES = 200 KiB`, `SOURCE_STORE_MAX_BYTES = 2 MiB`.
+
+### PythonProjector (`projection.rs:148-285`)
+
+Implements `CommandOutputProjector` for the shell projection pipeline. Name: `"python"`.
+Detects Python commands by argv prefix (`python3`, `python`, `pip`, `pip3`, `conda`).
+Extracts Python diagnostic spans (tracebacks, error types) for artifact references.
+
+### Free functions
 
 ```rust
-// src/python_script/tool.rs:40-51
-pub async fn execute_and_persist_python_script(
+// analyze.rs
+pub fn analyze_python_risk(code: &str) -> PythonRiskAssessment
+
+// sandbox.rs
+pub fn resolve_policy(
+    mode: PythonExecutionMode,
+    code: &str,
+    workspace_root: &Path,
+) -> PythonPolicyDecision
+pub fn check_compatibility(
+    mode: PythonExecutionMode, code: &str,
+) -> Vec<String>
+pub fn derive_envelope(
+    mode: PythonExecutionMode, code: &str,
+) -> (PythonCapabilityEnvelope, PythonRiskAssessment)
+pub fn validate_subprocess_invocation(
+    profile: &PythonCapabilityProfile,
+    cmd: &str,
+    first_arg: Option<&str>,
+) -> Result<(), String>
+
+// executor.rs
+pub async fn execute_python_script(
     request: &PythonScriptRequest,
-    run_store: Option<&Arc<dyn RunStore>>,
-) -> DelegatedPythonRun
-```
+) -> PythonRunResult
+pub async fn execute_python_script_with_cancellation(
+    request: &PythonScriptRequest,
+    cancellation: CancellationToken,
+) -> PythonRunResult
 
-Single entry point for canonical Python delegation. Both the model-facing `PythonScriptTool` and `BashTool`'s active routing dispatcher use this function. Calls `execute_python_script()` then `persist_python_run()`. Returns the run result plus an optional `RunId` proving the delegated record was begun.
+// projection.rs
+pub fn project_python_run(result: &PythonRunResult) -> String
+pub fn project_python_result(
+    result: &PythonRunResult,
+) -> ProjectionResult
 
-### persist_python_run
-
-```rust
-// src/python_script/tool.rs:56-60
+// tool.rs
+pub async fn begin_python_run(
+    store: &Arc<dyn RunStore>,
+    request: &PythonScriptRequest,
+    result: &PythonRunResult,
+) -> Option<RunHandle>
 pub async fn persist_python_run(
     store: &Arc<dyn RunStore>,
     request: &PythonScriptRequest,
     result: &PythonRunResult,
 ) -> Option<RunId>
+
+// source_store.rs
+pub fn compute_digest(source: &str) -> String
 ```
 
-Returns the `RunId` if the run was successfully begun — callers use this as proof of delegated ownership.
+## Configuration Surface
 
-### build_python_request
+### Executor constants (`executor.rs:21-22`)
 
-```rust
-// src/python_script/tool.rs:269
-fn build_python_request(input: &serde_json::Value) -> Result<PythonScriptRequest, ToolError>
-```
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DEFAULT_TIMEOUT_SECS` | 60 | Default for Analyze/Transform |
+| `MAX_SCRIPT_LENGTH` | 500,000 | Script body size limit |
 
-Converts planner output (JSON) to a canonical `PythonScriptRequest`. Used by `PythonScriptTool::execute`.
+### Verify mode timeouts
 
-### Called by BashTool
+The tool default for Verify mode is 300s (`tool.rs:525`). The scheduler may
+override via `JobPayload.timeout_secs`.
 
-`BashTool::dispatch_to_python_script` at `src/tool/bash.rs:693-725` builds a `PythonScriptRequest` from the planner's validated script, mode, cwd, and workspace root, then calls `execute_and_persist_python_script` with the shared `RunStore`. This replaces the previous direct `python3 -c` invocation, ensuring policy resolution, sandbox enforcement, snapshots, and RunStore persistence all run through the canonical path.
+### Source store constants (`source_store.rs:17-20`)
 
-```bash
-cargo test -p codegg --lib tool::bash
-```
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `INLINE_SOURCE_MAX_BYTES` | 204,800 | Max source inlineable in job payload |
+| `SOURCE_STORE_MAX_BYTES` | 2,000,000 | Max total source accepted by store |
 
-## Tests
+### Environment policy (`executor.rs:24-33`)
+
+Inherited env vars: `PATH`, `HOME`, `LANG`, `LC_ALL`, `VIRTUAL_ENV`,
+`PYTHONPATH`, `DYLD_LIBRARY_PATH`. All other env vars are cleared.
+
+### Diff generation
+
+Per-file content capped at 4000 chars (`executor.rs:669`).
+File content capture limit: 2 MiB per file (`executor.rs:598`).
+
+## Invariants & Gotchas
+
+### Risk analysis is NOT safety
+
+`analyze_python_risk()` is not a proof of safety. It feeds the capability
+envelope and permission prompts. Runtime sandbox/snapshot checks remain required.
+AST alias resolution handles `import subprocess as sp; sp.run(...)` and
+`from subprocess import run; run(...)` forms.
+
+### Capability narrowing only
+
+Risk analysis can only deny capabilities, never widen them.
+`PythonCapabilityProfile::from_mode_risk_and_context()` applies denials.
+The legacy `PythonCapabilityEnvelope::from_mode_and_risk()` does the same.
+
+### Sandbox failure is terminal
+
+If the Landlock helper setup fails, the launch is aborted. Python code is NOT
+started after a failed helper setup. `SandboxOutcome::Failed` is recorded.
+
+### Post-execution snapshot enforcement
+
+Analyze and Verify modes treat ANY file change as a policy violation (exit code -2).
+Transform mode allows changes and reports them. Snapshot walks skip hidden dirs,
+`target/`, `node_modules/`, `.codegg/`, and `Thumbs.db`.
+
+### Scheduler-owned execution
+
+`PythonScriptTool` and `BashTool` submit through `JobSubmissionService` when the
+scheduler is enabled. When disabled, they return `ToolError::Disabled` — no direct
+execution fallback exists (fail-closed).
+
+### Idempotency
+
+Analyze/Verify use `IdempotencyClass::SafeRepeat`. Transform uses
+`IdempotencyClass::NonIdempotent`. Deterministic submission keys are derived from
+source hash.
+
+### Cancellation
+
+Cancellation propagates through `CancellationToken` wired into the executor context.
+Pre-launch cancellation is checked before process spawn. During execution,
+`tokio::select!` races the cancellation token against `execute_python_script`.
+Post-cancellation: RunStore record is finalized with cancelled status.
+
+### Source integrity
+
+The executor validates `source_hash` against SHA-256 of the inline source before
+execution. Mismatches produce a `Failed` status with "source integrity check failed:
+digest mismatch".
+
+### Legacy payload rejection
+
+`JobPayload::Python` entries with only `script_path` (no inline `source`) are
+rejected with "inline source is required for scheduler-owned execution".
+
+## Testing
+
+Narrowest run:
 
 ```bash
 cargo test -p codegg --lib python_script
 ```
 
-### Adversarial Testing
+Submodule targeting:
 
-The Python sandbox has adversarial tests in `tests/python_sandbox_adversarial.rs` that validate escape and bypass resistance:
+```bash
+cargo test -p codegg --lib python_script::analyze      # 30+ tests
+cargo test -p codegg --lib python_script::sandbox       # 30+ tests
+cargo test -p codegg --lib python_script::executor      # 15+ tests
+cargo test -p codegg --lib python_script::projection    # 17 tests
+cargo test -p codegg --lib python_script::tool          # 2 tests
+cargo test -p codegg --lib python_script::source_store  # 12 tests
+cargo test -p codegg --lib python_script::snapshot      # 4 tests
+cargo test -p codegg --lib python_script::tests         # module-level integration tests
+```
 
-- **Alias bypass**: `import subprocess as sp; sp.run(...)` resolves through alias maps to detect subprocess calls
-- **getattr bypass**: `getattr(__builtins__, '__import__')('subprocess')` style dynamic imports
-- **shell=True bypass**: `subprocess.call(..., shell=True)` with command concatenation
-- **pathlib escape**: `Path('..').resolve()` traversals that attempt to write outside workspace
-- **Dynamic code execution**: `eval()`, `exec()`, `compile()` with embedded dangerous calls
-- **Import chain resolution**: multi-level aliases (`from os import path; path.join(...)`)
-- **sys.path manipulation**: modifying sys.path to import blocked modules
+### Adversarial testing
 
 ```bash
 cargo test --test python_sandbox_adversarial
 ```
 
-## Operator Troubleshooting
+Validates escape and bypass resistance: alias bypass, getattr bypass,
+shell=True bypass, pathlib escape, dynamic code execution, import chain
+resolution, sys.path manipulation.
 
-### Cancelled Python Jobs
+### BashTool integration
 
-Cancelled Python jobs show `Failed(-4)` status. Common causes:
-- User cancelled via TUI or API
-- Scheduler timeout exceeded
-- Daemon shutdown during execution
+```bash
+cargo test -p codegg --lib tool::bash
+```
 
-To inspect: check the RunStore record for the run_id appended to the executor summary.
+## Related Docs
 
-### Source Integrity Failures
-
-When `source_hash` in the job payload does not match the SHA-256 of the inline source, the executor returns a `Failed` status with "source integrity check failed: digest mismatch". This indicates the payload was corrupted or tampered with between submission and execution.
-
-### Legacy Payload Rejection
-
-Legacy `JobPayload::Python` entries with only `script_path` (no inline `source`) are rejected with "inline source is required for scheduler-owned execution". To migrate: ensure `PythonScriptTool` and `BashTool` always submit inline source with a `source_hash`.
-
-### Scheduler Disabled
-
-When the scheduler is disabled, `PythonScriptTool` and `BashTool` return `ToolError::Disabled("Python execution requires scheduler admission; scheduler is disabled")`. This is fail-closed behavior — no direct execution fallback exists.
-
-Tool Programs are a separate restricted-language surface: they never invoke
-general Python and use the Tool Broker/read-only manifest. Their scheduler
-deadline, cancellation, source integrity, and typed result records are owned
-by the Tool Program executor described in `architecture/tool_programs.md`.
-
-### Source Orphan Cleanup
-
-The scheduler periodically cleans up orphaned source files from `.codegg/python_sources/`. Files are retained only while referenced by active/queued/running Python jobs. Cleanup runs during the reconcile loop.
-
-### Progress Phases
-
-The executor emits progress at these phases:
-1. `python: materializing source` — before RunStore begin
-2. `python: resolving policy` — after begin, before execution
-3. `python: launching process` — just before subprocess spawn
-4. `python: persisting artifacts` — after execution, before artifact writes
-5. `python: <status>` — terminal status (success, failed, timed_out, cancelled)
+- `architecture/command_intent.md` — how Python commands are classified and routed
+- `architecture/scheduler.md` — scheduler admission and PythonJobExecutor lifecycle
+- `architecture/human_shell.md` — projection pipeline
+- `architecture/tool_programs.md` — tool program execution (separate subsystem)
+- `architecture/security.md` — Landlock sandbox enforcement

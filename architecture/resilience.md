@@ -1,162 +1,197 @@
 # Resilience Module
 
-The `resilience` module provides fault tolerance patterns.
+Circuit breaker pattern for provider fault tolerance, preventing
+cascade failures when upstream LLM services are unavailable.
 
-## Overview
+## Purpose
 
-**Location**: `src/resilience/` (re-exports `CircuitBreaker` from `codegg_providers::circuit`)
+Provides a reusable `CircuitBreaker` that wraps async fallible
+operations and tracks failure/success state to short-circuit calls
+to unhealthy backends.
 
-**Key Responsibilities**:
-- Circuit breaker pattern for provider fault tolerance
+## Where It Lives
 
-> **Note:** `CircuitBreaker` now lives in the `codegg-providers` crate
-> (`crates/codegg-providers/src/circuit.rs`). The root `src/resilience/mod.rs`
-> re-exports it for backwards compatibility.
+| Layer | Path | Role |
+|-------|------|------|
+| Canonical implementation | `crates/codegg-providers/src/circuit.rs` (282 lines) | `CircuitBreaker`, `CircuitState`, `CircuitError` |
+| Core re-export | `crates/codegg-core/src/resilience.rs:6` | `pub use codegg_providers::circuit::{CircuitBreaker, CircuitError, CircuitState};` |
+| Root re-export | `src/lib.rs:11` | `pub use codegg_core::resilience;` |
 
-## Circuit Breaker
+The `resilience` module is **purely a re-export**. All logic lives in
+`codegg-providers`. There is no retry logic here — `CircuitBreaker`
+only decides whether to admit or reject a call. Retry/backoff is the
+caller's responsibility.
 
-### CircuitBreaker
+## How It Works
 
-```rust
-struct CircuitBreakerInner {
-    name: String,
-    state: TokioRwLock<CircuitState>,       // Uses TokioRwLock, not AtomicU8
-    failure_count: TokioRwLock<usize>,
-    success_count: TokioRwLock<usize>,
-    last_failure_time: TokioRwLock<Option<Instant>>,
-    half_open_start_time: TokioRwLock<Option<Instant>>,  // Set when Open→HalfOpen transition occurs
-    failure_threshold: usize,
-    timeout_secs: u64,
-    success_threshold: usize,
-    max_half_open_duration: Duration,        // 30 seconds, controls HalfOpen→Open timeout
-}
-
-pub struct CircuitBreaker {
-    inner: Arc<CircuitBreakerInner>,
-}
-```
-
-**State Enum**:
-```rust
-pub enum CircuitState {
-    Closed,    // Normal operation
-    Open,      // Failing, reject requests
-    HalfOpen,  // Testing if recovered
-}
-```
-
-### State Transitions
+### States
 
 ```
-            failure_threshold exceeded
-     ┌─────────────────────────────────────┐
-     ▼                                     │
- ┌─────────┐                              │
- │ Closed  │──────────────────────────────►│
- │ (normal)│◄──────────────────────────────│
- └─────────┘     success in HalfOpen      │
-     ▲                ▲                    │
-     │                │                    │
-     │ recovery_timeout elapsed           │
-     │                │                    │
-     └────────┬───────┘                    │
-              │                            │
-              │ failure                    │
-              ▼                            │
-         ┌─────────┐                       │
-         │  Open   │───────────────────────┘
-         │(reject) │          │
-         └─────────┘          │
-              ▲                │ timeout after max_half_open_duration
-              │                │ (HalfOpen → Open, circuit returns error)
-              │ failure        │
-              ▼                ▼
-         ┌─────────┐     ┌───────────┐
-         │ HalfOpen │────►│   Open    │
-         │(testing)│     │ (reject)  │
-         └─────────┘     └───────────┘
+    ┌─────────┐     failure_threshold exceeded     ┌──────┐
+    │ Closed  │─────────────────────────────────────►│ Open │
+    │(normal) │◄─────────────────────────────────────│(reject)│
+    └─────────┘   success_threshold reached         └──┬───┘
+         ▲                                              │
+         │              timeout_secs elapsed            │
+         │                    ┌─────────────┐           │
+         └────────────────────┤  HalfOpen   │◄──────────┘
+                              │ (probe one) │   timeout_secs
+                              └──────┬──────┘
+                                     │ failure
+                                     ▼
+                               ┌─────────┐
+                               │  Open   │──┐
+                               └─────────┘  │
+                                     ▲      │ max_half_open_duration
+                                     └──────┘
 ```
 
-The `call()` method (circuit.rs:101-137) checks for HalfOpen timeout before executing the operation:
-- If `max_half_open_duration` (30s default) elapses while in HalfOpen state, transitions to Open and returns `CircuitError::Open`
-- This ensures the circuit doesn't stay in HalfOpen indefinitely when the underlying service remains unavailable
+### State machine (circuit.rs)
 
-### is_available() Implementation
+- **Closed**: Normal operation. Failures increment `failure_count`.
+  On reaching `failure_threshold`, transitions to Open. Successes
+  reset `failure_count` to 0.
+- **Open**: Rejects all calls with `CircuitError::Open`. After
+  `timeout_secs` elapses (since last failure), transitions to
+  HalfOpen.
+- **HalfOpen**: Admits exactly **one probe** via `half_open_probe`
+  (`AtomicBool` CAS). If the probe succeeds and `success_count`
+  reaches `success_threshold`, transitions to Closed. If the probe
+  fails, transitions to Open immediately. If `max_half_open_duration`
+  (30s default) elapses without the probe completing, transitions
+  back to Open and seeds `last_failure_time` so the normal
+  Open→HalfOpen timeout applies before the next probe.
 
-The `is_available()` method uses a write lock from the start to avoid TOCTOU race conditions:
+### is_available (circuit.rs:80)
 
-```rust
-pub async fn is_available(&self) -> bool {
-    let mut state = self.inner.state.write().await;
-    match *state {
-        CircuitState::Closed | CircuitState::HalfOpen => true,
-        CircuitState::Open => {
-            if let Some(last_failure) = *self.inner.last_failure_time.read().await {
-                let timeout = Duration::from_secs(self.inner.timeout_secs);
-                if last_failure.elapsed() >= timeout {
-                    *state = CircuitState::HalfOpen;
-                    *self.inner.half_open_start_time.write().await = Some(Instant::now());
-                    tracing::info!(
-                        "circuit breaker {} transitioned to HalfOpen",
-                        self.inner.name
-                    );
-                    return true;
-                }
-            }
-            false
-        }
-    }
-}
-```
+Uses a **write lock** from the start to avoid TOCTOU races. When the
+state is Open and the timeout has elapsed, atomically transitions
+to HalfOpen and returns `true`.
 
-### Usage
+### call (circuit.rs:103)
 
 ```rust
 pub async fn call<F, R, E>(&self, op: F) -> Result<R, E>
 where
     F: Future<Output = Result<R, E>>,
     E: From<CircuitError>,
-{
-    if !self.is_available().await {
-        let state = *self.inner.state.read().await;
-        if state == CircuitState::Open {
-            return Err(CircuitError::Open(self.inner.name.clone()).into());
-        }
-    }
+```
 
-    let result = op.await;
+Checks availability, then in HalfOpen enforces single-probe via
+`half_open_probe` CAS. Executes the operation, records
+success/failure.
 
-    match &result {
-        Ok(_) => self.record_success().await,
-        Err(_) => self.record_failure().await,
-    }
+### record_success (circuit.rs:156)
 
-    result
+- **Closed**: Resets `failure_count` to 0.
+- **HalfOpen**: Increments `success_count`; transitions to Closed
+  when threshold reached. Resets all counters and clears
+  `last_failure_time`. Releases `half_open_probe`.
+- **Open**: No action.
+
+### record_failure (circuit.rs:181)
+
+- **Closed**: Increments `failure_count`; transitions to Open when
+  threshold exceeded.
+- **HalfOpen**: Transitions to Open immediately. Resets
+  `success_count`. Releases `half_open_probe`.
+- **Open**: No action.
+
+Always sets `last_failure_time`.
+
+## Key Types & APIs
+
+### CircuitBreaker (circuit.rs:44)
+
+```rust
+#[derive(Clone)]
+pub struct CircuitBreaker {
+    inner: Arc<CircuitBreakerInner>,
 }
 ```
 
-### record_success() and record_failure()
+Constructed via:
+```rust
+pub fn new(
+    name: impl Into<String>,
+    failure_threshold: usize,
+    timeout_secs: u64,
+    success_threshold: usize,
+) -> Self
+```
 
-The `record_success()` method (circuit.rs):
-- **Closed**: Resets failure_count to 0
-- **HalfOpen**: Increments success_count; transitions to Closed when success_threshold reached
-- **Open**: No action
+### CircuitBreakerInner (circuit.rs:29)
 
-The `record_failure()` method (circuit.rs):
-- **Closed**: Increments failure_count; transitions to Open when failure_threshold exceeded
-- **HalfOpen**: Transitions to Open immediately
-- **Open**: No action
+```rust
+struct CircuitBreakerInner {
+    name: String,
+    state: TokioRwLock<CircuitState>,
+    failure_count: TokioRwLock<usize>,
+    success_count: TokioRwLock<usize>,
+    last_failure_time: TokioRwLock<Option<Instant>>,
+    half_open_start_time: TokioRwLock<Option<Instant>>,
+    half_open_probe: AtomicBool,
+    failure_threshold: usize,
+    timeout_secs: u64,
+    success_threshold: usize,
+    max_half_open_duration: Duration,   // 30s
+}
+```
 
-### FallbackProvider Integration
+### CircuitState (circuit.rs:8)
 
-`FallbackProvider` (provider/fallback.rs) creates a `CircuitBreaker` for each provider:
-- Default parameters: `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
-- Checks `is_available()` before calling provider
+```rust
+pub enum CircuitState { Closed, Open, HalfOpen }
+```
+
+### CircuitError (circuit.rs:14)
+
+```rust
+pub enum CircuitError { Open(String) }
+```
+
+Implements `Display`, `Error`.
+
+## FallbackProvider Integration
+
+`FallbackProvider` (`crates/codegg-providers/src/fallback.rs`) creates
+one `CircuitBreaker` per provider:
+
+```rust
+CircuitBreaker::new(p.name(), 3, 60, 2)
+```
+
+- `failure_threshold=3`, `timeout_secs=60`, `success_threshold=2`
+- Checks `is_available()` before calling each provider
 - Records success/failure after each call
-- Exponential backoff between providers: `2^i` seconds (i=0→1s, i=1→2s, i=2→4s...), capped at 30s
-- HalfOpen→Open timeout: 30s default via `max_half_open_duration`
+- Exponential backoff between providers: `2^i` seconds (i=0→1s,
+  i=1→2s, i=2→4s…), capped at 30s
+- Default retryable status codes: 429, 500, 502, 503, 504
 
-## See Also
+## Invariants & Gotchas
 
-- [provider.md](provider.md) - Uses circuit breaker for API calls via FallbackProvider
-- `architecture/resilience.md` - Usage and implementation notes
+- **Single-probe guarantee**: The `half_open_probe` `AtomicBool` with
+  CAS ensures exactly one concurrent probe in HalfOpen state. Second
+  callers get `CircuitError::Open`.
+- **Timeout seeding**: When HalfOpen→Open is forced by
+  `max_half_open_duration`, `last_failure_time` is seeded to `now`
+  so the breaker doesn't get stuck Open forever.
+- **No retry logic**: `CircuitBreaker` only gates admission. Callers
+  must implement their own retry/backoff.
+- **Clone is cheap**: `CircuitBreaker` wraps `Arc<CircuitBreakerInner>`.
+  FallbackProvider clones per-call.
+
+## Testing
+
+```bash
+cargo test -p codegg-providers circuit    # unit tests
+```
+
+Tests cover: HalfOpen single-probe enforcement, HalfOpen timeout
+recovery via Open, and basic state transitions.
+
+## Related Docs
+
+- [provider.md](provider.md) — Provider architecture and FallbackProvider
+- `crates/codegg-providers/src/circuit.rs` — Canonical implementation
+- `crates/codegg-providers/src/fallback.rs` — Consumer integration

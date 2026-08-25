@@ -1,28 +1,84 @@
 # Config Module
 
-The `config` module handles configuration loading, validation, and hot-reloading.
+## Purpose
 
-## Overview
+The config crate (`crates/codegg-config/`) handles configuration discovery,
+loading, JSONC parsing, field-level merging, encryption, hot-reload via
+file watching, and schema validation. It is the single source of truth for
+all runtime configuration.
 
-**Location**: `crates/codegg-config/` (the `codegg-config` crate)
+**Re-export**: `codegg::config` via `pub use codegg_config as config`
+in `src/lib.rs`.
 
-**Re-export**: `codegg::config` via `pub use codegg_config as config` in `src/lib.rs`
+## Where It Lives
 
-**Key Responsibilities**:
-- Configuration file discovery and loading
-- JSONC/JSON5 parsing with comment support
-- Schema validation (produces warnings, not errors)
-- Hot-reload via file watching with content hash deduplication
-- Environment variable interpolation
-- API key encryption/decryption
+| Path | Role |
+|------|------|
+| `crates/codegg-config/src/schema.rs` | Config struct, all type definitions |
+| `crates/codegg-config/src/paths.rs` | Discovery, loading, merging, env interpolation |
+| `crates/codegg-config/src/watcher.rs` | Hot-reload file watching with debounce |
+| `crates/codegg-config/src/encryption.rs` | Master key lookup, encrypt/decrypt provider keys |
+| `crates/codegg-config/src/error.rs` | ConfigError, AppError types |
 
-## Key Types
+## How It Works
 
-### Config Schema (`schema.rs`)
+### Discovery Order (later overrides earlier)
+
+1. `CODEGG_TUI_CONFIG` environment variable
+2. System config (`/Library/Application Support/codegg/codegg.json` on macOS,
+   `/etc/codegg/codegg.json` on Unix, `%ProgramData%/codegg/codegg.json` on Windows)
+3. Global config (`~/.config/codegg/codegg.jsonc`, `codegg.json`, or `config.json`)
+4. Project config (searches upward from `$PWD` for `.codegg/codegg.{jsonc,json}`
+   or `codegg/codegg.{jsonc,json}`)
+
+### Loading Flow
+
+```
+Config::load()
+  1. resolve_config_paths()    -> collect config file paths
+  2. load_config() per path    -> JSONC comment stripping + JSON5 parse
+  3. interpolate_env_vars()    -> expand ${VAR_NAME} syntax
+  4. merge_configs()           -> combine with per-field strategies
+  5. decrypt_provider_keys()   -> decrypt encrypted API keys
+  6. validate()                -> produce warnings (not errors)
+```
+
+### Merge Strategies (`paths.rs:164`)
+
+Different strategies per field type:
+
+- **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
+  `server` (via `ServerConfig::merge()`), `watcher`, `search`,
+  `discovery`
+- **Key replacement**: `agent`, `mcp`, `commands`, `mode` (insert
+  overwrites existing keys)
+- **Concatenation**: `instructions` (appended to list)
+- **Simple override** (via `merge_option!`): all other fields including
+  `schema`, `version`, `log_level`, `model`, `small_model`, `medium_model`,
+  `auto_route_models`, `default_agent`, `username`, `share`, `autoupdate`,
+  `disabled_providers`, `enabled_providers`, `permission`, `compaction`,
+  `subagent`, `skills`, `templates`, `layout`, `tools`, `formatter`,
+  `lsp`, `lsp_semantic_cache`, `snapshot`, `snapshot_config`, `plugin`,
+  `enterprise`, `experimental`, `keybinds`, `vim_mode`, `hooks`,
+  `notifications`, `catalog`, `context`, `context_packer`,
+  `context_policy`, `daemon`, `scheduler`, `tool_deferral`,
+  `model_profile`, `security`, `research`, `theme`, `tool_backends`,
+  `human_shell`, `shell`, `deterministic_tools`, `preflight`,
+  `command_intent`
+
+### ProviderConfig Merge (`schema.rs:774`)
+
+Field-by-field: non-None fields from override replace base. Unlike
+HashMap fields (key replacement), `ProviderConfig::merge()` merges
+each optional field independently. If global has `api_key` and project
+has `base_url`, merged result has both.
+
+## Key Types & APIs
+
+### Config (`schema.rs:203`)
 
 ```rust
 pub struct Config {
-    #[serde(rename = "$schema")]
     pub schema: Option<String>,
     pub version: Option<String>,
     pub log_level: Option<String>,
@@ -36,6 +92,7 @@ pub struct Config {
     pub autoupdate: Option<AutoupdateConfig>,
     pub server: Option<ServerConfig>,
     pub provider: Option<HashMap<String, ProviderConfig>>,
+    pub provider_connections: Option<ProviderConnectionsConfig>,
     pub disabled_providers: Option<Vec<String>>,
     pub enabled_providers: Option<Vec<String>>,
     pub agent: Option<HashMap<String, AgentConfig>>,
@@ -51,6 +108,7 @@ pub struct Config {
     pub tools: Option<HashMap<String, bool>>,
     pub formatter: Option<FormatterConfig>,
     pub lsp: Option<LspConfig>,
+    pub lsp_semantic_cache: Option<LspSemanticCacheConfig>,
     pub watcher: Option<WatcherConfig>,
     pub snapshot: Option<bool>,
     pub snapshot_config: Option<SnapshotConfig>,
@@ -62,17 +120,35 @@ pub struct Config {
     pub vim_mode: Option<bool>,
     pub hooks: Option<Vec<HookConfigEntry>>,
     pub notifications: Option<NotificationConfig>,
+    pub daemon: Option<DaemonConfig>,
+    pub scheduler: Option<SchedulerConfig>,
     pub catalog: Option<CatalogConfig>,
+    pub discovery: Option<DiscoveryConfig>,
+    pub tool_deferral: Option<ToolDeferralConfig>,
+    pub model_profile: Option<HashMap<String, ModelProfileConfig>>,
+    pub security: Option<SecurityConfig>,
+    pub research: Option<ResearchConfig>,
+    pub theme: Option<ThemeConfig>,
+    pub search: Option<SearchConfig>,
+    pub tool_backends: Option<ToolBackendConfigSchema>,
+    pub context: Option<ContextConfig>,
+    pub context_packer: Option<ContextPackerConfig>,
+    pub context_policy: Option<ContextPolicyConfig>,
+    pub human_shell: Option<HumanShellConfig>,
+    pub shell: Option<ShellConfig>,
+    pub deterministic_tools: Option<DeterministicToolsConfig>,
+    pub preflight: Option<PreflightConfig>,
+    pub command_intent: Option<CommandIntentConfig>,
 }
 ```
 
-### ProviderConfig
+### ProviderConfig (`schema.rs:734`)
 
 ```rust
 pub struct ProviderConfig {
-    pub api_key: Option<String>,                    // legacy inline API key
-    pub encrypted_api_key: Option<String>,          // legacy ciphertext
-    pub encrypted: Option<bool>,                    // legacy "is encrypted?" flag
+    pub api_key: Option<String>,
+    pub encrypted_api_key: Option<String>,
+    pub encrypted: Option<bool>,
     pub base_url: Option<String>,
     pub enterprise_url: Option<String>,
     pub set_cache_key: Option<bool>,
@@ -82,115 +158,51 @@ pub struct ProviderConfig {
     pub blacklist: Option<Vec<String>>,
     pub models: Option<HashMap<String, ModelConfig>>,
     pub options: Option<HashMap<String, serde_json::Value>>,
-    /// New typed auth descriptor. When present, takes precedence over
-    /// `api_key` / `encrypted_api_key` during credential resolution (see
-    /// `crate::auth::resolver::AuthResolver`).
     pub auth: Option<AuthConfig>,
-    /// Optional account id used to disambiguate multiple accounts in the
-    /// user-level credential store.
     pub account_id: Option<String>,
 }
 ```
 
-`AuthConfig` is the typed auth descriptor from `src/auth/`:
+`api_key(&self, prefix)` checks `{PREFIX}_API_KEY` env var first, then
+inline `api_key` field.
+
+### AuthConfig (`schema.rs:13`)
 
 ```rust
 pub enum AuthConfig {
-    ApiKey        { env: Option<String>, value: Option<String>, encrypted_value: Option<String> },
-    Stored        { account_id: Option<String> },
-    ExternalCommand { command: String, args: Vec<String>, timeout_ms: Option<u64> },
-    OAuthDevice   { client_id: String, scopes: Vec<String>, auth_url: String, token_url: String },
+    ApiKey { env, value, encrypted_value },
+    Stored { account_id },
+    ExternalCommand { command, args, timeout_ms },
+    OAuthDevice { client_id, scopes, auth_url, token_url },
     None,
 }
 ```
 
-`ProviderConfig` has a `merge()` method for field-by-field merging and an
-`api_key()` method that checks environment variables first. The `auth`
-field and `account_id` are merged like any other optional field; if a
-project config sets `auth: { type: "stored" }` it overrides the global
-`api_key` path.
+### ProviderConnectionsConfig (`schema.rs:284`)
+
+Daemon-owned provider-connection refresh policy. Defaults:
+`background_refresh=false`, `max_concurrent_refreshes=1`,
+`global_refresh_cap=4`, `health_stale_after_ms=300000`.
+
+### ServerConfig (`schema.rs:686`)
 
 ```rust
-pub fn api_key(&self, prefix: &str) -> Option<String>
+pub struct ServerConfig {
+    pub port: Option<u16>,
+    pub hostname: Option<String>,
+    pub token: Option<String>,
+    pub mdns: Option<bool>,
+    pub mdns_domain: Option<String>,
+    pub cors: Option<Vec<String>>,
+    pub cors_origins: Option<Vec<String>>,
+    pub tool_timeout_seconds: Option<u64>,
+    pub max_parallel_tools: Option<usize>,
+}
 ```
 
-The method checks environment variables first (e.g., `ANTHROPIC_API_KEY`),
-then `api_key` field, then encrypted `encrypted_api_key` field.
+Has its own `merge()` method for field-by-field merging.
 
-**Resolution order at registration time** (see
-`register_builtin_with_config` in `src/provider/mod.rs`):
-
-1. Explicit `auth.env` env var
-2. Conventional `{PROVIDER}_API_KEY`
-3. Inline `auth.value`
-4. Decrypted `auth.encrypted_value` (requires `CODEGG_MASTER_KEY`)
-5. User-level `CredentialStore` lookup (matched by `account_id` /
-   `auth.account_id`, filtered to `CredentialKind::ApiKey`)
-6. Legacy `api_key` / `encrypted_api_key` fields (backwards compat)
-
-If `auth` is `None`, the resolver falls back to conventional env, then
-legacy `api_key`, then the user store. If `auth` is `Some(AuthConfig::None)`,
-all lookups are skipped (explicit "no auth" marker). The user store
-lookup is filtered to `CredentialKind::ApiKey` for both the
-`AuthConfig::Stored` arm and the no-auth fallback, so a stored OAuth /
-bearer-token record is treated as a miss today. Future OAuth refresh
-support will need a separate `kind` selector or policy module.
-
-Provider registration has a **single resolution path** that runs
-through `resolve_provider_credential(...)`. `register_config_provider`
-does not read `cfg.api_key` directly anymore; the legacy field is
-honored by `AuthResolver` via `ctx.legacy_api_key`.
-
-### ProviderConfig merge() behavior
-
-`ProviderConfig` has a `merge()` method for field-level merging. Unlike HashMap fields which use key replacement, `ProviderConfig::merge()` performs **field-by-field merging**: non-None fields from the override config replace the corresponding fields in the base config.
-
-```rust
-pub fn merge(&mut self, other: &ProviderConfig)
-```
-
-Example: If global config has `api_key` and project config has `base_url`, the merged result has both.
-
-### merge_configs() behavior
-
-`merge_configs()` at `crates/codegg-config/src/paths.rs:164` uses different merge strategies per field type:
-
-- **Field-by-field merging**: `provider` (via `ProviderConfig::merge()`), `server` (via `ServerConfig::merge()`), `watcher` (manual field merge)
-- **Key replacement**: `agent`, `mcp`, `commands`, `mode` (insert overwrites existing keys)
-- **Concatenation**: `instructions` (appended to list)
-- **Simple override**: all other fields via `merge_option!` macro (schema, version, log_level, model, small_model, medium_model, auto_route_models, default_agent, username, share, autoupdate, disabled_providers, enabled_providers, permission, compaction, subagent, skills, templates, layout, tools, formatter, lsp, snapshot, snapshot_config, plugin, enterprise, experimental, keybinds, vim_mode, hooks, notifications, catalog)
-
-The optional `[subagent]` section bounds nested delegation. `enabled` is a
-global kill switch; `allowed_agents`/`denied_agents` constrain targets;
-`max_depth`, `max_direct_children`, `max_active_descendants`,
-`max_concurrent`, `max_total_child_tool_calls`, and
-`wall_clock_timeout_secs` bound the shared pool. Agents must still explicitly
-grant `task = "allow"`; prompts cannot enable delegation by themselves.
-
-## Components
-
-### schema.rs - Config Definitions
-
-- `Config::load()` - Loads and merges configs, decrypts keys, migrates, validates
-- `Config::save()` - Encrypts keys before saving
-- `Config::validate()` - Validates config values (warnings, not errors)
-
-### paths.rs - Config Discovery
-
-**Discovery Order** (later overrides earlier):
-1. `CODEGG_TUI_CONFIG` environment variable
-2. System config (`/Library/Application Support/codegg/codegg.json` on macOS, `/etc/codegg/codegg.json` on Unix)
-3. Global config (`~/.config/codegg/codegg.jsonc`)
-4. Project config (searches upward for `.codegg/codegg.json` or `.codegg/codegg.jsonc`)
-
-Key functions:
-- `resolve_config_paths()` - Collects all config file paths
-- `load_config()` - Parses a single config file
-- `parse_config()` - JSONC comment stripping + JSON5 parsing
-- `merge_configs()` - Combines multiple configs (strategies vary: field-by-field for provider/server/watcher, key replacement for agents/mcp/commands/mode, concatenation for instructions)
-- `interpolate_env_vars()` - Expands `${VAR_NAME}` syntax
-
-### watcher.rs - Hot Reload
+### ConfigWatcher (`watcher.rs:12`)
 
 ```rust
 pub struct ConfigWatcher {
@@ -205,21 +217,20 @@ pub struct ConfigWatcher {
 }
 ```
 
-Key methods:
-- `new()` - Creates watcher with default 500ms debounce
-- `with_config(&WatcherConfig)` - Configure debounce and ignore patterns
-- `start()` - Start watching config file directories (non-recursive)
-- `recv()` - Async receiver with content hash deduplication
-- `reload_now()` - Force immediate reload
+Key methods: `new()` (500ms default debounce),
+`with_config(&WatcherConfig)` (configurable debounce + ignore patterns),
+`start()` (watches config file parent dirs, non-recursive),
+`recv()` (async, content-hash deduplication),
+`reload_now()` (force immediate reload).
 
-Uses `notify` crate for file system watching with content hash deduplication to avoid spurious reloads.
+Uses `notify` crate. Content hash deduplication avoids spurious reloads.
 
-### encryption.rs - Config Encryption
+### Encryption (`encryption.rs`)
 
 ```rust
+pub fn get_master_key() -> Option<String>;
 pub fn encrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
 pub fn decrypt_provider_keys(config: &mut Config) -> Result<(), AppError>;
-pub fn get_master_key() -> Option<String>;
 ```
 
 Master key lookup order:
@@ -227,243 +238,121 @@ Master key lookup order:
 2. `CODEGG_ENCRYPTION_KEY`
 3. `OPENCODE_ENCRYPTION_KEY`
 
-## Loading Flow
+### ModelProfileConfig (`schema.rs:98`)
 
-```
-Config::load()
-1. resolve_config_paths() → collect config file paths
-2. load_config() → parse each file (JSONC → JSON5)
-3. merge_configs() → later files override earlier (strategies vary: field-by-field for provider/server/watcher, key replacement for agent/mcp/commands/mode, concatenation for instructions)
-4. decrypt_provider_keys() → decrypt API keys if encrypted
-5. migrate() → apply version migrations
-6. validate() → validate config values (warnings, not errors)
-```
+Per-model tuning: `prompt_profile`, `family`, `context_window`,
+`max_output_tokens`, `tool_call_reliability`, `instruction_adherence`,
+`patch_reliability`, `supports_late_system_messages`,
+`prefers_user_control_messages`, `prefers_small_patches`,
+`requires_explicit_tool_contract`, `requires_post_tool_continue_nudge`,
+`text_tool_repair`, `default_reasoning_effort`,
+`default_thinking_budget`, `max_parallel_tools`, `preferred_tools`,
+`disabled_tools`, `task_state_policy`.
 
-## Validation
+### ContextPolicyConfig (`schema.rs:366`)
 
-Validation failures produce **warnings** not errors - the app starts with a partially invalid config.
+Gated active context policy. First use: tool-palette reduction driven
+by effective-cost diagnostics. Disabled by default. Modes: `Observe`,
+`Warn`, `ToolPaletteReduce`. Includes volatile-tail compaction fields.
 
-Validated fields:
-- `log_level`: must be `debug|info|warn|error|trace`
-- `share`: must be `manual|auto|disabled`
-- `model`, `small_model`, `medium_model`: must be in `provider/model` format
-- `port`: must be >= 1024
-- Agent `mode`: must be `subagent|primary|all`
-- Agent `color`: must be hex color or theme color name
-- MCP server types: `local` requires `command`, `remote` requires `url`
-- `tool_timeout_seconds`: must be 1-3600 (0 = invalid, >3600 = invalid)
-- `max_parallel_tools`: must be 1-100 (0 = invalid, >100 = invalid)
-- `compaction.threshold`: must be 0.1-1.0 (threshold ratio for context compaction)
-- `compaction.max_tokens`: must be at least 1000
-- `deterministic_tools.backend`: must be `native` or `disabled`
-- `deterministic_tools.profile`: must be `codegg_core`, `codegg_core_min`, `default`, or `full` (unknown profiles emit warning and fall back to `codegg_core`)
-- `deterministic_tools.model_audience`: must be `model` or `harness`
-- `deterministic_tools.harness_audience`: must be `harness` or `model`
-- `deterministic_tools.max_output_chars`: must be > 0 and <= 1,000,000
-- `preflight.mode`: enum validated at deserialization (`off`, `observe`, `warn`, `block_on_definite`)
+### SearchConfig (`schema.rs:461`)
 
-## Configuration Example (JSONC)
+Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
+`expose_raw_mcp_tools`, `fallback_to_builtin`, output caps per domain,
+`eggsearch` sub-config (command, args, timeouts, env vars).
 
-```jsonc
-{
-  // Model configuration
-  "model": "anthropic/claude-sonnet-4-20250514",
-  "small_model": "anthropic/claude-sonnet-4-20250514",
-  "medium_model": "anthropic/claude-opus-4-20250514",
-  "auto_route_models": true,
+## Configuration Surface
 
-  "server": {
-    "port": 18789
-  },
-
-  "provider": {
-    "anthropic": {
-      "api_key": "${ANTHROPIC_API_KEY}",
-      "encrypted": false
-    }
-  },
-
-  "permission": {
-    "default": "Ask"
-  },
-
-  "watcher": {
-    "debounce_duration_ms": 500,
-    "ignore": ["node_modules", ".git"]
-  },
-
-  "experimental": {
-    "memory_auto_consolidate": true
-  }
-}
-```
-
-## Environment Variables
+### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `CODEGG_TUI_CONFIG` | Custom config path |
+| `CODEGG_TUI_CONFIG` | Custom config file path |
 | `CODEGG_MASTER_KEY` | Master key for encryption |
-| `{PROVIDER}_API_KEY` | Provider API key fallback (e.g., `ANTHROPIC_API_KEY`) |
+| `CODEGG_ENCRYPTION_KEY` | Fallback encryption key |
+| `OPENCODE_ENCRYPTION_KEY` | Legacy encryption key |
+| `{PROVIDER}_API_KEY` | Provider API key fallback |
 
-## Known Issues Fixed
+### Key Config Sections
 
-### Encrypted keys not decrypting on hot-reload
-**Bug**: API keys work after `save()` but fail on hot-reload (file watcher triggers reload).
-**Fix**: `ConfigWatcher::reload_config()` now calls `decrypt_provider_keys()`.
+- `model` / `small_model` / `medium_model` — model selection
+  (format: `provider/model`)
+- `provider.<id>` — per-provider config (api_key, base_url, auth, etc.)
+- `disabled_providers` / `enabled_providers` — provider allow/deny list
+- `server` — HTTP server settings (port, hostname, token, CORS)
+- `agent` — agent definitions (model, prompt, permissions, etc.)
+- `mcp` — MCP server entries
+- `permission` — permission rules per tool
+- `compaction` — context compaction settings
+- `subagent` — delegation bounds (max_concurrent, max_depth, etc.)
+- `search` — web search/fetch backend config
+- `lsp` / `lsp_semantic_cache` — LSP integration
+- `watcher` — file watching config
+- `plugin` — plugin specifications
+- `experimental` — experimental feature flags
+- `mode` — named mode configurations
+- `hooks` — event hooks (shell commands)
+- `context` / `context_packer` / `context_policy` — context management
+- `human_shell` / `shell` — human shell feature config
+- `deterministic_tools` / `preflight` — eggsact-backed tools
+- `command_intent` — command classification and routing
+- `daemon` / `scheduler` — daemon and scheduler settings
+- `discovery` — project discovery configuration
+- `model_profile` — per-model tuning profiles
+- `tool_backends` — per-domain tool backend selection
 
-### Encrypted keys not decrypting on load
-**Bug**: API keys work after `save()` but fail on subsequent loads.
-**Fix**: `decrypt_provider_keys()` is called automatically in `Config::load()`.
+## Validation
 
-### Provider config fields lost during merge
-**Bug**: Provider settings from global config disappear when project config specifies the same provider.
-**Fix**: `ProviderConfig::merge()` method implemented for field-level merging.
+Validation produces **warnings**, not errors — the app starts with a
+partially invalid config.
 
-### medium_model not validated
-**Bug**: Invalid `medium_model` values not caught by validation.
-**Fix**: `medium_model` validation added.
+Validated fields:
+- `log_level`: `debug|info|warn|error|trace`
+- `share`: `manual|auto|disabled`
+- `model`/`small_model`/`medium_model`: must be `provider/model` format
+- `port`: >= 1024
+- Agent `mode`: `subagent|primary|all`
+- Agent `color`: hex color or theme name
+- MCP types: `local` requires `command`, `remote` requires `url`
+- `tool_timeout_seconds`: 1-3600
+- `max_parallel_tools`: 1-100
+- `compaction.threshold`: 0.1-1.0
+- `compaction.max_tokens`: >= 1000
+- `deterministic_tools.backend`: `native` or `disabled`
+- `deterministic_tools.profile`: `codegg_core`, `codegg_core_min`,
+  `default`, or `full`
+- `preflight.mode`: `off`, `observe`, `warn`, `block_on_definite`
 
-### Dead tui_config code removed (historical note - 2026-05-22)
-**Historical**: This section documents a cleanup that was completed on 2026-05-22.
+## Invariants & Gotchas
 
-**Bug**: `find_tui_config()` and `load_tui_config()` were exported but never used anywhere in the codebase.
-**Fix**: Removed from `paths.rs` and `mod.rs` to clean up dead code.
+- **Merge is per-type**: HashMap fields use key replacement (later wins);
+  `ProviderConfig`/`ServerConfig`/`WatcherConfig` use field-by-field;
+  `instructions` concatenates.
+- **Decryption on reload**: `ConfigWatcher::reload_config()` calls
+  `decrypt_provider_keys()` so encrypted keys work after hot-reload.
+- **Project config searches upward**: From `$PWD`, checks `.codegg/` and
+  `codegg/` directories with both `.jsonc` and `.json` extensions.
+- **AuthConfig::None**: Explicit "no auth" marker — all credential
+  lookups are skipped.
+- **ProviderConfig merge**: `auth` field merges like any other optional;
+  a project config setting `auth: { type: "stored" }` overrides the
+  global `api_key` path.
+- **No encryption without master key**: `decrypt_provider_keys()` is
+  a no-op when `CODEGG_MASTER_KEY` is not set.
 
-## Search Backend Config
+## Testing
 
-The `[search]` section selects the backend for the native
-`websearch` and `webfetch` tools. The default backend is the
-external `eggsearch` MCP server, and the in-tree
-`SearchProviderRegistry` is retained only as a legacy
-compatibility fallback.
-
-### Minimal config
-
-```toml
-# No [search] section is required if eggsearch is installed on PATH.
-# Codegg defaults to spawning: eggsearch mcp stdio
+```bash
+cargo test -p codegg-config                 # all config tests
+cargo test -p codegg-config -- merge        # merge strategy tests
+cargo test -p codegg-config -- watcher      # watcher tests
+cargo test -p codegg-config -- validation   # validation tests
 ```
 
-When `eggsearch` is on `PATH`, Codegg will:
+## Related Docs
 
-- resolve the search backend to `eggsearch` (the default),
-- spawn `eggsearch mcp stdio` as an MCP subprocess,
-- route `websearch` and `webfetch` through it, and
-- hide the raw `mcp__eggsearch__*` tools from the model.
-
-The `[search]` block only needs to be present to override a
-default, point at a custom binary/args, forward provider API
-keys, or change the fallback / cap behavior.
-
-### Full schema
-
-```toml
-[search]
-backend = "eggsearch"           # "eggsearch" | "builtin" | "disabled"
-expose_raw_mcp_tools = false    # default false; set true to expose mcp__eggsearch__*
-fallback_to_builtin = false     # default false
-max_search_output_chars = 12000 # cap on websearch output
-max_fetch_output_chars = 20000  # cap on webfetch output
-max_repo_output_chars = 15000   # fallback for repo_* caps below
-max_repo_search_output_chars = 15000   # optional, falls back to max_repo_output_chars
-max_repo_fetch_output_chars = 15000    # optional, falls back to max_repo_output_chars
-max_repo_map_output_chars = 15000      # optional, falls back to max_repo_output_chars
-max_security_output_chars = 10000
-max_research_output_chars = 15000
-max_batch_output_chars = 50000
-max_evidence_output_chars = 100000
-
-[search.eggsearch]
-enabled = true                  # if false, behaves as backend = "disabled"
-server_name = "eggsearch"       # MCP server name; default "eggsearch"
-command = "eggsearch"           # binary to spawn
-args = ["mcp", "stdio"]         # default args
-timeout_ms = 60000              # default call timeout for all tools
-repo_timeout_ms = 60000         # optional per-domain overrides
-security_timeout_ms = 60000
-research_timeout_ms = 60000
-batch_fetch_timeout_ms = 60000
-provider_status_timeout_ms = 15000  # health check timeout (shorter)
-
-[search.eggsearch.env]
-# Optional provider keys passed only to the eggsearch subprocess.
-BRAVE_SEARCH_API_KEY = "$BRAVE_SEARCH_API_KEY"
-```
-
-When `backend = "eggsearch"` the agent loop connects the
-eggsearch MCP server at startup (`bootstrap::bootstrap_search_backend`)
-and the native `websearch`/`webfetch` tools call
-`mcp__<server>__web_search` / `mcp__<server>__web_fetch`
-internally. Setting `backend = "builtin"` forces the legacy
-in-tree `SearchProviderRegistry` path. Setting
-`backend = "disabled"` makes both tools return a clear disabled
-error.
-
-`fallback_to_builtin` defaults to `false`. When `true`, a failed
-eggsearch call falls through to the legacy implementation; the
-built-in fetch path is not considered the preferred security
-boundary (it exists for compatibility, not for defense in depth),
-so leave this off in production unless you have a specific reason
-to fall back.
-
-Run `codegg doctor search` after installing or upgrading eggsearch. The report
-distinguishes process/MCP initialization failure, missing required tools,
-missing recommended specialized tools, and provider-specific degraded
-routing. It also shows the current server version when the provider-status
-contract supplies one. Provider-status output is summarized to bounded
-provider names and states; credentials and raw diagnostic JSON are not
-printed. For an intentional baseline upgrade, use the opt-in local smoke
-documented in `tests/eggsearch_real_compat.rs` rather than adding a network CI
-job.
-
-### Adding new search providers
-
-New providers belong in eggsearch, not in Codegg's built-in
-registry (`src/search/`). The built-in registry is legacy fallback
-only and should not grow. Eggsearch owns the provider list, the
-fetching path, and any provider-specific extraction logic.
-
-### Durable provider-connection compatibility
-
-The existing `provider.<id>` configuration and environment-variable
-registration path remains authoritative for legacy callers. Durable provider
-connections are additive daemon-owned metadata: they reference an existing
-encrypted credential-store account by an opaque secret reference and do not
-copy inline or resolved credentials into SQLite. Configuration loading does
-not automatically import legacy providers when endpoint or account mapping
-is ambiguous; future connection workflows must make that selection explicit.
-
-See
-[`search_backend.md`](search_backend.md) and
-[`architecture/search_backend.md`](search_backend.md)
-for the full schema and dispatch details.
-
-## See Also
-
-- [crypto.md](crypto.md) - AES-256-GCM encryption details
-- [search_backend.md](search_backend.md) - search/fetch backend dispatch
-- [lsp.md](lsp.md#phase-12-semantic-memory-cache) - LSP semantic cache config (`[lsp_semantic_cache]`); disk cache deferred (Phase 16)
-- [agent.md](agent.md) - Uses config
-
-### Project discovery configuration
-
-`Config::discovery` is disabled and empty by default. When enabled, each root
-must provide an explicit local path plus a stable id or name.
-`DiscoveryRootConfig` supports `git`, `directory`, and `mixed` modes, hidden-file
-policy, no-follow symlink policy, ignore names/patterns, directory markers,
-direct-child-only mode, and finite depth/entry/candidate/time/concurrency
-bounds. Validation rejects control/NUL text, oversized values, invalid bounds,
-duplicate ids or names, and lexically overlapping roots. Reload changes only
-future scans; it does not remove catalog records or prior successful
-generations.
-# Subagent capacity semantics
-
-Subagent limits are intentionally separate. `max_concurrent` limits workers
-performing provider/tool work, while `max_active_descendants` counts accepted
-queued and running descendants and is reserved atomically before enqueue.
-`max_direct_children` counts accepted direct children per parent for the
-transient pool lifetime. `max_total_child_tool_calls` is cumulative and is not
-released when a child finishes. Accepted task/delegation identities are kept
-for deterministic duplicate rejection; only active capacity is released by
-the request lease.
+- `architecture/provider.md` — provider config and credential resolution
+- `architecture/crypto.md` — AES-256-GCM encryption details
+- `architecture/search_backend.md` — search backend dispatch
+- `architecture/lsp.md` — LSP semantic cache config
+- `architecture/agent.md` — agent config usage
