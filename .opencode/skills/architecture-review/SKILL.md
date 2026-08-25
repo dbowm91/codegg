@@ -116,5 +116,5 @@ Each subagent must confirm:
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in commands | 108 | `src/tui/command.rs` (assertion at line 520) |
 | Built-in agents | 9 | `assets/agents/*.toml` |
-| DB tables | ~50 | `crates/codegg-core/src/session/schema.rs` |
-| Native tool crates | 10 | `crates/` workspace |
+| DB tables | ~52 | `crates/codegg-core/src/session/schema.rs` |
+| Workspace crates | 9 members (+ `egglsp-test-server` on disk, not a member) | `crates/` |

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documented
+
+- Skills refresh (`.opencode/skills/`): corrected stale claims in `context`, `core`, `jobs`, `server`, `skills`, `architecture-review`, `tool-program-harness`, and `shell_session` guides (full `CoreRuntimeDeps` field list, `NewJob` lineage fields, `TuiMessage` crate location, `run_server` daemon parameter, `ContextPolicyConfig` tool-palette fields, current `STORAGE_LAYOUT_VERSION = 35`). Added a new `tui` skill covering command registration, sync dispatch, the async spawn-and-complete guard pattern, and dialog invariants.
+- `AGENTS.md`: fixed the `CoreRuntimeDeps` gotcha to list all 15 fields, documented both fake LSP server binaries (`egglsp-test-server` for egglsp crate tests, `codegg-lsp-test-server` for root-level tests), added a Skills Index mapping each skill to its architecture doc, and indexed the `docs/` directory.
+- Moved the completed architecture-docs audit from `architecture/review-findings.md` to `plans/archive/architecture-doc-review-findings.md` with a closure note; updated `architecture/overview.md`.
+- `architecture/core.md` and `architecture/workspace.md`: clarified that workspace tables arrived in migration v22 while the current layout version is 35.
+
 ### Added
 
 - Phase 09 projection contract: `ProjectionResult` now carries `projection_id`, `source_spans`, `redaction_records`, and `rtk_metadata`. `ProjectionRecord` in run_store persists full projection metadata with promotion decisions. `evaluate_promotion()` provides budget/redaction/span-aware promotion. `preferred_projector_for_run_kind()` maps run kinds to optimal projectors. `PythonProjector` implements `CommandOutputProjector` for Python script output.

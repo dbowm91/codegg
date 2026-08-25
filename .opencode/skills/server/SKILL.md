@@ -1,7 +1,7 @@
 ---
 name: server
 description: HTTP/WebSocket server for remote TUI connections with Axum
-version: 1.2.0
+version: 1.3.0
 tags: [server, http, websocket, rest-api, sse]
 ---
 
@@ -22,6 +22,7 @@ The server module (`src/server/`) provides an Axum-based HTTP server with WebSoc
 | `ws.rs` | WebSocket handling for `/ws` and `/tui` endpoints, RPC request processing, TUI message handling |
 | `state.rs` | `ServerState` struct with shared state including `WsRateLimiter` (note: `event_bus` field was removed - SSE uses global `GlobalEventBus`) |
 | `rpc.rs` | RPC message structures: `RpcRequest`, `RpcResponse`, `RpcError` (for the deprecated `/ws` JSON-RPC compatibility endpoint) |
+| `perm_ids.rs` | Scoped pending-request ID parsing for permissions/questions |
 | `mdns.rs` | mDNS service discovery implementation |
 | `middleware/mod.rs` | Auth middleware module |
 | `middleware/auth.rs` | Token validation middleware |
@@ -43,10 +44,15 @@ The server module (`src/server/`) provides an Axum-based HTTP server with WebSoc
 ## Entry Point
 
 ```rust
-pub async fn run_server(host: &str, port: u16) -> Result<(), ServerRuntimeError>
+// src/server/http.rs
+pub async fn run_server(
+    host: &str,
+    port: u16,
+    daemon: Option<Arc<CoreDaemon>>,
+) -> Result<(), ServerRuntimeError>
 ```
 
-**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. Daemon-proxying server mode (where the server forwards to the user-scoped singleton daemon) lands in a later phase.
+**Phase 1 (singleton daemon)**: The server requires `--standalone-core` to construct its own daemon. Without it, the server exits with an actionable error rather than silently creating a second core that defeats the singleton invariant. The optional `daemon` handle carries the daemon-connected server mode.
 
 ## ServerState
 
@@ -155,7 +161,7 @@ Supported methods:
 
 ### `/tui` - TuiMessage Protocol
 
-Uses `TuiMessage` enum from `src/protocol/tui.rs`:
+Uses `TuiMessage` enum from the `codegg-protocol` crate (`crates/codegg-protocol/src/tui.rs`, re-exported as `codegg::protocol::tui::TuiMessage`; the root-level `src/protocol/` directory no longer exists):
 
 **Client → Server**:
 - `Input { text }` - User text input

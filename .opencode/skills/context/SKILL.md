@@ -1,7 +1,7 @@
 ---
 name: context
 description: Artifact storage, tool-output projection, context_read tool, cache-aware packing observation layer, effective-cost analysis, volatile-tail compaction
-version: 1.0.0
+version: 1.1.0
 process: any
 ---
 
@@ -101,7 +101,7 @@ All disabled by default (`volatile_tail_compaction: false`).
 
 The packer is invoked via `observe_context_pack` at multiple phases: InitialRequest, AfterToolResults, AfterCompaction, BeforeProviderCall, BeforeFinalization. The helper never mutates the request.
 
-Provider usage is recorded into `ContextCacheStats` exactly once per successful provider response via `record_context_cache_stats_from_processor()`, which normalizes cached tokens (clamping to input) before recording. Missing or zero usage is skipped to avoid synthetic stats.
+Provider usage is recorded into `ContextCacheStats` exactly once per successful provider response via `record_context_cache_stats_from_processor()` (in `src/agent/context_runtime.rs`, called from the AgentLoop), which normalizes cached tokens (clamping to input) before recording. Missing or zero usage is skipped to avoid synthetic stats.
 
 ## Configuration
 
@@ -117,3 +117,20 @@ Provider usage is recorded into `ContextCacheStats` exactly once per successful 
   }
 }
 ```
+
+## Tool-Palette Reduction Configuration
+
+The `[context_policy]` section (`ContextPolicyConfig` in `crates/codegg-config/src/schema.rs`) carries BOTH the gated tool-palette reduction policy and volatile-tail compaction. Tool-palette fields:
+
+| Field | Type | Default | Purpose |
+|-------|------|---------|---------|
+| `enabled` | `bool` | `false` | Master toggle for the whole policy layer (false = decisions are Noop regardless of mode) |
+| `mode` | `observe\|warn\|tool_palette_reduce` | `observe` | observe logs only; warn dry-runs reductions; `tool_palette_reduce` applies reductions to `request.tools` only |
+| `min_cache_observations` | `usize` | `3` | Cache observations required before active reduction decisions |
+| `review_tool_palette_threshold` | `bool` | `true` | Consider ReviewToolPalette recommendations from EffectiveCostAnalysis as a trigger |
+| `max_tool_definitions` | `usize` | `24` | Hard cap on tool definitions when reduction is active (overflow logged, not truncated) |
+| `always_include_tools` | `Vec<String>` | `[context_read, tool_search, todowrite]` | Tools always kept if present in the filtered palette |
+| `never_reduce_tools` | `Vec<String>` | `[]` | Tools never removed by the reducer |
+| `log_policy_decisions` | `bool` | `true` | Structured policy decision logs (info decisions, debug names) |
+
+Reductions are always derived from `base_request_tools` (the full profile-filtered palette captured once per run), never cumulatively from an already-reduced palette.

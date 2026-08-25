@@ -290,7 +290,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`.
 - **AgentLoop has ~57 fields** at `src/agent/loop.rs:403`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
-- **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime.
+- **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): 15-field daemon dependency bundle -- pool, memory_store, legacy_agent, turn_runtime, lsp_service, workspace_services, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always holds a default TurnRuntime; override via `with_turn_runtime()`.
 - **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Prefer over `resolve_agents()`.
 - **Emergency fallback model**: `EMERGENCY_DEFAULT_MODEL` in `src/agent/mod.rs`. Users should always configure models explicitly.
 
@@ -299,7 +299,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
 - **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
-- **LSP tests need `lsp-test-support` feature**: The fake server binary is `codegg-lsp-test-server`. Tests use polling loops, not fixed sleeps.
+- **LSP tests need `lsp-test-support` feature**: Two fake servers exist. Crate-level tests (`crates/egglsp/tests/`) use `CARGO_BIN_EXE_egglsp-test-server` (bin target of the `egglsp` package); the root-level `tests/lsp_composite_stdio.rs` uses `CARGO_BIN_EXE_codegg-lsp-test-server` (from `crates/egglsp-test-server/`, declared in root `Cargo.toml`). Tests use polling loops, not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
 - **LSP semantic cache** is opt-in and disabled by default. Config via `[lsp_semantic_cache]`.
 
@@ -371,11 +371,32 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ## Architecture Docs
 
-`architecture/` has 73 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+`architecture/` has 72 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `plans/registry.md` is the planning control surface: active subsystem roadmaps, milestone statuses, blockers, and closure records (`plans/closure/`). Check it before assuming a milestone's state. All major subsystems are currently closed; see `plans/registry.md` for the authoritative status of any roadmap or milestone.
 
+`docs/` holds user/operator-facing and evidence documents: `docs/LSP.md`, `docs/MCP.md`, `docs/PLUGINS.md`, `docs/TROUBLESHOOTING.md`, `docs/themes.md`, `docs/dependency-maintenance.md`, `docs/execution-ownership.md` + `docs/execution-ownership.toml`, `docs/security-semantics.md`, and `docs/validation/` (dated closure-evidence records referenced from architecture docs -- historical by design).
+
+## Skills Index
+
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.skills` and `.agents/skills` are symlinks to `.opencode/skills`). Skills mirror module contracts documented in `architecture/`; update both together when a module contract changes (e.g., `src/skills/` -> `architecture/skills.md`, `src/server/` -> `architecture/server.md`, `src/shell/` -> `architecture/human_shell.md`).
+
+| Skill | Covers | Architecture doc |
+|-------|--------|------------------|
+| `architecture-review` | Process for auditing architecture docs against code | all |
+| `context` | Context packing, projection, `[context_policy]`, volatile-tail compaction | `cache-aware-context.md` |
+| `core` | Core facade, daemon singleton lifecycle, workspace registry | `core.md` |
+| `human-shell` | `!`/`!!` shell commands, promotion model, safety policy | `human_shell.md` |
+| `jobs` | Durable jobs, schedules, recovery, idempotency | `jobs.md` |
+| `planning` | plans/ roadmaps, ADRs, closure records, registry maintenance | `overview.md` + `plans/` |
+| `scheduler` | Admission control, fair queue, executors, submission boundary | `scheduler.md` |
+| `server` | HTTP/WebSocket server, routes, auth, rate limits | `server.md` |
+| `shell_session` | Legacy in-memory shell session metadata (no consumers) | `shell_session.md` |
+| `skills` | Skill discovery/activation, `AssetRegistry` | `skills.md` |
+| `tool-program-harness` | Tool Program evaluation harness (scripted/native/eggpool/acp) | `tool_programs.md` |
+| `tui` | TUI change patterns: commands, dispatch, async guard, dialogs | `tui.md` |
+| `upgrade` | Self-upgrade via GitHub releases | `upgrade.md` |
+| `util` | Clipboard, fuzzy matching, truncation, metrics, pricing | `util.md` |
 
 ## Where New Components Belong
 

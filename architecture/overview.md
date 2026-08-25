@@ -445,7 +445,6 @@ Deep-dive index. Every architecture document in this directory is listed here.
 - [CodeGG Core](codegg_core.md) — codegg-core crate internals
 - [Model Adapters](model-adapters.md) — Model adapter patterns and conversions
 - [Testing](testing.md) — Test resource taxonomy, Tokio runtime rules
-- [Review Findings](review-findings.md) — Systematic audit of all architecture docs
 
 ## Directory Layout
 

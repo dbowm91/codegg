@@ -1,7 +1,7 @@
 ---
 name: skills
 description: Skills module for specialized capabilities activated via /skill: commands
-version: 2.0.0
+version: 2.1.0
 tags:
   - skills
   - asset-registry
@@ -121,7 +121,7 @@ Loading accepts direct `.md` files and directories containing `SKILL.md` (direct
 
 ## Runtime Activation
 
-The `SkillTool` (`src/tool/skill.rs`) provides runtime skill loading:
+`SkillTool` (`src/tool/skill.rs`) provides runtime skill loading:
 
 ```rust
 // Execute with {"name": "<skill>"}
@@ -129,7 +129,9 @@ let result = skill_tool.execute(json!({"name": "git"})).await;
 // Returns JSON with name, description, body, and resources
 ```
 
-`list_skill_resources()` enumerates a skill package's additional resource files (excludes `SKILL.md`; returns names, not full paths).
+Resource enumeration happens inside `render_skill()`: it iterates
+`skill.resources` (excluding `SKILL.md`) and returns resource names alongside
+the rendered body. There is no standalone `list_skill_resources()` function.
 
 ## Integration Points
 
@@ -138,7 +140,7 @@ let result = skill_tool.execute(json!({"name": "git"})).await;
 | `src/tool/skill.rs` | Builds `AssetRegistry` at startup; provides the `skill` tool |
 | `src/agent/asset_snapshot_builder.rs` / `asset_snapshot.rs` | Surface effective skills to agents |
 | `src/core/daemon.rs` | Daemon-side registry construction |
-| `src/agent/prompt.rs` | `assemble_system_prompt()` accepts `skills: &[String]` |
+| `src/agent/prompt.rs` | `assemble_system_prompt_with_profile(ctx: PromptContext)` — skill names reach the prompt through the `PromptContext` profile |
 
 ## Skills vs System Prompts
 

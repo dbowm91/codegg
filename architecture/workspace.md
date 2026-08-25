@@ -84,7 +84,7 @@ sessions whose `workspace_id` is `NULL` until rebound via
 
 ## Storage
 
-Schema migration v22 (`crates/codegg-core/src/session/schema.rs:960`) adds:
+Schema migration v22 (`crates/codegg-core/src/session/schema.rs:963`) adds:
 
 ```sql
 CREATE TABLE workspace (

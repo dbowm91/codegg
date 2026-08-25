@@ -123,8 +123,8 @@ When running for closure evidence:
 
 | File | Purpose |
 |------|---------|
-| `tests/tool_program_scenarios.rs` | Scenario schema, runner, and 12 unit tests |
-| `tests/tool_program_chaos.rs` | Deterministic fault injection, 14 tests |
+| `tests/tool_program_scenarios.rs` | Scenario schema, runner, and 13 unit tests |
+| `tests/tool_program_chaos.rs` | Deterministic fault injection, 13 tests |
 | `tests/tool_program_resource_convergence.rs` | Resource baseline/final probes, 10 tests |
 | `tests/tool_program_model_behavior.rs` | Scripted model behavior and direct/programmatic metric validation, 14 tests |
 | `scripts/e2e/tool_program_harness.py` | External harness runner (scripted/eggpool/acp) |

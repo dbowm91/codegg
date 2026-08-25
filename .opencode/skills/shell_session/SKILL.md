@@ -1,7 +1,7 @@
 ---
 name: shell_session
 description: Shell session metadata management for terminal sessions in codegg
-version: 1.2.0
+version: 1.3.0
 tags:
   - shell
   - session
@@ -17,6 +17,8 @@ This skill covers the shell_session module in codegg for shell session metadata 
 The `shell_session` module manages in-memory metadata for shell/terminal sessions. It does **NOT** create actual PTY sessions - that is handled by the `tool::terminal` module.
 
 **Location**: `src/shell_session/`
+
+> **Note**: `ShellManager` currently has no external consumers outside this module and its unit tests. It is a legacy metadata-only module kept for forward compatibility; do not build new execution paths on it.
 
 ## Key Types
 

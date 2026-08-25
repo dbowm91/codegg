@@ -1,7 +1,7 @@
 ---
 name: core
 description: Core facade and transport adapters for TUI/session separation
-version: 1.0.0
+version: 1.1.0
 tags:
   - core
   - transport
@@ -88,7 +88,12 @@ Phase 2 introduces workspace identity as a first-class daemon concept. The daemo
 
 ### Storage
 
-Migration v22 adds a `workspace` table and `workspace_id` index on `session`. Existing sessions are lazily resolved on next access; their `directory` is canonicalized into a workspace record.
+The workspace table was introduced by migration v22 (a `workspace` table plus
+`workspace_id` index on `session`). The schema has advanced well past that:
+the current layout version is `STORAGE_LAYOUT_VERSION = 35`
+(`crates/codegg-core/src/storage/mod.rs`). Existing sessions are lazily
+resolved on next access; their `directory` is canonicalized into a workspace
+record.
 
 ### Protocol
 
@@ -101,7 +106,17 @@ Migration v22 adds a `workspace` table and `workspace_id` index on `session`. Ex
 
 `scripts/check_daemon_cwd_usage.py` scans protected modules for `std::env::current_dir()` usage. Legacy uses in tool `default()` constructors are allowlisted; new production-path uses fail CI.
 
-See `architecture/core.md` "Workspace Registry and Execution Context (Phase 2)" and `plans/single-daemon-phase-02-workspace-registry-and-execution-context.md` for the full contract.
+See `architecture/core.md` "Workspace Registry and Execution Context (Phase 2)" and `crates/codegg-core/src/workspace.rs` for the full contract.
+
+## CoreRuntimeDeps
+
+`CoreRuntimeDeps` (`src/core/runtime_deps.rs`) is the daemon dependency bundle.
+It carries far more than the legacy four: `pool`, `memory_store`,
+`legacy_agent`, `turn_runtime`, plus `lsp_service`, `workspace_services`,
+`workspace_service_policy`, `job_store`, `schedule_store`, `recovery_policy`,
+`daemon_generation`, `scheduler`, `submission`, `scheduler_config`, and
+`connection_manager`. It always holds a default `TurnRuntime`; override via
+`with_turn_runtime()`.
 
 ## Maintenance Rules
 

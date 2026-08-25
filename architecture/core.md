@@ -412,9 +412,12 @@ workspace.
 `session_id` to a `SessionRuntime` via `SessionStore` + `WorkspaceRegistry`.
 `TurnSubmit`, `AgentSelect`, and `ModelSelect` reject unbound sessions.
 
-**Storage migration v22**: adds a `workspace` table and `workspace_id`
-index on `session`. Existing sessions are lazily resolved on next access;
-their `directory` is canonicalized into a workspace record.
+**Storage**: workspace tables were introduced by migration v22 (a `workspace`
+table plus `workspace_id` index on `session`). The schema has advanced well
+past that; the current layout version is `STORAGE_LAYOUT_VERSION = 35`
+(`crates/codegg-core/src/storage/mod.rs`). Existing sessions are lazily
+resolved on next access; their `directory` is canonicalized into a workspace
+record.
 
 **Protocol**: `WorkspaceSnapshot` DTO,
 `CoreRequest::WorkspaceRegister|WorkspaceList|WorkspaceArchive|WorkspaceSnapshotRequest`,

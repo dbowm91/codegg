@@ -1,7 +1,7 @@
 ---
 name: jobs
 description: Durable jobs, attempts, schedules, recovery, and idempotency for the single-daemon orchestration layer
-version: 1.0.0
+version: 1.1.0
 tags:
   - jobs
   - schedules
@@ -61,6 +61,13 @@ let job = store.create_job(NewJob {
     deadline: None,
     schedule_id: None,
     depends_on: vec![],
+    // Child-job lineage fields (tool-program child jobs); all None for root jobs:
+    parent_job_id: None,
+    parent_attempt_id: None,
+    parent_call_id: None,
+    parent_program_id: None,
+    parent_instruction_sequence: None,
+    relation_kind: None,
 }).await?;
 ```
 
