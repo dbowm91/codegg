@@ -172,42 +172,34 @@ impl JobSubmissionService {
             }
 
             // Rebuild the retry index after a daemon restart from the
-            // durable Tool Program payload. The in-memory map is only a
-            // fast path; it must not be the source of invocation identity.
-            if matches!(spec.kind, JobKind::ToolProgram) {
-                let summaries = self
-                    .store
-                    .list_jobs(codegg_core::jobs::JobStoreQuery {
-                        workspace_id: Some(spec.workspace_id.clone()),
-                        kinds: vec![JobKind::ToolProgram],
-                        limit: Some(256),
-                        ..Default::default()
-                    })
-                    .await?;
-                for summary in summaries {
-                    let Some(existing_job) = self.store.get_job(&summary.job_id).await? else {
-                        continue;
-                    };
-                    let same_key = match &existing_job.payload {
-                        JobPayload::ToolProgram { submission_key, .. } => {
-                            submission_key == key_ref.as_str()
-                        }
-                        _ => false,
-                    };
-                    if same_key {
-                        if fingerprint_record(&existing_job) != fingerprint {
-                            return Err(JobSubmissionError::SubmissionKeyConflict);
-                        }
-                        idempotency.insert(
-                            key_ref.clone(),
-                            IdempotentSubmission {
-                                fingerprint: fingerprint.clone(),
-                                job_id: summary.job_id.clone(),
-                            },
-                        );
-                        return Ok(to_submitted(&existing_job));
-                    }
+            // durable payloads. The in-memory map is only a fast path; it
+            // must not be the source of invocation identity.
+            let summaries = self
+                .store
+                .list_jobs(codegg_core::jobs::JobStoreQuery {
+                    workspace_id: Some(spec.workspace_id.clone()),
+                    limit: Some(256),
+                    ..Default::default()
+                })
+                .await?;
+            for summary in summaries {
+                let Some(existing_job) = self.store.get_job(&summary.job_id).await? else {
+                    continue;
+                };
+                if !payload_matches_submission_key(&existing_job.payload, key_ref.as_str()) {
+                    continue;
                 }
+                if fingerprint_record(&existing_job) != fingerprint {
+                    return Err(JobSubmissionError::SubmissionKeyConflict);
+                }
+                idempotency.insert(
+                    key_ref.clone(),
+                    IdempotentSubmission {
+                        fingerprint: fingerprint.clone(),
+                        job_id: summary.job_id.clone(),
+                    },
+                );
+                return Ok(to_submitted(&existing_job));
             }
         }
 
@@ -255,6 +247,21 @@ fn to_submitted(job: &JobRecord) -> SubmittedJob {
         state: job.state,
         workspace_id: job.workspace_id.clone(),
         priority: job.priority,
+    }
+}
+
+/// Match a durable payload against a caller submission key. Only payload
+/// variants carrying a retry identity participate in post-restart
+/// recovery: ToolProgram stores its key explicitly; Python submissions
+/// derive `python:{source_hash}` at the call site.
+fn payload_matches_submission_key(payload: &JobPayload, key: &str) -> bool {
+    match payload {
+        JobPayload::ToolProgram { submission_key, .. } => submission_key == key,
+        JobPayload::Python {
+            source_hash: Some(hash),
+            ..
+        } => key == format!("python:{hash}"),
+        _ => false,
     }
 }
 
@@ -488,6 +495,81 @@ mod tests {
             .submit(Some(key), spec(workspace.id.clone()))
             .await
             .expect("retry submission");
+
+        assert_eq!(first.job_id, second.job_id);
+        let jobs = store
+            .list_jobs(codegg_core::jobs::store::JobStoreQuery::default())
+            .await
+            .expect("list jobs");
+        assert_eq!(jobs.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn python_submission_key_recovers_after_restart() {
+        let root = tempfile::tempdir().expect("temp workspace");
+        let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+            .await
+            .expect("workspace registry");
+        let workspace = workspace_registry
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
+        let scheduler = JobScheduler::new(
+            store.clone(),
+            services.clone(),
+            crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            codegg_core::jobs::DaemonGeneration::new_unchecked("generation-test"),
+        );
+        let submission = JobSubmissionService::new(
+            store.clone(),
+            scheduler,
+            services.clone(),
+            codegg_core::jobs::DaemonGeneration::new_unchecked("generation-test"),
+        );
+
+        let source_hash = "abc123".to_string();
+        let mut python_spec = spec(workspace.id.clone());
+        python_spec.kind = JobKind::Python;
+        python_spec.payload = JobPayload::Python {
+            script_path: String::new(),
+            args: vec![],
+            mode: "analyze".into(),
+            source: Some("print(1)".into()),
+            source_hash: Some(source_hash.clone()),
+            cwd: Some("/tmp".into()),
+            timeout_secs: None,
+        };
+
+        let key = SubmissionKey::new(format!("python:{source_hash}")).expect("key");
+        let first = submission
+            .submit(Some(key.clone()), python_spec.clone())
+            .await
+            .expect("first submission");
+
+        // Simulate a daemon restart: a fresh facade over the same durable
+        // store and services has an empty in-memory idempotency index.
+        let restarted_scheduler = JobScheduler::new(
+            store.clone(),
+            services.clone(),
+            crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            codegg_core::jobs::DaemonGeneration::new_unchecked("generation-test"),
+        );
+        let restarted = JobSubmissionService::new(
+            store.clone(),
+            restarted_scheduler,
+            services,
+            codegg_core::jobs::DaemonGeneration::new_unchecked("generation-test"),
+        );
+        let second = restarted
+            .submit(Some(key), python_spec)
+            .await
+            .expect("retry submission after restart");
 
         assert_eq!(first.job_id, second.job_id);
         let jobs = store

@@ -20,6 +20,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 /// State for the connection selection dialog.
+#[derive(Clone)]
 pub struct ConnectionSelectionDialog {
     pub session_id: String,
     pub selection: Option<SessionSelectionDto>,

@@ -58,11 +58,23 @@ pub enum CredentialKind {
 
 // --- Credential ---
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Credential {
     pub kind: CredentialKind,
     pub secret: String,
     pub expires_at: Option<DateTime<Utc>>,
+}
+
+// Repo policy: never log secrets. The derived Debug would render the
+// plaintext secret, so mask it explicitly.
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credential")
+            .field("kind", &self.kind)
+            .field("secret", &mask_secret(&self.secret))
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl Credential {
@@ -616,5 +628,18 @@ pub mod test_support {
 
     pub fn lock_env() -> MutexGuard<'static, ()> {
         env_lock().lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_debug_masks_secret() {
+        let credential = Credential::api_key("sk-super-secret-value");
+        let rendered = format!("{credential:?}");
+        assert!(!rendered.contains("sk-super-secret-value"));
+        assert!(rendered.contains("Credential"));
     }
 }

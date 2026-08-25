@@ -120,11 +120,19 @@ impl CircuitBreaker {
             {
                 return Err(CircuitError::Open(self.inner.name.clone()).into());
             }
-            if let Some(start_time) = *self.inner.half_open_start_time.read().await {
+            // Bind the timestamp first: an `if let` scrutinee guard on
+            // the RwLock read would otherwise stay alive across the
+            // block and deadlock the write below.
+            let probe_started = *self.inner.half_open_start_time.read().await;
+            if let Some(start_time) = probe_started {
                 if start_time.elapsed() >= self.inner.max_half_open_duration {
                     *self.inner.state.write().await = CircuitState::Open;
                     *self.inner.half_open_start_time.write().await = None;
-                    *self.inner.last_failure_time.write().await = None;
+                    // Seed the failure timestamp so the normal Open ->
+                    // HalfOpen timeout applies before the next probe.
+                    // Clearing it here would leave the breaker stuck
+                    // Open forever (no route back to HalfOpen).
+                    *self.inner.last_failure_time.write().await = Some(Instant::now());
                     self.inner.half_open_probe.store(false, Ordering::Release);
                     tracing::warn!(
                         "circuit breaker {} transitioned to Open after HalfOpen timeout",
@@ -239,5 +247,36 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         assert!(first.await.unwrap().is_ok());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn half_open_timeout_recovers_via_open() {
+        let breaker = CircuitBreaker::new("test-timeout", 1, 1, 1);
+        {
+            let mut state = breaker.inner.state.write().await;
+            *state = CircuitState::HalfOpen;
+            // Simulate a probe that started beyond the max half-open
+            // duration.
+            *breaker.inner.half_open_start_time.write().await =
+                Some(Instant::now() - Duration::from_secs(60));
+            *breaker.inner.last_failure_time.write().await =
+                Some(Instant::now() - Duration::from_secs(120));
+        }
+
+        let first = breaker.call(async { Ok::<_, CircuitError>(()) }).await;
+        assert!(matches!(first, Err(CircuitError::Open(_))));
+        assert_eq!(breaker.state().await, CircuitState::Open);
+        // The timeout path must keep a failure timestamp, otherwise the
+        // breaker can never leave Open again.
+        assert!(breaker.inner.last_failure_time.read().await.is_some());
+
+        // After the open timeout elapses the breaker must admit a new
+        // half-open probe instead of locking out forever.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(breaker.is_available().await);
+        assert_eq!(breaker.state().await, CircuitState::HalfOpen);
+
+        let recovered = breaker.call(async { Ok::<_, CircuitError>(()) }).await;
+        assert!(recovered.is_ok());
     }
 }

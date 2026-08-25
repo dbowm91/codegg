@@ -1032,10 +1032,14 @@ impl ToolProgramNotificationService {
                 .collect()
         };
         for id in ids {
+            // Lease expiry is terminal (consistent with `expire_stale`).
+            // Resetting to Pending would resurrect injected-but-unacked
+            // notifications and create redelivery windows that depend on
+            // downstream `is_injected` checks.
             self.transition_to(
                 &id,
                 NotificationState::Claimed,
-                NotificationState::Pending,
+                NotificationState::Expired,
                 now,
                 None,
                 None,
@@ -1236,6 +1240,24 @@ mod tests {
         let expired = svc.expire_stale(100).await;
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0], "tp-1");
+        let n = svc.get("tp-1").await.unwrap().unwrap();
+        assert_eq!(n.state, NotificationState::Expired);
+    }
+
+    #[tokio::test]
+    async fn stale_claim_expires_instead_of_resetting_to_pending() {
+        let svc = ToolProgramNotificationService::new();
+        svc.record_notification(test_notification("tp-1", "s1", "completed", true))
+            .await
+            .unwrap();
+        assert!(svc.claim("tp-1").await.unwrap());
+        // Make the claim lease stale (default lease is 5 minutes).
+        svc.set_updated_at("tp-1", chrono::Utc::now().timestamp_millis() - 400_000)
+            .await;
+        // A new claim attempt runs `recover_expired` first; the expired
+        // lease must be terminal rather than resetting to Pending, so
+        // the re-claim fails.
+        assert!(!svc.claim_as("tp-1", "other-owner").await.unwrap());
         let n = svc.get("tp-1").await.unwrap().unwrap();
         assert_eq!(n.state, NotificationState::Expired);
     }

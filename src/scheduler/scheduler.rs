@@ -344,6 +344,13 @@ impl JobScheduler {
     /// scheduler. The job is created in `Queued` state and the
     /// scheduler picks it up on the next tick. If the queue is at
     /// capacity, returns a typed error.
+    ///
+    /// WARNING: this is NOT the admission boundary. It skips every
+    /// `JobSubmissionService` check (payload validation, resource
+    /// policy, leases, idempotency, size caps) and exists for scheduler
+    /// subsystem internals and test fixtures. Production callers must
+    /// submit through `JobSubmissionService::submit`
+    /// (`scripts/check_scheduler_bypass.py` enforces this).
     pub async fn submit(
         &self,
         spec: codegg_core::jobs::NewJob,

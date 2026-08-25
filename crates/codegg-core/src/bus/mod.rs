@@ -4,7 +4,7 @@ pub mod global;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// User-facing permission decision, owned by the bus layer so that the
 /// low-level bus module does not depend on the `permission` domain module.
@@ -87,14 +87,14 @@ static PERMISSION_REGISTRY: Lazy<PermissionRegistry> = Lazy::new(PermissionRegis
 
 pub struct PermissionRegistry {
     senders: DashMap<String, PendingPermission>,
-    last_cleanup_secs: AtomicU64,
+    last_cleanup_ms: AtomicU64,
 }
 
 impl PermissionRegistry {
     pub fn new() -> Self {
         Self {
             senders: DashMap::new(),
-            last_cleanup_secs: AtomicU64::new(0),
+            last_cleanup_ms: AtomicU64::new(0),
         }
     }
 
@@ -155,11 +155,11 @@ impl PermissionRegistry {
         }
     }
 
-    /// Backward-compatible unregister. Removes by `perm_id` only,
-    /// regardless of session. New call sites should prefer
-    /// [`Self::unregister_scoped`].
+    /// Backward-compatible unregister. Removes only entries owned by
+    /// `session_id = "default"`, mirroring [`Self::respond`]. New call
+    /// sites should prefer [`Self::unregister_scoped`].
     pub fn unregister(perm_id: &str) {
-        let _ = PERMISSION_REGISTRY.senders.remove(perm_id);
+        Self::unregister_scoped(DEFAULT_SESSION_ID, perm_id);
     }
 
     /// Unregister a permission, but only if it belongs to the given
@@ -216,13 +216,11 @@ impl PermissionRegistry {
 
     fn cleanup_if_due() {
         let ttl = Duration::from_secs(310);
-        let now = unix_seconds();
-        let last = PERMISSION_REGISTRY
-            .last_cleanup_secs
-            .load(Ordering::Relaxed);
-        if now.saturating_sub(last) < 30
+        let now = monotonic_millis();
+        let last = PERMISSION_REGISTRY.last_cleanup_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < CLEANUP_THROTTLE_MS
             || PERMISSION_REGISTRY
-                .last_cleanup_secs
+                .last_cleanup_ms
                 .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
                 .is_err()
         {
@@ -235,8 +233,8 @@ impl PermissionRegistry {
 
     pub fn cleanup_now() {
         PERMISSION_REGISTRY
-            .last_cleanup_secs
-            .store(unix_seconds(), Ordering::Release);
+            .last_cleanup_ms
+            .store(monotonic_millis(), Ordering::Release);
         PERMISSION_REGISTRY
             .senders
             .retain(|_, pending| pending.created_at.elapsed() < Duration::from_secs(310));
@@ -253,14 +251,14 @@ static QUESTION_REGISTRY: Lazy<QuestionRegistry> = Lazy::new(QuestionRegistry::n
 
 pub struct QuestionRegistry {
     senders: DashMap<String, PendingQuestion>,
-    last_cleanup_secs: AtomicU64,
+    last_cleanup_ms: AtomicU64,
 }
 
 impl QuestionRegistry {
     pub fn new() -> Self {
         Self {
             senders: DashMap::new(),
-            last_cleanup_secs: AtomicU64::new(0),
+            last_cleanup_ms: AtomicU64::new(0),
         }
     }
 
@@ -319,11 +317,11 @@ impl QuestionRegistry {
         }
     }
 
-    /// Backward-compatible unregister. Removes by `question_id` only,
-    /// regardless of session. New call sites should prefer
-    /// [`Self::unregister_scoped`].
+    /// Backward-compatible unregister. Removes only entries owned by
+    /// `session_id = "default"`, mirroring [`Self::answer_question`]. New
+    /// call sites should prefer [`Self::unregister_scoped`].
     pub fn unregister(question_id: &str) {
-        let _ = QUESTION_REGISTRY.senders.remove(question_id);
+        Self::unregister_scoped(DEFAULT_SESSION_ID, question_id);
     }
 
     /// Unregister a question, but only if it belongs to the given
@@ -380,11 +378,11 @@ impl QuestionRegistry {
 
     fn cleanup_if_due() {
         let ttl = Duration::from_secs(310);
-        let now = unix_seconds();
-        let last = QUESTION_REGISTRY.last_cleanup_secs.load(Ordering::Relaxed);
-        if now.saturating_sub(last) < 30
+        let now = monotonic_millis();
+        let last = QUESTION_REGISTRY.last_cleanup_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < CLEANUP_THROTTLE_MS
             || QUESTION_REGISTRY
-                .last_cleanup_secs
+                .last_cleanup_ms
                 .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
                 .is_err()
         {
@@ -397,19 +395,22 @@ impl QuestionRegistry {
 
     pub fn cleanup_now() {
         QUESTION_REGISTRY
-            .last_cleanup_secs
-            .store(unix_seconds(), Ordering::Release);
+            .last_cleanup_ms
+            .store(monotonic_millis(), Ordering::Release);
         QUESTION_REGISTRY
             .senders
             .retain(|_, pending| pending.created_at.elapsed() < Duration::from_secs(310));
     }
 }
 
-fn unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+/// Cleanup throttle measured in monotonic milliseconds since process
+/// start. Wall-clock time is NTP-jump sensitive and must not gate the
+/// TTL sweep (which itself uses `Instant`).
+const CLEANUP_THROTTLE_MS: u64 = 30_000;
+
+fn monotonic_millis() -> u64 {
+    static START: Lazy<Instant> = Lazy::new(Instant::now);
+    START.elapsed().as_millis() as u64
 }
 
 impl Default for QuestionRegistry {

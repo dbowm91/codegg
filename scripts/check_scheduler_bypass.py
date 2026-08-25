@@ -102,6 +102,16 @@ RULES: list[tuple[str, list[tuple[str, str]], str]] = [
         ],
         "BackgroundScheduler loops are standalone compatibility only; daemon work must use durable schedules.",
     ),
+    (
+        r"\bscheduler\s*\.\s*submit\s*\(",
+        [
+            ("src/scheduler/**", "scheduler subsystem definition"),
+            ("tests/**", "test fixture"),
+        ],
+        "`JobScheduler::submit` bypasses JobSubmissionService admission checks "
+        "(payload validation, resource policy, leases, idempotency). Submit through "
+        "JobSubmissionService::submit instead.",
+    ),
 ]
 
 # Inline annotation pattern. The annotation must appear on the same

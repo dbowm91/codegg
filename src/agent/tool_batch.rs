@@ -276,7 +276,7 @@ impl AgentLoop {
                         Ok(Ok(choice)) => choice,
                         _ => PermissionDecision::DenyOnce,
                     };
-                    PermissionRegistry::unregister(&perm_id);
+                    PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
                     if choice.allowed() {
                         ToolPermissionOutcome::Allowed {
                             tool_call: tc.clone(),
@@ -335,7 +335,7 @@ impl AgentLoop {
                         Ok(Ok(choice)) => choice,
                         _ => PermissionDecision::DenyOnce,
                     };
-                    PermissionRegistry::unregister(&perm_id);
+                    PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
                     if choice.allowed() {
                         ToolPermissionOutcome::Allowed {
                             tool_call: tc.clone(),
@@ -397,7 +397,7 @@ impl AgentLoop {
                     Ok(Ok(choice)) => choice,
                     _ => PermissionDecision::DenyOnce,
                 };
-                PermissionRegistry::unregister(&perm_id);
+                PermissionRegistry::unregister_scoped(&self.session_id, &perm_id);
                 let allowed = choice.allowed();
                 if choice.persist() {
                     if allowed {

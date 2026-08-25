@@ -135,15 +135,25 @@ pub async fn install_from_path_into(
 
     let manifest_path = path.join("manifest.toml");
     let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
-    let _manifest: PluginManifest =
+    let manifest: PluginManifest =
         toml::from_str(&manifest_content).map_err(|e| InstallError::Manifest(e.to_string()))?;
 
     tokio::fs::create_dir_all(dest_root).await?;
 
-    let plugin_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    // The declared manifest identity — not the source directory name —
+    // decides the installed plugin name so a mismatched directory cannot
+    // shadow or collide with another plugin.
+    let plugin_name = manifest.name;
+    if plugin_name.is_empty()
+        || plugin_name == "."
+        || plugin_name == ".."
+        || plugin_name.contains('/')
+        || plugin_name.contains('\\')
+    {
+        return Err(InstallError::InvalidPath(format!(
+            "invalid plugin name in manifest: {plugin_name}"
+        )));
+    }
 
     let dest = dest_root.join(&plugin_name);
     if dest.exists() {
@@ -878,6 +888,33 @@ api_version = 1
     }
 
     // ---- validate_local_install_source tests (Workstream B) ----
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn install_uses_manifest_name_for_destination() {
+        let src = make_temp_dir("mismatched_dir");
+        let dest_root = make_temp_dir("mismatched_root");
+        fs::write(
+            src.join("manifest.toml"),
+            r#"
+name = "declared-identity"
+version = "1.0.0"
+api_version = 1
+"#,
+        )
+        .unwrap();
+
+        let result = install_from_path_into(&src, &dest_root).await;
+        let dest = result.expect("install should succeed");
+        // Destination must come from the manifest name, not the source
+        // directory name.
+        assert_eq!(
+            dest.file_name().and_then(|n| n.to_str()),
+            Some("declared-identity")
+        );
+        let _ = fs::remove_dir_all(&dest);
+        let _ = fs::remove_dir_all(&src);
+        let _ = fs::remove_dir_all(&dest_root);
+    }
 
     fn write_minimal_manifest(dir: &Path) {
         fs::write(

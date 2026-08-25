@@ -1616,15 +1616,14 @@ async fn handle_rpc_request(
                     error: None,
                 }
             }
-            Err(e) => RpcResponse {
-                jsonrpc: "2.0".to_string(),
-                id: req.id.clone(),
-                result: None,
-                error: Some(RpcError {
-                    code: -32000,
-                    message: e.to_string(),
-                }),
-            },
+            Err(e) => {
+                // Mirror the REST surface (`AxumAppError`): log full
+                // details server-side and send only a canonical reason so
+                // internal paths, DB errors, or provider URLs are not
+                // disclosed to the client.
+                tracing::error!(error = ?e, "ws rpc daemon request failed");
+                rpc_error(req, -32000, "Internal server error")
+            }
         }
     } else {
         // Legacy direct DB access (deprecated)
@@ -1668,15 +1667,10 @@ async fn handle_rpc_direct(
                         error: None,
                     }
                 }
-                Err(e) => RpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(RpcError {
-                        code: -32603,
-                        message: e.to_string(),
-                    }),
-                },
+                Err(e) => {
+                    tracing::error!(error = ?e, "ws rpc sessions.list failed");
+                    rpc_error(req, -32603, "Internal server error")
+                }
             }
         }
         "sessions.get" => {
@@ -1712,15 +1706,10 @@ async fn handle_rpc_direct(
                         message: "Session not found".into(),
                     }),
                 },
-                Err(e) => RpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(RpcError {
-                        code: -32603,
-                        message: e.to_string(),
-                    }),
-                },
+                Err(e) => {
+                    tracing::error!(error = ?e, "ws rpc sessions.get failed");
+                    rpc_error(req, -32603, "Internal server error")
+                }
             }
         }
         "sessions.create" => {
@@ -1761,15 +1750,10 @@ async fn handle_rpc_direct(
                     })),
                     error: None,
                 },
-                Err(e) => RpcResponse {
-                    jsonrpc: "2.0".to_string(),
-                    id: req.id.clone(),
-                    result: None,
-                    error: Some(RpcError {
-                        code: -32603,
-                        message: e.to_string(),
-                    }),
-                },
+                Err(e) => {
+                    tracing::error!(error = ?e, "ws rpc sessions.create failed");
+                    rpc_error(req, -32603, "Internal server error")
+                }
             }
         }
         "providers.list" => {

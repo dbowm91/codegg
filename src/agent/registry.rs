@@ -169,10 +169,14 @@ impl AgentSpec {
                 .permission
                 .clone()
                 .or_else(|| self.permission.clone()),
-            options: if !overlay.options.is_empty() {
-                overlay.options.clone()
-            } else {
-                self.options.clone()
+            options: {
+                // Key-wise merge: overlay entries win per key, but base
+                // keys absent from the overlay are preserved.
+                let mut merged = self.options.clone();
+                for (key, value) in &overlay.options {
+                    merged.insert(key.clone(), value.clone());
+                }
+                merged
             },
         }
     }

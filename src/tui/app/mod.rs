@@ -8893,6 +8893,10 @@ impl App {
             _ => {}
         }
 
+        // Capture the close target before the effect is consumed so the
+        // matching focus-stack entry can be dropped afterwards.
+        let closing_plugin_dialog = matches!(&effect, UiEffect::CloseDialog { .. });
+
         let result = self.plugin_ui_state.apply_effect(effect);
 
         // If a plugin dialog was just opened and no first-party modal
@@ -8901,25 +8905,52 @@ impl App {
         // opened) rather than the lexicographically-last entry in
         // `dialogs`, which may be a stale previously-opened dialog.
         if matches!(result, PluginUiApplyResult::Applied) {
-            let opened_id = self.plugin_ui_state.last_opened_dialog_id.clone();
-            if let Some(id) = opened_id {
-                if let Some(spec) = self.plugin_ui_state.get_dialog(&id) {
-                    if !matches!(
-                        self.ui_state.dialog,
-                        Dialog::Permission | Dialog::Question | Dialog::SecurityReview
-                    ) {
-                        let lines =
-                            crate::tui::components::ui_node_renderer::UiNodeRenderer::node_to_lines(
-                                &spec.body,
+            if closing_plugin_dialog {
+                // CloseDialog removed the spec; drop the matching
+                // focus-stack entry so the ghost dialog stops rendering
+                // and consuming keys.
+                if self.focus_manager.active_dialog_type()
+                    == crate::tui::components::component::DialogType::Plugin
+                {
+                    self.focus_manager.pop();
+                    let active_type = self.focus_manager.active_dialog_type();
+                    self.ui_state.dialog =
+                        if active_type != crate::tui::components::component::DialogType::None {
+                            Dialog::from(active_type)
+                        } else {
+                            Dialog::None
+                        };
+                }
+            } else {
+                let opened_id = self.plugin_ui_state.last_opened_dialog_id.clone();
+                if let Some(id) = opened_id {
+                    if let Some(spec) = self.plugin_ui_state.get_dialog(&id) {
+                        if !matches!(
+                            self.ui_state.dialog,
+                            Dialog::Permission | Dialog::Question | Dialog::SecurityReview
+                        ) {
+                            let lines = crate::tui::components::ui_node_renderer::UiNodeRenderer::
+                                node_to_lines(&spec.body);
+                            let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
+                                spec.id.clone(),
+                                spec.title.clone(),
+                                lines,
+                                Arc::clone(&self.ui_state.theme),
                             );
-                        let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
-                            spec.id.clone(),
-                            spec.title.clone(),
-                            lines,
-                            Arc::clone(&self.ui_state.theme),
-                        );
-                        self.focus_manager.push(Box::new(dialog));
-                        self.ui_state.dialog = Dialog::Plugin;
+                            if self.ui_state.dialog == Dialog::Plugin {
+                                // Replace the existing plugin entry rather
+                                // than pushing a duplicate so consecutive
+                                // OpenDialog effects cannot grow the stack
+                                // without bound.
+                                self.focus_manager.replace_top_dialog(
+                                    crate::tui::components::component::DialogType::Plugin,
+                                    Box::new(dialog),
+                                );
+                            } else {
+                                self.focus_manager.push(Box::new(dialog));
+                            }
+                            self.ui_state.dialog = Dialog::Plugin;
+                        }
                     }
                 }
             }
@@ -9545,6 +9576,11 @@ impl App {
             Dialog::RunDetail => {
                 if let Some(ref mut dialog) = self.dialog_state.run_detail_dialog {
                     dialog.set_theme(&self.ui_state.theme);
+                    self.focus_manager.push(Box::new(dialog.clone()));
+                }
+            }
+            Dialog::ConnectionSelection => {
+                if let Some(ref dialog) = self.dialog_state.connection_selection_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }

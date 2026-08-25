@@ -17,7 +17,7 @@ use tower_http::compression::{predicate::Predicate, CompressionLayer};
 use tower_http::cors::CorsLayer;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::middleware::auth::auth_middleware;
 use super::routes;
@@ -235,6 +235,17 @@ pub async fn run_server(
 
     let rate_limiter = RateLimiter::new(100, 60);
 
+    // Fail loud on auth misconfiguration: when token auth is enabled (the
+    // default) but no token resolves from the environment or config, both
+    // the HTTP and WebSocket surfaces accept unauthenticated connections.
+    let auth_open = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err()
+        && std::env::var("CODEGG_SERVER_TOKEN").is_err()
+        && !state
+            .config
+            .server
+            .as_ref()
+            .is_some_and(|s| s.token.as_deref().is_some_and(|t| !t.is_empty()));
+
     let compression = CompressionLayer::new()
         .gzip(true)
         .br(true)
@@ -324,6 +335,15 @@ pub async fn run_server(
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| crate::error::ServerRuntimeError::Bind(e.to_string()))?;
+
+    if auth_open {
+        warn!(
+            "server auth is enabled but no token is configured; all HTTP and \
+             WebSocket connections are accepted unauthenticated. Set \
+             CODEGG_SERVER_TOKEN or [server].token to require bearer auth, or \
+             set CODEGG_SERVER_AUTH_DISABLED=1 to acknowledge local-only use."
+        );
+    }
 
     info!("Server listening on {}", addr);
 

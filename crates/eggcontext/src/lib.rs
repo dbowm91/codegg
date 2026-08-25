@@ -147,7 +147,10 @@ pub fn estimate_with_provenance(text: &str, model: Option<&str>) -> TokenEstimat
     };
 
     let multiplier = tokenizer_type.multiplier();
-    let tokens = (base_tokens as f64 * multiplier) as usize;
+    // Saturating conversion: on 32-bit targets a plain `as usize`
+    // silently truncates near u32::MAX.
+    let tokens = (base_tokens as f64 * multiplier) as u64;
+    let tokens = usize::try_from(tokens).unwrap_or(usize::MAX);
     TokenEstimate {
         tokens,
         tokenizer: tokenizer_type,

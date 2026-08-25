@@ -1357,14 +1357,21 @@ impl MeteredInterpreter {
 
                                 match call_result {
                                     Ok(result) => {
-                                        let completed = self.make_completed_call(
-                                            seq,
-                                            request.clone(),
-                                            result.clone(),
-                                        );
-                                        broker.call_completed(&completed).await?;
-                                        self.completed_calls.insert(seq, completed);
-                                        self.commit_checkpoint(broker).await?;
+                                        // M013-F02: Only persist completed
+                                        // calls with successful tool outcomes,
+                                        // mirroring sequential ExecuteCall.
+                                        // Failed results are NOT journaled so
+                                        // replay re-executes them.
+                                        if result.success {
+                                            let completed = self.make_completed_call(
+                                                seq,
+                                                request.clone(),
+                                                result.clone(),
+                                            );
+                                            broker.call_completed(&completed).await?;
+                                            self.completed_calls.insert(seq, completed);
+                                            self.commit_checkpoint(broker).await?;
+                                        }
                                         result
                                     }
                                     Err(e) => return Err(e),

@@ -342,13 +342,13 @@ impl GitOperation {
             ]),
             Self::StashDrop { .. } => RiskSet::new(vec![GitRiskClass::RefMutation]),
 
-            Self::Checkout { paths: Some(_), .. } => {
-                RiskSet::new(vec![GitRiskClass::WorktreeMutation])
-            }
             Self::Checkout { force: true, .. } => RiskSet::new(vec![
                 GitRiskClass::WorktreeMutation,
                 GitRiskClass::DestructiveWorktree,
             ]),
+            Self::Checkout { paths: Some(_), .. } => {
+                RiskSet::new(vec![GitRiskClass::WorktreeMutation])
+            }
             Self::Checkout { .. } => RiskSet::new(vec![
                 GitRiskClass::WorktreeMutation,
                 GitRiskClass::RefMutation,
@@ -453,6 +453,7 @@ impl GitOperation {
                 GitRiskClass::WorktreeMutation,
                 GitRiskClass::HistoryIntegration,
                 GitRiskClass::DestructiveWorktree,
+                GitRiskClass::DestructiveHistory,
             ]),
             Self::ResetMixed { .. } => RiskSet::new(vec![
                 GitRiskClass::IndexMutation,
@@ -697,8 +698,28 @@ mod tests {
         assert!(risk.contains(&GitRiskClass::WorktreeMutation));
         assert!(risk.contains(&GitRiskClass::HistoryIntegration));
         assert!(risk.contains(&GitRiskClass::DestructiveWorktree));
+        // The documented DestructiveHistory definition explicitly names
+        // `reset --hard`; consumers gate on this class specifically.
+        assert!(risk.contains(&GitRiskClass::DestructiveHistory));
         assert!(risk.is_destructive());
         assert_eq!(op.subcommand_name(), "reset");
+    }
+
+    #[test]
+    fn checkout_force_with_paths_is_destructive() {
+        let root = crate::path::RepoRoot::new("/tmp").unwrap();
+        let op = GitOperation::Checkout {
+            target: Some("main".into()),
+            paths: Some(vec![crate::path::RepoPath::new(&root, "foo.rs").unwrap()]),
+            create: false,
+            force: true,
+        };
+        let risk = op.risk_classes();
+        assert!(risk.contains(&GitRiskClass::WorktreeMutation));
+        // Match-arm ordering must not shadow the destructive class for
+        // `checkout --force -- <paths>`.
+        assert!(risk.contains(&GitRiskClass::DestructiveWorktree));
+        assert!(risk.is_destructive());
     }
 
     #[test]

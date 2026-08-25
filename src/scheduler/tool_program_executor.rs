@@ -230,7 +230,11 @@ impl BrokerAdapter {
             submission: None,
             workspace_id: None,
             allowed_tools: None,
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            // No process-CWD fallback: production construction must set
+            // the workspace root explicitly via `with_cwd`. Reading the
+            // process CWD here would silently bind execution to whatever
+            // directory the daemon was launched from.
+            cwd: std::path::PathBuf::from("."),
             ledger: None,
             cancellation: None,
             progress: None,

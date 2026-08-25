@@ -588,18 +588,24 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             dialog.finish_loading();
             if let Some(err) = error {
                 dialog.set_error(err);
-                return;
-            }
-            dialog.set_connections(connections);
-            dialog.set_models(models);
-            if let Some(focused) = focused_connection_id {
-                if let Some(idx) = dialog.connections.iter().position(|c| c.id == focused) {
-                    dialog.connection_idx = idx;
+            } else {
+                dialog.set_connections(connections);
+                dialog.set_models(models);
+                if let Some(focused) = focused_connection_id {
+                    if let Some(idx) = dialog.connections.iter().position(|c| c.id == focused) {
+                        dialog.connection_idx = idx;
+                    }
+                }
+                if let Some(sel) = selection {
+                    dialog.set_selection(sel);
                 }
             }
-            if let Some(sel) = selection {
-                dialog.set_selection(sel);
-            }
+            // The focus stack holds a clone pushed at open time; sync it
+            // so the rendered dialog reflects the refreshed state.
+            app.focus_manager.replace_top_dialog(
+                crate::tui::components::component::DialogType::ConnectionSelection,
+                Box::new(dialog.clone()),
+            );
         }
         TuiCommand::TasksListed {
             request_id,

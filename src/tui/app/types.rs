@@ -57,6 +57,7 @@ impl Dialog {
                 | Self::Import
                 | Self::Template
                 | Self::Connect
+                | Self::ConnectionSelection
                 | Self::Context
                 | Self::Cost
                 | Self::Usage
