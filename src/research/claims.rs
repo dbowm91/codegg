@@ -166,11 +166,11 @@ pub async fn build_claims_with_model(
 }
 
 fn truncate_for_prompt(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_chars])
+    let mut out = crate::util::truncate_prefix(s, max_chars).to_string();
+    if out.len() < s.len() {
+        out.push_str("...");
     }
+    out
 }
 
 #[cfg(test)]
@@ -178,6 +178,15 @@ mod tests {
     use super::*;
     use chrono::Utc;
     use std::path::PathBuf;
+
+    #[test]
+    fn truncate_for_prompt_is_utf8_boundary_safe() {
+        let s = "证据".repeat(300); // 1800 bytes
+        let out = truncate_for_prompt(&s, 500);
+        assert!(out.starts_with("证据"));
+        assert!(out.ends_with("..."));
+        assert_eq!(truncate_for_prompt(&s, s.len()), s);
+    }
 
     fn make_source(id: &str, uri: &str) -> SourceRecord {
         SourceRecord {

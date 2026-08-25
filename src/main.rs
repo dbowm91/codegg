@@ -1897,10 +1897,13 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
     // TUI command channel.
     if !cli.no_session {
         #[allow(clippy::result_large_err)]
-        let _ = app
+        let send_result = app
             .tui_cmd_tx
             .as_ref()
             .map(|tx| tx.try_send(crate::tui::TuiCommand::ManifestRestoreRequested));
+        if let Some(Err(e)) = send_result {
+            tracing::warn!("failed to enqueue manifest restore request: {e}");
+        }
     }
 
     tui::run_event_loop(&mut app).await
@@ -2230,7 +2233,11 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
-    let _ = daemon.recover_jobs().await;
+    if daemon.recover_jobs().await.is_none() {
+        tracing::error!(
+            "durable job recovery produced no report; previously scheduled work may not be recovered"
+        );
+    }
 
     // Step 4: bind the socket (now that we own the lock).
     let listener = match codegg::core::transport::daemon_socket::bind_listener(&paths.socket_path) {
@@ -2476,7 +2483,11 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
 
     daemon.start_event_bridge();
     daemon.recover_state().await;
-    let _ = daemon.recover_jobs().await;
+    if daemon.recover_jobs().await.is_none() {
+        tracing::error!(
+            "durable job recovery produced no report; previously scheduled work may not be recovered"
+        );
+    }
 
     codegg::server::run_server(host, port, Some(daemon))
         .await

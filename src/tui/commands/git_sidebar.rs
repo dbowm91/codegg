@@ -110,11 +110,9 @@ impl GitProbeInfo {
 }
 
 async fn probe_git_status(project_dir: std::path::PathBuf) -> anyhow::Result<GitProbeInfo> {
-    let git_root = crate::worktree::find_git_root(&project_dir);
-    if git_root.is_none() {
+    let Some(root) = crate::worktree::find_git_root(&project_dir) else {
         return Ok(GitProbeInfo::error(String::new()));
-    }
-    let root = git_root.expect("checked is_some above");
+    };
     let status = egggit::status_v2::rich_repo_status(&root)
         .await
         .map_err(|e| anyhow::anyhow!("git status failed: {}", e))?;

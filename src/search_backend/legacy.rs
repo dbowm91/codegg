@@ -78,7 +78,7 @@ pub async fn call_web_search_legacy(
     let raw = format_hits(query, &hits);
     let capped = if raw.len() > max_output_chars {
         let mut s = String::with_capacity(max_output_chars + 64);
-        s.push_str(&raw[..max_output_chars]);
+        s.push_str(crate::util::truncate_prefix(&raw, max_output_chars));
         s.push_str(&format!(
             "\n\n[truncated by Codegg: output exceeded max_search_output_chars={max_output_chars}]"
         ));

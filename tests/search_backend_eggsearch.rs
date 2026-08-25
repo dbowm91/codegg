@@ -370,9 +370,11 @@ mod real_build_tool_definitions_tests {
     /// raw `mcp__eggsearch__*` tools.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools() {
-        state::reset_for_tests();
         let _cp = acquire_cross_process_lock();
         let _g = SHARED_TEST_LOCK.lock().await;
+        // Reset inside the lock: an unlocked reset can land in another
+        // test's critical section and wipe its config mid-build.
+        state::reset_for_tests();
 
         let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
@@ -421,9 +423,11 @@ mod real_build_tool_definitions_tests {
     /// tools in addition to the native wrappers.
     #[tokio::test]
     async fn real_build_shows_raw_eggsearch_tools_when_exposed() {
-        state::reset_for_tests();
         let _cp = acquire_cross_process_lock();
         let _g = SHARED_TEST_LOCK.lock().await;
+        // Reset inside the lock: an unlocked reset can land in another
+        // test's critical section and wipe its config mid-build.
+        state::reset_for_tests();
 
         let mcp = {
             let mcp = Arc::new(RwLock::new(build_mock_eggsearch_mcp()));
@@ -470,9 +474,11 @@ mod real_build_tool_definitions_tests {
     /// `expose_raw_mcp_tools = false`.
     #[tokio::test]
     async fn real_build_hides_raw_eggsearch_tools_for_custom_server_name() {
-        state::reset_for_tests();
         let _cp = acquire_cross_process_lock();
         let _g = SHARED_TEST_LOCK.lock().await;
+        // Reset inside the lock: an unlocked reset can land in another
+        // test's critical section and wipe its config mid-build.
+        state::reset_for_tests();
 
         let mcp = {
             // Build a service whose tools use a non-default prefix.

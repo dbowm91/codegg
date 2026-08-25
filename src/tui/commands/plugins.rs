@@ -170,12 +170,12 @@ pub(crate) fn apply_plugin_command_finished(
             // renders EmitChat visibly (toast / info dialog), so we do not
             // need any deferred handling here.
             for effect in resp.effects {
-                let _ = app.apply_plugin_ui_effect(effect, None);
+                log_plugin_ui_effect_failure(app.apply_plugin_ui_effect(effect, None));
             }
         } else {
             // Apply diagnostic effects but show error toast
             for effect in &resp.effects {
-                let _ = app.apply_plugin_ui_effect(effect.clone(), None);
+                log_plugin_ui_effect_failure(app.apply_plugin_ui_effect(effect.clone(), None));
             }
             let diag_msgs: Vec<String> = resp
                 .diagnostics
@@ -237,7 +237,22 @@ pub(crate) fn apply_plugin_command_finished(
 /// but callable from the command dispatch path. EmitChat effects are
 /// rendered visibly (toast / info dialog) by the App-level handler.
 pub(crate) fn apply_plugin_ui_effect(app: &mut App, effect: UiEffect) {
-    let _ = app.apply_plugin_ui_effect(effect, None);
+    log_plugin_ui_effect_failure(app.apply_plugin_ui_effect(effect, None));
+}
+
+/// Plugin UI effects must not fail silently; unsupported or errored
+/// effects are logged so plugin authors can diagnose them.
+fn log_plugin_ui_effect_failure(result: crate::tui::app::state::PluginUiApplyResult) {
+    use crate::tui::app::state::PluginUiApplyResult;
+    match result {
+        PluginUiApplyResult::Error(message) => {
+            tracing::warn!("plugin UI effect failed to apply: {message}");
+        }
+        PluginUiApplyResult::Unsupported(effect) => {
+            tracing::warn!("plugin UI effect unsupported in this context: {effect}");
+        }
+        _ => {}
+    }
 }
 
 fn level_label(level: crate::protocol::plugin::PluginDiagnosticLevel) -> &'static str {

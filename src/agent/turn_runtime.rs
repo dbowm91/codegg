@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use futures_util::FutureExt;
+
 use crate::config::schema::Config;
 use crate::error::AppError;
 use crate::provider::{ChatRequest, ResponseFormat};
@@ -590,14 +592,29 @@ impl TurnRuntime for DefaultTurnRuntime {
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
         tokio::spawn(async move {
-            let result = agent_loop.run(request).await;
-            let result = result.and_then(|events| {
-                if let Some(prepared) = specialized_prepared_for_spawn.as_ref() {
-                    let terminal = crate::agent::r#loop::AgentLoop::terminal_output(&events);
-                    crate::agent::specialized_runtime::finalize(prepared, &terminal)?;
+            // A panic inside the agent-loop task must not vanish with the
+            // detached JoinHandle: catch it, log it, and surface TurnFailed.
+            let outcome = std::panic::AssertUnwindSafe(async {
+                let result = agent_loop.run(request).await;
+                result.and_then(|events| {
+                    if let Some(prepared) = specialized_prepared_for_spawn.as_ref() {
+                        let terminal = crate::agent::r#loop::AgentLoop::terminal_output(&events);
+                        crate::agent::specialized_runtime::finalize(prepared, &terminal)?;
+                    }
+                    Ok(events)
+                })
+            })
+            .catch_unwind()
+            .await;
+            let result = match outcome {
+                Ok(result) => result,
+                Err(panic) => {
+                    let message = panic_message(&panic);
+                    Err(crate::error::AppError::Other(anyhow::anyhow!(
+                        "agent loop panicked: {message}"
+                    )))
                 }
-                Ok(events)
-            });
+            };
             if let Err(e) = result {
                 tracing::error!("Agent loop error: {}", e);
                 event_log_for_spawn
@@ -633,6 +650,17 @@ impl TurnRuntime for DefaultTurnRuntime {
             cancel_tx,
             steer_tx,
         })
+    }
+}
+
+/// Extract a human-readable message from a panic payload.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
     }
 }
 

@@ -226,7 +226,13 @@ pub async fn run_resolved_test(
 
     let report_json = serde_json::to_string_pretty(&report).unwrap_or_default();
     let report_path = log_dir.join("report.json");
-    let _ = std::fs::write(&report_path, report_json);
+    if let Err(e) = std::fs::write(&report_path, report_json) {
+        tracing::warn!(
+            error = %e,
+            path = %report_path.display(),
+            "failed to write test run report.json"
+        );
+    }
 
     // RunStore is the authoritative persistence layer for test runs.
     // The legacy .codegg/test-runs/index.json is retained for backward compatibility

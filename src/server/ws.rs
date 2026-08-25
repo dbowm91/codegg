@@ -2248,10 +2248,9 @@ async fn update_tui_session_info(
     let mut state_guard = state.lock().await;
     let normalized_session_id = normalize_tui_session_id(id);
     if state_guard.session_id != normalized_session_id {
-        state_guard.raw_route_generation = state_guard
-            .raw_route_generation
-            .checked_add(1)
-            .expect("TUI raw route generation exhausted");
+        // Saturate rather than panic: the generation only needs to be
+        // monotonically increasing per connection, not wrap-free.
+        state_guard.raw_route_generation = state_guard.raw_route_generation.saturating_add(1);
     }
     state_guard.rate_limit_key = normalized_session_id
         .as_deref()
@@ -2446,9 +2445,10 @@ async fn handle_tui_message_with_observer(
             }
         }
         TuiMessage::Resume { from_event_seq } => {
-            if state.lock().await.projection.lock().await.mode()
-                == ProjectionConnectionMode::ProjectionPrimary
-            {
+            // Clone the projection Arc under the state lock and release
+            // before locking projection; never nest the two locks.
+            let projection = state.lock().await.projection.clone();
+            if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary {
                 let diagnostic = TuiMessage::ProjectionCompatibilityDiagnostic {
                     code: "raw_resume_ignored_in_projection_primary".into(),
                     message: "projection-primary connections resume with ProjectionCursor".into(),
@@ -2543,9 +2543,10 @@ async fn handle_tui_message_with_observer(
         }
         TuiMessage::RequestSnapshot { reason } => {
             tracing::info!("RequestSnapshot from client: reason={:?}", reason);
-            if state.lock().await.projection.lock().await.mode()
-                == ProjectionConnectionMode::ProjectionPrimary
-            {
+            // Clone the projection Arc under the state lock and release
+            // before locking projection; never nest the two locks.
+            let projection = state.lock().await.projection.clone();
+            if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary {
                 return Ok(());
             }
             if let Some(ref daemon) = _server_state.daemon {
@@ -2781,8 +2782,13 @@ async fn handle_projection_subscribe(
         return Ok(());
     };
     let projection = state.lock().await.projection.clone();
-    let client_id = projection.lock().await.connection_id().to_string();
-    let lifecycle_seam = projection.lock().await.lifecycle_seam();
+    let (client_id, lifecycle_seam) = {
+        let projection_state = projection.lock().await;
+        (
+            projection_state.connection_id().to_string(),
+            projection_state.lifecycle_seam(),
+        )
+    };
     let requested_cursor = request.cursor.clone();
 
     let response = daemon
@@ -3364,9 +3370,15 @@ async fn handle_projection_ack(
         return Ok(());
     };
     let projection = state.lock().await.projection.clone();
-    let client_id = projection.lock().await.connection_id().to_string();
-    let lifecycle_seam = projection.lock().await.lifecycle_seam();
-    if !projection.lock().await.owns(&ack.subscription_id) {
+    let (client_id, lifecycle_seam, owns_subscription) = {
+        let projection_state = projection.lock().await;
+        (
+            projection_state.connection_id().to_string(),
+            projection_state.lifecycle_seam(),
+            projection_state.owns(&ack.subscription_id),
+        )
+    };
+    if !owns_subscription {
         critical_send(
             bus_tx,
             &TuiMessage::ProjectionAckResult {
@@ -3711,9 +3723,13 @@ async fn handle_projection_artifact_read(
         return Ok(());
     }
     let projection = state.lock().await.projection.clone();
-    if !projection.lock().await.owns_project(&project_id)
-        || !projection.lock().await.try_begin_artifact_read()
-    {
+    // Single lock acquisition for the check-then-claim pair so the
+    // ownership check and artifact-read claim are evaluated atomically.
+    let admitted = {
+        let mut projection_state = projection.lock().await;
+        projection_state.owns_project(&project_id) && projection_state.try_begin_artifact_read()
+    };
+    if !admitted {
         critical_send(
             bus_tx,
             &TuiMessage::ProjectionArtifactReadResult {
@@ -4205,22 +4221,28 @@ async fn handle_core_frame(
                     | crate::protocol::core::CoreRequest::ProjectionArtifactRead { .. }
                     | crate::protocol::core::CoreRequest::ProjectionArtifactList { .. }
             );
-            let projection_scope_owned = match &envelope.payload {
-                crate::protocol::core::CoreRequest::ProjectionArtifactRead {
-                    project_id, ..
-                }
-                | crate::protocol::core::CoreRequest::ProjectionArtifactList { project_id } => {
-                    Some(projection.lock().await.owns_project(project_id))
-                }
-                _ => None,
+            // One lock acquisition covers the scope check, artifact-read
+            // claim, and mode read so they are evaluated atomically.
+            let (projection_scope_owned, artifact_read_started, projection_mode) = {
+                let mut projection_state = projection.lock().await;
+                let scope_owned = match &envelope.payload {
+                    crate::protocol::core::CoreRequest::ProjectionArtifactRead {
+                        project_id,
+                        ..
+                    }
+                    | crate::protocol::core::CoreRequest::ProjectionArtifactList { project_id } => {
+                        Some(projection_state.owns_project(project_id))
+                    }
+                    _ => None,
+                };
+                let artifact_started = if scope_owned == Some(true) {
+                    projection_state.try_begin_artifact_read()
+                } else {
+                    false
+                };
+                (scope_owned, artifact_started, projection_state.mode())
             };
-            let artifact_read_started = if projection_scope_owned == Some(true) {
-                projection.lock().await.try_begin_artifact_read()
-            } else {
-                false
-            };
-            if projection_request
-                && projection.lock().await.mode() != ProjectionConnectionMode::ProjectionPrimary
+            if projection_request && projection_mode != ProjectionConnectionMode::ProjectionPrimary
             {
                 if artifact_read_started {
                     projection.lock().await.end_artifact_read();

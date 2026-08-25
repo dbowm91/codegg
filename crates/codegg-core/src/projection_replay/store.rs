@@ -296,7 +296,9 @@ impl ProjectionReplayStore {
     ) -> Result<(), StorageError> {
         let payload_json =
             serde_json::to_string(envelope).map_err(|e| StorageError::Database(e.to_string()))?;
-        let payload_bytes = payload_json.len() as i64;
+        // SQLite INTEGER is i64; saturate rather than silently wrap on
+        // pathological sizes/sequence values.
+        let payload_bytes = i64::try_from(payload_json.len()).unwrap_or(i64::MAX);
         let now = Utc::now().timestamp_millis();
         let event_kind = format!("{:?}", envelope.payload);
 
@@ -305,7 +307,7 @@ impl ProjectionReplayStore {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(stream_id)
-        .bind(event_seq as i64)
+        .bind(event_seq.min(i64::MAX as u64) as i64)
         .bind(envelope.protocol_version)
         .bind(envelope.timestamp_ms)
         .bind(&envelope.session_id)
@@ -331,7 +333,7 @@ impl ProjectionReplayStore {
     ) -> Result<(), StorageError> {
         let payload_json =
             serde_json::to_string(envelope).map_err(|e| StorageError::Database(e.to_string()))?;
-        let payload_bytes = payload_json.len() as i64;
+        let payload_bytes = i64::try_from(payload_json.len()).unwrap_or(i64::MAX);
         let now = Utc::now().timestamp_millis();
         let event_kind = format!("{:?}", envelope.payload);
 
@@ -340,7 +342,7 @@ impl ProjectionReplayStore {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         )
         .bind(stream_id)
-        .bind(event_seq as i64)
+        .bind(event_seq.min(i64::MAX as u64) as i64)
         .bind(envelope.protocol_version)
         .bind(envelope.timestamp_ms)
         .bind(&envelope.session_id)

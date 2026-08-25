@@ -854,13 +854,15 @@ impl GitMutationExecutor {
     }
 }
 
-/// Truncate a string to `max_bytes` with a clear marker.
+/// Truncate a string to `max_bytes` with a clear marker. The cut point is
+/// always a UTF-8 char boundary so multi-byte content (commit messages,
+/// renamed paths, diffs) cannot panic mid-character.
 fn truncate_for_result(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }
     let mut out = String::with_capacity(max_bytes + 64);
-    out.push_str(&s[..max_bytes]);
+    out.push_str(crate::util::truncate_prefix(s, max_bytes));
     out.push_str(&format!("\n... [truncated, original {} bytes]", s.len()));
     out
 }
@@ -1188,5 +1190,26 @@ mod error_context_tests {
             displayed.contains("45"),
             "timeout seconds missing: {displayed}"
         );
+    }
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::{truncate_for_public, truncate_for_result};
+
+    #[test]
+    fn truncate_for_result_is_utf8_boundary_safe() {
+        // Git output routinely contains multi-byte characters (commit
+        // messages, renamed paths); a byte-offset cut must not split one.
+        let s = "コミット".repeat(200); // 2400 bytes
+        let out = truncate_for_result(&s, 500);
+        assert!(out.starts_with("コミット"));
+        assert!(out.ends_with("\n... [truncated, original 2400 bytes]"));
+        assert_eq!(truncate_for_public(&s, 500), out);
+    }
+
+    #[test]
+    fn truncate_for_result_short_input_untouched() {
+        assert_eq!(truncate_for_result("ok", 500), "ok");
     }
 }

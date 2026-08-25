@@ -60,11 +60,11 @@ pub async fn load_plugin(path: &Path) -> Result<LoadedPlugin, LoadError> {
 async fn load_manifest(plugin_dir: &Path) -> Result<PluginManifest, LoadError> {
     let manifest_path = plugin_dir.join("manifest.toml");
 
-    if !manifest_path.exists() {
-        return Err(LoadError::Manifest("manifest.toml not found".into()));
-    }
-
-    let content = tokio::fs::read_to_string(&manifest_path).await?;
+    // Read directly and map the error: a pre-check with exists() is a
+    // TOCTOU race and adds no value over surfacing the open error.
+    let content = tokio::fs::read_to_string(&manifest_path)
+        .await
+        .map_err(|e| LoadError::Manifest(format!("manifest.toml not found or unreadable: {e}")))?;
     let manifest: PluginManifest =
         toml::from_str(&content).map_err(|e| LoadError::Manifest(e.to_string()))?;
 

@@ -1306,7 +1306,11 @@ impl AgentLoop {
             if !decision.should_continue {
                 if let Some(prompt) = decision.prompt {
                     // Final wrap-up prompt (e.g. budget-limited).
-                    let _ = self.follow_up_tx.send(prompt);
+                    if self.follow_up_tx.send(prompt).is_err() {
+                        tracing::warn!(
+                            "goal wrap-up prompt dropped: follow-up receiver unavailable"
+                        );
+                    }
                     self.drain_follow_up(request, all_events, processor).await;
                 }
                 return;
@@ -1322,7 +1326,9 @@ impl AgentLoop {
             // Reset per-turn token/tool counters so the next
             // accounting tick measures the *continuation* turn, not
             // a stale carry-over from the user's turn.
-            let _ = self.follow_up_tx.send(prompt);
+            if self.follow_up_tx.send(prompt).is_err() {
+                tracing::warn!("goal continuation prompt dropped: follow-up receiver unavailable");
+            }
             self.drain_follow_up(request, all_events, processor).await;
             // After the continuation turn finishes, account for it
             // before deciding whether to continue again.
@@ -2658,7 +2664,7 @@ impl AgentLoop {
                 if matches!(processor.stop_reason(), Some("tool_calls")) {
                     let raw_text = processor.text().to_string();
                     let preview = if raw_text.len() > 600 {
-                        format!("{}…", &raw_text[..600])
+                        format!("{}…", crate::util::truncate_prefix(&raw_text, 600))
                     } else {
                         raw_text
                     };
@@ -3459,7 +3465,7 @@ impl AgentLoop {
                     if matches!(processor.stop_reason(), Some("tool_calls")) {
                         let raw_text = processor.text().to_string();
                         let preview = if raw_text.len() > 600 {
-                            format!("{}…", &raw_text[..600])
+                            format!("{}…", crate::util::truncate_prefix(&raw_text, 600))
                         } else {
                             raw_text
                         };

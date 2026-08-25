@@ -579,9 +579,25 @@ fn short_id(id: &str) -> &str {
 }
 
 fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max_chars])
+    let mut out = crate::util::truncate_prefix(s, max_chars).to_string();
+    if out.len() < s.len() {
+        out.push('…');
+    }
+    out
+}
+
+#[cfg(test)]
+mod truncate_tests {
+    use super::truncate_str;
+
+    #[test]
+    fn truncate_str_is_utf8_boundary_safe() {
+        // Synthesized reports are highly likely to contain multi-byte
+        // characters; a byte-offset cut must not split one.
+        let s = "综合报告".repeat(150); // 1800 bytes
+        let out = truncate_str(&s, 500);
+        assert!(out.starts_with("综合报告"));
+        assert!(out.ends_with('…'));
+        assert_eq!(truncate_str(&s, s.len()), s);
     }
 }

@@ -1298,7 +1298,10 @@ impl CoreDaemon {
                     })
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "job recovery failed");
+                    tracing::error!(
+                        error = %e,
+                        "job recovery failed; attempts from a prior daemon generation may not be recovered"
+                    );
                     None
                 }
             }
@@ -1804,11 +1807,18 @@ impl CoreDaemon {
                         message: "Provider connections require a daemon SQLite catalog".to_string(),
                     });
                 };
-                let handle = codegg_protocol::provider::SecretInputRef::new(format!(
+                let handle = match codegg_protocol::provider::SecretInputRef::new(format!(
                     "rot-secret-{}",
                     uuid::Uuid::new_v4()
-                ))
-                .expect("generated rotation secret handle must satisfy protocol bounds");
+                )) {
+                    Ok(handle) => handle,
+                    Err(reason) => {
+                        return Ok(CoreResponse::Error {
+                            code: "connection_rotation_secret_rejected".to_string(),
+                            message: format!("Generated rotation secret handle rejected: {reason}"),
+                        });
+                    }
+                };
                 if !provisioner.register_rotation_secret(handle.clone(), secret.expose().to_owned())
                 {
                     return Ok(CoreResponse::Error {

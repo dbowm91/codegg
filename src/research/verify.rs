@@ -237,17 +237,28 @@ async fn verify_claim_batch(
 }
 
 fn truncate_verify(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_chars])
+    let mut out = crate::util::truncate_prefix(s, max_chars).to_string();
+    if out.len() < s.len() {
+        out.push_str("...");
     }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn truncate_verify_is_utf8_boundary_safe() {
+        // Fetched pages are full of multi-byte text; a byte-offset cut
+        // must not split a character (this used to panic).
+        let s = "验证内容".repeat(150); // 1800 bytes
+        let out = truncate_verify(&s, 500);
+        assert!(out.starts_with("验证内容"));
+        assert!(out.ends_with("..."));
+        assert_eq!(truncate_verify(&s, s.len()), s);
+    }
 
     fn make_request() -> ResearchRequest {
         ResearchRequest {

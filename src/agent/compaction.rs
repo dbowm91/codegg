@@ -285,7 +285,10 @@ fn truncate_tool_outputs(messages: Vec<Message>) -> Vec<Message> {
                 content,
             } => {
                 let truncated = if content.len() > 500 {
-                    format!("{}...[truncated]", &content[..500])
+                    format!(
+                        "{}...[truncated]",
+                        crate::util::truncate_prefix(&content, 500)
+                    )
                 } else {
                     content.to_string()
                 };
@@ -374,7 +377,10 @@ pub async fn llm_summarize(
             }
             Message::Tool { content, .. } => {
                 let truncated = if content.len() > 300 {
-                    format!("{}...[truncated]", &content[..300])
+                    format!(
+                        "{}...[truncated]",
+                        crate::util::truncate_prefix(content, 300)
+                    )
                 } else {
                     content.to_string()
                 };
@@ -495,14 +501,14 @@ pub fn prune_tool_outputs(messages: &[Message], max_tokens_per_output: usize) ->
             } => {
                 let tokens = ContextTracker::estimate_tokens(content);
                 if tokens > max_tokens_per_output {
-                    let max_chars = max_tokens_per_output * 4;
+                    let max_bytes = max_tokens_per_output * 4;
                     let hint = format!(
                         "\n\n[Tool output truncated ({} tokens). Use read tool to view full output. Protected: {} tokens reserved for conversation.]",
                         tokens,
                         PROTECTED_TOKENS,
                     );
-                    let truncated = if content.len() > max_chars {
-                        format!("{}{}", &content[..max_chars], hint)
+                    let truncated = if content.len() > max_bytes {
+                        format!("{}{}", crate::util::truncate_prefix(content, max_bytes), hint)
                     } else {
                         format!("{}{}", content, hint)
                     };
@@ -894,19 +900,11 @@ fn extract_text_from_content(content: &[ContentPart]) -> String {
 }
 
 fn truncate_for_summary(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..max_chars])
+    let mut out = crate::util::truncate_prefix(text, max_chars).to_string();
+    if out.len() < text.len() {
+        out.push_str("...");
     }
-}
-
-fn compute_content_hash(text: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    format!("sha256:{:016x}", hasher.finish())
+    out
 }
 
 // === Semantic Checkpoint (Phase 4) ===
@@ -1434,7 +1432,7 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
                         id: format!("msg_{:04}", msg_counter),
                         kind: EvidenceKind::UserMessage,
                         summary: truncate_for_summary(&text, 200),
-                        content_hash: Some(compute_content_hash(&text)),
+                        content_hash: Some(crate::context::compute_content_hash(&text)),
                     });
                     msg_counter += 1;
                 }
@@ -1465,7 +1463,7 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
                             id: format!("msg_{:04}", msg_counter),
                             kind: EvidenceKind::AssistantMessage,
                             summary: truncate_for_summary(&text, 200),
-                            content_hash: Some(compute_content_hash(&text)),
+                            content_hash: Some(crate::context::compute_content_hash(&text)),
                         });
                         msg_counter += 1;
                     }
@@ -1482,7 +1480,7 @@ pub fn build_evidence_index(messages: &[Message]) -> Vec<EvidenceRef> {
                     id: format!("tool_{:04}", tool_counter),
                     kind,
                     summary: truncate_for_summary(content, 200),
-                    content_hash: Some(compute_content_hash(content)),
+                    content_hash: Some(crate::context::compute_content_hash(content)),
                 });
                 tool_counter += 1;
             }
@@ -1546,7 +1544,7 @@ pub fn prune_tool_outputs_rich(
                     kept_indices.iter().map(|&i| (i, lines[i])).collect();
                 kept_lines.sort_by_key(|(i, _)| *i);
 
-                let content_hash = compute_content_hash(content);
+                let content_hash = crate::context::compute_content_hash(content);
 
                 let mut compacted = format!(
                     "[Tool output compacted]\n\
@@ -2207,6 +2205,38 @@ mod tests {
             assert!(content.contains("40000"));
         } else {
             panic!("expected tool message");
+        }
+    }
+
+    #[test]
+    fn test_truncation_helpers_are_utf8_boundary_safe() {
+        // Each '字' is 3 bytes; a naive `&content[..N]` cut at N=500/300/400
+        // splits a character mid-sequence and used to panic.
+        let content = "字".repeat(200); // 600 bytes
+
+        let messages = vec![Message::Tool {
+            tool_call_id: "1".to_string().into(),
+            content: content.clone().into(),
+        }];
+        let result = truncate_tool_outputs(messages);
+        if let Message::Tool { content, .. } = &result[0] {
+            assert!(content.as_str().ends_with("...[truncated]"));
+        } else {
+            panic!("expected tool message");
+        }
+
+        let summarized = truncate_for_summary(&content, 300);
+        assert!(summarized.ends_with("..."));
+        assert!(summarized.starts_with("字"));
+
+        let messages = vec![Message::Tool {
+            tool_call_id: "1".to_string().into(),
+            content: content.clone().into(),
+        }];
+        let pruned = prune_tool_outputs(&messages, 100);
+        if let Message::Tool { content, .. } = &pruned[0] {
+            assert!(content.contains("truncated"));
+            assert!(content.starts_with("字"));
         }
     }
 
