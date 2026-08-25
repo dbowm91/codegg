@@ -17,7 +17,8 @@ pub(crate) fn handle_security_review_run(
     lsp_tool: Option<std::sync::Arc<crate::tool::lsp::LspTool>>,
 ) {
     use crate::tui::app::TuiCommand;
-    use crate::tui::async_cmd::spawn_tui_task;
+    use crate::tui::async_cmd::spawn_registered_tui_task;
+    use crate::tui::task_lifecycle::TuiTaskKind;
 
     if app.core_client.is_none() {
         app.messages_state.toasts.warning("Core client unavailable");
@@ -25,22 +26,29 @@ pub(crate) fn handle_security_review_run(
     }
 
     let tx = app.tui_cmd_tx.clone();
-    spawn_tui_task(tx, "security_review_legacy", async move {
-        let result =
-            crate::security::workflow::run_security_review_background(root, args, lsp_tool).await;
-        match result {
-            Ok(receipt) => Some(TuiCommand::SecurityReviewFinished {
-                id,
-                receipt: Some(Box::new(receipt)),
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::SecurityReviewFinished {
-                id,
-                receipt: None,
-                error: Some(format!("Security review failed: {e}")),
-            }),
-        }
-    });
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::SecurityReview,
+        "security_review_legacy",
+        async move {
+            let result =
+                crate::security::workflow::run_security_review_background(root, args, lsp_tool)
+                    .await;
+            match result {
+                Ok(receipt) => Some(TuiCommand::SecurityReviewFinished {
+                    id,
+                    receipt: Some(Box::new(receipt)),
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::SecurityReviewFinished {
+                    id,
+                    receipt: None,
+                    error: Some(format!("Security review failed: {e}")),
+                }),
+            }
+        },
+    );
 }
 
 /// Apply a completed security review to the App: store the latest

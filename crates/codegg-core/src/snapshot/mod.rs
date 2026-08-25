@@ -313,18 +313,9 @@ impl SnapshotManager {
                                 format!("failed to create directory {}: {}", parent.display(), e)
                             })?;
                         }
-                        // After mkdir, re-canonicalize the parent and
-                        // confirm we are still inside the project root.
-                        // This blocks `..` paths that bypass the lexical
-                        // filter (e.g. symlinked parents).
-                        if let Ok(canonical_parent) = parent.canonicalize() {
-                            if !canonical_parent.starts_with(&canonical_project_root) {
-                                return Err(format!(
-                                    "path traversal attempt detected: {}",
-                                    full_path.display()
-                                ));
-                            }
-                        }
+                        // After mkdir, re-verify containment with
+                        // symlink rejection before writing.
+                        ensure_contained_parent(parent, &canonical_project_root)?;
                     }
                     let temp_path = full_path.with_extension("tmp");
                     if let Err(e) = std::fs::write(&temp_path, &file_snapshot.content) {
@@ -379,14 +370,9 @@ impl SnapshotManager {
                                 format!("failed to create directory {}: {}", parent.display(), e)
                             })?;
                         }
-                        if let Ok(canonical_parent) = parent.canonicalize() {
-                            if !canonical_parent.starts_with(&canonical_target) {
-                                return Err(format!(
-                                    "path traversal attempt detected: {}",
-                                    full_path.display()
-                                ));
-                            }
-                        }
+                        // After mkdir, re-verify containment with
+                        // symlink rejection before writing.
+                        ensure_contained_parent(parent, &canonical_target)?;
                     }
                     let temp_path = full_path.with_extension("tmp");
                     std::fs::write(&temp_path, &file_snapshot.content)
@@ -440,6 +426,33 @@ fn is_safe_relative_path(path: &Path) -> bool {
         }
     }
     true
+}
+
+/// Validate that `parent` is safe to write into: it must be a real
+/// (non-symlink) directory whose canonical path stays inside
+/// `canonical_root`. Fails closed on stat or canonicalize errors,
+/// shrinking the create-then-check TOCTOU window around restore.
+fn ensure_contained_parent(parent: &Path, canonical_root: &Path) -> Result<(), String> {
+    let meta = match parent.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) => return Err(format!("failed to stat {}: {}", parent.display(), e)),
+    };
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "path traversal attempt detected (symlinked directory): {}",
+            parent.display()
+        ));
+    }
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|e| format!("failed to canonicalize {}: {}", parent.display(), e))?;
+    if !canonical_parent.starts_with(canonical_root) {
+        return Err(format!(
+            "path traversal attempt detected: {}",
+            parent.display()
+        ));
+    }
+    Ok(())
 }
 
 fn collect_files_sync(

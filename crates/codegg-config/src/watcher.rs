@@ -156,7 +156,12 @@ impl ConfigWatcher {
         config.migrate();
 
         if let Err(errors) = config.validate() {
+            // Keep last-known-good behavior: refuse to hand out an
+            // invalid config so consumers retain their previous one.
             tracing::warn!("config validation errors: {:?}", errors);
+            return Err(AppError::Config(ConfigError::Watch(format!(
+                "config validation failed: {errors:?}"
+            ))));
         }
 
         crate::encryption::decrypt_provider_keys(&mut config)

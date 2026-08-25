@@ -237,8 +237,8 @@ pub async fn run_server(
 
     // Fail loud on auth misconfiguration: when token auth is enabled (the
     // default) but no token resolves from the environment or config, both
-    // the HTTP and WebSocket surfaces accept unauthenticated connections.
-    let auth_open = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err()
+    // the HTTP and WebSocket surfaces fail closed and reject requests.
+    let auth_open = !crate::server::middleware::auth::auth_disabled_by_env()
         && std::env::var("CODEGG_SERVER_TOKEN").is_err()
         && !state
             .config
@@ -338,10 +338,10 @@ pub async fn run_server(
 
     if auth_open {
         warn!(
-            "server auth is enabled but no token is configured; all HTTP and \
-             WebSocket connections are accepted unauthenticated. Set \
-             CODEGG_SERVER_TOKEN or [server].token to require bearer auth, or \
-             set CODEGG_SERVER_AUTH_DISABLED=1 to acknowledge local-only use."
+            "server auth is enabled but no token is configured; HTTP and \
+             WebSocket requests are rejected until CODEGG_SERVER_TOKEN or \
+             [server].token is set, or CODEGG_SERVER_AUTH_DISABLED=1 \
+             acknowledges local-only use."
         );
     }
 

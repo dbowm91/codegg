@@ -7,7 +7,9 @@
 //! runtime-only until a persistence backend lands.
 //!
 //! All handlers are `pub(crate) fn` (non-async) and spawn background
-//! tasks via [`spawn_tui_task`] for any I/O, posting a typed
+//! tasks via [`spawn_registered_tui_task`] (tracked by the
+//! [`TuiTaskRegistry`](crate::tui::task_lifecycle::TuiTaskRegistry) so
+//! shutdown can cancel them) for any I/O, posting a typed
 //! [`TuiCommand`] completion variant back through the command channel.
 
 use crate::plugin::management::PluginDoctorReport;
@@ -16,6 +18,7 @@ use crate::plugin::management_ui::{
 };
 use crate::tui::app::App;
 use crate::tui::app::TuiCommand;
+use crate::tui::task_lifecycle::TuiTaskKind;
 
 // ---------------------------------------------------------------------------
 // Command handlers (spawn + completion pattern)
@@ -30,28 +33,34 @@ pub(crate) fn show_plugins(app: &mut App) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_list", async move {
-        let views = mgr.list().await;
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_list",
+        async move {
+            let views = mgr.list().await;
 
-        if views.is_empty() {
-            return Some(TuiCommand::PluginListFinished {
-                lines: vec!["No plugins registered.".to_string()],
-                error: None,
-            });
-        }
+            if views.is_empty() {
+                return Some(TuiCommand::PluginListFinished {
+                    lines: vec!["No plugins registered.".to_string()],
+                    error: None,
+                });
+            }
 
-        let node = plugins_table(&views);
-        let mut lines = node_to_lines(&node);
-        lines.insert(0, format!("Registered plugins ({}):", views.len()));
-        lines.insert(1, String::new());
-        lines.insert(
-            2,
-            "Note: enable/disable is runtime-only until persistence lands.".to_string(),
-        );
-        lines.insert(3, String::new());
+            let node = plugins_table(&views);
+            let mut lines = node_to_lines(&node);
+            lines.insert(0, format!("Registered plugins ({}):", views.len()));
+            lines.insert(1, String::new());
+            lines.insert(
+                2,
+                "Note: enable/disable is runtime-only until persistence lands.".to_string(),
+            );
+            lines.insert(3, String::new());
 
-        Some(TuiCommand::PluginListFinished { lines, error: None })
-    });
+            Some(TuiCommand::PluginListFinished { lines, error: None })
+        },
+    );
 }
 
 /// Show detailed info for a single plugin.
@@ -64,24 +73,30 @@ pub(crate) fn show_plugin_info(app: &mut App, query: &str) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_info", async move {
-        match mgr.info(&query).await {
-            Ok(view) => {
-                let node = plugin_info_node(&view);
-                let lines = node_to_lines(&node);
-                Some(TuiCommand::PluginInfoFinished {
-                    plugin_id: view.id,
-                    lines,
-                    error: None,
-                })
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_info",
+        async move {
+            match mgr.info(&query).await {
+                Ok(view) => {
+                    let node = plugin_info_node(&view);
+                    let lines = node_to_lines(&node);
+                    Some(TuiCommand::PluginInfoFinished {
+                        plugin_id: view.id,
+                        lines,
+                        error: None,
+                    })
+                }
+                Err(e) => Some(TuiCommand::PluginInfoFinished {
+                    plugin_id: query,
+                    lines: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
             }
-            Err(e) => Some(TuiCommand::PluginInfoFinished {
-                plugin_id: query,
-                lines: Vec::new(),
-                error: Some(e.to_string()),
-            }),
-        }
-    });
+        },
+    );
 }
 
 /// Enable a plugin by selector.
@@ -94,18 +109,24 @@ pub(crate) fn enable_plugin(app: &mut App, query: &str) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_enable", async move {
-        match mgr.enable(&query).await {
-            Ok(view) => Some(TuiCommand::PluginEnableFinished {
-                plugin_id: view.id,
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::PluginEnableFinished {
-                plugin_id: query,
-                error: Some(e.to_string()),
-            }),
-        }
-    });
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_enable",
+        async move {
+            match mgr.enable(&query).await {
+                Ok(view) => Some(TuiCommand::PluginEnableFinished {
+                    plugin_id: view.id,
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::PluginEnableFinished {
+                    plugin_id: query,
+                    error: Some(e.to_string()),
+                }),
+            }
+        },
+    );
 }
 
 /// Disable a plugin by selector.
@@ -118,18 +139,24 @@ pub(crate) fn disable_plugin(app: &mut App, query: &str) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_disable", async move {
-        match mgr.disable(&query).await {
-            Ok(view) => Some(TuiCommand::PluginDisableFinished {
-                plugin_id: view.id,
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::PluginDisableFinished {
-                plugin_id: query,
-                error: Some(e.to_string()),
-            }),
-        }
-    });
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_disable",
+        async move {
+            match mgr.disable(&query).await {
+                Ok(view) => Some(TuiCommand::PluginDisableFinished {
+                    plugin_id: view.id,
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::PluginDisableFinished {
+                    plugin_id: query,
+                    error: Some(e.to_string()),
+                }),
+            }
+        },
+    );
 }
 
 /// Run plugin diagnostics.
@@ -145,41 +172,47 @@ pub(crate) fn doctor_plugin(app: &mut App, query: Option<&str>) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_doctor", async move {
-        let reports: Vec<PluginDoctorReport> = match query {
-            Some(ref q) => match mgr.doctor(q).await {
-                Ok(report) => vec![report],
-                Err(e) => {
-                    return Some(TuiCommand::PluginDoctorFinished {
-                        lines: Vec::new(),
-                        error: Some(e.to_string()),
-                    });
-                }
-            },
-            None => mgr.doctor_all().await,
-        };
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_doctor",
+        async move {
+            let reports: Vec<PluginDoctorReport> = match query {
+                Some(ref q) => match mgr.doctor(q).await {
+                    Ok(report) => vec![report],
+                    Err(e) => {
+                        return Some(TuiCommand::PluginDoctorFinished {
+                            lines: Vec::new(),
+                            error: Some(e.to_string()),
+                        });
+                    }
+                },
+                None => mgr.doctor_all().await,
+            };
 
-        let mut all_lines = Vec::new();
-        all_lines.push(format!(
-            "Plugin doctor: checking {} plugin(s)",
-            reports.len()
-        ));
-        all_lines.push(String::new());
-
-        for report in &reports {
-            let node = doctor_report_node(report);
-            let mut node_lines = node_to_lines(&node);
-            all_lines.append(&mut node_lines);
+            let mut all_lines = Vec::new();
+            all_lines.push(format!(
+                "Plugin doctor: checking {} plugin(s)",
+                reports.len()
+            ));
             all_lines.push(String::new());
-        }
 
-        all_lines.push("Diagnostics complete.".to_string());
+            for report in &reports {
+                let node = doctor_report_node(report);
+                let mut node_lines = node_to_lines(&node);
+                all_lines.append(&mut node_lines);
+                all_lines.push(String::new());
+            }
 
-        Some(TuiCommand::PluginDoctorFinished {
-            lines: all_lines,
-            error: None,
-        })
-    });
+            all_lines.push("Diagnostics complete.".to_string());
+
+            Some(TuiCommand::PluginDoctorFinished {
+                lines: all_lines,
+                error: None,
+            })
+        },
+    );
 }
 
 /// Remove (uninstall) an installed plugin.
@@ -195,27 +228,33 @@ pub(crate) fn remove_plugin(app: &mut App, query: &str) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_remove", async move {
-        match mgr.uninstall(&query).await {
-            Ok(result) => Some(TuiCommand::PluginRemoveFinished {
-                plugin_id: result.view.id,
-                removed_files: result.removed_files,
-                install_path: result
-                    .install_path
-                    .as_ref()
-                    .map(|p| p.display().to_string()),
-                warning: result.warning,
-                error: None,
-            }),
-            Err(e) => Some(TuiCommand::PluginRemoveFinished {
-                plugin_id: query,
-                removed_files: false,
-                install_path: None,
-                warning: None,
-                error: Some(e.to_string()),
-            }),
-        }
-    });
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_remove",
+        async move {
+            match mgr.uninstall(&query).await {
+                Ok(result) => Some(TuiCommand::PluginRemoveFinished {
+                    plugin_id: result.view.id,
+                    removed_files: result.removed_files,
+                    install_path: result
+                        .install_path
+                        .as_ref()
+                        .map(|p| p.display().to_string()),
+                    warning: result.warning,
+                    error: None,
+                }),
+                Err(e) => Some(TuiCommand::PluginRemoveFinished {
+                    plugin_id: query,
+                    removed_files: false,
+                    install_path: None,
+                    warning: None,
+                    error: Some(e.to_string()),
+                }),
+            }
+        },
+    );
 }
 
 /// Install a plugin from a local filesystem path.
@@ -232,40 +271,46 @@ pub(crate) fn install_plugin(app: &mut App, source_path: &str) {
         return;
     };
     let tx = app.tui_cmd_tx.clone();
-    crate::tui::async_cmd::spawn_tui_task(tx, "plugin_install", async move {
-        let path = std::path::PathBuf::from(&source_path);
-        match mgr.install_from_path(&path).await {
-            Ok(view) => {
-                let mut lines = vec![format!("Plugin '{}' installed and registered.", view.id)];
-                lines.push(format!("Name:    {}", view.name));
-                lines.push(format!("Version: {}", view.version));
-                lines.push(format!("Runtime: {}", view.runtime_kind));
-                if let Some(ref src) = view.source_path {
-                    lines.push(format!("Install path: {}", src));
+    crate::tui::async_cmd::spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "plugin_install",
+        async move {
+            let path = std::path::PathBuf::from(&source_path);
+            match mgr.install_from_path(&path).await {
+                Ok(view) => {
+                    let mut lines = vec![format!("Plugin '{}' installed and registered.", view.id)];
+                    lines.push(format!("Name:    {}", view.name));
+                    lines.push(format!("Version: {}", view.version));
+                    lines.push(format!("Runtime: {}", view.runtime_kind));
+                    if let Some(ref src) = view.source_path {
+                        lines.push(format!("Install path: {}", src));
+                    }
+                    lines.push(format!(
+                        "State:   {} (runtime-only; enable/disable does not persist)",
+                        if view.enabled { "enabled" } else { "disabled" }
+                    ));
+                    if view.command_count > 0 {
+                        lines.push(format!("Commands: {}", view.command_count));
+                    }
+                    if view.hook_count > 0 {
+                        lines.push(format!("Hooks:    {}", view.hook_count));
+                    }
+                    Some(TuiCommand::PluginInstallFinished {
+                        source: source_path,
+                        lines,
+                        error: None,
+                    })
                 }
-                lines.push(format!(
-                    "State:   {} (runtime-only; enable/disable does not persist)",
-                    if view.enabled { "enabled" } else { "disabled" }
-                ));
-                if view.command_count > 0 {
-                    lines.push(format!("Commands: {}", view.command_count));
-                }
-                if view.hook_count > 0 {
-                    lines.push(format!("Hooks:    {}", view.hook_count));
-                }
-                Some(TuiCommand::PluginInstallFinished {
+                Err(e) => Some(TuiCommand::PluginInstallFinished {
                     source: source_path,
-                    lines,
-                    error: None,
-                })
+                    lines: Vec::new(),
+                    error: Some(e.to_string()),
+                }),
             }
-            Err(e) => Some(TuiCommand::PluginInstallFinished {
-                source: source_path,
-                lines: Vec::new(),
-                error: Some(e.to_string()),
-            }),
-        }
-    });
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------

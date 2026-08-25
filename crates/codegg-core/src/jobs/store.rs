@@ -185,6 +185,16 @@ fn priority_from_str(s: &str) -> JobPriority {
     JobPriority::from_str_lossy(s)
 }
 
+/// Convert a persisted i64 counter to its `u32` domain type without
+/// silent truncation of corrupt/hostile rows.
+fn u32_from_i64(v: i64) -> Result<u32, JobStoreError> {
+    u32::try_from(v).map_err(|_| {
+        JobStoreError::Storage(StorageError::Database(format!(
+            "integer out of range for u32: {v}"
+        )))
+    })
+}
+
 // ── In-memory implementation ──────────────────────────────────────────────
 
 /// In-memory job store. Used for state-machine unit tests and as a
@@ -720,7 +730,7 @@ impl JobStore for InMemoryJobStore {
             touched.insert(attempt.job_id.clone());
         }
         for job_id in &touched {
-            let job = guard.jobs.get(job_id).cloned().unwrap();
+            let mut job = guard.jobs.get(job_id).cloned().unwrap();
             let eligible = match job.idempotency {
                 IdempotencyClass::ReadOnly => policy.requeue_read_only,
                 IdempotencyClass::SafeRepeat => policy.requeue_safe_repeat,
@@ -731,33 +741,59 @@ impl JobStore for InMemoryJobStore {
             let resumable_tool_program = matches!(job.kind, JobKind::ToolProgram)
                 && job.idempotency.is_retry_eligible()
                 && job.deadline.is_some_and(|deadline| deadline > now);
-            if eligible
+            let wants_requeue = eligible
                 && job.cancel_requested_at.is_none()
-                && (job.attempt_count < job.retry_policy.max_attempts || resumable_tool_program)
+                && (job.attempt_count < job.retry_policy.max_attempts || resumable_tool_program);
+            // Route every write through the documented transition
+            // table (`validate_state_transition`). States without a
+            // legal edge are left untouched rather than corrupted.
+            let mut handled = false;
+            if wants_requeue
+                && (job.state == JobState::Interrupted
+                    || validate_state_transition(job.state, JobState::Interrupted).is_ok())
             {
-                let updated = JobRecord {
-                    state: JobState::Queued,
-                    current_attempt_id: None,
-                    cancel_requested_at: None,
-                    cancel_reason: None,
-                    updated_at: now,
-                    ..job
-                };
-                guard.jobs.insert(job_id.clone(), updated);
+                // Park the stale job on `Interrupted`, then enqueue a
+                // fresh attempt via the normal `Interrupted -> Queued`
+                // edge.
+                if job.state != JobState::Interrupted {
+                    job.state = JobState::Interrupted;
+                    job.updated_at = now;
+                    guard.jobs.insert(job_id.clone(), job.clone());
+                }
+                debug_assert!(
+                    validate_state_transition(JobState::Interrupted, JobState::Queued).is_ok()
+                );
+                job.state = JobState::Queued;
+                job.current_attempt_id = None;
+                job.cancel_requested_at = None;
+                job.cancel_reason = None;
+                job.updated_at = now;
+                guard.jobs.insert(job_id.clone(), job.clone());
                 requeued += 1;
-            } else {
-                let updated = JobRecord {
-                    state: if job.cancel_requested_at.is_some() {
-                        JobState::Cancelled
-                    } else {
-                        JobState::Failed
-                    },
-                    current_attempt_id: None,
-                    terminal_at: Some(now),
-                    updated_at: now,
-                    ..job
-                };
-                guard.jobs.insert(job_id.clone(), updated);
+                handled = true;
+            }
+            if !handled && job.cancel_requested_at.is_some() {
+                // A pending cancel request settles the job on
+                // `Cancelled`, reachable from every pre-terminal
+                // scheduling state.
+                if validate_state_transition(job.state, JobState::Cancelled).is_ok() {
+                    job.state = JobState::Cancelled;
+                    job.current_attempt_id = None;
+                    job.terminal_at = Some(now);
+                    job.updated_at = now;
+                    guard.jobs.insert(job_id.clone(), job.clone());
+                    terminals += 1;
+                }
+                handled = true;
+            }
+            if !handled && validate_state_transition(job.state, JobState::Failed).is_ok() {
+                // Exhausted/non-requeueable work fails through the
+                // normal `Running -> Failed` edge.
+                job.state = JobState::Failed;
+                job.current_attempt_id = None;
+                job.terminal_at = Some(now);
+                job.updated_at = now;
+                guard.jobs.insert(job_id.clone(), job.clone());
                 terminals += 1;
             }
         }
@@ -1066,7 +1102,7 @@ impl JobStore for SqliteJobStore {
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let mut out: Vec<JobSummary> = rows
             .into_iter()
-            .map(|row| {
+            .map(|row| -> Result<JobSummary, JobStoreError> {
                 let job_id: String = row.get("id");
                 let workspace_id: String = row.get("workspace_id");
                 let kind: String = row.get("kind");
@@ -1078,13 +1114,13 @@ impl JobStore for SqliteJobStore {
                 let time_updated: i64 = row.get("time_updated");
                 let schedule_id: Option<String> = row.get("schedule_id");
                 let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
-                JobSummary {
+                Ok(JobSummary {
                     job_id: JobId::new_unchecked(job_id),
                     workspace_id: WorkspaceId::new_unchecked(workspace_id),
                     kind: JobKind::from_str_lossy(&kind),
                     priority: priority_from_str(&priority),
                     state: JobState::from_str_lossy(&state),
-                    attempt_count: attempt_count as u32,
+                    attempt_count: u32_from_i64(attempt_count)?,
                     current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
                     created_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_created)
                         .unwrap_or_else(Utc::now),
@@ -1093,9 +1129,9 @@ impl JobStore for SqliteJobStore {
                     schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
                     cancel_requested_at: cancel_requested_at
                         .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         if let Some(limit) = query.limit {
             out.truncate(limit as usize);
         }
@@ -1173,9 +1209,35 @@ impl JobStore for SqliteJobStore {
         id: &JobId,
         generation: &DaemonGeneration,
     ) -> Result<JobAttempt, JobStoreError> {
-        let job = self
-            .get_job(id)
-            .await?
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        // Read the authoritative row inside the transaction so a
+        // racing transition surfaces as the SQL guard's `Conflict`
+        // rather than a misleading pre-transaction
+        // `InvalidTransition` classification.
+        let row = sqlx::query(
+            r#"
+            SELECT id, workspace_id, session_id, turn_id, kind, source_json,
+                   priority, payload_json, resource_json, retry_json,
+                   idempotency, state, current_attempt_id, attempt_count,
+                   not_before, deadline, schedule_id,
+                   time_created, time_updated, time_terminal,
+                   cancel_requested_at, cancel_reason, labels_json,
+                   parent_job_id, parent_attempt_id, parent_call_id,
+                   parent_program_id, parent_instruction_sequence, relation_kind
+            FROM job WHERE id = ?
+            "#,
+        )
+        .bind(id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let job = row
+            .map(|row| row_to_job(&row))
+            .transpose()?
             .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))?;
         if matches!(job.state, JobState::Running) {
             return Err(JobStoreError::JobAlreadyRunning(
@@ -1194,11 +1256,6 @@ impl JobStore for SqliteJobStore {
             }
             e
         })?;
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let now = Utc::now();
         let attempt_id = AttemptId::new_unchecked(uuid::Uuid::new_v4().to_string());
         let next_seq = job.attempt_count + 1;
@@ -1658,20 +1715,43 @@ impl JobStore for SqliteJobStore {
             if JobState::from_str_lossy(&current_state).is_terminal() {
                 continue;
             }
+            let current = JobState::from_str_lossy(&current_state);
             let resumable_tool_program = matches!(kind, JobKind::ToolProgram)
                 && idempotency.is_retry_eligible()
                 && deadline.is_some_and(|deadline| deadline > now);
-            if eligible
+            let wants_requeue = eligible
                 && cancel_requested_at.is_none()
-                && ((attempt_count as u32) < retry_policy.max_attempts || resumable_tool_program)
+                && ((attempt_count as u32) < retry_policy.max_attempts || resumable_tool_program);
+            // Route every write through the documented transition
+            // table (`validate_state_transition`). States without a
+            // legal edge are left untouched rather than corrupted.
+            let mut handled = false;
+            if wants_requeue
+                && (current == JobState::Interrupted
+                    || validate_state_transition(current, JobState::Interrupted).is_ok())
             {
+                // Two UPDATEs in the same transaction: park the stale
+                // job on 'interrupted', then enqueue a fresh attempt
+                // via the normal `Interrupted -> Queued` edge.
+                if current != JobState::Interrupted {
+                    sqlx::query(
+                        "UPDATE job SET state = 'interrupted', current_attempt_id = NULL,
+                                        time_updated = ?
+                         WHERE id = ?",
+                    )
+                    .bind(now.timestamp_millis())
+                    .bind(job_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+                }
+                debug_assert!(
+                    validate_state_transition(JobState::Interrupted, JobState::Queued).is_ok()
+                );
                 sqlx::query(
-                    r#"
-                    UPDATE job SET state = 'queued', current_attempt_id = NULL,
-                                   cancel_requested_at = NULL, cancel_reason = NULL,
-                                   time_updated = ?
-                    WHERE id = ?
-                    "#,
+                    "UPDATE job SET state = 'queued', cancel_requested_at = NULL,
+                                    cancel_reason = NULL, time_updated = ?
+                     WHERE id = ?",
                 )
                 .bind(now.timestamp_millis())
                 .bind(job_id)
@@ -1679,20 +1759,36 @@ impl JobStore for SqliteJobStore {
                 .await
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
                 requeued += 1;
-            } else {
-                let terminal_state = if cancel_requested_at.is_some() {
-                    "cancelled"
-                } else {
-                    "failed"
-                };
+                handled = true;
+            }
+            if !handled && cancel_requested_at.is_some() {
+                // A pending cancel request settles the job on
+                // `Cancelled`, reachable from every pre-terminal
+                // scheduling state.
+                if validate_state_transition(current, JobState::Cancelled).is_ok() {
+                    sqlx::query(
+                        "UPDATE job SET state = 'cancelled', current_attempt_id = NULL,
+                                        time_updated = ?, time_terminal = ?
+                         WHERE id = ?",
+                    )
+                    .bind(now.timestamp_millis())
+                    .bind(now.timestamp_millis())
+                    .bind(job_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+                    terminals += 1;
+                }
+                handled = true;
+            }
+            if !handled && validate_state_transition(current, JobState::Failed).is_ok() {
+                // Exhausted/non-requeueable work fails through the
+                // normal `Running -> Failed` edge.
                 sqlx::query(
-                    r#"
-                    UPDATE job SET state = ?, current_attempt_id = NULL,
-                                   time_updated = ?, time_terminal = ?
-                    WHERE id = ?
-                    "#,
+                    "UPDATE job SET state = 'failed', current_attempt_id = NULL,
+                                    time_updated = ?, time_terminal = ?
+                     WHERE id = ?",
                 )
-                .bind(terminal_state)
                 .bind(now.timestamp_millis())
                 .bind(now.timestamp_millis())
                 .bind(job_id)
@@ -1774,7 +1870,7 @@ impl JobStore for SqliteJobStore {
                         kind: JobKind::from_str_lossy(&kind),
                         priority: priority_from_str(&priority),
                         state,
-                        attempt_count: attempt_count as u32,
+                        attempt_count: u32_from_i64(attempt_count)?,
                         current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
                         created_at: chrono::DateTime::<Utc>::from_timestamp_millis(time_created)
                             .unwrap_or_else(Utc::now),
@@ -1874,7 +1970,7 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
         idempotency,
         state: JobState::from_str_lossy(&state_str),
         current_attempt_id: current_attempt_id.map(AttemptId::new_unchecked),
-        attempt_count: attempt_count as u32,
+        attempt_count: u32_from_i64(attempt_count)?,
         not_before: not_before_ms.and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
         deadline: deadline_ms.and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
         schedule_id: schedule_id.map(crate::jobs::ScheduleId::new_unchecked),
@@ -1929,7 +2025,7 @@ fn row_to_attempt(row: &sqlx::sqlite::SqliteRow) -> Result<JobAttempt, JobStoreE
     Ok(JobAttempt {
         attempt_id: AttemptId::new_unchecked(id),
         job_id: JobId::new_unchecked(job_id),
-        sequence: sequence as u32,
+        sequence: u32_from_i64(sequence)?,
         state: AttemptState::from_str_lossy(&state_str),
         daemon_generation: DaemonGeneration::new_unchecked(daemon_generation),
         executor,

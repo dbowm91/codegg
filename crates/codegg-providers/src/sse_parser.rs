@@ -921,6 +921,9 @@ where
     F: FnOnce() -> Fut + Send + 'static,
     Fut: std::future::Future<Output = Result<reqwest::Response, ProviderError>> + Send,
 {
+    // Raw bytes awaiting UTF-8 decoding.
+    let pending_bytes: Vec<u8> = Vec::new();
+    // Decoded text awaiting parsing.
     let buffer = String::new();
     let response = tokio::runtime::Handle::current().block_on(send_request())?;
 
@@ -942,36 +945,49 @@ where
     let stream = response.bytes_stream();
 
     Ok(Box::pin(futures_util::stream::unfold(
-        (stream, buffer),
-        move |(mut stream, mut buffer)| async move {
+        (stream, pending_bytes, buffer),
+        move |(mut stream, mut pending_bytes, mut buffer)| async move {
             loop {
                 if let Some(event) = parse_buffer(&mut buffer) {
-                    return Some((event, (stream, buffer)));
+                    return Some((event, (stream, pending_bytes, buffer)));
                 }
 
                 let chunk = stream.next().await;
                 match chunk {
                     Some(Ok(bytes)) => {
-                        let text = String::from_utf8_lossy(&bytes).to_string();
-                        buffer.push_str(&text);
-                        if buffer.len() > MAX_BUFFER_SIZE {
+                        // Buffer raw bytes and decode incrementally so a
+                        // multi-byte character split across chunk
+                        // boundaries is never corrupted.
+                        pending_bytes.extend_from_slice(&bytes);
+                        append_decoded_utf8(&mut pending_bytes, &mut buffer);
+                        if pending_bytes.len() + buffer.len() > MAX_BUFFER_SIZE {
                             return Some((
                                 Err(ProviderError::Stream(
                                     "response buffer exceeded limit".to_string(),
                                 )),
-                                (stream, buffer),
+                                (stream, pending_bytes, buffer),
                             ));
                         }
                     }
                     Some(Err(e)) => {
-                        return Some((Err(ProviderError::Stream(e.to_string())), (stream, buffer)));
+                        return Some((
+                            Err(ProviderError::Stream(e.to_string())),
+                            (stream, pending_bytes, buffer),
+                        ));
                     }
                     None => {
+                        // End of stream: flush any trailing partial
+                        // sequence (replacement chars are the best we
+                        // can do for a truncated tail).
+                        if !pending_bytes.is_empty() {
+                            let rest = std::mem::take(&mut pending_bytes);
+                            buffer.push_str(&String::from_utf8_lossy(&rest));
+                        }
                         if buffer.is_empty() {
                             return None;
                         }
                         if let Some(event) = parse_buffer(&mut buffer) {
-                            return Some((event, (stream, buffer)));
+                            return Some((event, (stream, pending_bytes, buffer)));
                         }
                         return None;
                     }
@@ -979,6 +995,38 @@ where
             }
         },
     )))
+}
+
+/// Decode as much of the buffered bytes as possible without splitting a
+/// multi-byte UTF-8 character. Valid bytes are appended to `text` and
+/// drained from `buf`; an incomplete trailing sequence is kept for the
+/// next chunk; a genuinely invalid sequence becomes U+FFFD instead of
+/// being spliced mid-character.
+fn append_decoded_utf8(buf: &mut Vec<u8>, text: &mut String) {
+    while !buf.is_empty() {
+        match std::str::from_utf8(buf) {
+            Ok(s) => {
+                text.push_str(s);
+                buf.clear();
+            }
+            Err(e) => {
+                let valid_up_to = e.valid_up_to();
+                if valid_up_to > 0 {
+                    if let Ok(s) = std::str::from_utf8(&buf[..valid_up_to]) {
+                        text.push_str(s);
+                    }
+                    buf.drain(..valid_up_to);
+                }
+                match e.error_len() {
+                    Some(invalid_len) => {
+                        text.push('\u{FFFD}');
+                        buf.drain(..invalid_len.min(buf.len()));
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

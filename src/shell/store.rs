@@ -43,14 +43,13 @@ impl BoundedOutput {
         let remaining = &data[space_in_head.min(data.len())..];
         if !remaining.is_empty() {
             self.omitted_bytes += remaining.len();
-            let combined = {
-                let mut tmp = self.tail.clone();
-                tmp.extend_from_slice(remaining);
-                tmp
-            };
-            let keep = combined.len().min(TAIL_CAP);
-            if keep > 0 {
-                self.tail = combined[combined.len() - keep..].to_vec();
+            // Truncate in place: extend the tail then drain the
+            // overflow from the front. Cloning per chunk would make
+            // streaming output quadratic in the tail size.
+            self.tail.extend_from_slice(remaining);
+            let overflow = self.tail.len().saturating_sub(TAIL_CAP);
+            if overflow > 0 {
+                self.tail.drain(..overflow);
             }
         }
     }

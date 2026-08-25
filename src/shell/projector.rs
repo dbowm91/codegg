@@ -2118,16 +2118,20 @@ impl CommandOutputProjector for GitDiffProjector {
                     current_hunk_lines.clear();
                 }
                 // Parse hunk header: @@ -old_start,old_lines +new_start,new_lines @@
-                let (old_start, old_lines, new_start, new_lines) = parse_hunk_header(line);
-                current_hunk = Some(DiffHunk {
-                    old_start,
-                    old_lines,
-                    new_start,
-                    new_lines,
-                    lines: Vec::new(),
-                });
-                in_hunk = true;
-                current_hunk_lines.push(line.to_string());
+                // Skip hunks with unparsable headers rather than
+                // fabricating misleading (1, 1) metadata.
+                if let Some((old_start, old_lines, new_start, new_lines)) = parse_hunk_header(line)
+                {
+                    current_hunk = Some(DiffHunk {
+                        old_start,
+                        old_lines,
+                        new_start,
+                        new_lines,
+                        lines: Vec::new(),
+                    });
+                    in_hunk = true;
+                    current_hunk_lines.push(line.to_string());
+                }
             } else if line.starts_with('+') && !line.starts_with("+++") {
                 additions += 1;
                 if in_hunk {
@@ -2225,32 +2229,29 @@ impl CommandOutputProjector for GitDiffProjector {
     }
 }
 
-/// Parse a `@@ -old_start,old_lines +new_start,new_lines @@` hunk header.
-fn parse_hunk_header(line: &str) -> (u32, u32, u32, u32) {
-    let inner = line
-        .strip_prefix("@@ ")
-        .and_then(|s| s.strip_suffix(" @@"))
-        .unwrap_or(line);
-    // inner looks like "-1,5 +1,6" or "-1 +1,6"
-    let (old_part, new_part) = if let Some(idx) = inner.find(" +") {
-        (&inner[..idx], &inner[idx + 1..])
-    } else {
-        (inner, "")
-    };
-    let parse_range = |s: &str| -> (u32, u32) {
-        let s = s.strip_prefix('-').unwrap_or(s);
-        if let Some((start, count)) = s.split_once(',') {
-            let start = start.parse().unwrap_or(1);
-            let count = count.parse().unwrap_or(1);
-            (start, count)
-        } else {
-            let start = s.parse().unwrap_or(1);
-            (start, 1)
+/// Parse a `@@ -old_start,old_lines +new_start,new_lines @@` hunk
+/// header. Tolerates a trailing function-context section but returns
+/// `None` when the numeric fields cannot be parsed so callers can skip
+/// the hunk instead of fabricating misleading `(1, 1)` metadata from
+/// adversarial git output.
+fn parse_hunk_header(line: &str) -> Option<(u32, u32, u32, u32)> {
+    let inner = line.strip_prefix("@@ ")?.trim();
+    let inner = inner.strip_suffix("@@").unwrap_or(inner).trim_end();
+
+    let parse_range = |s: &str| -> Option<(u32, u32)> {
+        let s = s.strip_prefix(['-', '+']).unwrap_or(s);
+        match s.split_once(',') {
+            Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
+            None => Some((s.parse().ok()?, 1)),
         }
     };
-    let (old_start, old_lines) = parse_range(old_part);
-    let (new_start, new_lines) = parse_range(new_part);
-    (old_start, old_lines, new_start, new_lines)
+
+    let mut tokens = inner.split_whitespace();
+    let old_token = tokens.next()?;
+    let new_token = tokens.next()?;
+    let (old_start, old_lines) = parse_range(old_token)?;
+    let (new_start, new_lines) = parse_range(new_token)?;
+    Some((old_start, old_lines, new_start, new_lines))
 }
 
 /// Extract decorations from a log line like "subject (HEAD -> main, origin/main)".

@@ -27,6 +27,25 @@ use std::time::{Duration, SystemTime};
 use crate::shell::projection::{CommandExit, CommandOutputStore, CommandRunId};
 use crate::shell::ShellEvent;
 
+/// Per-stream cap on in-flight accumulation. Matches the downstream
+/// [`CommandOutputStore`] single-stream retention so finalized runs
+/// keep equivalent content while bounding bridge memory for
+/// pathological producers (e.g. commands streaming gigabytes of logs).
+const IN_FLIGHT_STREAM_CAP: usize =
+    crate::shell::projection::COMMAND_OUTPUT_MAX_SINGLE_STREAM_BYTES;
+
+/// Append bytes to an in-flight stream, counting anything beyond the
+/// cap as dropped instead of growing the buffer unboundedly.
+fn append_capped(buf: &mut Vec<u8>, dropped: &mut usize, bytes: &[u8]) {
+    if buf.len() >= IN_FLIGHT_STREAM_CAP {
+        *dropped += bytes.len();
+        return;
+    }
+    let take = (IN_FLIGHT_STREAM_CAP - buf.len()).min(bytes.len());
+    buf.extend_from_slice(&bytes[..take]);
+    *dropped += bytes.len() - take;
+}
+
 /// In-flight accumulator for one command.
 #[derive(Debug, Default)]
 struct InFlightCommand {
@@ -35,6 +54,8 @@ struct InFlightCommand {
     started_at: Option<SystemTime>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+    stdout_dropped: usize,
+    stderr_dropped: usize,
     finalized: bool,
 }
 
@@ -65,13 +86,13 @@ impl ShellCommandRunBridge {
             ShellEvent::Stdout { id, bytes } => {
                 let cmd_id = CommandRunId::from(*id);
                 let entry = self.in_flight.entry(cmd_id).or_default();
-                entry.stdout.extend_from_slice(bytes);
+                append_capped(&mut entry.stdout, &mut entry.stdout_dropped, bytes);
                 cmd_id
             }
             ShellEvent::Stderr { id, bytes } => {
                 let cmd_id = CommandRunId::from(*id);
                 let entry = self.in_flight.entry(cmd_id).or_default();
-                entry.stderr.extend_from_slice(bytes);
+                append_capped(&mut entry.stderr, &mut entry.stderr_dropped, bytes);
                 cmd_id
             }
             ShellEvent::Exited {
@@ -134,6 +155,14 @@ impl ShellCommandRunBridge {
         }
         entry.finalized = true;
         let started_at = entry.started_at.unwrap_or_else(SystemTime::now);
+        if entry.stdout_dropped > 0 || entry.stderr_dropped > 0 {
+            tracing::warn!(
+                run_id = id.0,
+                stdout_dropped = entry.stdout_dropped,
+                stderr_dropped = entry.stderr_dropped,
+                "in-flight command output exceeded bridge cap; bytes dropped"
+            );
+        }
         let _ = store.insert(
             id,
             std::mem::take(&mut entry.command),

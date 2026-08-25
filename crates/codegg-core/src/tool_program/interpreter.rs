@@ -742,6 +742,13 @@ impl InterpreterError {
 
 // ── Run configuration ─────────────────────────────────────────────
 
+/// Arithmetic overflow on runtime values is an execution error, never
+/// a panic: tool-call results feed these operations and only
+/// compile-time constants pass the static bounds checker.
+fn overflow_err(op: &str) -> InterpreterError {
+    InterpreterError::TypeError(format!("integer overflow in {op}"))
+}
+
 /// Per-execution configuration passed to [`MeteredInterpreter::run`].
 /// These are not persisted in the interpreter; they apply to a single
 /// execution run and allow the executor to enforce deadlines.
@@ -780,6 +787,8 @@ pub struct MeteredInterpreter {
     /// Replay fingerprint for C-21 verification.
     replay_fingerprint: Option<ReplayFingerprint>,
     pending_child_wait: Option<PendingChildWait>,
+    /// Monotonically increasing sequence stamped on each checkpoint.
+    next_checkpoint_sequence: u32,
 }
 
 impl MeteredInterpreter {
@@ -799,6 +808,7 @@ impl MeteredInterpreter {
             checkpoints: Vec::new(),
             replay_fingerprint: None,
             pending_child_wait: None,
+            next_checkpoint_sequence: 0,
         }
     }
 
@@ -1125,17 +1135,17 @@ impl MeteredInterpreter {
                 let items = self.resume_for_loop(*body_start, *loop_end)?;
                 let count = items.len() as u64;
 
-                // Check loop iteration budget (conservative: count all items)
+                // Iteration accounting scheme: all items are counted
+                // once here at first entry (against both the per-loop
+                // and total budgets). ForLoopNext only performs the
+                // re-entry budget check above; it does not add to the
+                // counters.
                 if count > self.limits.max_loop_iterations {
                     return Err(InterpreterError::BudgetExceeded(format!(
                         "loop iteration count {} exceeds max {}",
                         count, self.limits.max_loop_iterations
                     )));
                 }
-                // Don't add to total iterations here — ForLoopNext counts
-                // each continuation, and the first iteration is counted by
-                // the implicit first pass through ForLoopNext.
-                // Actually, count the first iteration here:
                 self.budget.iterations += count;
 
                 // Push loop metadata: (items, index)
@@ -1602,7 +1612,7 @@ impl MeteredInterpreter {
     }
 
     /// Create a checkpoint of the current interpreter state.
-    fn create_checkpoint(&self) -> InterpreterCheckpoint {
+    fn create_checkpoint(&mut self) -> InterpreterCheckpoint {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -1618,6 +1628,11 @@ impl MeteredInterpreter {
         let mut completed_calls: Vec<_> = self.completed_calls.values().cloned().collect();
         completed_calls.sort_by_key(|call| call.sequence);
 
+        // Stamp a monotonically increasing sequence before persisting
+        // so ordering and duplicate detection work across the ledger.
+        let checkpoint_sequence = self.next_checkpoint_sequence;
+        self.next_checkpoint_sequence = self.next_checkpoint_sequence.wrapping_add(1);
+
         let mut checkpoint = InterpreterCheckpoint {
             pc: self.pc,
             steps: self.budget.steps,
@@ -1632,7 +1647,7 @@ impl MeteredInterpreter {
                 .replay_fingerprint
                 .as_ref()
                 .and_then(|f| f.original_deadline_millis),
-            checkpoint_sequence: 0, // Set by the caller (ledger)
+            checkpoint_sequence,
             created_at_millis: chrono::Utc::now().timestamp_millis(),
             semantic_digest: String::new(),
             completed_calls,
@@ -1758,18 +1773,35 @@ impl MeteredInterpreter {
                             "range() step cannot be zero".into(),
                         ));
                     }
-                    let mut items = Vec::new();
-                    if *step > 0 {
-                        let mut v = *start;
-                        while v < *stop {
-                            items.push(ProgramValue::Int(v));
-                            v += step;
-                        }
+                    // Compute the materialized item count with wide
+                    // integers so a hostile range cannot overflow the
+                    // counter or allocate unbounded items before the
+                    // loop-budget check runs.
+                    let (s, t, st) = (*start as i128, *stop as i128, *step as i128);
+                    let span = if st > 0 { t - s } else { s - t };
+                    let stride = st.abs();
+                    let count: u64 = if span > 0 {
+                        ((span - 1) / stride + 1) as u64
                     } else {
-                        let mut v = *start;
-                        while v > *stop {
-                            items.push(ProgramValue::Int(v));
-                            v += step;
+                        0
+                    };
+                    if count > self.limits.max_loop_iterations {
+                        return Err(InterpreterError::BudgetExceeded(format!(
+                            "loop iteration count {} exceeds max {}",
+                            count, self.limits.max_loop_iterations
+                        )));
+                    }
+                    let mut items = Vec::new();
+                    let mut v = *start;
+                    for _ in 0..count {
+                        items.push(ProgramValue::Int(v));
+                        match v.checked_add(*step) {
+                            Some(next) => v = next,
+                            None => {
+                                return Err(InterpreterError::TypeError(
+                                    "range() bounds overflow i64".into(),
+                                ))
+                            }
                         }
                     }
                     items
@@ -1854,11 +1886,15 @@ impl MeteredInterpreter {
             IrBinOp::Add => self.add_values(left, right),
             IrBinOp::Sub => {
                 let (l, r) = self.to_numbers(left, right)?;
-                Ok(ProgramValue::Int(l - r))
+                l.checked_sub(r)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("subtraction"))
             }
             IrBinOp::Mul => {
                 let (l, r) = self.to_numbers(left, right)?;
-                Ok(ProgramValue::Int(l * r))
+                l.checked_mul(r)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("multiplication"))
             }
             IrBinOp::Div => {
                 let (l, r) = self.to_numbers(left, right)?;
@@ -1872,18 +1908,31 @@ impl MeteredInterpreter {
                 if r == 0 {
                     return Err(InterpreterError::DivisionByZero);
                 }
-                Ok(ProgramValue::Int(l / r))
+                l.checked_div(r)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("division"))
             }
             IrBinOp::Mod => {
                 let (l, r) = self.to_numbers(left, right)?;
                 if r == 0 {
                     return Err(InterpreterError::DivisionByZero);
                 }
-                Ok(ProgramValue::Int(l % r))
+                l.checked_rem(r)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("modulo"))
             }
             IrBinOp::Pow => {
                 let (l, r) = self.to_numbers(left, right)?;
-                Ok(ProgramValue::Int(l.pow(r as u32)))
+                // Bound the exponent so bases like 0/1/-1 cannot spin
+                // checked_pow for billions of iterations.
+                if !(0..=1024).contains(&r) {
+                    return Err(InterpreterError::TypeError(format!(
+                        "pow exponent out of supported range: {r}"
+                    )));
+                }
+                l.checked_pow(r as u32)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("exponentiation"))
             }
             IrBinOp::BitOr => {
                 let (l, r) = self.to_numbers(left, right)?;
@@ -1899,11 +1948,25 @@ impl MeteredInterpreter {
             }
             IrBinOp::LShift => {
                 let (l, r) = self.to_numbers(left, right)?;
-                Ok(ProgramValue::Int(l << r))
+                if !(0..64).contains(&r) {
+                    return Err(InterpreterError::TypeError(format!(
+                        "shift amount out of range: {r}"
+                    )));
+                }
+                l.checked_shl(r as u32)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("left shift"))
             }
             IrBinOp::RShift => {
                 let (l, r) = self.to_numbers(left, right)?;
-                Ok(ProgramValue::Int(l >> r))
+                if !(0..64).contains(&r) {
+                    return Err(InterpreterError::TypeError(format!(
+                        "shift amount out of range: {r}"
+                    )));
+                }
+                l.checked_shr(r as u32)
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("right shift"))
             }
         }
     }
@@ -1914,7 +1977,10 @@ impl MeteredInterpreter {
         right: &ProgramValue,
     ) -> Result<ProgramValue, InterpreterError> {
         match (left, right) {
-            (ProgramValue::Int(l), ProgramValue::Int(r)) => Ok(ProgramValue::Int(l + r)),
+            (ProgramValue::Int(l), ProgramValue::Int(r)) => l
+                .checked_add(*r)
+                .map(ProgramValue::Int)
+                .ok_or_else(|| overflow_err("addition")),
             (ProgramValue::Float(l), ProgramValue::Float(r)) => Ok(ProgramValue::Float(l + r)),
             (ProgramValue::Int(l), ProgramValue::Float(r)) => {
                 Ok(ProgramValue::Float(*l as f64 + r))
@@ -1960,7 +2026,10 @@ impl MeteredInterpreter {
     ) -> Result<ProgramValue, InterpreterError> {
         match kind {
             IrUnaryOp::Neg => match operand {
-                ProgramValue::Int(i) => Ok(ProgramValue::Int(-i)),
+                ProgramValue::Int(i) => i
+                    .checked_neg()
+                    .map(ProgramValue::Int)
+                    .ok_or_else(|| overflow_err("negation")),
                 ProgramValue::Float(f) => Ok(ProgramValue::Float(-f)),
                 _ => Err(InterpreterError::TypeError(format!(
                     "cannot negate {:?}",
@@ -2106,19 +2175,30 @@ impl MeteredInterpreter {
         stop: &ProgramValue,
         step: &ProgramValue,
     ) -> Result<ProgramValue, InterpreterError> {
-        let to_usize = |v: &ProgramValue, default: Option<usize>| -> Option<usize> {
-            match v {
-                ProgramValue::Int(i) => Some(*i as usize),
-                ProgramValue::None => default,
-                _ => None,
-            }
-        };
+        // Reject negative indices explicitly instead of letting them
+        // wrap to huge usizes and silently produce empty slices.
+        let to_usize =
+            |v: &ProgramValue, default: Option<usize>| -> Result<Option<usize>, InterpreterError> {
+                match v {
+                    ProgramValue::Int(i) => {
+                        if *i < 0 {
+                            Err(InterpreterError::IndexError(format!(
+                                "negative slice index {i} is not supported"
+                            )))
+                        } else {
+                            Ok(Some(*i as usize))
+                        }
+                    }
+                    ProgramValue::None => Ok(default),
+                    _ => Ok(None),
+                }
+            };
 
         match collection {
             ProgramValue::List(items) => {
-                let start_idx = to_usize(start, Some(0)).unwrap_or(0);
-                let stop_idx = to_usize(stop, Some(items.len())).unwrap_or(items.len());
-                let step_val = to_usize(step, Some(1)).unwrap_or(1).max(1);
+                let start_idx = to_usize(start, Some(0))?.unwrap_or(0);
+                let stop_idx = to_usize(stop, Some(items.len()))?.unwrap_or(items.len());
+                let step_val = to_usize(step, Some(1))?.unwrap_or(1).max(1);
                 let sliced: Vec<ProgramValue> = items
                     .iter()
                     .enumerate()
@@ -2131,9 +2211,9 @@ impl MeteredInterpreter {
             }
             ProgramValue::String(s) => {
                 let chars: Vec<char> = s.chars().collect();
-                let start_idx = to_usize(start, Some(0)).unwrap_or(0);
-                let stop_idx = to_usize(stop, Some(chars.len())).unwrap_or(chars.len());
-                let step_val = to_usize(step, Some(1)).unwrap_or(1).max(1);
+                let start_idx = to_usize(start, Some(0))?.unwrap_or(0);
+                let stop_idx = to_usize(stop, Some(chars.len()))?.unwrap_or(chars.len());
+                let step_val = to_usize(step, Some(1))?.unwrap_or(1).max(1);
                 let sliced: String = chars
                     .iter()
                     .enumerate()

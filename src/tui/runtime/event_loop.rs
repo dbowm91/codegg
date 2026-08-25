@@ -365,6 +365,9 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                     }
                     Err(e) => {
                         tracing::warn!("Config reload error: {}", e);
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("Config reload failed: {e}"));
                     }
                 }
             }

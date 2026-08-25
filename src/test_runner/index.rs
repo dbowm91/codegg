@@ -334,9 +334,13 @@ fn is_cwd_within_workdir(cwd: &Path, workdir: &Path) -> bool {
 fn truncate_utf8(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         s.to_string()
+    } else if max_bytes < 3 {
+        // No room for the "..." suffix; an empty string is the only
+        // result that respects the limit.
+        String::new()
     } else {
         // Reserve 3 bytes for "..." suffix
-        let target = max_bytes.saturating_sub(3);
+        let target = max_bytes - 3;
         if target == 0 {
             return "...".to_string();
         }
@@ -640,7 +644,10 @@ mod tests {
         assert_eq!(truncate_utf8("hello", 3), "...");
         assert_eq!(truncate_utf8("hello", 5), "hello");
         assert_eq!(truncate_utf8("hello", 10), "hello");
-        assert_eq!(truncate_utf8("αβγ", 2), "...");
+        // Limits below the 3-byte ellipsis must return an empty string
+        // so callers can assume result.len() <= max_bytes.
+        assert_eq!(truncate_utf8("αβγ", 2), "");
+        assert_eq!(truncate_utf8("αβγ", 0), "");
         assert_eq!(truncate_utf8("αβγ", 4), "...");
         assert_eq!(truncate_utf8("αβγ", 5), "α...");
         assert_eq!(truncate_utf8("αβγ", 7), "αβγ");

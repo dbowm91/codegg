@@ -1068,6 +1068,26 @@ fn validate_id_str(s: &str) -> Result<(), RunStoreError> {
     Ok(())
 }
 
+/// Write file contents durably: create, write, and fsync before any
+/// rename so the rename cannot land while data blocks are not on
+/// stable storage.
+async fn write_file_durable(path: &Path, data: &[u8]) -> Result<(), RunStoreError> {
+    let mut file = fs::File::create(path).await.map_err(RunStoreError::Io)?;
+    file.write_all(data).await.map_err(RunStoreError::Io)?;
+    file.sync_all().await.map_err(RunStoreError::Io)?;
+    Ok(())
+}
+
+/// Best-effort fsync of a target's parent directory so a completed
+/// rename is itself durable across power loss.
+async fn sync_parent_dir(target: &Path) {
+    if let Some(parent) = target.parent() {
+        if let Ok(dir) = fs::File::open(parent).await {
+            let _ = dir.sync_all().await;
+        }
+    }
+}
+
 async fn directory_size(path: &Path) -> Result<u64, std::io::Error> {
     let mut total = 0u64;
     let mut pending = vec![path.to_path_buf()];
@@ -1177,12 +1197,11 @@ impl FsRunStore {
             data.push(b'\n');
         }
 
-        fs::write(&tmp_path, &data)
-            .await
-            .map_err(RunStoreError::Io)?;
+        write_file_durable(&tmp_path, &data).await?;
         fs::rename(&tmp_path, &path)
             .await
             .map_err(RunStoreError::Io)?;
+        sync_parent_dir(&path).await;
 
         let mut cache = self.index_cache.write();
         *cache = entries.to_vec();
@@ -1199,8 +1218,9 @@ impl FsRunStore {
         let target = run_dir.join(filename);
         let tmp = run_dir.join(format!(".{}.tmp", filename));
 
-        fs::write(&tmp, data).await.map_err(RunStoreError::Io)?;
+        write_file_durable(&tmp, data).await?;
         fs::rename(&tmp, &target).await.map_err(RunStoreError::Io)?;
+        sync_parent_dir(&target).await;
         Ok(target)
     }
 
@@ -1497,10 +1517,11 @@ impl RunStore for FsRunStore {
         manifest.artifacts.push(record);
         let data = serde_json::to_vec_pretty(&manifest).map_err(RunStoreError::Json)?;
         let tmp = manifest_path.with_extension("json.tmp");
-        fs::write(&tmp, &data).await.map_err(RunStoreError::Io)?;
+        write_file_durable(&tmp, &data).await?;
         fs::rename(&tmp, &manifest_path)
             .await
             .map_err(RunStoreError::Io)?;
+        sync_parent_dir(&manifest_path).await;
 
         Ok(ArtifactRef {
             artifact_id,
@@ -1618,8 +1639,16 @@ impl RunStore for FsRunStore {
                 let total_bytes = full_data.len() as u64;
                 let chunk = match range {
                     Some(r) => {
-                        let start = r.start.min(full_data.len());
+                        if r.start > r.end {
+                            return Err(RunStoreError::IntegrityViolation(format!(
+                                "invalid byte range: start {} > end {}",
+                                r.start, r.end
+                            )));
+                        }
+                        // Clamp out-of-bounds values while preserving
+                        // start <= end.
                         let end = r.end.min(full_data.len());
+                        let start = r.start.min(end);
                         ArtifactChunk {
                             artifact_id: id.clone(),
                             data: full_data[start..end].to_vec(),
@@ -1911,8 +1940,16 @@ impl RunStore for MemRunStore {
         let total_bytes = data.len() as u64;
         let chunk = match range {
             Some(r) => {
-                let start = r.start.min(data.len());
+                if r.start > r.end {
+                    return Err(RunStoreError::IntegrityViolation(format!(
+                        "invalid byte range: start {} > end {}",
+                        r.start, r.end
+                    )));
+                }
+                // Clamp out-of-bounds values while preserving
+                // start <= end.
                 let end = r.end.min(data.len());
+                let start = r.start.min(end);
                 ArtifactChunk {
                     artifact_id: id.clone(),
                     data: data[start..end].to_vec(),

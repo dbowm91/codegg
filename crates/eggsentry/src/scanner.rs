@@ -306,7 +306,86 @@ fn inspect_lines(path: Option<&Path>, text: &str) -> Vec<SecurityFinding> {
 }
 
 pub fn inspect_text(path: Option<&std::path::Path>, text: &str) -> Vec<SecurityFinding> {
-    inspect_lines(path, text)
+    let mut findings = inspect_lines(path, text);
+    // Second, bounded multi-line pass: secrets wrapped across line
+    // breaks (PEM bodies, chunked base64, split tokens) are invisible
+    // to the per-line rules above.
+    findings.extend(inspect_multiline(path, text, &findings));
+    findings
+}
+
+/// Window size (in lines) for the multi-line secret pass.
+const MULTILINE_WINDOW_LINES: usize = 4;
+/// Hard cap on the characters considered per window so huge minified
+/// lines cannot blow up the join cost.
+const MULTILINE_WINDOW_MAX_CHARS: usize = 8192;
+
+fn inspect_multiline(
+    path: Option<&Path>,
+    text: &str,
+    existing: &[SecurityFinding],
+) -> Vec<SecurityFinding> {
+    let mut findings = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 2 {
+        return findings;
+    }
+
+    for start in 0..lines.len().saturating_sub(1) {
+        let end = (start + MULTILINE_WINDOW_LINES).min(lines.len());
+        let mut joined = String::new();
+        for line in &lines[start..end] {
+            if joined.chars().count() + line.chars().count() > MULTILINE_WINDOW_MAX_CHARS {
+                break;
+            }
+            // Join without separators so a token wrapped across a
+            // line break reassembles into a matchable form.
+            joined.push_str(line.trim_end_matches(['\\', '\r']));
+        }
+        let joined = joined.trim();
+        if joined.is_empty() {
+            continue;
+        }
+
+        let first_line = start + 1;
+        let last_line = end;
+
+        for rule in SECRET_RULES.iter() {
+            if !rule.re.is_match(joined) {
+                continue;
+            }
+            // Skip if the per-line pass already reported this rule
+            // category inside the window.
+            if existing.iter().any(|f| {
+                f.category == rule.category
+                    && matches!(&f.line_range, Some((a, b)) if *a >= first_line && *b <= last_line)
+            }) || findings.iter().any(|f: &SecurityFinding| {
+                f.category == rule.category
+                    && matches!(&f.line_range, Some((a, b)) if *a >= first_line && *b <= last_line)
+            }) {
+                continue;
+            }
+            let context = path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<text>".to_string());
+            let id =
+                SecurityFinding::deterministic_id("file", &rule.category, &context, first_line);
+            findings.push(SecurityFinding {
+                id,
+                severity: rule.severity,
+                confidence: Confidence::Medium,
+                category: rule.category.clone(),
+                source: FindingSource::BuiltinHeuristic,
+                mode: FindingMode::Deterministic,
+                file: path.map(|p| p.to_path_buf()),
+                line_range: Some((first_line, last_line)),
+                evidence: joined.chars().take(200).collect(),
+                recommendation: rule.recommendation.clone(),
+            });
+        }
+    }
+
+    findings
 }
 
 pub async fn inspect_file(

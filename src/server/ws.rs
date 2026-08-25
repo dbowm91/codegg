@@ -28,6 +28,19 @@ pub use crate::server::state::{ConnectionProbeFactory, ConnectionProbeRegistry};
 
 const WS_OUTBOUND_QUEUE_CAPACITY: usize = 256;
 const TUI_REQUEST_QUEUE_CAPACITY: usize = 32;
+/// Inbound WebSocket message/frame caps applied at every upgrade.
+/// Axum's defaults are 64 MiB/16 MiB per connection; these are sized to
+/// the largest legitimate RPC/TUI command so several near-limit
+/// connections cannot create memory pressure. Keep in sync with the
+/// queue-capacity bounds covered by `check_websocket_bounds.py`.
+const WS_MAX_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
+const WS_MAX_FRAME_SIZE: usize = 4 * 1024 * 1024;
+
+/// Apply the shared inbound size limits to an upgrade request.
+fn limit_ws(ws: WebSocketUpgrade) -> WebSocketUpgrade {
+    ws.max_message_size(WS_MAX_MESSAGE_SIZE)
+        .max_frame_size(WS_MAX_FRAME_SIZE)
+}
 
 /// Connection-local task completion probe. Each counter tracks how many
 /// tasks of the given kind have completed within this connection. Tests
@@ -1373,9 +1386,7 @@ fn validate_ws_auth(
     auth: &WebSocketAuth,
     config: &crate::config::schema::Config,
 ) -> Result<(), StatusCode> {
-    let auth_required = std::env::var("CODEGG_SERVER_AUTH_DISABLED").is_err();
-
-    if !auth_required {
+    if crate::server::middleware::auth::auth_disabled_by_env() {
         return Ok(());
     }
 
@@ -1387,19 +1398,21 @@ fn validate_ws_auth(
     // Same resolution order as the HTTP auth middleware: env var first,
     // then config-file token. Without this fallback a config-only token
     // protects HTTP routes while the WS endpoints stay open.
-    let expected = std::env::var("CODEGG_SERVER_TOKEN")
-        .ok()
-        .or_else(|| config.server.as_ref().and_then(|s| s.token.clone()));
+    let expected = crate::server::middleware::auth::resolve_expected_token(config);
 
-    if let Some(expected_token) = expected {
-        let valid = client_token
-            .as_ref()
-            .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
-            .unwrap_or(false);
+    let Some(expected_token) = expected else {
+        // Fail closed: with auth enabled and no token configured there
+        // is no way to distinguish callers, so refuse the upgrade.
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    };
 
-        if !valid {
-            return Err(StatusCode::UNAUTHORIZED);
-        }
+    let valid = client_token
+        .as_ref()
+        .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
+        .unwrap_or(false);
+
+    if !valid {
+        return Err(StatusCode::UNAUTHORIZED);
     }
 
     Ok(())
@@ -1415,7 +1428,7 @@ pub async fn handle_ws(
         return res.into_response();
     }
 
-    ws.on_upgrade(move |socket| async move {
+    limit_ws(ws).on_upgrade(move |socket| async move {
         upgrade_ws(socket, state, addr).await;
     })
 }
@@ -1807,7 +1820,7 @@ pub async fn handle_tui(
         return res.into_response();
     }
 
-    ws.on_upgrade(move |socket| async move {
+    limit_ws(ws).on_upgrade(move |socket| async move {
         upgrade_tui(socket, state, addr).await;
     })
 }
@@ -3820,7 +3833,7 @@ pub async fn handle_core_ws(
         return res.into_response();
     }
 
-    ws.on_upgrade(move |socket| async move {
+    limit_ws(ws).on_upgrade(move |socket| async move {
         upgrade_core_ws(socket, state, addr).await;
     })
 }

@@ -472,9 +472,11 @@ pub const CONFIG_KEY_ALLOWLIST: &[&str] = &[
     "core.safecrlf",
     "core.quotepath",
     "core.autopush",
-    "credential.helper",
-    "http.postbuffer",
-    "http.sslverify",
+    // Note: `credential.*` and `http.*` are denied by
+    // CONFIG_DENIED_KEY_PATTERNS, which is evaluated first — do not
+    // re-add `credential.helper`, `http.postbuffer`, or
+    // `http.sslverify` here; they would be unreachable (and
+    // credential.helper is an arbitrary-execution vector).
 ];
 
 /// Glob-like patterns for sensitive credential/URL config keys that

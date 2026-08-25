@@ -405,6 +405,10 @@ pub struct WorkspaceRegistry {
     store: Arc<dyn WorkspaceStore>,
     by_id: DashMap<String, Arc<WorkspaceRecord>>,
     by_root: DashMap<PathBuf, WorkspaceId>,
+    /// Serializes the check-then-insert registration slow path so two
+    /// concurrent first-time registrations of the same canonical root
+    /// cannot mint distinct IDs and leave inconsistent index maps.
+    register_lock: Mutex<()>,
 }
 
 impl WorkspaceRegistry {
@@ -416,6 +420,7 @@ impl WorkspaceRegistry {
             store,
             by_id: DashMap::new(),
             by_root: DashMap::new(),
+            register_lock: Mutex::new(()),
         });
         for record in records {
             registry
@@ -438,6 +443,7 @@ impl WorkspaceRegistry {
             store,
             by_id: DashMap::new(),
             by_root: DashMap::new(),
+            register_lock: Mutex::new(()),
         })
     }
 
@@ -470,6 +476,22 @@ impl WorkspaceRegistry {
         if let Some(existing) = self.by_root.get(&canonical_root) {
             let existing_id = existing.clone();
             drop(existing);
+            // Refresh last-opened in the store (best-effort, non-fatal).
+            if let Err(e) = self.store.touch_last_opened(existing_id.as_str()).await {
+                tracing::warn!(error = %e, workspace_id = %existing_id, "workspace last-opened touch failed");
+            }
+            if let Some(cached) = self.by_id.get(existing_id.as_str()) {
+                return Ok(cached.clone());
+            }
+        }
+        // Serialize the check-then-insert slow path: two concurrent
+        // first-time registrations of the same root must not mint two
+        // IDs. The loser of the race re-checks below and adopts the
+        // winner's record.
+        let _registration = self.register_lock.lock().await;
+        // Double-checked lookup after acquiring the registration lock.
+        if let Some(existing_id) = self.by_root.get(&canonical_root).map(|e| e.clone()) {
+            drop(_registration);
             // Refresh last-opened in the store (best-effort, non-fatal).
             if let Err(e) = self.store.touch_last_opened(existing_id.as_str()).await {
                 tracing::warn!(error = %e, workspace_id = %existing_id, "workspace last-opened touch failed");
