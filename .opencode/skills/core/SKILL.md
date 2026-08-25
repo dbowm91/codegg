@@ -50,7 +50,7 @@ Override with `CODEGG_DAEMON_HOME`. Key types in `src/core/instance.rs`:
 
 ## Protocol Basics
 
-Core requests and responses are defined in `src/protocol/core.rs` and wrapped in `RequestEnvelope` / `CoreResponse`.
+Core requests and responses are defined in the `codegg-protocol` workspace crate (`crates/codegg-protocol`), re-exported as `codegg::protocol` via `src/lib.rs`. The root-level `src/protocol/` directory no longer exists.
 
 Important points:
 - `protocol_version` is part of every request envelope

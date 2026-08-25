@@ -1,33 +1,64 @@
 ---
 name: skills
 description: Skills module for specialized capabilities activated via /skill: commands
-version: 1.1.0
+version: 2.0.0
 tags:
   - skills
-  - module
+  - asset-registry
   - loading
   - activation
 ---
 
 # Skills Module Guide
 
-This skill covers the skills system in codegg for loading and activating specialized capabilities.
+This skill covers the skills system in codegg for discovering, loading, and activating specialized capabilities.
 
 ## Overview
 
-The `skills` module (`src/skills/mod.rs`) provides:
-- Skill loading from markdown files with YAML frontmatter
-- Skill activation via `/skill:<name>` commands
+The `skills` module (`src/skills/`) provides:
+- Source-aware skill discovery from CodeGG, `.agents`, OpenCode, and Claude-compatible harness locations (project and global)
+- Portable `SKILL.md` package parsing with YAML frontmatter
+- Deterministic precedence and duplicate/shadow resolution
+- Content digests for change detection
+- Security-bounded discovery (symlink escape, path traversal, bounded sizes)
+- Skill activation via `/skill:<name>` commands and the `skill` model tool
 - System prompt augmentation with skill content
 
-This repository also keeps the agent-facing maintenance copy of those skill docs in `.skills/`. Keep that directory aligned with the runtime behavior documented here.
+This repository also keeps agent-facing maintenance copies of its own skill docs in `.opencode/skills/` (`.skills` and `.agents/skills` are symlinks to it). Keep those aligned with runtime behavior documented here.
+
+## Module Structure
+
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Legacy `Skill`, `SkillIndex` facade + re-exports |
+| `registry.rs` | `AssetRegistry` — primary public type; builds an immutable source-aware snapshot (`effective`, `diagnostics`, `sources`) |
+| `candidate.rs` | `SkillCandidate`, `EffectiveSkill`, `ResourceDescriptor`, `ShadowedAlternative` |
+| `source.rs` | `SourceKind`, `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
+| `parser.rs` | Frontmatter/package parsing |
+| `resource.rs` | `ResourceHandle`, `ResourceReadLimits`, bounded resource reads |
+| `compat.rs` | `SkillIndexCompat` — backward-compatible bridge to the legacy `SkillIndex` API |
+| `diagnostic.rs` | `Diagnostic`, `Severity` |
+
+## Discovery Sources and Precedence
+
+`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden):
+
+| Rank | Source |
+|------|--------|
+| 0 | `.codegg/skills/` (project) |
+| 10 | `.agents/skills/` (project) |
+| 20 | `.opencode/skills/` (project) |
+| 30 | `.claude/skills/` (project) |
+| 40–70 | Same four roots under the global config directory |
+| 80 | CodeGG native compat location |
+
+Discovery is bounded by `AssetDiscoveryConfig` (max file size, max frontmatter size, max skills per root, max resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
 
 ## Key Types
 
-### Skill
+### Skill (legacy facade)
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -38,16 +69,28 @@ pub struct Skill {
 }
 ```
 
-### SkillIndex
+### AssetRegistry (primary)
 
 ```rust
-pub struct SkillIndex {
-    skills: Vec<Skill>,
+pub struct AssetRegistry {
+    pub effective: Vec<EffectiveSkill>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub sources: Vec<SourceSummary>,
 }
 
+impl AssetRegistry {
+    pub fn build(config: AssetDiscoveryConfig, project_root: &Path, global_roots: &[PathBuf]) -> Self;
+}
+```
+
+Constructed once at startup in `src/tool/skill.rs` (`AssetRegistry::build(&asset_config, workspace_root, &global_roots)`) and surfaced to agents through the asset snapshot (`src/agent/asset_snapshot*.rs`).
+
+### SkillIndex (legacy facade)
+
+```rust
 impl SkillIndex {
     pub fn new() -> Self;
-    pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>;
+    pub async fn load(&mut self, project_dir: &str) -> Result<(), AppError>; // global ~/.config/codegg/skills + project .codegg/skills
     pub fn get(&self, name: &str) -> Option<&Skill>;
     pub fn list(&self) -> &[Skill];
     pub fn find_matching(&self, query: &str) -> Vec<&Skill>;
@@ -56,9 +99,11 @@ impl SkillIndex {
 }
 ```
 
+`SkillIndexCompat` adapts registry output for existing consumers. New code should prefer `AssetRegistry`.
+
 ## Skill File Format
 
-Skills are stored as markdown files with YAML frontmatter:
+Skills are markdown files with YAML frontmatter:
 
 ```markdown
 ---
@@ -69,121 +114,42 @@ tags: [vcs, git]
 ---
 
 # Git Skill
-
-You have access to advanced git operations...
-
-## Branches
-- `git branch -a` - List all branches
+...
 ```
 
-## Skill Loading
+Loading accepts direct `.md` files and directories containing `SKILL.md` (directory name becomes the skill name when `name` is absent).
 
-Skills are loaded from two locations:
-- **Global**: `~/.config/codegg/skills/`
-- **Project**: `.codegg/skills/` (in project directory)
-- **Workspace mirror**: `.agents/skills` is a symlink to `.opencode/skills/` for workspace-root convenience; these are the agent-facing skill docs, not the runtime loading path
-
-Loading is done recursively:
-- Direct `.md` files are loaded as skills
-- Directories containing `SKILL.md` are loaded as skills (directory name becomes skill name)
-
-## Usage in Code
-
-### Loading Skills (main.rs)
-
-```rust
-let mut skills = SkillIndex::new();
-skills.load(&project_dir).await?;
-```
-
-### Activating a Skill
-
-```rust
-// From CLI --session flag
-if let Some(skill_body) = skills.activate(skill_name) {
-    app.prompt_state.prompt.set_text(skill_body);
-}
-```
-
-### SkillTool for Runtime Loading
+## Runtime Activation
 
 The `SkillTool` (`src/tool/skill.rs`) provides runtime skill loading:
 
 ```rust
-// Execute with /skill:<name>
+// Execute with {"name": "<skill>"}
 let result = skill_tool.execute(json!({"name": "git"})).await;
 // Returns JSON with name, description, body, and resources
 ```
 
-### Resource Enumeration
-
-The `list_skill_resources()` function (`src/tool/skill.rs:67`) scans a skill's directory for additional resource files:
-
-```rust
-async fn list_skill_resources(skill_path: &Path) -> Vec<String>
-```
-
-**Behavior:**
-- If `skill_path` is a file, uses its parent directory
-- If `skill_path` is a directory, uses it directly
-- Returns empty `Vec` if path is not a valid directory
-- Excludes `SKILL.md` from results
-- Returns file/directory names (not full paths)
-
-**Used by:** `SkillTool::execute()` to include resource list in tool output
+`list_skill_resources()` enumerates a skill package's additional resource files (excludes `SKILL.md`; returns names, not full paths).
 
 ## Integration Points
 
 | Location | Usage |
 |----------|-------|
-| `main.rs:930` | Creates and loads `SkillIndex` at startup |
-| `src/tool/skill.rs` | Provides `/skill:` tool for runtime loading |
-| `src/agent/prompt.rs` | `assemble_system_prompt()` accepts `skills: &[String]` parameter |
-
-## Key Methods
-
-### `load(project_dir)`
-
-Async method that loads skills from both global and project directories. Clears existing skills before loading.
-
-### `get(name)`
-
-Returns `Option<&Skill>` for exact name match.
-
-### `find_matching(query)`
-
-Searches name, description, and tags for fuzzy matching. Returns `Vec<&Skill>`.
-
-### `activate(name)`
-
-Returns `Option<String>` containing the skill body for a given name.
-
-### `build_system_prompt()`
-
-Generates a markdown listing of all available skills. Returns empty string if no skills loaded.
+| `src/tool/skill.rs` | Builds `AssetRegistry` at startup; provides the `skill` tool |
+| `src/agent/asset_snapshot_builder.rs` / `asset_snapshot.rs` | Surface effective skills to agents |
+| `src/core/daemon.rs` | Daemon-side registry construction |
+| `src/agent/prompt.rs` | `assemble_system_prompt()` accepts `skills: &[String]` |
 
 ## Skills vs System Prompts
 
-- **Skills**: Loaded on-demand via `/skill:` command, contain specialized instructions
+- **Skills**: Loaded on-demand via `/skill:` command or `skill` tool; contain specialized instructions
 - **System Prompts**: Agent-level instructions baked into `Agent.system_prompt`
 - **Instructions**: Global instructions from `config.instructions` applied to all agents
 
 ## Adding New Skills
 
-1. Create `~/.config/codegg/skills/<name>/SKILL.md` or `.opencode/skills/<name>.md`
+1. Create a directory with `SKILL.md` under one of the discovery roots (project `.codegg/skills/<name>/SKILL.md` is canonical)
 2. Use YAML frontmatter with `name`, `description`, and optional `version` and `tags`
 3. Add skill body content after frontmatter
 
-Example:
-```markdown
----
-name: docker
-description: Docker and container operations
-version: 1.0.0
-tags: [containers, devops]
----
-
-# Docker Skill
-
-You have access to Docker commands for container management...
-```
+See `architecture/skills.md` for the authoritative module contract.

@@ -28,6 +28,7 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 | `!command` | Run command, store output ephemerally (model never sees it) |
 | `!!command` | Run command, auto-promote output into conversation |
 | `/shell-list` | Show recent shell commands with status |
+| `/shell-show <id>` | Show stored output for a command |
 | `/shell-include <id> [stdout\|stderr\|all]` | Promote a stored command's output into context |
 | `/shell-rerun <id>` | Re-execute a previous command |
 | `/shell-kill <id>` | Abort a running command |
@@ -97,11 +98,14 @@ The human shell lets users run shell commands from the TUI prompt without the mo
     "max_history_entries": 100,
     "max_bytes_per_command": 1000000,
     "max_total_bytes": 8000000,
+    "ansi": "sgr-only",
     "confirm_dangerous": true,
     "auto_promote_bangbang": true
   }
 }
 ```
+
+`ansi` controls ANSI escape handling in captured output (`AnsiMode`: `sgr-only` (default), `strip`, `raw`).
 
 ## Key Types
 

@@ -1,12 +1,14 @@
 ---
 name: util
-description: Utility functions for clipboard, fuzzy matching, text truncation, and metrics collection
-version: 1.0.0
+description: Utility functions for clipboard, fuzzy matching, text truncation, metrics collection, string interning, and model pricing lookup
+version: 1.1.0
 tags:
   - clipboard
   - fuzzy
   - truncate
   - metrics
+  - interner
+  - pricing
   - utilities
 ---
 
@@ -19,8 +21,10 @@ This skill covers the utility functions in codegg for common operations.
 The `src/util/` module provides:
 - Clipboard operations (feature-gated with `arboard`)
 - Fuzzy string matching and scoring (using `strsim`)
-- Text truncation (by lines or bytes)
+- Text truncation (by lines or bytes, prefix and suffix)
 - Metrics collection (counters, gauges, histograms)
+- String interning (`interner.rs`)
+- Model cost-per-token pricing tables (`pricing.rs`)
 
 ## Components
 
@@ -56,10 +60,23 @@ Text truncation utilities for handling long content.
 ```rust
 pub fn truncate_lines(text: &str, max_lines: usize) -> String;
 pub fn truncate_bytes(text: &str, max_bytes: usize) -> String;
+pub fn truncate_prefix(text: &str, max_bytes: usize) -> &str;
+pub fn truncate_suffix(text: &str, max_bytes: usize) -> &str;
 ```
 
 - `truncate_lines`: Keeps `max_lines/2` from start and end, shows "[X lines truncated]" in middle
 - `truncate_bytes`: Safely truncates at UTF-8 character boundary, appends "... [truncated]"
+- `truncate_prefix` / `truncate_suffix`: Borrowing variants that keep the tail/head respectively, truncated at a UTF-8 char boundary
+
+`mod.rs` re-exports `truncate_bytes`, `truncate_lines`, `truncate_prefix`, and `truncate_suffix`.
+
+### interner.rs
+
+Small string interner for deduplicating repeated strings (e.g., tool names in metrics/tracing paths).
+
+### pricing.rs
+
+Model cost-per-token pricing lookup tables used by usage/cost reporting. Pricing entries are keyed by provider/model identifiers.
 
 ### metrics.rs
 
@@ -121,16 +138,14 @@ let score = fuzzy_score("hello", "hello"); // case-insensitive scoring
 // Truncation
 let truncated = truncate_lines("line1\nline2\n...", 10);
 let truncated = truncate_bytes("very long text...", 10);
-```
-
-## Integration Points
+```## Integration Points
 
 | Location | Usage |
 |----------|-------|
-| `src/tui/app/mod.rs:44` | Uses `fuzzy_score` for command filtering |
-| `src/tui/command.rs:2` | Uses `fuzzy_score` for slash command matching |
-| `src/tui/components/completion_overlay.rs:10` | Uses `fuzzy_score` for completion filtering |
-| `src/tui/components/dialogs/share.rs:12` | Uses `clipboard` for URL copying |
+| `src/tui/app/mod.rs` | Uses `fuzzy_score` for command filtering |
+| `src/tui/command.rs` | Uses `fuzzy_score` for slash command matching |
+| `src/tui/components/completion_overlay.rs` | Uses `fuzzy_score` for completion filtering |
+| `src/tui/components/dialogs/share.rs` | Uses `clipboard` for URL copying |
 
 ## Testing
 

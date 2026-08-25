@@ -27,94 +27,38 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 conditionally closed | Provider/storage review passes; hosted verify `30681164263` fails on unrelated workspace Clippy dead-code errors in `crates/codegg-core/build.rs` |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
-| Programmatic tool execution and Tool Programs | closing | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 019 ready | M018 fixture implementation is accepted and green; `018-status.md` remains provisional implementation evidence, and M019 owns independent strict review and isolation ratification |
-| Development verification and release | active | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 006 blocked | Final DVR closure requires strict Provider M007 and Tool Programs M019 records before independent DVR review may proceed |
+| Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
+| Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Status | Implementation plan | Dependencies |
-|---|---|---|---|---|
-| Programmatic tool execution and Tool Programs | 019 — independent strict closure and evidence ratification | ready | `plans/implementation/tool-programs/019-independent-strict-closure-and-evidence-ratification.md` | M018 implementation landed; repeated-run and green full/hosted evidence are available for independent review |
+None currently. The Provider M007, Tool Programs M019, and DVR M007 closure records are accepted; no registered plan is waiting on a dependency.
 
 ## Closure work and dependencies
 
-### Runtime consolidation, deletion, and footprint
+All previously active closure lines are closed:
 
-M009 remains the historical architectural closure record: it converged the TUI on the durable `Schedule*` API, completed provider-turn physical ownership, closed M006 final-tree measurements, and obtained exact-candidate hosted verification. A later audit found one narrower supported-TUI contract defect that M009's regression evidence did not exercise.
+- Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record.
+- Tool Programs M019 independent strict review: `plans/closure/tool-programs/019-status.md`. `018-status.md` remains provisional implementation-authored historical evidence.
+- Tool Programs M020 corrective disposition (child-artifact recovery): `plans/closure/tool-programs/020-status.md`.
+- DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
+- Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 
-Current controlling execution order:
-
-1. Preserve M001–M009 implementation and closure history; do not reopen scheduler architecture, provider ownership, prompt/recovery, or footprint work.
-2. M010 is the sole ready corrective handoff. It must make the short schedule token shown by `/tasks` and the schedule-created toast resolvable to exactly one full durable ID in the active workspace before deletion.
-3. M010 must restore a meaningful `/tasks` prompt/label through the existing durable `ScheduleGet` record path, without another persistence source or public prefix-delete API.
-4. M010 closure requires focused resolver/label tests plus one create -> list -> displayed-token -> delete -> list-absent regression through the durable client/daemon path.
-5. After accepted `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`, the TUI closure addendum may return to closed and M010 moves out of dependency-ready work.
-
-M006 footprint measurements remain accepted and are not rerun for this TUI-only correction unless implementation unexpectedly changes dependencies, features, release profile, or topology.
-
-Verification remains minimal and change-specific. Do not add CI lanes/matrices, scheduled audits, source scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence.
-
-### Agent runtime correctness, autonomy, and simplification
-
-M010 remains historical conditional evidence in `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`. Its structural recovery corrections remain accepted, but its strict disposition is superseded by M011 because later evidence changed the repository state:
-
-- hosted `CI / verify` run `31521674076`, job `93879950640`, failed at Workspace Clippy on the obsolete empty `autonomy_bootstrap_is_explicitly_one_shot` test;
-- ordinary native tool execution still had `Result<String, ToolError>` available but rendered failures to strings before recovery, so known `Permission`/`Timeout` status was not yet preserved through the authoritative path.
-
-M011 was the sole controlling strict closure milestone for that workstream and is now strictly closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Its exact candidate `e3b671ad` passed hosted run `31525206176` / job `93891703941` through Workspace tests.
-
-### Post-audit daemon lifecycle corrective pass
-
-C001/C002 remain accepted historical closure evidence. C003 is a new corrective control point created from later production-entrypoint evidence and must not rewrite those records.
-
-C003 owns the smallest coherent production lifecycle correction:
-
-1. restore production daemon catalog bootstrap/migration instead of project-local legacy-store authority;
-2. make connect-or-start ownership/race semantics correct so an autostarted daemon survives its initiating frontend and concurrent clients converge on one lock winner;
-3. make local socket handshake/readiness, peer-death propagation, reconnect disposition, and endpoint overrides finite and coherent;
-4. make SIGTERM use graceful cancellation with bounded connection draining and owned runtime-artifact cleanup;
-5. make daemon startup logs observable and drain local-MCP stderr so piped child output cannot deadlock the child.
-
-C003 closure requires a real ordinary-startup smoke path, multi-process lifecycle regressions, focused transport/process tests, and `scripts/verify.sh quick`. It must not add a service manager, new CI topology, binary split, or scheduler/protocol redesign.
-
-### Search and eggsearch integration
-
-The 2026-08-15 audit found that CodeGG still selects eggsearch correctly by default, but specialized wrapper schemas had drifted from eggsearch 0.3.6 and direct Exa/research-provider clients bypassed the intended ownership boundary. M001–M003 corrected those issues and recorded wrapper-level current-process compatibility. A 2026-08-16 post-closure review then found a narrower deep-research consumer defect that M004 corrected. A later exact-head review found that M004's strict closure disposition was premature: hosted run `31930352527` / job `95124064959` failed directly on the M004 `result_items()` type shape, current-shaped fixtures still used noncanonical singular provider/source-kind fields, and `LibraryEvaluation` was mapped to `api_evaluation` rather than the supported `library_comparison` workflow.
-
-Current controlling execution order:
-
-1. Preserve M001 request-contract repair and its accepted `plans/closure/search-eggsearch-integration/001-status.md` evidence.
-2. Preserve M002 provider-ownership consolidation and its accepted `plans/closure/search-eggsearch-integration/002-status.md` evidence; do not reintroduce direct Exa/Tavily/Brave/SerpAPI/Kagi paths.
-3. Preserve M003's structured MCP/search-backend implementation and real eggsearch 0.3.6 wrapper smoke as historical accepted evidence. Do not rewrite `plans/closure/search-eggsearch-integration/003-status.md` to conceal later findings.
-4. Preserve M004's functional implementation and `plans/closure/search-eggsearch-integration/004-status.md` as historical evidence. Its current strict disposition is superseded by M005 because exact hosted evidence later failed and the SourceCard/workflow fidelity review found remaining defects.
-5. M005 is closed by `plans/closure/search-eggsearch-integration/005-status.md`; it cleared the exact M004 Clippy failure without weakening lint policy, consumed canonical `SourceCard.providers` and nested `metadata.source_kind`, mapped `LibraryEvaluation -> library_comparison`, preserved M004 invariants, and reconciled PR #78 metadata.
-6. The exact accepted candidate passed focused/current-shaped tests, `scripts/verify.sh quick`, and the ordinary existing PR `CI / verify` run through Workspace Clippy and Workspace tests.
-7. M005 is removed from dependency-ready work and the corrective addendum/search subsystem are closed. No registered downstream plan was unblocked by this closure.
-8. Verification remains deliberately light: no new network CI lane, scheduled compatibility job, version matrix, source scanner, or release gate is added. The M003 real-process smoke remains accepted unless M005 uncovers a specific ambiguity that deterministic fixtures cannot resolve.
-
-### Other active closure dependencies
-
-- Agent runtime/model adaptation/ACP M017 is closed by `plans/closure/agent-runtime-model-adaptation-acp/017-status.md`.
-- Tool Programs M019 remains ready and owns independent strict Tool Programs closure.
-- Provider M007 remains conditionally closed pending its named hosted workspace-gate evidence; this is the independent Provider subsystem, not runtime-consolidation M007.
-- Development Verification and Release M006 remains blocked until Provider M007 and Tool Programs M019 are strictly closed.
-- Runtime-safety C002 remains conditionally closed only on its previously recorded supported-Linux Landlock fixture evidence; do not create another runtime-safety milestone for that external evidence item.
+An audit of this registry found no registered blocked or dependency-ready plan remaining on any of these closures. Verification remains deliberately light: no new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
-| Subsystem | Milestone | Blocker |
-|---|---|---|
-| Development verification and release | M006 | Strict Provider M007 and Tool Programs M019 closure records |
+None. The previous blocker (DVR M006 waiting on strict Provider M007 and Tool Programs M019 closure records) is resolved: Provider M007, Tool Programs M019/M020, and DVR M007 all have accepted strict closure records.
 
 ## Agent-runtime correctness execution order
 
@@ -160,13 +104,17 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
 | Runtime safety, resource control, and footprint | C002 | conditionally closed | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
-| Provider connections and Eggpool | M007 | conditionally closed | `plans/closure/provider-connections/007-status.md` |
-| Programmatic tool execution and Tool Programs | M018 | provisional/conditional implementation evidence | `plans/closure/tool-programs/018-status.md`; strict review owned by M019 |
+| Provider connections and Eggpool | M007 — conditional disposition (historical) | superseded by strict closure | `plans/closure/provider-connections/007-status.md`; the record's historical sections preserve the earlier conditional result and hosted Clippy failure `30681164263`; see the strict row below |
+| Programmatic tool execution and Tool Programs | M018 — runtime fixture correction (historical) | provisional implementation evidence retained; strict disposition owned by M019 | `plans/closure/tool-programs/018-status.md`; see the M019/M020 rows below |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
 | Search and eggsearch integration | M002 — external search ownership consolidation | closed | `plans/closure/search-eggsearch-integration/002-status.md`; implementation `e46f97d2`; M003 moved to ready |
 | Search and eggsearch integration | M003 — structured contract and compatibility closure | historical closed evidence; current strict disposition superseded by later corrective milestones | `plans/closure/search-eggsearch-integration/003-status.md`; implementation `89dbac7`; M004 corrected the deep-research consumer gap |
 | Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | historical closed implementation evidence; current strict disposition superseded by M005 | `plans/closure/search-eggsearch-integration/004-status.md`; implementation `6f1fa20a`; exact hosted run `31930352527` / job `95124064959` later failed on M004 Clippy and M005 owns remaining SourceCard/workflow fidelity |
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity corrective pass | closed | `plans/closure/search-eggsearch-integration/005-status.md`; implementation/final candidate `75ccc70e`; hosted run `32047863303` / job `95439829669` passed through Workspace tests |
+| Provider connections and Eggpool | M007 — independent closure ratification and governance reconciliation | closed (strict) | `plans/closure/provider-connections/007-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` passed on attempt 3; earlier conditional record retained as historical evidence |
+| Programmatic tool execution and Tool Programs | M019 — independent strict closure and evidence ratification | closed | `plans/closure/tool-programs/019-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` |
+| Programmatic tool execution and Tool Programs | M020 — canonical child-artifact recovery corrective closure | closed | `plans/closure/tool-programs/020-status.md`; implementation `c85980e2`; covered by the same green hosted run |
+| Development verification and release | M007 — minimal verification contract and final closure | closed | `plans/closure/development-verification-release/007-status.md`; accepted revision `c85980e2`; boundary guard fail-open correction; no registered plan was left blocked |
 
 Detailed predecessor history is intentionally not duplicated here. Use the source subsystem roadmaps and `plans/closure/` records for older milestones.
 

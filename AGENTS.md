@@ -288,7 +288,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### Agent Runtime
 
 - **TurnRuntime**: Daemon calls `DefaultTurnRuntime.run_turn(TurnRunInput)` via `deps.turn_runtime`.
-- **AgentLoop has ~57 fields** at `src/agent/loop.rs:401`. Many docs claim 15.
+- **AgentLoop has ~57 fields** at `src/agent/loop.rs:403`. Many docs claim 15.
 - **AgentLoopFactory** (`src/agent/agent_loop_factory.rs`) is a build-only seam.
 - **CoreRuntimeDeps** (`src/core/runtime_deps.rs`): Bundles pool, memory_store, legacy_agent, turn_runtime.
 - **AgentRegistry** (`src/agent/registry.rs`): Central registry separating declarative sources from resolved runtime agents. Prefer over `resolve_agents()`.
@@ -373,9 +373,9 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 `architecture/` has 73 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
 
-`plans/registry.md` is the planning control surface: active subsystem roadmaps, milestone statuses, blockers, and closure records (`plans/closure/`). Check it before assuming a milestone's state.
+`plans/registry.md` is the planning control surface: active subsystem roadmaps, milestone statuses, blockers, and closure records (`plans/closure/`). Check it before assuming a milestone's state. All major subsystems are currently closed; see `plans/registry.md` for the authoritative status of any roadmap or milestone.
 
-`.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
+`.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.skills` and `.agents/skills` are symlinks to `.opencode/skills`). Skills mirror module contracts documented in `architecture/`; update both together when a module contract changes (e.g., `src/skills/` -> `architecture/skills.md`, `src/server/` -> `architecture/server.md`, `src/shell/` -> `architecture/human_shell.md`).
 
 ## Where New Components Belong
 

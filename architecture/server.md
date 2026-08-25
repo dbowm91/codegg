@@ -288,6 +288,12 @@ pub struct ServerState {
     pub mcp_service: Arc<RwLock<McpService>>, // MCP server connections
     pub config: Config,                   // Full configuration
     pub ws_rate_limiter: Arc<WsRateLimiter>,  // Shared WebSocket rate limiter
+    pub daemon: Option<Arc<CoreDaemon>>,  // Daemon handle for daemon-connected mode
+    pub projection_lifecycle_seam: ProjectionLifecycleSeam, // Connection-adapter lifecycle seam (no-op default)
+    // Test-only seams (production leaves these None):
+    pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
+    pub probe_factory: Option<ConnectionProbeFactory>,
+    pub transport_test_config: Option<ProjectionTransportTestConfig>,
 }
 ```
 

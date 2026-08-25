@@ -1,7 +1,7 @@
 ---
 name: server
 description: HTTP/WebSocket server for remote TUI connections with Axum
-version: 1.1.0
+version: 1.2.0
 tags: [server, http, websocket, rest-api, sse]
 ---
 
@@ -21,7 +21,7 @@ The server module (`src/server/`) provides an Axum-based HTTP server with WebSoc
 | `http.rs` | Main server setup with Axum router, middleware, CORS, rate limiting, all API routes |
 | `ws.rs` | WebSocket handling for `/ws` and `/tui` endpoints, RPC request processing, TUI message handling |
 | `state.rs` | `ServerState` struct with shared state including `WsRateLimiter` (note: `event_bus` field was removed - SSE uses global `GlobalEventBus`) |
-| `rpc.rs` | RPC message structures: `RpcRequest`, `RpcResponse`, `RpcError` (for `/ws` JSON-RPC), plus `JsonRpcMessage`/`JsonRpcError` legacy types |
+| `rpc.rs` | RPC message structures: `RpcRequest`, `RpcResponse`, `RpcError` (for the deprecated `/ws` JSON-RPC compatibility endpoint) |
 | `mdns.rs` | mDNS service discovery implementation |
 | `middleware/mod.rs` | Auth middleware module |
 | `middleware/auth.rs` | Token validation middleware |
@@ -52,17 +52,24 @@ pub async fn run_server(host: &str, port: u16) -> Result<(), ServerRuntimeError>
 
 ```rust
 pub struct ServerState {
-    pub project_dir: String,
     pub pool: SqlitePool,
     pub mcp_service: Arc<RwLock<McpService>>,
     pub config: Config,
     pub ws_rate_limiter: Arc<WsRateLimiter>,
+    pub daemon: Option<Arc<crate::core::daemon::CoreDaemon>>,
+    pub projection_lifecycle_seam: ProjectionLifecycleSeam,
+    // Test-only seams (production leaves these None):
+    pub connection_task_probe: Option<Arc<ConnectionTaskProbe>>,
+    pub probe_factory: Option<ConnectionProbeFactory>,
+    pub transport_test_config: Option<ProjectionTransportTestConfig>,
 }
 ```
 
 Key points:
-- `ws_rate_limiter` is shared across all WebSocket connections (not created per-connection)
-- Note: `event_bus` field was removed - SSE handler (`/api/event`) and TUI WebSocket (`/tui`) now directly use `GlobalEventBus::subscribe()` from `crate::bus::global`
+- `ws_rate_limiter` is shared across all WebSocket connections (not created per-connection) and bounded (`MAX_WS_RATE_LIMITER_KEYS = 10_000`) against key churn
+- `daemon` carries the optional `CoreDaemon` handle for daemon-connected server mode
+- `projection_lifecycle_seam` is the connection-adapter lifecycle seam (no-op by default; tests may install pause/fault policy)
+- SSE handler (`/api/event`) and TUI WebSocket (`/tui`) use `GlobalEventBus::subscribe()` from `crate::bus::global`
 - MCP service is wrapped in `Arc<RwLock<>>` for concurrent access
 
 ## HTTP Routes
@@ -106,10 +113,14 @@ Key points:
 - `POST /api/file/write` - Write file
 - `DELETE /api/file/delete` - Delete file
 
-### Project Routes (`/api/project`)
-- `GET /api/project` - Get project info
+### Project Routes (`/api/project`, `/api/projects`)
+- `GET /api/project` - Get current project info
 - `POST /api/project` - Create project
 - `GET /api/project/list` - List projects
+- `GET /api/projects` - List bounded catalog summaries
+- `GET /api/projects/:id` - Get one explicit project
+- `POST /api/projects/:id/archive` - Archive one project logically
+- `POST /api/projects/:id/restore` - Restore one project
 
 ### Workspace Routes (`/api/workspace`)
 - `GET /api/workspace` - Get workspace info
@@ -117,7 +128,8 @@ Key points:
 - `GET /api/workspace/list` - List workspaces
 
 ### WebSocket Routes
-- `GET /ws` - WebSocket RPC endpoint (JSON-RPC)
+- `GET /ws` - Deprecated bounded JSON-RPC WebSocket (legacy compatibility)
+- `GET /core` - CoreFrame WebSocket protocol for non-TUI clients
 - `GET /tui` - WebSocket TUI endpoint (TuiMessage protocol)
 
 ### Health Route
@@ -125,7 +137,7 @@ Key points:
 
 ## WebSocket Protocol
 
-### `/ws` - JSON-RPC
+### `/ws` - Deprecated JSON-RPC (legacy compatibility)
 ```rust
 // Request
 {"jsonrpc": "2.0", "id": 1, "method": "sessions.list", "params": {}}
@@ -221,24 +233,33 @@ The `WsRateLimiter` in `ServerState` is shared across all WebSocket connections.
 ### Health Route Standalone
 `routes/health.rs` contains a standalone `health_check()` function. The main router uses an inline `async fn health_check()` at the top level.
 
+### `/core` CoreFrame WebSocket
+`/core` (handled by `ws::handle_core_ws`) is the remote core protocol for non-TUI clients. It negotiates projection capabilities during handshake, advertises the project-catalog capability, and uses the same bounded critical writer path as `/tui`. See `architecture/server.md` for the full protocol.
+
 ### No TLS Implementation
 Although config supports TLS section, no TLS handling exists in the code.
 
 ## ServerRuntimeError
 
+Defined in `crates/codegg-core/src/error.rs`:
+
 ```rust
 pub enum ServerRuntimeError {
     Bind(String),
     Shutdown(String),
+    WebSocket(String),
+    Rpc(String),
+    Auth(String),
 }
 ```
 
+Root `src/error.rs` re-exports it; Axum-specific error wrappers live behind `#[cfg(feature = "server")]`.
+
 ## See Also
 
-- [architecture/server.md](../architecture/server.md) - Architecture overview
-- `.skills/client/SKILL.md` - Client module for remote TUI
-- `.skills/tui/SKILL.md` - TUI module with remote protocol details
-- `.skills/event-bus/SKILL.md` - GlobalEventBus for SSE
+- [architecture/server.md](../../architecture/server.md) - Architecture overview (includes the `/core` CoreFrame protocol)
+- `.skills/core/SKILL.md` - Core facade and daemon lifecycle
+- `.skills/context/SKILL.md` - Context projection used by WebSocket transports
 
 ## Remote TUI Protocol (Phase 8)
 
