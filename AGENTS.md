@@ -48,6 +48,8 @@ cargo cksplit      # check protocol + config + providers + root
 
 Root `src/` is the application: agent, TUI, tools, server, auth, etc.
 
+Root `Cargo.toml` declares two extra binaries: `codegg-lsp-test-server` (fake LSP server, behind `lsp-test-support`) and `codegg-sandbox-helper` (Linux Landlock sandbox helper).
+
 `examples/plugins/` contains six reference plugins plus two SDKs — process / wasm / builtin / python / rust patterns. Each example is independent; root workspace unmodified.
 
 ## codegg-core Boundary
@@ -74,7 +76,7 @@ Run this after touching `codegg-core` or adding workspace crate dependencies.
 | `debug-logging` | Extra debug logging |
 | `arboard` | Clipboard support (default) |
 
-Changes to server/plugin modules need `--all-features` testing. LSP integration tests need `lsp-test-support`.
+Changes to server/plugin modules need feature-gated testing (targeted `--all-features` runs are fine; never for full workspace sweeps — see Test Resource Budget). LSP integration tests need `lsp-test-support`.
 
 ## Test Resource Budget
 
@@ -83,8 +85,10 @@ The workspace test matrix is large and has substantially different resource prof
 The canonical local entry points are `scripts/verify.sh quick` and `scripts/verify.sh full`. When you do need the full suite locally, cap Cargo's build parallelism and limit test threads:
 
 ```bash
-CARGO_BUILD_JOBS=1 cargo test --workspace --all-features -- --test-threads=1
+CARGO_BUILD_JOBS=1 cargo test --workspace --locked -- --test-threads=1
 ```
+
+Do NOT use `--all-features` for this sweep — it activates `lsp-real-server-tests` (real language-server smoke tests). `verify.sh full` uses `--features server,plugins,lsp-test-support` instead of `--all-features` for the same reason.
 
 Release-footprint measurements are diagnostic and should use isolated target
 directories so incremental artifacts do not affect comparisons:
@@ -251,7 +255,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~15K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (20 submodules). Runtime is in `src/tui/runtime/`.
+- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~15K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (19 submodules). Runtime is in `src/tui/runtime/`.
 - **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` -- never via a shell.
 - **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
@@ -276,10 +280,10 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **Deterministic tools**: `EggsactTool` generic wrapper in `src/tool/deterministic.rs` exposes 8 always-visible tools (`text_equal`, `text_diff_explain`, `text_replace_check`, `validate_json`, `validate_toml`, `command_preflight`, `path_normalize`, `text_security_inspect`) plus 5 deferred tools. Registered best-effort; if `EggsactRuntime::new()` fails, tools are silently skipped.
 - **Preflight**: `src/preflight/` provides harness-side automatic validation before mutating operations using eggsact. **Harness-internal only** -- not model-facing. Findings are severity-classified (`Block`/`Warn`/`Annotate`).
 - **CommandIntentMode**: `Observe | Active | deprecated Route` with default `Observe`. `Active` enables dispatch to structured backends. `route_safe_commands = true` alone does NOT enable active routing.
-- **Tool Programs (M006-M012)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
+- **Tool Programs (M006-M020)**: `tool_program` foreground model tool submits restricted-Python programs. Read-only palette: `read`, `glob`, `grep`, `list` with `DirectOrProgrammatic` caller policy. Manifest resolution validates tool availability before execution. `ToolProgramExecutor` uses real `ToolBroker` via `BrokerAdapter`. `ProgramCallCache` caches read-only results with content/policy-aware keys. Output schemas defined for all palette tools.
   - **M007** child-job composition (`submit_job()`, `BrokerCallback::submit_child_job`, scheduler submission via `JobSubmissionService`).
   - **M008** background submission, projection events, `ToolProgramNotificationService`, AgentLoop notification injection.
-  - **M011/M012** authority, broker, notification, lineage, recovery, result, and hosted correctness closure (current active milestone; see `plans/subsystems/tool-programs-correctness-closure-addendum.md` and `architecture/tool_broker.md`).
+  - **M011-M020**: authority, broker, notification, lineage, recovery, results, descendants, and artifacts closure; M019/M020 records are closed (see `plans/closure/tool-programs/`). Current status lives in `plans/registry.md`; see also `architecture/tool_broker.md`.
 
 ### Agent Runtime
 
@@ -307,7 +311,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **PluginManager** (`src/plugin/management.rs`) is the canonical API: `list()`, `info()`, `enable()`, `disable()`, `doctor()`, `remove()`, `install_from_path()`, `uninstall()`.
 - **Plugin install validation**: `src/plugin/install.rs` does lexical path traversal checks BEFORE canonicalizing. Rejects symlinks, hardlinks, and absolute paths.
 - **Plugin security policy**: `PluginPolicy` in `src/plugin/policy.rs`. All default to conservative. Policy is opt-in.
-- **Plugin SDKs**: `examples/plugins/sdk-rust/` (11 tests) and `examples/plugins/sdk-python/` (24 tests).
+- **Plugin SDKs**: `examples/plugins/sdk-rust/` (12 tests) and `examples/plugins/sdk-python/` (24 tests).
 
 ### Auth
 
@@ -363,11 +367,13 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **BrokerAdapter bridges interpreter to real broker**: `FixtureBroker` is test-only. Production uses `BrokerAdapter` in `src/scheduler/tool_program_executor.rs`.
 - **Manifest resolution gates submission**: Tools without `DirectOrProgrammatic` policy or output schemas are rejected before job creation.
 - **ToolProgramTool is DirectOnly**: Only the agent loop can submit programs. Programs themselves can only call `DirectOrProgrammatic` tools.
-- **M012 active milestone**: Corrective closure is the current focus. Major subsystems live in `crates/codegg-core/src/tool_program/` (interpreter, IR, language), `src/scheduler/tool_program_*`, and `src/tool/tool_program_*`. Test suites are `tests/tool_program_m011_correctness.rs`, `tests/tool_program_m012_*.rs`, `hosted_tool_program_*.rs`. Re-run targeted M012 tests after touching any of these paths.
+- **Milestones M011-M020 are closed** (see `plans/closure/tool-programs/`; `plans/registry.md` is the planning control surface). Major subsystems live in `crates/codegg-core/src/tool_program/` (interpreter, IR, language), `src/scheduler/tool_program_*`, and `src/tool/tool_program_*`. Test suites are `tests/tool_program_*.rs` and `tests/hosted_tool_program_*.rs`. Re-run targeted suites after touching any of these paths.
 
 ## Architecture Docs
 
 `architecture/` has 73 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+
+`plans/registry.md` is the planning control surface: active subsystem roadmaps, milestone statuses, blockers, and closure records (`plans/closure/`). Check it before assuming a milestone's state.
 
 `.opencode/skills/*/SKILL.md` contain module-specific skill guides loaded on-demand via the `skill` tool (`.agents/skills` is a symlink to `.opencode/skills`).
 
