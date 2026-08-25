@@ -37,84 +37,11 @@ impl ApiVersion {
 }
 
 pub mod hooks {
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    #[serde(rename_all = "snake_case")]
-    pub enum HookType {
-        Auth,
-        Provider,
-        ToolDefinition,
-        ToolExecuteBefore,
-        ToolExecuteAfter,
-        ChatParams,
-        ChatHeaders,
-        Event,
-        Config,
-        ShellEnv,
-        TextComplete,
-        SessionCompacting,
-        MessagesTransform,
-    }
-
-    impl HookType {
-        pub fn as_str(&self) -> &'static str {
-            match self {
-                HookType::Auth => "auth",
-                HookType::Provider => "provider",
-                HookType::ToolDefinition => "tool.definition",
-                HookType::ToolExecuteBefore => "tool.execute.before",
-                HookType::ToolExecuteAfter => "tool.execute.after",
-                HookType::ChatParams => "chat.params",
-                HookType::ChatHeaders => "chat.headers",
-                HookType::Event => "event",
-                HookType::Config => "config",
-                HookType::ShellEnv => "shell.env",
-                HookType::TextComplete => "text.complete",
-                HookType::SessionCompacting => "session.compacting",
-                HookType::MessagesTransform => "messages.transform",
-            }
-        }
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct HookContext {
-        pub hook_type: HookType,
-        pub input: serde_json::Value,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct HookResult {
-        pub output: serde_json::Value,
-        pub blocked: bool,
-        pub error: Option<String>,
-    }
-
-    impl HookResult {
-        pub fn ok(output: serde_json::Value) -> Self {
-            Self {
-                output,
-                blocked: false,
-                error: None,
-            }
-        }
-
-        pub fn blocked() -> Self {
-            Self {
-                output: serde_json::Value::Null,
-                blocked: true,
-                error: None,
-            }
-        }
-
-        pub fn error(msg: impl Into<String>) -> Self {
-            Self {
-                output: serde_json::Value::Null,
-                blocked: false,
-                error: Some(msg.into()),
-            }
-        }
-    }
+    // Re-export the canonical hook types from `crate::plugin::hooks`.
+    // This module previously carried its own divergent copies
+    // (`HookResult` without the `effects` field), which drifted from
+    // the production dispatch path; keep a single definition.
+    pub use crate::plugin::hooks::{HookContext, HookResult, HookType};
 }
 
 pub mod tools {

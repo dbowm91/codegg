@@ -281,11 +281,14 @@ pub fn redact_url_credentials_in_text(text: &str) -> String {
             continue;
         }
         // Emit verbatim run before the URL, then the redacted URL.
-        out.push_str(&text[i..pos]);
-        // text[pos..end] starts at `://`; we need the full URL
-        // including the scheme. Walk back to the scheme start so the
-        // redactor sees `scheme://...`.
+        // The verbatim run must stop at the scheme start (not at the
+        // `://` marker) because the sanitized replacement below
+        // includes the scheme; stopping at `pos` would duplicate it
+        // (`httpshttps://redacted@...`).
         let scheme_start = walk_back_to_scheme_start(text.as_bytes(), pos);
+        out.push_str(&text[i..scheme_start]);
+        // text[scheme_start..end] starts at the scheme so the redactor
+        // sees `scheme://...`.
         let sanitized = redact_url_credentials(text[scheme_start..end].trim_end());
         out.push_str(&sanitized);
         i = end;
@@ -590,6 +593,20 @@ mod tests {
         assert!(
             redacted.contains("redacted"),
             "missing redacted marker in {redacted}"
+        );
+    }
+
+    #[test]
+    fn text_redact_does_not_duplicate_scheme() {
+        // Regression: the verbatim prefix used to be emitted up to the
+        // `://` marker while the replacement re-included the scheme,
+        // producing `httpshttps://redacted@...`.
+        let stderr =
+            "fatal: unable to access 'https://user:secret@github.com/r.git/': Failed to connect";
+        let redacted = redact_url_credentials_in_text(stderr);
+        assert_eq!(
+            redacted,
+            "fatal: unable to access 'https://redacted@github.com/r.git/': Failed to connect"
         );
     }
 

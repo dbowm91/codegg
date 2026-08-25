@@ -2,6 +2,7 @@ use axum::{extract::Path, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AxumAppError, ToolError};
+use crate::server::perm_ids::parse_scoped_pending_id;
 
 #[derive(Deserialize, Serialize)]
 pub struct PermissionResponse {
@@ -20,6 +21,8 @@ pub struct SubmitPermissionRequest {
     pub persist: bool,
 }
 
+/// Serializable view of a pending permission for remote clients.
+/// Wire shape: `{ perm_id, session_id, turn_id, age_ms }`.
 pub async fn submit_permission(
     Path(perm_id): Path<String>,
     Json(req): Json<SubmitPermissionRequest>,
@@ -38,7 +41,17 @@ pub async fn submit_permission(
         }
     };
 
-    if !crate::bus::PermissionRegistry::respond(perm_id.clone(), choice) {
+    // The registry is session-scoped: resolve (session, simple perm id)
+    // from a prefixed protocol ID when present, otherwise trust the
+    // body's session_id. Unscoped legacy `respond` would silently fail
+    // against any real registration (which always carries a session).
+    let responded = match parse_scoped_pending_id(&perm_id) {
+        Some((session_id, simple_perm_id)) => {
+            crate::bus::PermissionRegistry::respond_scoped(&session_id, &simple_perm_id, choice)
+        }
+        None => crate::bus::PermissionRegistry::respond_scoped(&req.session_id, &perm_id, choice),
+    };
+    if !responded {
         tracing::warn!("permission response failed for perm_id: {}", perm_id);
     }
 
@@ -56,19 +69,22 @@ pub async fn get_pending_permissions(
     Ok(Json(get_pending_permissions_for_session(&session_id)))
 }
 
-/// Helper function that returns pending permissions for a session.
-/// This can be called directly in tests without Axum extractors.
-/// NOTE: PermissionRegistry does not store session_id in keys, so proper session-based
-/// filtering is not possible without extending the registry. Returns empty list when
-/// session_id is provided to indicate filtering is not supported.
+/// Helper function that returns pending permissions owned by
+/// `session_id`. This can be called directly in tests without Axum
+/// extractors.
 pub fn get_pending_permissions_for_session(session_id: &str) -> serde_json::Value {
-    let _pending_ids = crate::bus::PermissionRegistry::pending_permission_ids();
-
-    // PermissionRegistry keys are in format "{tool_call_id}-{tool_name}" not "{session_id}-..."
-    // We cannot properly filter by session without extending the registry.
-    // Return empty to indicate filtering is not possible.
-    let _ = session_id;
-    let permissions: Vec<serde_json::Value> = Vec::new();
+    let permissions: Vec<serde_json::Value> =
+        crate::bus::PermissionRegistry::get_pending_for_session(session_id)
+            .into_iter()
+            .map(|p| {
+                serde_json::json!({
+                    "perm_id": p.perm_id,
+                    "session_id": p.session_id,
+                    "turn_id": p.turn_id,
+                    "age_ms": p.created_at.elapsed().as_millis() as u64,
+                })
+            })
+            .collect();
 
     serde_json::json!({
         "permissions": permissions

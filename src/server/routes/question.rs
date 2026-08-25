@@ -35,9 +35,23 @@ pub async fn submit_question(
         )))
     })?;
 
-    let answered = QuestionRegistry::answer_question(session_id.clone(), answers_json);
+    // Questions are keyed by their registry id (`q-{uuid}`) and owned by
+    // a session. Answer every pending question owned by this session —
+    // the legacy path looked up `session_id` as a question key, which
+    // never matched a real registration.
+    let pending = QuestionRegistry::get_pending_for_session(&session_id);
+    let mut answered_any = false;
+    for info in pending {
+        if QuestionRegistry::answer_question_scoped(
+            &session_id,
+            &info.question_id,
+            answers_json.clone(),
+        ) {
+            answered_any = true;
+        }
+    }
 
-    if !answered {
+    if !answered_any {
         return Err(AppError::Storage(StorageError::NotFound(
             "no pending question for this session".to_string(),
         ))
@@ -56,18 +70,20 @@ pub async fn get_pending_questions(
     Ok(Json(get_pending_questions_for_session(&session_id)))
 }
 
-/// Helper function that returns pending questions for a session.
+/// Helper function that returns pending questions owned by `session_id`.
 /// This can be called directly in tests without Axum extractors.
-/// NOTE: QuestionRegistry does not store session_id in keys, so proper session-based
-/// filtering is not possible without extending the registry. Returns empty list when
-/// session_id is provided to indicate filtering is not supported.
 pub fn get_pending_questions_for_session(session_id: &str) -> serde_json::Value {
-    let _pending_ids = crate::bus::QuestionRegistry::pending_question_ids();
-
-    // QuestionRegistry keys are not session_id based, so we cannot filter.
-    // Return empty to indicate filtering is not possible.
-    let _ = session_id;
-    let questions: Vec<serde_json::Value> = Vec::new();
+    let questions: Vec<serde_json::Value> = QuestionRegistry::get_pending_for_session(session_id)
+        .into_iter()
+        .map(|q| {
+            serde_json::json!({
+                "question_id": q.question_id,
+                "session_id": q.session_id,
+                "turn_id": q.turn_id,
+                "age_ms": q.created_at.elapsed().as_millis() as u64,
+            })
+        })
+        .collect();
 
     serde_json::json!({
         "questions": questions

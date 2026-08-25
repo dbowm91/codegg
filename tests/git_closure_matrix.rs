@@ -956,3 +956,56 @@ fn risk_classification_of_push_with_lease() {
 // RunStore persistence and reload semantics are tested in
 // crates/codegg-core/src/run_store.rs unit tests.
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Cross-crate URL credential redaction equivalence.
+//
+// `codegg_git::redact_url_credentials` (crates/codegg-git/src/sensitive.rs)
+// is a deliberate in-crate copy of the root crate's
+// `codegg::git_network_policy::redact_url_credentials` because
+// `codegg-git` must not depend on the root. The two implementations MUST
+// stay behaviorally identical — this is the test promised by the
+// `sensitive.rs` module docs.
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn redact_url_credentials_cross_crate_equivalence() {
+    let cases = [
+        "https://user:hunter2@example.com/repo.git",
+        "https://alice:secret@github.com/owner/repo",
+        "http://u:p@host.example/x?query=1#frag",
+        "ssh://git:token@gitlab.example/group/proj.git",
+        // Bare username (no secret) must be preserved verbatim.
+        "https://git@example.com/repo.git",
+        "git@github.com:owner/repo.git",
+        // No userinfo at all.
+        "https://example.com/repo.git",
+        "https://example.com",
+        // Already-redacted input must be idempotent.
+        "https://redacted@example.com/repo.git",
+        "",
+    ];
+    for case in cases {
+        let via_root = codegg::git_network_policy::redact_url_credentials(case);
+        let via_crate = codegg_git::redact_url_credentials(case);
+        assert_eq!(
+            via_root, via_crate,
+            "cross-crate redaction diverged for input: {case:?}"
+        );
+    }
+}
+
+#[test]
+fn redact_url_credentials_in_text_matches_single_url_redaction() {
+    let text = "fatal: unable to access 'https://user:hunter2@example.com/repo.git/'";
+    let sanitized = codegg::git_network_policy::redact_url_credentials_in_text(text);
+    assert!(
+        !sanitized.contains("hunter2"),
+        "credential leaked: {sanitized}"
+    );
+    let expected = format!(
+        "fatal: unable to access '{}'",
+        codegg_git::redact_url_credentials("https://user:hunter2@example.com/repo.git/")
+    );
+    assert_eq!(sanitized, expected);
+}

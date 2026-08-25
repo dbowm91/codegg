@@ -867,17 +867,12 @@ fn truncate_for_result(s: &str, max_bytes: usize) -> String {
     out
 }
 
-/// Public alias used by sibling modules (e.g. raw-mutation helpers).
-pub(crate) fn truncate_for_public(s: &str, max_bytes: usize) -> String {
-    truncate_for_result(s, max_bytes)
-}
-
 /// Defense-in-depth: redact any URL-embedded credentials, then truncate.
 /// This is the single boundary through which every Git-emitted byte
 /// reaches `MutationResult.stdout`/`stderr`, RunStore artifacts, and
 /// downstream projectors. The raw URL still reaches the Git child via
 /// `RedactedUrl::expose_secret` at the argv construction site.
-fn sanitize_truncate_for_result(s: &str, max_bytes: usize) -> String {
+pub(crate) fn sanitize_truncate_for_result(s: &str, max_bytes: usize) -> String {
     truncate_for_result(&redact_url_credentials_in_text(s), max_bytes)
 }
 
@@ -1195,7 +1190,9 @@ mod error_context_tests {
 
 #[cfg(test)]
 mod truncate_tests {
-    use super::{truncate_for_public, truncate_for_result};
+    use super::{
+        redact_url_credentials_in_text, sanitize_truncate_for_result, truncate_for_result,
+    };
 
     #[test]
     fn truncate_for_result_is_utf8_boundary_safe() {
@@ -1205,11 +1202,30 @@ mod truncate_tests {
         let out = truncate_for_result(&s, 500);
         assert!(out.starts_with("コミット"));
         assert!(out.ends_with("\n... [truncated, original 2400 bytes]"));
-        assert_eq!(truncate_for_public(&s, 500), out);
     }
 
     #[test]
     fn truncate_for_result_short_input_untouched() {
         assert_eq!(truncate_for_result("ok", 500), "ok");
+    }
+
+    #[test]
+    fn sanitize_truncate_redacts_url_credentials_in_stdout_and_stderr() {
+        // Regression: the raw-mutation path (`run_raw_mutation`) must
+        // route through this boundary like the typed path does. Every
+        // Git-emitted byte reaching `MutationResult.stdout`/`stderr`
+        // must be credential-free.
+        let s = "remote: https://user:hunter2@example.com/repo.git\nok";
+        let out = sanitize_truncate_for_result(s, 500);
+        assert!(!out.contains("hunter2"), "credential leaked: {out}");
+        assert!(out.contains("example.com"));
+    }
+
+    #[test]
+    fn redact_url_credentials_in_text_handles_multiple_urls() {
+        let s = "a https://u:p@one.example/x b ssh://git:token@two.example/y";
+        let out = redact_url_credentials_in_text(s);
+        assert!(!out.contains(":p@"), "leak: {out}");
+        assert!(!out.contains(":token@"), "leak: {out}");
     }
 }

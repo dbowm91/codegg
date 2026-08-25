@@ -776,8 +776,11 @@ pub(crate) async fn run_raw_mutation(
         subcommand,
         delta,
         outcome,
-        stdout: crate::git_mutations::truncate_for_public(&raw.stdout, 64 * 1024),
-        stderr: crate::git_mutations::truncate_for_public(&raw.stderr, 64 * 1024),
+        // Same credential-redaction boundary as the typed path: every
+        // Git-emitted byte that reaches `MutationResult` must pass
+        // through `sanitize_truncate_for_result`.
+        stdout: crate::git_mutations::sanitize_truncate_for_result(&raw.stdout, 64 * 1024),
+        stderr: crate::git_mutations::sanitize_truncate_for_result(&raw.stderr, 64 * 1024),
         exit_code: raw.exit_code,
         success: raw.exit_code == 0,
         duration_ms: start.elapsed().as_millis() as u64,

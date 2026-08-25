@@ -1,6 +1,7 @@
 mod http;
 mod mdns;
 mod middleware;
+mod perm_ids;
 pub mod routes;
 pub mod rpc;
 pub mod scope;

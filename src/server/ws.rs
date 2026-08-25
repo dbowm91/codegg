@@ -2510,7 +2510,21 @@ async fn handle_tui_message_with_observer(
             let id = id.clone();
             tokio::spawn(async move {
                 let result = std::panic::AssertUnwindSafe(async move {
-                    let _ = crate::bus::PermissionRegistry::respond(id, perm_choice);
+                    // Registry entries are session-scoped; the TUI echoes
+                    // back the prefixed protocol ID
+                    // (`perm:<session_id>:<turn_id>:<perm_id>`), so split
+                    // it and respond scoped. An unscoped `respond` would
+                    // silently fail against every real registration.
+                    match super::perm_ids::parse_scoped_pending_id(&id) {
+                        Some((session_id, perm_id)) => {
+                            crate::bus::PermissionRegistry::respond_scoped(
+                                &session_id,
+                                &perm_id,
+                                perm_choice,
+                            )
+                        }
+                        None => false,
+                    }
                 })
                 .catch_unwind()
                 .await;
@@ -2529,7 +2543,17 @@ async fn handle_tui_message_with_observer(
                         Ok(json) => json,
                         Err(_) => return,
                     };
-                    let _ = crate::bus::QuestionRegistry::answer_question(id, answers_json);
+                    // Session-scoped lookup, mirroring the
+                    // permission path above.
+                    if let Some((session_id, question_id)) =
+                        super::perm_ids::parse_scoped_pending_id(&id)
+                    {
+                        crate::bus::QuestionRegistry::answer_question_scoped(
+                            &session_id,
+                            &question_id,
+                            answers_json,
+                        );
+                    }
                 })
                 .catch_unwind()
                 .await;
