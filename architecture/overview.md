@@ -1,18 +1,10 @@
 # CodeGG Architecture Overview
 
-CodeGG is a high-performance AI coding agent built in Rust, designed for terminal-based interaction with deep IDE and LSP integration. This document provides a bird's eye view of the entire system and serves as an index to detailed architecture documents.
+CodeGG is a high-performance AI coding agent built in Rust, designed for terminal-based interaction with deep IDE and LSP integration. This document provides a bird's eye view of how the system works as a whole and serves as the index into detailed architecture documents — one per discrete module/component — in this directory.
 
 ## Deployment topology
 
-The supported distribution remains one `codegg` executable per target. The
-daemon is a user-scoped singleton discovered and started by that executable;
-the TUI and daemon share the same business-logic libraries and invocation
-contracts. Runtime-safety milestone M007 measured the dependency and release
-profiles and retained this no-split topology because a daemon/TUI split did
-not produce a material deployment improvement without adding packaging or
-ownership complexity. Future role-specific binaries require a new measured
-deployment constraint and compatibility plan; they are not an advertised
-installation mode.
+The supported distribution remains one `codegg` executable per target. The daemon is a user-scoped singleton discovered and started by that executable; the TUI and daemon share the same business-logic libraries and invocation contracts. Runtime-safety milestone M007 measured the dependency and release profiles and retained this no-split topology because a daemon/TUI split did not produce a material deployment improvement without adding packaging or ownership complexity. Future role-specific binaries require a new measured deployment constraint and compatibility plan; they are not an advertised installation mode.
 
 ## System Architecture
 
@@ -45,16 +37,91 @@ installation mode.
 │  │                                         ┌─── egglsp        │  │
 │  │                                         │    egggit        │  │
 │  │                                         │    codegg-git    │  │
-│  │                                         │    eggsentry        │  │
+│  │                                         │    eggsentry     │  │
 │  │                                         │    eggcontext    │  │
 │  │                                         └──────────────────┘  │  │
 │  └──────────────────────┴───────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+## How Everything Works Together
+
+A single user prompt flows through the system along this path:
+
+1. **Connect** — Running plain `codegg` calls `connect_or_start_daemon`
+   (`src/core/instance.rs`) which connects to the running user-scoped daemon
+   singleton (guarded by an authoritative `flock`) or starts one.
+   `--standalone` runs an in-process core instead.
+2. **Transport** — The TUI talks to the core through the `CoreClient`
+   facade over Inproc, Stdio, or Socket transports ([core.md](core.md)).
+   Remote TUI sessions use the Axum WebSocket server ([server.md](server.md));
+   external agents use the ACP stdio adapter ([acp.md](acp.md)).
+3. **Turn submission** — User input becomes a `CoreRequest`. The daemon hands
+   work to `DefaultTurnRuntime.run_turn(TurnRunInput)` carrying an immutable,
+   `Arc`-wrapped `ExecutionContext` (workspace root, workspace id, session id,
+   path policy) — never `std::env::current_dir()` ([workspace.md](workspace.md)).
+4. **Agent loop cycle** — `AgentLoop` builds the turn context (asset snapshot,
+   instructions, skills, memory, task state), streams an LLM completion through
+   a provider ([provider.md](provider.md)), parses tool calls, executes them,
+   appends results, and repeats until the model stops calling tools
+   ([agent.md](agent.md)). Compaction manages context-window overflow
+   ([compaction.md](compaction.md)).
+5. **Tool dispatch** — Every production tool call crosses the `ToolBroker`
+   boundary: ordered policy pipeline → permission check → backend execution
+   ([tool_broker.md](tool_broker.md)). Tools are either native wrappers over
+   workspace crates (`egglsp`, `egggit`, `eggsentry`, …), eggsact deterministic
+   validators ([deterministic_tools.md](deterministic_tools.md)), MCP servers
+   ([mcp.md](mcp.md)), or WASM plugins ([plugin.md](plugin.md)).
+6. **Admission control** — Heavy operations (tests, managed processes, Python
+   scripts, subagent dispatch, tool programs) do not run inline: callers submit
+   through `JobSubmissionService`, the only door into the global
+   `JobScheduler`, which enforces fair queuing and permits before dispatching
+   executors ([scheduler.md](scheduler.md)). Work is durable — jobs, attempts,
+   schedules, recovery, idempotency live in codegg-core
+   ([jobs.md](jobs.md)).
+7. **Events and projection** — Everything that happens publishes an `AppEvent`
+   on the bus ([bus.md](bus.md)). A deterministic canonical reducer folds
+   events into a frontend-neutral session projection; clients subscribe to
+   scoped views and replay durable history ([projection.md](projection.md)).
+8. **Persistence** — Sessions, messages, todos, checkpoints, usage, goals,
+   research runs, jobs, and schedules persist in SQLite (52 tables across 35
+   migrations) ([session.md](session.md), [storage.md](storage.md)). Command,
+   script, and test outputs land in the RunStore artifact store
+   ([run_store.md](run_store.md)).
+9. **Render** — The TUI applies projected state and renders
+   ([tui.md](tui.md)). Human `!`/`!!` shell commands bypass the model unless
+   explicitly promoted, flowing through a 10-phase safety/redaction projection
+   pipeline first ([human_shell.md](human_shell.md)).
+
+### Command Execution Pipeline
+
+Shell-originated commands additionally flow through a 3-stage pipeline:
+
+```
+Raw Shell Command
+    │
+    ▼
+classify_command_with_context()          ← command_intent (stage 1)
+    │  Risk assessment, execution capabilities
+    ▼
+plan_execution()                         ← command_planner (stage 2)
+    │  Backend selection, permission generation, projector policy
+    ▼
+resolve_routing()                        ← command_routing (stage 3)
+    │  Concrete subsystem dispatch
+    ▼
+┌──────────────────────────────────────────────────────────┐
+│ RouteToTestRunner │ RouteToShell │ RouteToPython          │
+│ RouteToGit        │ RouteToNativeTool │ RouteToManagedProcess │
+└──────────────────────────────────────────────────────────┘
+```
+
+Active routing (`CommandIntentMode::Active`) dispatches to structured backends;
+the default `Observe` mode classifies and annotates only.
+
 ## Module Map
 
-Modules are grouped by architectural layer. Each module links to a detailed architecture document in this directory.
+Modules are grouped by architectural layer. Each row links to the deep-dive document for that component.
 
 ### Agent Layer — Orchestration and Execution
 
@@ -74,11 +141,11 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 
 ### Tool Layer — Capabilities and Execution
 
-The tool layer defines the ~30 built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
+The tool layer defines the built-in tools the agent can invoke, the backend abstractions for dispatching, and the deterministic validation pipeline.
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Tool | Built-in tools (~30 in default registry), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
+| Tool | Built-in tools (~31 core always registered; ~50 registration sites total once conditional todo/evidence/deterministic/context-read tools are included), `Tool` trait, `ToolCatalog`, backend abstraction (Native/MCP/Shell/Builtin) | `mod.rs`, `backend.rs`, `bash.rs`, `read.rs`, `edit.rs`, `write.rs`, `glob.rs`, `grep.rs` | [tool.md](tool.md) |
 | Deterministic Tools | Eggsact in-process deterministic tools (8 always-visible + 5 deferred) — text comparison, config validation, security inspection | `deterministic.rs`, `eggsact/adapter.rs` | [deterministic_tools.md](deterministic_tools.md) |
 | Preflight | Harness-side eggsact validation before mutating operations — severity-classified findings (Block/Warn/Annotate), never model-facing | `preflight/` | [preflight.md](preflight.md) |
 | Git Service | Canonical read executor — delegates to egggit for structured parsing, subprocess fallback for mutations | `git_service.rs` | [git.md](git.md) |
@@ -113,7 +180,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Scheduler | Global admission control scheduler, fair queue, executor dispatch, permit lifecycle (Phase 5) | `scheduler/mod.rs`, `scheduler/scheduler.rs`, `scheduler/admission.rs`, `scheduler/fair_queue.rs` | [scheduler.md](scheduler.md) |
 | Job Dispatcher | Bridges durable jobs to existing executors (SubAgent, ManagedArgv, Test) | `job_dispatcher.rs`, `job_recovery.rs` | [jobs.md](jobs.md) |
 | Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
-| Session | SQLite session storage, message history, 32 migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
+| Session | SQLite session storage, message history, migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
 | Bus | Event bus publish/subscribe (45 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
@@ -127,9 +194,9 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Provider | LLM provider implementations, streaming, CircuitBreaker, 16 auto-registered + 4 config-only providers | `provider/` (codegg-providers) | [provider.md](provider.md) |
-| Protocol | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto | `protocol/` (codegg-protocol) | [protocol.md](protocol.md) |
-| Config | Configuration schema, paths, loading, validation, file watching | `config/` (codegg-config) | [config.md](config.md) |
+| Provider | LLM provider implementations, streaming, CircuitBreaker — 15 env-var auto-registered providers plus config-defined ones (Azure, Bedrock, Vertex AI, Cloudflare, GitHub Copilot, GitLab Duo, OpenAI-compatible, eggpool) | `provider_core.rs`, `anthropic.rs`, `openai.rs`, `google.rs`, `connection.rs` (codegg-providers) | [provider.md](provider.md) |
+| Protocol | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto | `core.rs`, `tui.rs` (codegg-protocol) | [protocol.md](protocol.md) |
+| Config | Configuration schema, paths, loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` (codegg-config) | [config.md](config.md) |
 | Model Profile | Model behavioral profiles and task state policy | `model_profile/` (codegg-core) | [model_profile_task_state.md](model_profile_task_state.md) |
 | Task State | Todo/task state machine, injection, and projection | `task_state/` (codegg-core) | [model_profile_task_state.md](model_profile_task_state.md) |
 
@@ -157,15 +224,15 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 
 ### Native Tool Crates (Workspace)
 
-Codegg follows a **library-first, MCP-second** tool architecture. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers. The same crates can later expose optional MCP adapter binaries without changing the model-facing tool names.
+Codegg follows a **library-first, MCP-second** tool architecture. Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process by Codegg's tool wrappers. The same crates can later expose optional MCP adapter binaries without changing the model-facing tool names. See [native_crates.md](native_crates.md).
 
 | Crate | Purpose | Key Files |
 |-------|---------|-----------|
-| `codegg-core` | Domain types: bus, error, goal, memory, migration, run_store, session, storage, snapshot, worktree, workspace, workspace_services, task_state, model_profile, resilience, protocol_conversions | `lib.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
+| `codegg-core` | Domain types: bus, error, goal, identity, jobs, memory, migration, model_profile, project_catalog/discovery/storage, projection_replay, provider_connections, repository_lineage, resilience, run_store, session, snapshot, storage, task_state, tool_program, workspace, workspace_services, worktree | `lib.rs`, `bus/`, `jobs/`, `session/`, `storage/` |
 | `codegg-config` | Configuration schema, paths, loading, validation, file watching | `schema.rs`, `paths.rs`, `watcher.rs` |
-| `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto | `core.rs`, `tui.rs` |
-| `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider/mod.rs`, `auth/`, `circuit.rs` |
-| `codegg-git` | Typed Git operation model, argv parser, and risk classification (47 operation variants, 11 risk classes) | `lib.rs` |
+| `codegg-protocol` | CoreRequest, CoreResponse, CoreEvent, TuiMessage, UiNode, UiEffect, PluginManifestDto, runtime assets DTOs | `core.rs`, `tui.rs` |
+| `codegg-providers` | LLM provider implementations, auth types, CircuitBreaker | `provider_core.rs`, `auth_types.rs`, `circuit.rs` |
+| `codegg-git` | Typed Git operation model (54 operation variants), argv parser, risk classification (11 risk classes) | `operation.rs`, `risk.rs` |
 | `egglsp` | LSP client/service/operations (authoritative implementation) | `service.rs`, `client.rs`, `operations.rs`, `server.rs` |
 | `egggit` | Read-only git facts: status (v2 rich structured), diff, changed files, log, blame, refs, worktree | `status_v2/`, `diff/`, `log/`, `blame/`, `refs/`, `worktree/` |
 | `eggsentry` | Security scanning — secrets, commands, dependencies, unsafe code | `scanner.rs`, `command.rs`, `finding.rs`, `profile.rs` |
@@ -191,23 +258,27 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 
 ## Verified Counts
 
+Counts below were re-verified against the current tree (see source column).
+
 | Item | Count | Source |
 |------|-------|--------|
-| Tools (default registry) | ~38 | `src/tool/mod.rs:with_options()` |
+| Tools (registration sites) | 50 | `src/tool/mod.rs::with_options()` |
+| Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / eggsact / context-read config |
+| Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
-| Native tool crates | 10 | `crates/` workspace (9 workspace + test server) |
+| Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
 | AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
-| Built-in commands | 108 | `src/tui/command.rs` |
+| Built-in slash commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
-| DB migrations | 35 | `crates/codegg-core/src/session/schema.rs` |
-| Integration tests | 163 | `tests/` |
+| Storage layout version | 35 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Integration test files | 164 | `tests/*.rs` |
 | Architecture docs | 73 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
-| Git risk classes | 11 | `crates/codegg-git/src/lib.rs` |
-| Providers (auto-registered) | 16 | `crates/codegg-providers/` |
+| Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
+| Providers (env-var auto-registered) | 15 | `crates/codegg-providers/src/provider_core.rs::register_builtin()` |
 | CI guard scripts | 19 | `scripts/` |
 
 ## Feature Gates
@@ -226,7 +297,7 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (52+, 35 migrations)                                       │
+│ Tables (52, STORAGE_LAYOUT_VERSION = 35)                          │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
@@ -259,27 +330,6 @@ User Input → TUI Event Loop → App::on_key() → State Mutation → Render
             CoreClient.subscribe() → TUI updates
 ```
 
-### Command Execution Pipeline
-
-```
-Raw Shell Command
-    │
-    ▼
-classify_command_with_context()          ← command_intent (stage 1)
-    │  Risk assessment, execution capabilities
-    ▼
-plan_execution()                         ← command_planner (stage 2)
-    │  Backend selection, permission generation, projector policy
-    ▼
-resolve_routing()                        ← command_routing (stage 3)
-    │  Concrete subsystem dispatch
-    ▼
-┌─────────────────────────────────────────────────────┐
-│ RouteToTestRunner │ RouteToShell │ RouteToPython     │
-│ RouteToGit        │ RouteToNativeTool │ RouteToManagedProcess │
-└─────────────────────────────────────────────────────┘
-```
-
 ## Key Architectural Patterns
 
 ### Singleton Daemon
@@ -287,6 +337,12 @@ Exactly one user-scoped daemon per OS user. `connect_or_start_daemon` (`src/core
 
 ### Library-First, MCP-Second
 Durable tool domains live in workspace crates under `crates/` and are consumed directly in-process. The same crates can later expose optional MCP adapter binaries without changing model-facing tool names.
+
+### Single Canonical Boundaries
+- `ToolBroker` is the only production tool-call boundary.
+- `JobSubmissionService` is the only door into the `JobScheduler`; the scheduler is the only admission authority for submitted work.
+- `GitExecutionService` is the canonical read executor; `egggit` never mutates.
+- All process-spawn sites are inventoried in `docs/execution-ownership.toml`.
 
 ### 3-Stage Command Pipeline
 Commands flow through classification → planning → routing. Each stage is a separate module with clear responsibilities. Active routing mode (`CommandIntentMode::Active`) enables dispatch to structured backends; default mode is `Observe` (classify + annotate only).
@@ -302,6 +358,8 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 
 ## Navigation
 
+Deep-dive index. Every architecture document in this directory is listed here.
+
 ### Agent and Execution
 - [Agent Loop](agent.md) — Main execution cycle, compaction, routing, multi-agent teams
 - [ACP](acp.md) — Agent Client Protocol v1 stdio adapter
@@ -314,7 +372,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Exec](exec.md) — Non-interactive execution mode
 
 ### Tools and Capabilities
-- [Tool](tool.md) — Tool trait, registry, ~30 built-in tools, backend abstraction
+- [Tool](tool.md) — Tool trait, registry, built-in tools, backend abstraction
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
 - [Preflight](preflight.md) — Harness-side validation before mutations
 - [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
@@ -349,7 +407,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [Project Identity Storage](project_identity_storage.md) — Project/repository identity, binding, reconciliation
 
 ### Providers and Config
-- [Provider](provider.md) — LLM provider implementations (16 auto-registered)
+- [Provider](provider.md) — LLM provider implementations
 - [Protocol](protocol.md) — Shared request/response envelopes
 - [Config](config.md) — Configuration loading and validation
 - [Model Profile & Task State](model_profile_task_state.md) — Model behavioral profiles, todo/task state
@@ -387,7 +445,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 - [CodeGG Core](codegg_core.md) — codegg-core crate internals
 - [Model Adapters](model-adapters.md) — Model adapter patterns and conversions
 - [Testing](testing.md) — Test resource taxonomy, Tokio runtime rules
-- [Review Findings](review-findings.md) — Systematic audit of all 72 architecture docs
+- [Review Findings](review-findings.md) — Systematic audit of all architecture docs
 
 ## Directory Layout
 
@@ -396,6 +454,7 @@ codegg/
 ├── src/                        # Root crate (application)
 │   ├── agent/                  # Agent loop, compaction, routing, teams
 │   ├── auth/                   # Authentication, crypto
+│   ├── bin/                    # Auxiliary binaries (sandbox helper)
 │   ├── client/                 # Remote TUI WebSocket client
 │   ├── command_intent/         # Command classification (stage 1)
 │   ├── command/                # Slash command registry
@@ -415,13 +474,13 @@ codegg/
 │   ├── search/                 # Web search tools (legacy)
 │   ├── search_backend/         # Search backend dispatch
 │   ├── security/               # SSRF, sandboxing
-│   ├── server/                 # HTTP/WebSocket server
+│   ├── server/                 # HTTP/WebSocket server (feature-gated)
 │   ├── shell/                  # Human shell, projection pipeline
 │   ├── shell_session/          # Shell session metadata
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # ~30 built-in tools
+│   ├── tool/                   # Built-in tools
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade
@@ -442,16 +501,16 @@ codegg/
 │   ├── egggit/                 # Read-only git facts (status, diff, log, etc.)
 │   ├── eggsentry/              # Security scanning
 │   ├── eggcontext/             # Token counting
-│   └── egglsp-test-server/     # Fake LSP server for tests
-├── tests/                      # Integration tests (162 files)
+│   └── egglsp-test-server/     # Fake LSP server for tests (not a member)
+├── tests/                      # Integration tests (164 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # 9 built-in agent TOML definitions
-│   └── prompts/               # Agent prompt templates
+│   └── prompts/                # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (72 docs)
+├── architecture/               # Architecture documentation (73 docs)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
-└── examples/                   # Plugin SDKs and examples
+└── examples/plugins/           # Plugin SDKs and reference plugins
 ```
 
 ## Static Guards
@@ -467,3 +526,5 @@ python3 scripts/check_git_forbidden_patterns.py  # git secret boundary + policy 
 python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + schema validation
 python3 scripts/check_projection_transport_isolation.py # projection raw-broadcast/identity guard
 ```
+
+See AGENTS.md for the complete guard list.
