@@ -1673,9 +1673,13 @@ impl MeteredInterpreter {
         for attempt in 0..=max_retries {
             if attempt > 0 {
                 // Exponential backoff with jitter
-                let delay_ms = self.limits.retry_base_delay_ms * (1u64 << (attempt - 1));
+                let shift = (attempt - 1).min(16);
+                let delay_ms = self
+                    .limits
+                    .retry_base_delay_ms
+                    .saturating_mul(1u64 << shift);
                 let jitter = rand::random::<u64>() % (delay_ms / 2 + 1);
-                let total_delay = delay_ms + jitter;
+                let total_delay = delay_ms.saturating_add(jitter);
                 tokio::time::sleep(tokio::time::Duration::from_millis(total_delay)).await;
             }
 
@@ -3348,8 +3352,8 @@ emit({k: v})
         let compilation =
             compile_program("x = call({\"tool\": \"test\", \"input\": \"v\"})\nemit(x)\n").unwrap();
         let mut limits = RuntimeLimits::from(&compilation.ir.bounds);
-        limits.max_retries = 2;
-        limits.retry_base_delay_ms = 1;
+        limits.max_retries = 65;
+        limits.retry_base_delay_ms = 0;
         let mut interp = MeteredInterpreter::new(compilation.ir, limits);
         let rt = tokio::runtime::Runtime::new().unwrap();
         let broker = AlwaysFailBroker;

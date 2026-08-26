@@ -4,7 +4,7 @@
 
 use crate::error::AppError;
 use async_trait::async_trait;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, Default)]
 pub enum TtsProvider {
@@ -20,18 +20,13 @@ pub trait TtsEngine: Send + Sync {
 }
 
 pub struct Tts {
-    speaking: Mutex<std::sync::atomic::AtomicBool>,
+    speaking: AtomicBool,
 }
 
 impl Clone for Tts {
     fn clone(&self) -> Self {
         Self {
-            speaking: Mutex::new(std::sync::atomic::AtomicBool::new(
-                self.speaking
-                    .lock()
-                    .unwrap()
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            )),
+            speaking: AtomicBool::new(self.speaking.load(Ordering::SeqCst)),
         }
     }
 }
@@ -45,7 +40,7 @@ impl Default for Tts {
 impl Tts {
     pub fn new() -> Self {
         Self {
-            speaking: Mutex::new(std::sync::atomic::AtomicBool::new(false)),
+            speaking: AtomicBool::new(false),
         }
     }
 
@@ -62,25 +57,16 @@ impl Tts {
                 "cannot speak empty string",
             )));
         }
-        self.speaking
-            .lock()
-            .unwrap()
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.speaking.store(true, Ordering::SeqCst);
         let output = tokio::process::Command::new("say")
             .arg(text)
             .output()
             .await
             .map_err(|e| {
-                self.speaking
-                    .lock()
-                    .unwrap()
-                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                self.speaking.store(false, Ordering::SeqCst);
                 AppError::Io(e)
             })?;
-        self.speaking
-            .lock()
-            .unwrap()
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.speaking.store(false, Ordering::SeqCst);
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             tracing::warn!("say command failed: {}", stderr);
@@ -96,10 +82,7 @@ impl Tts {
         if !self.is_speaking() {
             return Ok(());
         }
-        self.speaking
-            .lock()
-            .unwrap()
-            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.speaking.store(false, Ordering::SeqCst);
         let output = tokio::process::Command::new("pkill")
             .arg("say")
             .output()
@@ -117,10 +100,7 @@ impl Tts {
     }
 
     pub fn is_speaking(&self) -> bool {
-        self.speaking
-            .lock()
-            .unwrap()
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.speaking.load(Ordering::SeqCst)
     }
 }
 

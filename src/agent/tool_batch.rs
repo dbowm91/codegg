@@ -1012,7 +1012,7 @@ impl AgentLoop {
                             .ok()
                             .map(|o| {
                                 if o.len() > 500 {
-                                    format!("{}...", &o[..497])
+                                    format!("{}...", crate::util::truncate_prefix(o, 497))
                                 } else {
                                     o.clone()
                                 }
@@ -1052,7 +1052,7 @@ impl AgentLoop {
                 let output_preview = result.as_ref().ok().map(|o| {
                     summarize_tool_output(&tool_name, o, success).unwrap_or_else(|| {
                         if o.len() > 200 {
-                            format!("{}...", &o[..197])
+                            format!("{}...", crate::util::truncate_prefix(o, 197))
                         } else {
                             o.clone()
                         }

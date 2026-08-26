@@ -3,6 +3,7 @@ use serde_json::json;
 
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolRegistry};
+use crate::util::truncate_prefix;
 use std::sync::Arc;
 
 const MAX_CALL_INPUT_SIZE: usize = 100_000;
@@ -142,7 +143,7 @@ impl Tool for BatchTool {
                     let content = if content.len() > 10000 {
                         format!(
                             "{}... [{} chars truncated]",
-                            &content[..10000],
+                            truncate_prefix(content, 10000),
                             content.len() - 10000
                         )
                     } else {

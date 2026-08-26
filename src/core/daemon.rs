@@ -4119,7 +4119,7 @@ impl CoreDaemon {
                     "Goal checkpoint is updated with completed/remaining work.".to_string(),
                 ];
                 let plan_excerpt = if content.len() > 4000 {
-                    Some(&content[..4000])
+                    Some(crate::util::truncate_prefix(&content, 4000))
                 } else {
                     Some(content.as_str())
                 };

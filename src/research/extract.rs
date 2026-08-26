@@ -4,6 +4,7 @@ use crate::provider::Provider;
 use crate::research::llm;
 use crate::research::templates;
 use crate::research::types::*;
+use crate::util::truncate_prefix;
 
 /// Chunk a source's content into evidence spans deterministically.
 /// For local files: chunk by line windows (100 lines with 10-line overlap).
@@ -282,7 +283,7 @@ async fn model_evidence_for_chunk(
 
     // Truncate chunk if very long to fit in context
     let truncated_chunk = if chunk_text.len() > 8000 {
-        format!("{}...(truncated)", &chunk_text[..8000])
+        format!("{}...(truncated)", truncate_prefix(chunk_text, 8000))
     } else {
         chunk_text.to_string()
     };

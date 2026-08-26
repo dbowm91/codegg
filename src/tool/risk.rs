@@ -4,6 +4,7 @@
 //! Provides deterministic output summarization without LLM calls.
 
 use crate::session::events::ToolRisk;
+use crate::util::truncate_prefix;
 
 /// Classify a tool call by risk level based on tool name and input.
 pub fn classify_tool_risk(tool_name: &str, input: &serde_json::Value) -> ToolRisk {
@@ -323,7 +324,7 @@ fn summarize_bash_output(lines: &[&str], line_count: usize) -> Option<String> {
             .find(|l| !l.trim().is_empty() && !l.starts_with('#') && !l.starts_with("//"))
             .map(|l| {
                 if l.len() > 80 {
-                    format!("{}...", &l[..77])
+                    format!("{}...", truncate_prefix(l, 77))
                 } else {
                     l.to_string()
                 }
@@ -539,5 +540,12 @@ mod tests {
             .join("\n");
         let summary = summarize_tool_output("bash", &output, true).unwrap();
         assert!(summary.contains("100 lines"));
+    }
+
+    #[test]
+    fn summarize_long_utf8_line_without_splitting_codepoint() {
+        let output = format!("{}\nsecond line\nthird line", "é".repeat(100));
+        let summary = summarize_tool_output("bash", &output, true).unwrap();
+        assert_eq!(summary, format!("{}...", "é".repeat(38)));
     }
 }
