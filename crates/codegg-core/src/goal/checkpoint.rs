@@ -88,8 +88,8 @@ pub async fn read_checkpoint_excerpt(
 ) -> Result<Option<String>, AppError> {
     match tokio::fs::read_to_string(path.as_ref()).await {
         Ok(content) => {
-            let truncated = if content.len() > max_chars {
-                content[..max_chars].to_string()
+            let truncated = if content.chars().count() > max_chars {
+                content.chars().take(max_chars).collect()
             } else {
                 content
             };
@@ -211,7 +211,20 @@ mod tests {
             .await
             .unwrap();
         let excerpt = read_checkpoint_excerpt(&path, 100).await.unwrap();
-        assert!(excerpt.unwrap().len() <= 100);
+        assert!(excerpt.unwrap().chars().count() <= 100);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_read_checkpoint_excerpt_respects_unicode_char_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unicode-checkpoint.md");
+        let content = format!("{}éz", "a".repeat(599));
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let excerpt = read_checkpoint_excerpt(&path, 600).await.unwrap().unwrap();
+
+        assert_eq!(excerpt.chars().count(), 600);
+        assert!(excerpt.ends_with('é'));
     }
 
     #[tokio::test(flavor = "current_thread")]

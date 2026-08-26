@@ -151,8 +151,18 @@ fn render_item_line(item: &LspContextItem) -> String {
         _ => String::new(),
     };
 
+    let message = if item.message.len() > 80 {
+        let mut end = 77;
+        while end > 0 && !item.message.is_char_boundary(end) {
+            end -= 1;
+        }
+        &item.message[..end]
+    } else {
+        item.message.as_str()
+    };
+
     format!(
-        "{} {}{} [{}, {}, {}{}]{}",
+        "{} {}{} [{}, {}, {}{}] | {}",
         item.file.display(),
         loc,
         item.symbol
@@ -163,11 +173,7 @@ fn render_item_line(item: &LspContextItem) -> String {
         freshness_label,
         item.provenance.server_id,
         gen_label,
-        if item.message.len() > 80 {
-            format!(" | {}", &item.message[..77])
-        } else {
-            format!(" | {}", item.message)
-        },
+        message,
     )
 }
 
@@ -1030,6 +1036,22 @@ mod tests {
         assert!(rendered.contains("## Definitions"));
         assert!(rendered.contains("## References"));
         assert!(rendered.contains("rust-analyzer"));
+    }
+
+    #[test]
+    fn render_item_line_respects_utf8_boundaries() {
+        let item = make_item(
+            LspContextItemKind::Diagnostic,
+            "a.rs",
+            Some(5),
+            &format!("{}é{}", "x".repeat(76), "y".repeat(10)),
+            false,
+        );
+
+        let rendered = render_item_line(&item);
+
+        assert!(rendered.contains(&"x".repeat(76)));
+        assert!(!rendered.contains('é'));
     }
 
     #[test]

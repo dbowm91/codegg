@@ -114,7 +114,8 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(s);
     }
     if max_bytes <= TRUNCATION_MARKER.len() + 1 {
-        return std::borrow::Cow::Owned(TRUNCATION_MARKER[..max_bytes].to_string());
+        let cut = floor_char_boundary(TRUNCATION_MARKER, max_bytes);
+        return std::borrow::Cow::Owned(TRUNCATION_MARKER[..cut].to_string());
     }
     let cut = max_bytes - TRUNCATION_MARKER.len();
     let cut = floor_char_boundary(s, cut);
@@ -176,5 +177,14 @@ mod tests {
     fn clip_does_not_append_marker() {
         let s = "abcdef";
         assert_eq!(clip_str(s, 3), "abc");
+    }
+
+    #[test]
+    fn truncate_small_limits_do_not_split_marker() {
+        for max_bytes in 0..=15 {
+            let out = truncate_str("abcdef", max_bytes);
+            assert!(out.len() <= max_bytes);
+            assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        }
     }
 }

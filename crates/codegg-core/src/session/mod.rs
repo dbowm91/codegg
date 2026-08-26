@@ -63,7 +63,10 @@ pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
         Ok(v) => v,
         Err(e) => {
             let preview = if raw.len() > 100 {
-                format!("{}...", &raw[..100])
+                format!(
+                    "{}...",
+                    codegg_protocol::projection::limits::clip_str(raw, 100)
+                )
             } else {
                 raw.to_string()
             };
@@ -77,3 +80,15 @@ pub(crate) fn parse_json_field(raw: &str) -> serde_json::Value {
 }
 
 pub use import::redact_for_export;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_invalid_json_with_unicode_preview_does_not_panic() {
+        let raw = format!("{}é", "x".repeat(99));
+
+        assert_eq!(parse_json_field(&raw), serde_json::Value::Null);
+    }
+}

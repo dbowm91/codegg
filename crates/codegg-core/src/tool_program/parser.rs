@@ -935,12 +935,15 @@ fn convert_cmpop(op: &pyast::CmpOp) -> Result<CmpOp, ToolProgramError> {
     }
 }
 
-/// Truncate a message to a maximum length.
-fn truncate_message(msg: &str, max_len: usize) -> String {
-    if msg.len() <= max_len {
+/// Truncate a message to a maximum number of bytes without splitting UTF-8.
+fn truncate_message(msg: &str, max_bytes: usize) -> String {
+    if msg.len() <= max_bytes {
         msg.to_string()
     } else {
-        format!("{}...", &msg[..max_len])
+        format!(
+            "{}...",
+            codegg_protocol::projection::limits::clip_str(msg, max_bytes)
+        )
     }
 }
 
@@ -953,6 +956,15 @@ mod tests {
         let prog = parse_source("x = 1\n").unwrap();
         assert_eq!(prog.body.len(), 1);
         assert!(matches!(&prog.body[0], Stmt::Assign { .. }));
+    }
+
+    #[test]
+    fn truncate_message_respects_utf8_boundaries() {
+        let msg = format!("{}é{}", "x".repeat(199), "y".repeat(10));
+
+        let truncated = truncate_message(&msg, 200);
+
+        assert_eq!(truncated, format!("{}...", "x".repeat(199)));
     }
 
     #[test]
