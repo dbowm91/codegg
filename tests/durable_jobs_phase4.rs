@@ -802,6 +802,12 @@ async fn sqlite_dependency_blocking() {
     assert_eq!(row.0, main_job.job_id.to_string());
     assert_eq!(row.1, dep_job.job_id.to_string());
     assert_eq!(row.2, "completed");
+
+    // get_job must restore dependencies persisted at creation time.
+    let fetched = store.get_job(&main_job.job_id).await.unwrap().unwrap();
+    assert_eq!(fetched.depends_on, vec![dep_job.job_id.clone()]);
+    let fetched_dep = store.get_job(&dep_job.job_id).await.unwrap().unwrap();
+    assert!(fetched_dep.depends_on.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

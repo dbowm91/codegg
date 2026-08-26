@@ -223,7 +223,12 @@ impl Tool for MultiEditTool {
         if let Some(ref svc) = self.preflight {
             let path_str = path_str_for_config;
             if is_config_file(&path_str) {
-                let content_after = std::fs::read_to_string(&path_str).unwrap_or_default();
+                let content_after = tokio::task::spawn_blocking({
+                    let path_str = path_str.clone();
+                    move || std::fs::read_to_string(&path_str).unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default();
                 let ext = std::path::Path::new(&path_str)
                     .extension()
                     .and_then(|e| e.to_str())

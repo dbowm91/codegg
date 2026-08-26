@@ -703,7 +703,7 @@ impl ExecutionContext {
     /// Pick the directory a command should run in. `None` means "use
     /// the workspace root"; a relative path is resolved under the
     /// workspace root; an absolute path must fall under an explicitly
-    /// allowed root (workspace plus extras).
+    /// allowed root (workspace plus extras) that is also writable.
     pub fn resolve_relative_cwd(
         &self,
         requested: Option<&Path>,
@@ -711,7 +711,13 @@ impl ExecutionContext {
         match requested {
             None => Ok(self.workspace_root.clone()),
             Some(p) if p.as_os_str().is_empty() => Ok(self.workspace_root.clone()),
-            Some(p) if p.is_absolute() => self.pick_allowed_root(p, &self.allowed_read_roots),
+            Some(p) if p.is_absolute() => {
+                let canonical = self.pick_allowed_root(p, &self.allowed_read_roots)?;
+                if !path_within_any(&canonical, &self.allowed_write_roots) {
+                    return Err(PathPolicyError::OutsideAllowedRoots(p.to_path_buf()));
+                }
+                Ok(canonical)
+            }
             Some(p) => resolve_under_root(&self.workspace_root, p),
         }
     }

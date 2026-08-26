@@ -358,6 +358,9 @@ impl BrokerCallback for BrokerAdapter {
                 .as_millis()
                 .min(u64::MAX as u128) as u64
         });
+        if remaining_ms == Some(0) {
+            return Err(InterpreterError::Cancelled);
+        }
         let ctx = BrokerInvocationContext {
             caller: crate::tool::contract::ToolCaller::Program {
                 program_id: self.program_id.clone(),

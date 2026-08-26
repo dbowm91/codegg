@@ -636,9 +636,14 @@ impl WorkspaceServiceRegistry {
 
     fn shutdown_bundle(&self, id: &WorkspaceId) {
         if let Some((_, services)) = self.active.remove(id) {
-            // Forget any tracked repository locks for this workspace.
-            for entry in services.locks.inner.iter() {
-                services.locks.forget_repository(entry.key());
+            // Forget tracked repository locks only when no lease can
+            // still hold a guard. Forgetting under an outstanding guard
+            // would let a later acquire on the same repo construct a
+            // fresh lock and break mutual exclusion.
+            if services.active_leases.load(Ordering::Relaxed) == 0 {
+                for entry in services.locks.inner.iter() {
+                    services.locks.forget_repository(entry.key());
+                }
             }
         }
     }

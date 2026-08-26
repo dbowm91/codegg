@@ -357,7 +357,17 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
                 }
             } => {
                 match config_result {
-                    Ok(_config) => {
+                    Ok(config) => {
+                        app.shell_confirm_dangerous = config
+                            .human_shell
+                            .as_ref()
+                            .map(|h| h.confirm_dangerous())
+                            .unwrap_or(true);
+                        app.shell_output_config = config
+                            .shell
+                            .as_ref()
+                            .and_then(|s| s.output.clone())
+                            .unwrap_or_default();
                         tracing::info!("Configuration changed, reloading...");
                         GlobalEventBus::publish(AppEvent::ConfigChanged);
                         app.messages_state.toasts.add(crate::tui::components::toast::Toast::info("Configuration reloaded"));

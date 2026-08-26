@@ -19,11 +19,7 @@ pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promot
             return;
         }
         crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
-            let confirm_enabled = crate::config::schema::Config::load()
-                .ok()
-                .and_then(|c| c.human_shell)
-                .map(|h| h.confirm_dangerous())
-                .unwrap_or(true);
+            let confirm_enabled = app.shell_confirm_dangerous;
             if confirm_enabled {
                 app.dialog_state.pending_shell_command = Some((command, promote_after));
                 let title = "Dangerous Command".to_string();
@@ -76,11 +72,12 @@ pub(crate) fn spawn_human_shell(app: &mut app::App, command: String, promote_aft
     app.task_registry
         .spawn(TuiTaskKind::Shell, "shell_event_forwarding", async move {
             match runtime.spawn(req, tx.clone()).await {
-                Ok(_handle) => {
+                Ok(handle) => {
                     if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = ttx.try_send(app::TuiCommand::ShellEvent(
-                            crate::shell::ShellEvent::Started { id, command, cwd },
-                        ));
+                        let _ = ttx.try_send(app::TuiCommand::RegisterShellHandle {
+                            id: handle.id.0,
+                            handle,
+                        });
                     }
                     while let Some(event) = rx.recv().await {
                         if let Some(ref ttx) = tui_cmd_tx {
@@ -149,6 +146,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                     return;
                 }
             }
+            app.shell_handles.remove(&id.0);
             app.shell_store.mark_exited(*id, *status, *elapsed);
             let elapsed_ms = elapsed.as_millis() as u64;
             let exit_code = *status;
@@ -175,9 +173,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
                 .command_run_store
                 .get_run(crate::shell::projection::CommandRunId(id.0))
             {
-                let config = crate::config::schema::Config::load().unwrap_or_default();
-                let output_config = config.shell.as_ref().and_then(|s| s.output.as_ref());
-                let shell_output_config = output_config.cloned().unwrap_or_default();
+                let shell_output_config = app.shell_output_config.clone();
                 let result = crate::shell::projector::config_command_projection(
                     run,
                     &app.command_run_store,
@@ -251,6 +247,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
             }
         }
         crate::shell::ShellEvent::TimedOut { id, elapsed } => {
+            app.shell_handles.remove(&id.0);
             app.shell_store.mark_timeout(*id, *elapsed);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("timed_out".to_string());
@@ -258,6 +255,7 @@ pub(crate) fn handle_shell_event(app: &mut app::App, event: crate::shell::ShellE
             });
         }
         crate::shell::ShellEvent::FailedToStart { id, error } => {
+            app.shell_handles.remove(&id.0);
             app.shell_store.mark_failed_to_start(*id);
             app.messages_state.messages.update_shell_cell(id.0, |cell| {
                 cell.status = Some("failed".to_string());
@@ -620,9 +618,7 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         lines.push(format!("Exit:     {}", run.exit.label()));
 
         // Projection result
-        let config = crate::config::schema::Config::load().unwrap_or_default();
-        let output_config = config.shell.as_ref().and_then(|s| s.output.as_ref());
-        let shell_output_config = output_config.cloned().unwrap_or_default();
+        let shell_output_config = app.shell_output_config.clone();
         let result = crate::shell::projector::config_command_projection(
             run,
             &app.command_run_store,

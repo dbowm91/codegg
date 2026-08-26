@@ -227,6 +227,7 @@ impl Default for ShellRuntime {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ShellHandle {
     pub id: ShellCommandId,
     abort_handle: tokio::task::AbortHandle,

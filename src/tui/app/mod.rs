@@ -500,6 +500,10 @@ pub enum TuiCommand {
         error: Option<String>,
     },
     ShellEvent(crate::shell::ShellEvent),
+    RegisterShellHandle {
+        id: u64,
+        handle: crate::shell::runtime::ShellHandle,
+    },
     ShellInclude {
         id: u64,
         mode: String,
@@ -946,6 +950,13 @@ pub struct App {
     /// each command reaches a terminal state.
     pub command_run_bridge: crate::shell::ShellCommandRunBridge,
     pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
+    /// Cached human-shell confirmation policy from `[human_shell]`.
+    /// Loaded at construction (or config reload) so the UI thread never
+    /// performs synchronous disk I/O per shell event.
+    pub shell_confirm_dangerous: bool,
+    /// Cached shell output projection configuration from
+    /// `[shell.output]`. Refreshed on config reload.
+    pub shell_output_config: crate::config::schema::ShellOutputConfig,
     /// Registry of TUI-owned background tasks.  Tracked tasks can be
     /// counted, cancelled, and reaped on shutdown or dialog close.
     pub task_registry: crate::tui::task_lifecycle::TuiTaskRegistry,
@@ -1135,6 +1146,9 @@ impl App {
             }
         });
 
+        let loaded_shell_cfg = cfg
+            .cloned()
+            .or_else(|| crate::config::schema::Config::load().ok());
         let theme_registry = Arc::new(crate::theme::ThemeRegistry::load_with_config(
             cfg.and_then(|c| c.theme.as_ref()),
         ));
@@ -1349,6 +1363,16 @@ impl App {
             shell_store: cfg
                 .and_then(|c| c.human_shell.as_ref())
                 .map(crate::shell::ShellOutputStore::from_config)
+                .unwrap_or_default(),
+            shell_confirm_dangerous: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.human_shell.as_ref())
+                .map(|h| h.confirm_dangerous())
+                .unwrap_or(true),
+            shell_output_config: loaded_shell_cfg
+                .as_ref()
+                .and_then(|c| c.shell.as_ref())
+                .and_then(|s| s.output.clone())
                 .unwrap_or_default(),
             command_run_store: crate::shell::CommandOutputStore::new(),
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
@@ -1792,6 +1816,8 @@ impl App {
             security_review_running: None,
             latest_security_review: None,
             shell_store: crate::shell::ShellOutputStore::new(),
+            shell_confirm_dangerous: true,
+            shell_output_config: crate::config::schema::ShellOutputConfig::default(),
             command_run_store: crate::shell::CommandOutputStore::new(),
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             shell_handles: std::collections::HashMap::new(),

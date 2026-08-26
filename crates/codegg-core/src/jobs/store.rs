@@ -1030,7 +1030,9 @@ impl JobStore for SqliteJobStore {
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
-                   parent_program_id, parent_instruction_sequence, relation_kind
+                   parent_program_id, parent_instruction_sequence, relation_kind,
+                   (SELECT GROUP_CONCAT(depends_on_job_id, ',')
+                    FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
             FROM job WHERE id = ?
             "#,
         )
@@ -1227,7 +1229,9 @@ impl JobStore for SqliteJobStore {
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
-                   parent_program_id, parent_instruction_sequence, relation_kind
+                   parent_program_id, parent_instruction_sequence, relation_kind,
+                   (SELECT GROUP_CONCAT(depends_on_job_id, ',')
+                    FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
             FROM job WHERE id = ?
             "#,
         )
@@ -1376,13 +1380,17 @@ impl JobStore for SqliteJobStore {
         attempt_id: &AttemptId,
         at: DateTime<Utc>,
     ) -> Result<(), JobStoreError> {
-        sqlx::query("UPDATE job_attempt SET heartbeat_at = ?, time_updated = ? WHERE id = ?")
-            .bind(at.timestamp_millis())
-            .bind(at.timestamp_millis())
-            .bind(attempt_id.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let result =
+            sqlx::query("UPDATE job_attempt SET heartbeat_at = ?, time_updated = ? WHERE id = ?")
+                .bind(at.timestamp_millis())
+                .bind(at.timestamp_millis())
+                .bind(attempt_id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+        }
         Ok(())
     }
 
@@ -1987,6 +1995,16 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
     };
     let labels: HashMap<String, String> = serde_json::from_str(&labels_json)
         .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+    let depends_on: Vec<JobId> = row
+        .try_get::<Option<String>, _>("depends_on_csv")
+        .unwrap_or(None)
+        .map(|csv| {
+            csv.split(',')
+                .filter(|s| !s.is_empty())
+                .map(JobId::new_unchecked)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(JobRecord {
         job_id: JobId::new_unchecked(id),
         workspace_id: WorkspaceId::new_unchecked(workspace_id),
@@ -2014,7 +2032,7 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
         cancel_requested_at: cancel_requested_at
             .and_then(chrono::DateTime::<Utc>::from_timestamp_millis),
         cancel_reason,
-        depends_on: Vec::new(),
+        depends_on,
         parent_job_id: row
             .try_get::<Option<String>, _>("parent_job_id")
             .unwrap_or(None)

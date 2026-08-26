@@ -106,51 +106,88 @@ impl CircuitBreaker {
         F: core::future::Future<Output = Result<R, E>>,
         E: From<CircuitError>,
     {
-        if !self.is_available().await {
-            return Err(CircuitError::Open(self.inner.name.clone()).into());
+        enum Admission {
+            Run,
+            Reject,
         }
 
-        let state = *self.inner.state.read().await;
-        if state == CircuitState::HalfOpen {
-            if self
-                .inner
-                .half_open_probe
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
-            {
-                return Err(CircuitError::Open(self.inner.name.clone()).into());
-            }
-            // Bind the timestamp first: an `if let` scrutinee guard on
-            // the RwLock read would otherwise stay alive across the
-            // block and deadlock the write below.
-            let probe_started = *self.inner.half_open_start_time.read().await;
-            if let Some(start_time) = probe_started {
-                if start_time.elapsed() >= self.inner.max_half_open_duration {
-                    *self.inner.state.write().await = CircuitState::Open;
-                    *self.inner.half_open_start_time.write().await = None;
-                    // Seed the failure timestamp so the normal Open ->
-                    // HalfOpen timeout applies before the next probe.
-                    // Clearing it here would leave the breaker stuck
-                    // Open forever (no route back to HalfOpen).
-                    *self.inner.last_failure_time.write().await = Some(Instant::now());
-                    self.inner.half_open_probe.store(false, Ordering::Release);
-                    tracing::warn!(
-                        "circuit breaker {} transitioned to Open after HalfOpen timeout",
-                        self.inner.name
-                    );
-                    return Err(CircuitError::Open(self.inner.name.clone()).into());
+        // Decide admission and claim the half-open probe in a single
+        // write-lock critical section. Splitting these steps would let a
+        // concurrent failure flip HalfOpen -> Open between the check and
+        // the probe claim, silently discarding the probe.
+        let admission = {
+            let mut state = self.inner.state.write().await;
+            match *state {
+                CircuitState::Closed => Admission::Run,
+                CircuitState::HalfOpen => {
+                    if self
+                        .inner
+                        .half_open_probe
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_err()
+                    {
+                        Admission::Reject
+                    } else {
+                        // Bind the timestamp first: an `if let` scrutinee guard on
+                        // the RwLock read would otherwise stay alive across the
+                        // block and deadlock the write below.
+                        let probe_started = *self.inner.half_open_start_time.read().await;
+                        if let Some(start_time) = probe_started {
+                            if start_time.elapsed() >= self.inner.max_half_open_duration {
+                                *state = CircuitState::Open;
+                                *self.inner.half_open_start_time.write().await = None;
+                                // Seed the failure timestamp so the normal Open ->
+                                // HalfOpen timeout applies before the next probe.
+                                // Clearing it here would leave the breaker stuck
+                                // Open forever (no route back to HalfOpen).
+                                *self.inner.last_failure_time.write().await = Some(Instant::now());
+                                self.inner.half_open_probe.store(false, Ordering::Release);
+                                tracing::warn!(
+                                    "circuit breaker {} transitioned to Open after HalfOpen timeout",
+                                    self.inner.name
+                                );
+                                return Err(CircuitError::Open(self.inner.name.clone()).into());
+                            }
+                        }
+                        Admission::Run
+                    }
+                }
+                CircuitState::Open => {
+                    let mut admitted = false;
+                    if let Some(last_failure) = *self.inner.last_failure_time.read().await {
+                        if last_failure.elapsed() >= Duration::from_secs(self.inner.timeout_secs) {
+                            *state = CircuitState::HalfOpen;
+                            self.inner.half_open_probe.store(true, Ordering::Release);
+                            *self.inner.half_open_start_time.write().await = Some(Instant::now());
+                            tracing::info!(
+                                "circuit breaker {} transitioned to HalfOpen",
+                                self.inner.name
+                            );
+                            admitted = true;
+                        }
+                    }
+                    if admitted {
+                        Admission::Run
+                    } else {
+                        Admission::Reject
+                    }
                 }
             }
+        };
+
+        match admission {
+            Admission::Reject => Err(CircuitError::Open(self.inner.name.clone()).into()),
+            Admission::Run => {
+                let result = op.await;
+
+                match &result {
+                    Ok(_) => self.record_success().await,
+                    Err(_) => self.record_failure().await,
+                }
+
+                result
+            }
         }
-
-        let result = op.await;
-
-        match &result {
-            Ok(_) => self.record_success().await,
-            Err(_) => self.record_failure().await,
-        }
-
-        result
     }
 
     pub async fn record_success(&self) {

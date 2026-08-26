@@ -2611,7 +2611,8 @@ impl AgentLoop {
                     .resolve_adapter(None, &request.model);
                 if let Some(profile) = adapter.text_tool_repair.as_deref() {
                     if !autonomy.adapter_repair_allowed() {
-                        // M002 permits one bounded textual adapter repair.
+                        // Repair budget exhausted: M002 permits at most one
+                        // bounded textual adapter repair.
                     } else {
                         match repair_text_as_tool_calls(
                             profile,
@@ -3417,7 +3418,8 @@ impl AgentLoop {
                         .resolve_adapter(None, &request.model);
                     if let Some(profile) = adapter.text_tool_repair.as_deref() {
                         if !autonomy.adapter_repair_allowed() {
-                            // M002 permits one bounded textual adapter repair.
+                            // Repair budget exhausted: M002 permits at most one
+                            // bounded textual adapter repair.
                         } else {
                             match repair_text_as_tool_calls(
                                 profile,

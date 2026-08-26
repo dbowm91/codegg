@@ -450,10 +450,14 @@ impl ToolRegistry {
             crate::tool::tool_program::ToolProgramTool::new()
         };
         registry.register(tool_program_tool);
+        let git_tool = match options.workspace_root.clone() {
+            Some(root) => crate::tool::git::GitTool::default().with_workdir(root),
+            None => crate::tool::git::GitTool::default(),
+        };
         let git_tool = if let Some(ref store) = options.run_store {
-            crate::tool::git::GitTool::default().with_run_store(store.clone())
+            git_tool.with_run_store(store.clone())
         } else {
-            crate::tool::git::GitTool::default()
+            git_tool
         };
         registry.register(git_tool);
 

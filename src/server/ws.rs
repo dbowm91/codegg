@@ -945,16 +945,13 @@ fn fire_connection_cancel(
     probe: Option<&Arc<ConnectionTaskProbe>>,
 ) {
     if let Some(probe) = probe {
-        let first = probe.connection_cancel_fired.fetch_update(
+        // Mark the once-only diagnostic counter; cancellation itself is
+        // idempotent and always applied.
+        let _ = probe.connection_cancel_fired.fetch_update(
             std::sync::atomic::Ordering::AcqRel,
             std::sync::atomic::Ordering::Acquire,
             |count| (count == 0).then_some(1),
         );
-        cancellation.cancel();
-        if first.is_err() {
-            return;
-        }
-        return;
     }
     cancellation.cancel();
 }

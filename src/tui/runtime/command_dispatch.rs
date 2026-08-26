@@ -670,6 +670,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellEvent(event) => {
             handle_shell_event(app, event);
         }
+        TuiCommand::RegisterShellHandle { id, handle } => {
+            app.shell_handles.insert(id, handle);
+        }
         TuiCommand::ShellInclude { id, mode, question } => {
             handle_shell_include(app, id, mode, question);
         }

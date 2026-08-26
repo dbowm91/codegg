@@ -42,7 +42,6 @@ impl BoundedOutput {
 
         let remaining = &data[space_in_head.min(data.len())..];
         if !remaining.is_empty() {
-            self.omitted_bytes += remaining.len();
             // Truncate in place: extend the tail then drain the
             // overflow from the front. Cloning per chunk would make
             // streaming output quadratic in the tail size.
@@ -50,6 +49,7 @@ impl BoundedOutput {
             let overflow = self.tail.len().saturating_sub(TAIL_CAP);
             if overflow > 0 {
                 self.tail.drain(..overflow);
+                self.omitted_bytes += overflow;
             }
         }
     }
@@ -295,8 +295,21 @@ mod tests {
         let data = vec![b'x'; 512 * 1024];
         bo.append(&data);
         assert_eq!(bo.head.len(), HEAD_CAP);
-        assert!(bo.omitted_bytes > 0);
+        assert_eq!(bo.tail.len(), 512 * 1024 - HEAD_CAP);
+        // Everything is retained in head+tail; nothing was evicted.
+        assert_eq!(bo.omitted_bytes, 0);
         assert_eq!(bo.total_bytes, 512 * 1024);
+    }
+
+    #[test]
+    fn bounded_output_omitted_counts_only_evicted_bytes() {
+        let mut bo = BoundedOutput::new();
+        bo.append(&vec![b'x'; 512 * 1024]);
+        assert_eq!(bo.omitted_bytes, 0);
+        bo.append(b"overflow-past-tail-cap");
+        assert_eq!(bo.tail.len(), TAIL_CAP);
+        assert_eq!(bo.omitted_bytes, b"overflow-past-tail-cap".len());
+        assert_eq!(bo.total_bytes, 512 * 1024 + b"overflow-past-tail-cap".len());
     }
 
     #[test]

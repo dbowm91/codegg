@@ -201,10 +201,10 @@ impl ShellDigest {
 }
 
 fn summarize(text: &str, max_chars: usize) -> String {
-    if text.len() <= max_chars {
+    if text.chars().count() <= max_chars {
         text.to_string()
     } else {
-        let mut truncated = text[..max_chars].to_string();
+        let mut truncated: String = text.chars().take(max_chars).collect();
         truncated.push_str("\n... [truncated]");
         truncated
     }
@@ -478,6 +478,10 @@ mod tests {
     fn digest_truncation_report() {
         let mut stdout = BoundedOutput::new();
         stdout.append(&[b'x'; 512 * 1024]);
+        // A single append fits entirely in head+tail; push past the
+        // tail cap so bytes are genuinely evicted.
+        stdout.append(&[b'y'; 4096]);
+        assert!(stdout.omitted_bytes > 0);
         let digest = ShellDigest::build(
             "cmd",
             &PathBuf::from("/tmp"),
@@ -489,7 +493,7 @@ mod tests {
         );
         assert!(digest.truncation.stdout_truncated);
         assert!(!digest.truncation.stderr_truncated);
-        assert!(digest.truncation.stdout_omitted_bytes > 0);
+        assert_eq!(digest.truncation.stdout_omitted_bytes, stdout.omitted_bytes);
     }
 
     #[test]
@@ -502,6 +506,16 @@ mod tests {
     fn summarize_long_text() {
         let s = summarize(&"a".repeat(200), 100);
         assert!(s.len() < 120);
+        assert!(s.contains("[truncated]"));
+    }
+
+    #[test]
+    fn summarize_multibyte_no_panic_on_char_boundary() {
+        let text = "a".repeat(599) + "é";
+        assert_eq!(text.len(), 601);
+        let s = summarize(&text, 500);
+        assert!(s.contains("[truncated]"));
+        let s = summarize(&"é".repeat(600), 500);
         assert!(s.contains("[truncated]"));
     }
 

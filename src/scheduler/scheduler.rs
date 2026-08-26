@@ -106,8 +106,11 @@ pub struct JobScheduler {
     running: Arc<AsyncMutex<HashMap<AttemptId, RunningAttempt>>>,
     /// Recent in-process completions let daemon clients receive the same
     /// bounded executor projection that completed the work. Durable job and
-    /// attempt state remains authoritative across restart.
-    completions: Arc<AsyncMutex<HashMap<JobId, ExecutorCompletion>>>,
+    /// attempt state remains authoritative across restart. Values carry the
+    /// insertion sequence so eviction is oldest-first.
+    completions: Arc<AsyncMutex<HashMap<JobId, (u64, ExecutorCompletion)>>>,
+    /// Monotonic insertion counter for `completions`.
+    completions_seq: Arc<AtomicU64>,
     /// Per-workspace running attempts (denormalized for snapshot).
     running_per_workspace: Arc<AsyncMutex<HashMap<WorkspaceId, usize>>>,
     /// Per-priority ready-window counts (denormalized).
@@ -161,6 +164,7 @@ impl JobScheduler {
             dispatch: AsyncMutex::new(()),
             running,
             completions: Arc::new(AsyncMutex::new(HashMap::new())),
+            completions_seq: Arc::new(AtomicU64::new(0)),
             running_per_workspace,
             ready_counts,
             running_total: Arc::new(AtomicU64::new(0)),
@@ -391,7 +395,14 @@ impl JobScheduler {
     ) -> Result<ExecutorCompletion, JobSchedulerError> {
         let deadline = Instant::now() + wait_timeout;
         loop {
-            if let Some(completion) = self.completions.lock().await.get(job_id).cloned() {
+            if let Some(completion) = self
+                .completions
+                .lock()
+                .await
+                .get(job_id)
+                .map(|(_, c)| c)
+                .cloned()
+            {
                 return Ok(completion);
             }
             if let Some(job) = self.store.get_job(job_id).await? {
@@ -857,6 +868,7 @@ impl JobScheduler {
             let running_total = self.running_total.clone();
             let rpw = self.running_per_workspace.clone();
             let completions = self.completions.clone();
+            let completions_seq = self.completions_seq.clone();
             let event_tx = self.event_tx.clone();
             let notify = self.notify.clone();
             tokio::spawn(async move {
@@ -908,9 +920,14 @@ impl JobScheduler {
                 };
                 {
                     let mut completions_guard = completions.lock().await;
-                    completions_guard.insert(job_id_for_task.clone(), completion.clone());
+                    let seq = completions_seq.fetch_add(1, Ordering::Relaxed);
+                    completions_guard.insert(job_id_for_task.clone(), (seq, completion.clone()));
                     if completions_guard.len() > 1024 {
-                        if let Some(oldest) = completions_guard.keys().next().cloned() {
+                        if let Some(oldest) = completions_guard
+                            .iter()
+                            .min_by_key(|(_, (seq, _))| *seq)
+                            .map(|(k, _)| k.clone())
+                        {
                             completions_guard.remove(&oldest);
                         }
                     }
