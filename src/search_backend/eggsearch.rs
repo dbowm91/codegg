@@ -58,7 +58,11 @@ fn repository_locator(input: &Value, require_owner: bool) -> Result<RepositoryLo
         }
         Some(owner) => (Some(owner), repo),
         None if repo.matches('/').count() == 1 => {
-            let (owner, repo_name) = repo.split_once('/').expect("one slash implies split");
+            let Some((owner, repo_name)) = repo.split_once('/') else {
+                return Err(ToolError::Execution(format!(
+                    "invalid repository locator '{repo}'; expected owner/repo"
+                )));
+            };
             if owner.is_empty() || repo_name.is_empty() {
                 return Err(ToolError::Execution(format!(
                     "invalid repository locator '{repo}'; expected owner/repo"

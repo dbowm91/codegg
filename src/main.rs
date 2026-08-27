@@ -487,7 +487,7 @@ async fn main() -> Result<(), AppError> {
                 port,
                 standalone_core,
             } => {
-                let config = Config::load().unwrap_or_default();
+                let config = Config::load_or_default();
                 let port = port
                     .or_else(|| config.server.as_ref().and_then(|s| s.port))
                     .unwrap_or(3000);
@@ -619,9 +619,8 @@ async fn main() -> Result<(), AppError> {
                         pid, metadata.generation
                     );
                     let shutdown_timeout = std::time::Duration::from_millis(
-                        Config::load()
-                            .ok()
-                            .and_then(|config| config.daemon)
+                        Config::load_or_default()
+                            .daemon
                             .and_then(|daemon| daemon.shutdown_timeout_ms)
                             .unwrap_or(10_000),
                     );
@@ -775,7 +774,7 @@ async fn cmd_providers() -> Result<(), AppError> {
     // ensures `codegg providers` and `codegg models` agree on which
     // providers are visible, including those sourced from the user
     // credential store.
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut registry, &config);
 
@@ -795,7 +794,7 @@ async fn cmd_providers() -> Result<(), AppError> {
 }
 
 async fn cmd_models(provider_filter: Option<String>) -> Result<(), AppError> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut registry, &config);
 
@@ -1353,7 +1352,7 @@ async fn cmd_exec(
 }
 
 async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let mut registry = ProviderRegistry::new();
     provider::register_builtin_with_config(&mut registry, &config);
 
@@ -1498,7 +1497,7 @@ async fn launch_tui(cli: &Cli) -> Result<(), AppError> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
 
     // Resolve the runtime mode with explicit overrides winning over
     // config, and the daemon-client mode being the default for plain
@@ -2079,7 +2078,7 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     use codegg::core::instance::{current_process_metadata, DaemonInstanceGuard, DaemonPaths};
     use tokio_util::sync::CancellationToken;
 
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let project_dir = match config
         .daemon
         .as_ref()
@@ -2342,7 +2341,7 @@ async fn run_core_stdio() -> Result<(), AppError> {
     let pool = storage::init_migrated_daemon_catalog(&catalog_paths).await?;
     let session_store = Arc::new(SessionStore::new(pool.clone()));
     let memory_store = Arc::new(MemoryStore::new().unwrap_or_else(|_| MemoryStore::default()));
-    let mut config = Config::load().unwrap_or_default();
+    let mut config = Config::load_or_default();
     if std::env::var_os("CODEGG_CORE_STDIO_CATALOG").is_some() {
         // The isolated harness must not inherit an operator's rollout toggle;
         // it is explicitly testing the production scheduler/executor path.
@@ -2453,7 +2452,7 @@ async fn cmd_server(host: &str, port: u16, standalone_core: bool) -> Result<(), 
         tracing::warn!("Failed to initialize memory store: {}", e);
         MemoryStore::default()
     }));
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let agents = match agent::resolve_agents_with_context(&config, Some(Path::new(&project_dir))) {
         Ok(a) => a,
         Err(e) => {

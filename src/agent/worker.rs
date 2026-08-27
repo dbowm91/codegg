@@ -198,7 +198,7 @@ impl Drop for DescendantAdmissionLease {
                 .registry
                 .state
                 .lock()
-                .expect("admission registry poisoned");
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.active = state.active.saturating_sub(1);
             self.active = false;
         }
@@ -213,7 +213,10 @@ impl AdmissionRegistry {
     ) -> Result<DescendantAdmissionLease, String> {
         let key = delegation_key(request);
         let parent = request.parent_id.as_deref().unwrap_or("<root>").to_string();
-        let mut state = self.state.lock().expect("admission registry poisoned");
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.active >= self.max_active {
             return Err("subagent active-descendant limit exceeded".into());
         }
@@ -251,7 +254,7 @@ impl AdmissionRegistry {
     fn active_count(&self) -> usize {
         self.state
             .lock()
-            .expect("admission registry poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .active
     }
 }
@@ -443,10 +446,15 @@ impl SubAgentPool {
                     Some(WorkerRequest { request, response_tx, lease, lineage_token }) = request_rx.recv() => {
                         if cancel_token.is_cancelled() {
                             drop(lease);
-                            let _ = response_tx.send(SubAgentResult::failure(
-                                request.task_id,
-                                "pool shutting down".to_string(),
-                            ));
+                            if response_tx
+                                .send(SubAgentResult::failure(
+                                    request.task_id,
+                                    "pool shutting down".to_string(),
+                                ))
+                                .is_err()
+                            {
+                                tracing::debug!(task_id = request.task_id, "subagent result receiver closed");
+                            }
                             continue;
                         }
 
@@ -467,17 +475,27 @@ impl SubAgentPool {
                             let permit = tokio::select! {
                                 biased;
                                 _ = cancel_token.cancelled() => {
-                                    let _ = response_tx.send(SubAgentResult::failure(
-                                        request.task_id,
-                                        "pool shutting down".to_string(),
-                                    ));
+                                    if response_tx
+                                        .send(SubAgentResult::failure(
+                                            request.task_id,
+                                            "pool shutting down".to_string(),
+                                        ))
+                                        .is_err()
+                                    {
+                                        tracing::debug!(task_id = request.task_id, "subagent result receiver closed");
+                                    }
                                     return;
                                 }
                                 _ = lineage_token.cancelled() => {
-                                    let _ = response_tx.send(SubAgentResult::failure(
-                                        request.task_id,
-                                        "Task cancelled".to_string(),
-                                    ));
+                                    if response_tx
+                                        .send(SubAgentResult::failure(
+                                            request.task_id,
+                                            "Task cancelled".to_string(),
+                                        ))
+                                        .is_err()
+                                    {
+                                        tracing::debug!(task_id = request.task_id, "subagent result receiver closed");
+                                    }
                                     return;
                                 }
                                 result = sem.acquire() => {
@@ -485,16 +503,22 @@ impl SubAgentPool {
                                         Ok(p) => p,
                                         Err(e) => {
                                             tracing::error!("Failed to acquire semaphore: {}", e);
-                                            let _ = response_tx.send(SubAgentResult::failure(
-                                                request.task_id,
-                                                format!("Worker semaphore error: {}", e),
-                                            ));
+                                            if response_tx
+                                                .send(SubAgentResult::failure(
+                                                    request.task_id,
+                                                    format!("Worker semaphore error: {}", e),
+                                                ))
+                                                .is_err()
+                                            {
+                                                tracing::debug!(task_id = request.task_id, "subagent result receiver closed");
+                                            }
                                             return;
                                         }
                                     }
                                 }
                             };
 
+                            let task_id = request.task_id;
                             let result = run_subagent_task_with_cancel(
                                 request,
                                 task_store,
@@ -508,7 +532,9 @@ impl SubAgentPool {
                                 subagent_pool,
                             ).await;
 
-                            let _ = response_tx.send(result);
+                            if response_tx.send(result).is_err() {
+                                tracing::debug!(task_id, "subagent result receiver closed");
+                            }
                             drop(permit);
                         });
 
@@ -580,7 +606,9 @@ impl SubAgentPool {
         // Wait for worker loop to finish
         let workers = std::mem::take(&mut *self.workers.lock().await);
         for handle in workers {
-            let _ = handle.await;
+            if let Err(error) = handle.await {
+                tracing::warn!(error = %error, "subagent worker loop exited unexpectedly");
+            }
         }
 
         // Wait for aborted tasks to complete (active_count to reach 0)
@@ -1279,5 +1307,23 @@ mod admission_tests {
         drop(lease);
         assert_eq!(registry.active_count(), 0);
         assert!(registry.admit(&request(2), 0).is_ok());
+    }
+
+    #[test]
+    fn poisoned_admission_lock_is_recovered() {
+        let registry = Arc::new(AdmissionRegistry {
+            state: Mutex::new(AdmissionState::default()),
+            max_active: 1,
+            max_direct_children: usize::MAX,
+            max_total_child_tool_calls: usize::MAX,
+        });
+        let lease = registry.admit(&request(1), 0).unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = registry.state.lock().unwrap();
+            panic!("poison admission lock");
+        }));
+
+        drop(lease);
+        assert_eq!(registry.active_count(), 0);
     }
 }

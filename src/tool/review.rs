@@ -73,7 +73,7 @@ impl ReviewTool {
     }
 
     async fn analyze_diff(&self, diff: &str) -> Result<String, ToolError> {
-        let config = Config::load().unwrap_or_default();
+        let config = Config::load_or_default();
         let mut registry = ProviderRegistry::new();
         register_builtin_with_config(&mut registry, &config);
 

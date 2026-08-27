@@ -18,12 +18,14 @@
 //! The registry tracks three lifetime counters:
 //! - [`completed_count`]: tasks that finished naturally before being reaped
 //! - [`cancelled_count`]: tasks aborted via the registry's cancellation API
-//! - [`panicked_count`]: tasks whose result was `Err(JoinError::Panic)` when
-//!   last observed. Note: detecting panics requires awaiting the JoinHandle;
-//!   the abort-handle-only design cannot observe them, so this counter stays
-//!   at zero unless the registry is later upgraded to store JoinHandles.
+//! - [`panicked_count`]: tasks whose result was `Err(JoinError::Panic)` after
+//!   their owned JoinHandle was observed by the registry's monitor.
 
 use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use std::time::Instant;
 
 /// Monotonically increasing task identifier.
@@ -123,11 +125,16 @@ pub struct TuiTaskRegistry {
     /// reaped. Bumped by [`reap_finished`] when a finished task is removed
     /// from the active map.
     completed_count: u64,
-    /// Cumulative count of tasks observed to have panicked. The
-    /// abort-handle-only design cannot observe panics; this counter is
-    /// reserved for a future JoinHandle upgrade and stays at 0 in the
-    /// current implementation.
-    panicked_count: u64,
+    /// Shared counter updated by the JoinHandle monitors owned by each task.
+    panicked_count: Arc<AtomicU64>,
+}
+
+impl Drop for TuiTaskRegistry {
+    fn drop(&mut self) {
+        for record in self.tasks.values() {
+            record.abort();
+        }
+    }
 }
 
 impl Default for TuiTaskRegistry {
@@ -143,7 +150,7 @@ impl TuiTaskRegistry {
             tasks: HashMap::new(),
             cancelled_count: 0,
             completed_count: 0,
-            panicked_count: 0,
+            panicked_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -179,13 +186,24 @@ impl TuiTaskRegistry {
         self.next_id += 1;
 
         let handle = tokio::spawn(fut);
+        let abort_handle = handle.abort_handle();
+        let panic_counter = Arc::clone(&self.panicked_count);
+        let monitor_name = name;
+        tokio::spawn(async move {
+            if let Err(error) = handle.await {
+                if error.is_panic() {
+                    tracing::error!(task = monitor_name, "TUI background task panicked");
+                    panic_counter.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        });
         self.tasks.insert(
             id,
             TuiTaskRecord {
                 name,
                 kind,
                 started_at: Instant::now(),
-                abort_handle: handle.abort_handle(),
+                abort_handle,
                 scope_tab_id,
                 scope_session_id,
                 scope_active_view_epoch,
@@ -322,7 +340,7 @@ impl TuiTaskRegistry {
     /// Number of tasks observed to have panicked. Reserved for a
     /// future JoinHandle upgrade; always 0 in the current design.
     pub fn panicked_count(&self) -> u64 {
-        self.panicked_count
+        self.panicked_count.load(Ordering::Relaxed)
     }
 
     /// Human-readable summary for diagnostics.
@@ -332,7 +350,7 @@ impl TuiTaskRegistry {
             self.tasks.len(),
             self.completed_count,
             self.cancelled_count,
-            self.panicked_count,
+            self.panicked_count(),
         )];
 
         if self.tasks.is_empty() {
@@ -562,16 +580,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn panicked_count_stays_zero_in_abort_handle_design() {
+    async fn panicked_tasks_are_reported() {
         let mut reg = TuiTaskRegistry::new();
         reg.spawn(TuiTaskKind::Command, "panic", async {
-            // Panic — but with abort-handle-only design we cannot observe.
             panic!("intentional test panic");
         });
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         reg.reap_finished();
-        // The task panicked but the registry cannot detect that yet.
-        assert_eq!(reg.panicked_count(), 0);
+        assert_eq!(reg.panicked_count(), 1);
     }
 
     #[test]

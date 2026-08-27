@@ -863,7 +863,9 @@ async fn handle_callback(
         tracing::warn!(error = %error, "failed to flush OAuth callback response");
     }
 
-    let _ = tx.send(code);
+    if tx.send(code).is_err() {
+        tracing::debug!("OAuth callback receiver closed before code delivery");
+    }
     Ok(())
 }
 

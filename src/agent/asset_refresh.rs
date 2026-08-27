@@ -592,7 +592,10 @@ mod tests {
             context: &AssetContext,
         ) -> Result<ProjectAssetSnapshot, SnapshotBuildError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            *self.thread.lock().unwrap() = Some(std::thread::current());
+            *self
+                .thread
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::thread::current());
             self.started.notify_one();
             std::thread::park();
             self.inner.build(context)
@@ -762,7 +765,12 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-        thread.lock().unwrap().take().unwrap().unpark();
+        thread
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap()
+            .unpark();
 
         let (first, second) = tokio::join!(first, second);
         let first = first.unwrap();

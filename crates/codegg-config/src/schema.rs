@@ -1894,6 +1894,15 @@ pub enum PluginSpec {
 }
 
 impl Config {
+    /// Load the merged configuration, logging parse or filesystem failures
+    /// before falling back to defaults so a broken config is never silent.
+    pub fn load_or_default() -> Self {
+        Self::load().unwrap_or_else(|error| {
+            tracing::warn!(error = %error, "failed to load config; using defaults");
+            Self::default()
+        })
+    }
+
     pub fn load() -> Result<Self, crate::error::ConfigError> {
         let paths = crate::paths::resolve_config_paths();
         if paths.is_empty() {

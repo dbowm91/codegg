@@ -2535,7 +2535,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -2555,7 +2558,7 @@ mod tests {
         .await;
 
         // Verify sorted processing order
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(seen_files.len(), 3);
         assert_eq!(seen_files[0], "src/a_first.rs");
         assert_eq!(seen_files[1], "src/m_middle.rs");
@@ -2733,7 +2736,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 if request.file_path == "src/b.rs" {
                     return Err("LSP server unavailable for b.rs".to_string());
                 }
@@ -2813,7 +2819,7 @@ mod tests {
             result.notes
         );
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(seen_files.len(), 3, "all 3 files should be attempted");
         assert!(seen_files.contains(&"src/a.rs".to_string()));
         assert!(seen_files.contains(&"src/b.rs".to_string()));
@@ -2848,7 +2854,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -2866,7 +2875,7 @@ mod tests {
         )
         .await;
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(seen_files.len(), 8, "exactly 8 files should be processed");
 
         for i in 0..8 {
@@ -2993,7 +3002,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -3012,7 +3024,7 @@ mod tests {
         )
         .await;
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(seen_files.len(), 1, "only eligible file should execute");
         assert!(seen_files.contains(&"src/main.rs".to_string()));
         assert_eq!(result.stats.requests_attempted, 1);
@@ -3048,7 +3060,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -3067,7 +3082,7 @@ mod tests {
         )
         .await;
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(
             seen_files.len(),
             1,
@@ -3214,7 +3229,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -3233,7 +3251,7 @@ mod tests {
         )
         .await;
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(
             seen_files.len(),
             2,
@@ -3283,7 +3301,10 @@ mod tests {
                 &self,
                 request: HunkSourceNavigationRequest,
             ) -> Result<HunkSourceNavigationResponse, String> {
-                self.seen.lock().unwrap().push(request.file_path.clone());
+                self.seen
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(request.file_path.clone());
                 Ok(HunkSourceNavigationResponse::new(&request.file_path))
             }
         }
@@ -3302,7 +3323,7 @@ mod tests {
         )
         .await;
 
-        let seen_files = seen.lock().unwrap();
+        let seen_files = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         // src/small.rs should be processed (uses synthetic headers, passes policy)
         assert!(

@@ -38,7 +38,7 @@ pub fn spawn_sidebar_diff_stats(
     path: String,
     old_content: Option<String>,
     generation: u64,
-    registry: Option<&mut TuiTaskRegistry>,
+    registry: &mut TuiTaskRegistry,
 ) {
     let Some(tx) = tui_cmd_tx else {
         tracing::warn!("spawn_sidebar_diff_stats: no command sender available");
@@ -68,14 +68,12 @@ pub fn spawn_sidebar_diff_stats(
             generation,
             result,
         };
-        let _ = tx.send(cmd).await;
+        if let Err(error) = tx.send(cmd).await {
+            tracing::debug!(error = %error, "sidebar diff result receiver closed");
+        }
     };
 
-    if let Some(reg) = registry {
-        reg.spawn(TuiTaskKind::FileDiff, "sidebar_diff", future);
-    } else {
-        tokio::spawn(future);
-    }
+    registry.spawn(TuiTaskKind::FileDiff, "sidebar_diff", future);
 }
 
 fn compute_diff_stats(
@@ -114,8 +112,18 @@ fn compute_diff_stats(
     let probe_len = (file_size as usize).min(SIDEBAR_DIFF_BINARY_PROBE_BYTES);
     if probe_len > 0 {
         let mut probe = vec![0u8; probe_len];
-        if let Ok(mut f) = std::fs::File::open(&abs_path) {
-            let _ = std::io::Read::read(&mut f, &mut probe);
+        let mut file = match std::fs::File::open(&abs_path) {
+            Ok(file) => file,
+            Err(error) => {
+                return FileDiffStatsResult::Error {
+                    message: format!("file open failed: {error}"),
+                };
+            }
+        };
+        if let Err(error) = std::io::Read::read(&mut file, &mut probe) {
+            return FileDiffStatsResult::Error {
+                message: format!("binary probe failed: {error}"),
+            };
         }
         if probe.contains(&0) {
             return FileDiffStatsResult::Skipped { reason: "binary" };
@@ -268,6 +276,7 @@ mod tests {
     #[tokio::test]
     async fn stale_generation_is_ignored() {
         let (tx, mut rx) = mpsc::channel(10);
+        let mut registry = TuiTaskRegistry::new();
 
         // Spawn a diff that will take a moment.
         let dir = tempfile::tempdir().unwrap();
@@ -281,7 +290,7 @@ mod tests {
             "slow.txt".to_string(),
             None,
             1, // generation 1
-            None,
+            &mut registry,
         );
 
         // Wait for the command.
@@ -304,6 +313,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_sends_ready_result() {
         let (tx, mut rx) = mpsc::channel(10);
+        let mut registry = TuiTaskRegistry::new();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.txt");
         std::fs::write(&path, "a\nb\nc\n").unwrap();
@@ -314,7 +324,7 @@ mod tests {
             "a.txt".to_string(),
             Some("a\nc\n".to_string()),
             42,
-            None,
+            &mut registry,
         );
 
         let cmd = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

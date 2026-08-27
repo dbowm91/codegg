@@ -506,35 +506,72 @@ pub struct PendingChildWait {
     pub config_value: Option<ProgramValue>,
 }
 
+#[derive(Serialize)]
+struct CheckpointSemanticMaterial<'a> {
+    pc: u32,
+    steps: u64,
+    iterations: u64,
+    calls_completed: u32,
+    bytes_used: u64,
+    parallel_groups: u32,
+    locals: &'a Vec<Option<ProgramValue>>,
+    stack: &'a Vec<ProgramValue>,
+    next_call_seq: u32,
+    terminated: bool,
+    completed_calls_count: usize,
+    pending_child_wait: &'a Option<PendingChildWait>,
+    original_deadline_millis: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct LegacyCheckpointSemanticMaterial<'a> {
+    pc: u32,
+    steps: u64,
+    iterations: u64,
+    calls_completed: u32,
+    bytes_used: u64,
+    parallel_groups: u32,
+    locals: &'a Vec<Option<ProgramValue>>,
+    stack: &'a Vec<ProgramValue>,
+    next_call_seq: u32,
+    terminated: bool,
+    completed_calls_count: usize,
+}
+
 impl InterpreterCheckpoint {
-    fn semantic_material(&self) -> String {
-        serde_json::to_string(&serde_json::json!({
-            "pc": self.pc,
-            "steps": self.steps,
-            "iterations": self.iterations,
-            "calls_completed": self.calls_completed,
-            "bytes_used": self.bytes_used,
-            "parallel_groups": self.parallel_groups,
-            "locals": &self.locals,
-            "stack": &self.stack,
-            "next_call_seq": self.completed_calls.iter()
+    fn semantic_material(&self) -> Result<String, InterpreterError> {
+        serde_json::to_string(&CheckpointSemanticMaterial {
+            pc: self.pc,
+            steps: self.steps,
+            iterations: self.iterations,
+            calls_completed: self.calls_completed,
+            bytes_used: self.bytes_used,
+            parallel_groups: self.parallel_groups,
+            locals: &self.locals,
+            stack: &self.stack,
+            next_call_seq: self
+                .completed_calls
+                .iter()
                 .map(|call| call.sequence)
                 .max()
                 .map(|sequence| sequence + 1)
                 .unwrap_or(0),
-            "terminated": false,
-            "completed_calls_count": self.completed_calls.len(),
-            "pending_child_wait": &self.pending_child_wait,
-            "original_deadline_millis": self.original_deadline_millis,
-        }))
-        .expect("checkpoint semantic state is serializable")
+            terminated: false,
+            completed_calls_count: self.completed_calls.len(),
+            pending_child_wait: &self.pending_child_wait,
+            original_deadline_millis: self.original_deadline_millis,
+        })
+        .map_err(|error| {
+            InterpreterError::InternalError(format!(
+                "checkpoint semantic state serialization failed: {error}"
+            ))
+        })
     }
 
-    pub fn refresh_semantic_digest(&mut self) {
-        self.semantic_digest = format!(
-            "sha256:{:x}",
-            sha2::Sha256::digest(self.semantic_material().as_bytes())
-        );
+    pub fn refresh_semantic_digest(&mut self) -> Result<(), InterpreterError> {
+        let material = self.semantic_material()?;
+        self.semantic_digest = format!("sha256:{:x}", sha2::Sha256::digest(material.as_bytes()));
+        Ok(())
     }
 }
 
@@ -1531,7 +1568,7 @@ impl MeteredInterpreter {
                             ));
                         }
                     }
-                    let checkpoint = self.create_checkpoint();
+                    let checkpoint = self.create_checkpoint()?;
                     let call_result = broker
                         .submit_child_job_with_checkpoint(&request, &checkpoint)
                         .await;
@@ -1605,14 +1642,14 @@ impl MeteredInterpreter {
         &mut self,
         broker: &dyn BrokerCallback,
     ) -> Result<(), InterpreterError> {
-        let checkpoint = self.create_checkpoint();
+        let checkpoint = self.create_checkpoint()?;
         broker.checkpoint(&checkpoint).await?;
         self.checkpoints.push(checkpoint);
         Ok(())
     }
 
     /// Create a checkpoint of the current interpreter state.
-    fn create_checkpoint(&mut self) -> InterpreterCheckpoint {
+    fn create_checkpoint(&mut self) -> Result<InterpreterCheckpoint, InterpreterError> {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
@@ -1653,8 +1690,8 @@ impl MeteredInterpreter {
             completed_calls,
             locals_hash,
         };
-        checkpoint.refresh_semantic_digest();
-        checkpoint
+        checkpoint.refresh_semantic_digest()?;
+        Ok(checkpoint)
     }
 
     /// Execute a single broker call with transient retry and per-call timeout.
@@ -2273,31 +2310,34 @@ impl MeteredInterpreter {
         checkpoint: InterpreterCheckpoint,
     ) -> Result<(), InterpreterError> {
         // M014-C1: Verify the semantic digest before restoring.
-        let legacy_material = serde_json::to_string(&serde_json::json!({
-            "pc": checkpoint.pc,
-            "steps": checkpoint.steps,
-            "iterations": checkpoint.iterations,
-            "calls_completed": checkpoint.calls_completed,
-            "bytes_used": checkpoint.bytes_used,
-            "parallel_groups": checkpoint.parallel_groups,
-            "locals": &checkpoint.locals,
-            "stack": &checkpoint.stack,
-            "next_call_seq": checkpoint.completed_calls.iter()
+        let legacy_material = serde_json::to_string(&LegacyCheckpointSemanticMaterial {
+            pc: checkpoint.pc,
+            steps: checkpoint.steps,
+            iterations: checkpoint.iterations,
+            calls_completed: checkpoint.calls_completed,
+            bytes_used: checkpoint.bytes_used,
+            parallel_groups: checkpoint.parallel_groups,
+            locals: &checkpoint.locals,
+            stack: &checkpoint.stack,
+            next_call_seq: checkpoint
+                .completed_calls
+                .iter()
                 .map(|c| c.sequence)
                 .max()
                 .map(|m| m + 1)
                 .unwrap_or(0),
-            "terminated": false,
-            "completed_calls_count": checkpoint.completed_calls.len(),
-        }))
+            terminated: false,
+            completed_calls_count: checkpoint.completed_calls.len(),
+        })
         .unwrap_or_default();
         let legacy_digest = format!(
             "sha256:{:x}",
             sha2::Sha256::digest(legacy_material.as_bytes())
         );
+        let expected_material = checkpoint.semantic_material()?;
         let expected_digest = format!(
             "sha256:{:x}",
-            sha2::Sha256::digest(checkpoint.semantic_material().as_bytes())
+            sha2::Sha256::digest(expected_material.as_bytes())
         );
         if !checkpoint.semantic_digest.is_empty()
             && checkpoint.semantic_digest != expected_digest
@@ -3374,6 +3414,19 @@ emit({k: v})
         assert_eq!(result.status, ProgramStatus::Completed);
         // The interpreter should have produced at least one checkpoint
         // (Checkpoint instruction is emitted by the compiler at key points)
+    }
+
+    #[test]
+    fn checkpoint_serialization_failure_is_returned() {
+        let compilation = compile_program("x = 1\n").unwrap();
+        let limits = RuntimeLimits::from(&compilation.ir.bounds);
+        let mut interp = MeteredInterpreter::new(compilation.ir, limits);
+        interp.locals[0] = Some(ProgramValue::Float(f64::NAN));
+
+        let checkpoint = interp
+            .create_checkpoint()
+            .expect("non-finite model output must not panic checkpointing");
+        assert!(checkpoint.semantic_digest.starts_with("sha256:"));
     }
 
     // ── In-flight budget tests ──────────────────────────────────────

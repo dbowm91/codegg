@@ -422,7 +422,7 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                 path,
                 old_content,
                 generation,
-                Some(&mut app.task_registry),
+                &mut app.task_registry,
             );
 
             true

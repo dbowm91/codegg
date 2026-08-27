@@ -78,6 +78,14 @@ pub struct CoreDaemon {
     _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+impl Drop for CoreDaemon {
+    fn drop(&mut self) {
+        if let Some(handle) = self._projection_maintenance_handle.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// Adapter bridging `EventLog`'s `ProjectionSink` trait to the
 /// centralized `ProjectionPublicationSeam`. Spawned by the daemon
 /// construction path when a SQLite pool is available.
@@ -93,7 +101,9 @@ impl super::event_log::ProjectionSink for SeamProjectionSink {
         let seam = self.inner.clone();
         Box::pin(async move {
             let ctx = codegg_core::projection_replay::seam::ProjectionPublicationContext::default();
-            let _ = seam.publish(&envelope, ctx).await;
+            if let Err(error) = seam.publish(&envelope, ctx).await {
+                tracing::warn!(error = %error, "projection publication failed");
+            }
         })
     }
 }
@@ -152,7 +162,9 @@ impl CoreDaemon {
                 loop {
                     interval.tick().await;
                     let now = chrono::Utc::now().timestamp_millis();
-                    let _ = maintenance_seam.service().maintenance_tick(now).await;
+                    if let Err(error) = maintenance_seam.service().maintenance_tick(now).await {
+                        tracing::warn!(error = %error, "projection replay maintenance tick failed");
+                    }
                 }
             });
 
@@ -250,10 +262,15 @@ impl CoreDaemon {
         // Phase 5: global admission control scheduler. Daemon-owned work
         // is scheduler-authoritative by default; an explicitly disabled
         // scheduler produces a placeholder that rejects heavy submission.
-        let scheduler_config = crate::scheduler::config::ResolvedSchedulerConfig::from_input(
+        let scheduler_config = match crate::scheduler::config::ResolvedSchedulerConfig::from_input(
             config.scheduler.as_ref(),
-        )
-        .unwrap_or_default();
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::warn!(error = %error, "invalid scheduler config; using defaults");
+                Default::default()
+            }
+        };
         let (scheduler, should_spawn_scheduler) = if let Some(existing) = deps.scheduler.clone() {
             (existing, false)
         } else if scheduler_config.enabled {
@@ -1194,7 +1211,7 @@ impl CoreDaemon {
         // grep-able. The DISTINCT + NOT EXISTS pattern ensures each (session, turn)
         // pair is reported at most once and we only flag turns that have a real
         // turn_id (e.g., not blank rows from older schemas).
-        let active_turns: Vec<(String, String)> = sqlx::query_as(
+        let active_turns: Result<Vec<(String, String)>, sqlx::Error> = sqlx::query_as(
             "SELECT DISTINCT e1.session_id, e1.turn_id \
              FROM core_event_log e1 \
              WHERE e1.event_type = 'turn_started' \
@@ -1207,8 +1224,14 @@ impl CoreDaemon {
              )",
         )
         .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        .await;
+        let active_turns = match active_turns {
+            Ok(active_turns) => active_turns,
+            Err(error) => {
+                tracing::warn!(error = %error, "event log recovery query failed; skipping turn recovery");
+                return;
+            }
+        };
 
         if !active_turns.is_empty() {
             tracing::info!(
@@ -1246,7 +1269,7 @@ impl CoreDaemon {
         }
 
         // Count stale PermissionPending events (no PermissionResponded in same session)
-        let stale_perms: i64 = sqlx::query_scalar(
+        let stale_perms: Result<i64, sqlx::Error> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM core_event_log WHERE event_type = 'permission_pending' \
              AND NOT EXISTS ( \
                  SELECT 1 FROM core_event_log e2 \
@@ -1255,11 +1278,17 @@ impl CoreDaemon {
              )",
         )
         .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        .await;
+        let stale_perms = match stale_perms {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(error = %error, "permission recovery query failed; skipping stale-request recovery");
+                return;
+            }
+        };
 
         // Count stale QuestionPending events (no QuestionAnswered in same session)
-        let stale_questions: i64 = sqlx::query_scalar(
+        let stale_questions: Result<i64, sqlx::Error> = sqlx::query_scalar(
             "SELECT COUNT(*) FROM core_event_log WHERE event_type = 'question_pending' \
              AND NOT EXISTS ( \
                  SELECT 1 FROM core_event_log e2 \
@@ -1268,8 +1297,14 @@ impl CoreDaemon {
              )",
         )
         .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+        .await;
+        let stale_questions = match stale_questions {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::warn!(error = %error, "question recovery query failed; skipping stale-request recovery");
+                return;
+            }
+        };
 
         if stale_perms > 0 || stale_questions > 0 {
             tracing::info!(
@@ -2803,7 +2838,13 @@ impl CoreDaemon {
                             )
                             .await
                         {
-                            let _ = store.delete(&child.id).await;
+                            if let Err(delete_error) = store.delete(&child.id).await {
+                                tracing::warn!(
+                                    error = %delete_error,
+                                    session_id = %child.id,
+                                    "failed to clean up unbound forked session"
+                                );
+                            }
                             return Ok(CoreResponse::Error {
                                 code: "session_binding_failed".to_string(),
                                 message: error.to_string(),
@@ -4414,12 +4455,22 @@ impl CoreDaemon {
                                 remaining_items: vec![],
                                 open_questions: goal.open_questions.clone(),
                             };
-                            let _ =
-                                crate::goal::checkpoint::append_checkpoint_update(cp_path, &update)
-                                    .await;
-                            Ok(CoreResponse::Json {
-                                data: serde_json::json!({ "checkpoint_path": cp_path, "appended": true }),
-                            })
+                            match crate::goal::checkpoint::append_checkpoint_update(
+                                cp_path, &update,
+                            )
+                            .await
+                            {
+                                Ok(()) => Ok(CoreResponse::Json {
+                                    data: serde_json::json!({ "checkpoint_path": cp_path, "appended": true }),
+                                }),
+                                Err(error) => {
+                                    tracing::warn!(error = %error, checkpoint_path = %cp_path, "failed to append goal checkpoint update");
+                                    Ok(CoreResponse::Error {
+                                        code: "goal_checkpoint_update_failed".to_string(),
+                                        message: error.to_string(),
+                                    })
+                                }
+                            }
                         } else {
                             let project_path = std::path::PathBuf::from(&project_id);
                             match crate::goal::checkpoint::create_checkpoint_file(
@@ -4647,7 +4698,9 @@ impl CoreDaemon {
                 let active = runtime.active_turn.read().await;
                 match active.as_ref() {
                     Some(handle) if handle.turn_id == turn_id => {
-                        let _ = handle.cancel_tx.send(true);
+                        if handle.cancel_tx.send(true).is_err() {
+                            tracing::debug!(turn_id = %turn_id, "turn cancellation receiver already closed");
+                        }
                         Ok(CoreResponse::Ack)
                     }
                     Some(handle) => Ok(CoreResponse::Error {
@@ -4678,7 +4731,9 @@ impl CoreDaemon {
                 match active.as_ref() {
                     Some(handle) if handle.turn_id == turn_id => {
                         if let Some(ref steer_tx) = handle.steer_tx {
-                            let _ = steer_tx.send(text);
+                            if steer_tx.send(text).is_err() {
+                                tracing::debug!(turn_id = %turn_id, "turn steering receiver already closed");
+                            }
                             Ok(CoreResponse::Ack)
                         } else {
                             Ok(CoreResponse::Error {
@@ -4777,7 +4832,13 @@ impl CoreDaemon {
                     }
                 };
 
-                let messages = msg_store.list(&session_id).await.unwrap_or_default();
+                let messages = match msg_store.list(&session_id).await {
+                    Ok(messages) => messages,
+                    Err(error) => {
+                        tracing::warn!(error = %error, session_id = %session_id, "message replay query failed");
+                        Vec::new()
+                    }
+                };
 
                 let (
                     status,
@@ -5401,7 +5462,9 @@ impl CoreDaemon {
                         let descriptor = match descriptor_result {
                             Ok(descriptor) => descriptor,
                             Err(message) => {
-                                let _ = service.unsubscribe(&sub_id).await;
+                                if let Err(error) = service.unsubscribe(&sub_id).await {
+                                    tracing::warn!(error = %error, subscription_id = %sub_id.0, "failed to clean up projection subscription");
+                                }
                                 return Ok(CoreResponse::Error {
                                     code: "projection_descriptor_missing".into(),
                                     message,
@@ -6118,7 +6181,9 @@ impl CoreDaemon {
         job: &codegg_core::jobs::JobRecord,
         offset: u32,
     ) -> Result<codegg_protocol::projection::dto::ToolProgramCallPage, String> {
-        let program_id = tool_program_id(job).unwrap_or_default();
+        let Some(program_id) = tool_program_id(job) else {
+            return Err("job does not contain a tool program id".to_string());
+        };
         let lease = self
             .workspace_services
             .acquire(&job.workspace_id)

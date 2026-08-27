@@ -707,7 +707,7 @@ impl BrokerCallback for BrokerAdapter {
                 .unwrap_or_default(),
             )),
         });
-        pending_checkpoint.refresh_semantic_digest();
+        pending_checkpoint.refresh_semantic_digest()?;
         self.checkpoint(&pending_checkpoint).await?;
         crate::test_failpoint::hit("tool_program_after_child_wait_checkpoint");
 

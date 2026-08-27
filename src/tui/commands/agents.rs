@@ -150,7 +150,7 @@ fn cli_compat_context_from_cwd() -> AssetContext {
 }
 
 fn load_cli_registry() -> Result<AgentRegistry, crate::error::AgentError> {
-    let config = Config::load().unwrap_or_default();
+    let config = Config::load_or_default();
     let ctx = cli_compat_context_from_cwd();
     AgentRegistry::load_for_context(&config, &ctx)
 }

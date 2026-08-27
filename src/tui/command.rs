@@ -344,7 +344,7 @@ impl CommandRegistry {
 
         let mut new_commands: Vec<Command> = Vec::new();
 
-        let config = crate::config::schema::Config::load().unwrap_or_default();
+        let config = crate::config::schema::Config::load_or_default();
         if let Some(config_commands) = config.commands.as_ref() {
             for cmd in crate::command::resolve_commands_from_config(config_commands) {
                 let normalized = Self::normalize_name(&cmd.name);

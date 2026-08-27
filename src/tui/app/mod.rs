@@ -7099,7 +7099,7 @@ impl App {
                 // the live `ToolRegistry`, so we rely on the resolved
                 // `Config` plus the eggsearch server name in
                 // `search_backend::state` (if initialized).
-                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let config = crate::config::schema::Config::load_or_default();
                 let search_cfg = config.search.clone().unwrap_or_default();
                 let mcp_server_names: Option<Vec<String>> =
                     crate::search_backend::state::mcp_service().map(|_mcp| {
@@ -9788,7 +9788,7 @@ impl App {
             }
             "reload" => {
                 let current = self.ui_state.theme.name.clone();
-                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let config = crate::config::schema::Config::load_or_default();
                 let new_registry = std::sync::Arc::new(
                     crate::theme::ThemeRegistry::load_with_config(config.theme.as_ref()),
                 );

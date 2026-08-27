@@ -52,7 +52,7 @@ impl CommitTool {
     /// Message generation is a separate concern from the commit
     /// itself; this method does not own repository mutation.
     async fn generate_commit_message(&self, diff: &str) -> Result<String, ToolError> {
-        let config = Config::load().unwrap_or_default();
+        let config = Config::load_or_default();
         let mut registry = ProviderRegistry::new();
         register_builtin_with_config(&mut registry, &config);
 

@@ -207,6 +207,15 @@ pub type WsSender = mpsc::Sender<OutboundMessage>;
 
 type CriticalSendFailure = CriticalDeliveryError;
 
+fn send_delivery_receipt(
+    receipt: oneshot::Sender<Result<(), CriticalSendFailure>>,
+    result: Result<(), CriticalSendFailure>,
+) {
+    if receipt.send(result).is_err() {
+        tracing::debug!("WebSocket delivery receipt receiver closed");
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboundRoute {
     Control,
@@ -1297,10 +1306,12 @@ async fn unsubscribe_tui_daemon_subscription(
     client_id: &str,
 ) {
     if let Some(seam) = daemon.projection_seam.as_ref() {
-        let _ = seam.service().unsubscribe(subscription_id).await;
+        if let Err(error) = seam.service().unsubscribe(subscription_id).await {
+            tracing::debug!(error = %error, subscription_id = %subscription_id.0, "daemon-side TUI subscription cleanup failed");
+        }
         return;
     }
-    let _ = daemon
+    if let Err(error) = daemon
         .handle_request_for_client(
             crate::core::new_request(
                 format!("tui-projection-unsubscribe-{}", uuid::Uuid::new_v4()),
@@ -1310,7 +1321,10 @@ async fn unsubscribe_tui_daemon_subscription(
             ),
             client_id,
         )
-        .await;
+        .await
+    {
+        tracing::debug!(error = %error, subscription_id = %subscription_id.0, "daemon-side TUI subscription cleanup request failed");
+    }
 }
 
 fn event_matches_raw_filter(
@@ -1447,7 +1461,8 @@ async fn upgrade_ws(
         while let Some(outbound) = out_rx.recv().await {
             let result = ws_tx.send(outbound.message).await;
             if let Some(receipt) = outbound.receipt {
-                let _ = receipt.send(
+                send_delivery_receipt(
+                    receipt,
                     result
                         .as_ref()
                         .map(|_| ())
@@ -2307,7 +2322,7 @@ where
                     .await
                 {
                     if let Some(receipt) = receipt.take() {
-                        let _ = receipt.send(Err(error));
+                        send_delivery_receipt(receipt, Err(error));
                     }
                     return Ok(());
                 }
@@ -2331,13 +2346,13 @@ where
             };
             let Some(projection) = projection else {
                 if let Some(receipt) = receipt {
-                    let _ = receipt.send(Err(CriticalSendFailure::Cancelled));
+                    send_delivery_receipt(receipt, Err(CriticalSendFailure::Cancelled));
                 }
                 return Ok(());
             };
             if projection.lock().await.mode() == ProjectionConnectionMode::ProjectionPrimary {
                 if let Some(receipt) = receipt {
-                    let _ = receipt.send(Err(CriticalSendFailure::Cancelled));
+                    send_delivery_receipt(receipt, Err(CriticalSendFailure::Cancelled));
                 }
                 return Ok(());
             }
@@ -2345,7 +2360,8 @@ where
         }
     };
     if let Some(receipt) = receipt {
-        let _ = receipt.send(
+        send_delivery_receipt(
+            receipt,
             result
                 .as_ref()
                 .map(|_| ())
@@ -2385,14 +2401,15 @@ where
             .await
         {
             if let Some(receipt) = receipt.take() {
-                let _ = receipt.send(Err(error));
+                send_delivery_receipt(receipt, Err(error));
             }
             return Ok(());
         }
     }
     let result = ws_tx.send(message).await;
     if let Some(receipt) = receipt {
-        let _ = receipt.send(
+        send_delivery_receipt(
+            receipt,
             result
                 .as_ref()
                 .map(|_| ())

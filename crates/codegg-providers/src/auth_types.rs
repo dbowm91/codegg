@@ -480,7 +480,10 @@ impl CredentialStore {
             codegg_config::encryption::get_master_key().ok_or(AuthError::MasterKeyMissing)?;
         let encrypted = crate::crypto::encrypt_to_string(secret, &master)?;
         let now = Utc::now();
-        let mut records = self.records.lock().expect("poisoned");
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let existing = records
             .iter_mut()
             .find(|r| r.provider_id == provider_id && r.account_id.as_deref() == account_id);
@@ -506,7 +509,10 @@ impl CredentialStore {
     }
 
     pub fn remove(&self, provider_id: &str, account_id: Option<&str>) -> Result<bool, AuthError> {
-        let mut records = self.records.lock().expect("poisoned");
+        let mut records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let original_len = records.len();
         if account_id == Some("*") {
             records.retain(|r| r.provider_id != provider_id);
@@ -523,7 +529,10 @@ impl CredentialStore {
     }
 
     pub fn list(&self) -> Vec<StoredCredentialRecord> {
-        self.records.lock().expect("poisoned").clone()
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn get_plaintext(
@@ -536,7 +545,10 @@ impl CredentialStore {
             Some(m) => m,
             None => return Ok(None),
         };
-        let records = self.records.lock().expect("poisoned");
+        let records = self
+            .records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let rec = records
             .iter()
             .find(|r| {
@@ -641,5 +653,19 @@ mod tests {
         let rendered = format!("{credential:?}");
         assert!(!rendered.contains("sk-super-secret-value"));
         assert!(rendered.contains("Credential"));
+    }
+
+    #[test]
+    fn credential_store_recovers_from_poisoned_lock() {
+        let path =
+            std::env::temp_dir().join(format!("codegg-credentials-{}", uuid::Uuid::new_v4()));
+        let store = CredentialStore::at_path(path.clone()).unwrap();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = store.records.lock().unwrap();
+            panic!("poison credential store lock");
+        }));
+
+        assert!(store.list().is_empty());
+        let _ = std::fs::remove_file(path);
     }
 }

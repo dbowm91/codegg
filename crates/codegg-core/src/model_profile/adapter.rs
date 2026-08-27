@@ -462,6 +462,10 @@ fn merge_adapter(base: &AdapterDefinition, overlay: &AdapterDefinition) -> Adapt
 
 pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdapter {
     let provider = provider.unwrap_or_else(|| provider_for(model));
+    let Some(generic) = definitions().iter().find(|x| x.adapter.id == "generic") else {
+        tracing::error!("generic model adapter is missing; using conservative fallback");
+        return fallback_resolved_adapter(model);
+    };
     let mut candidates = Vec::new();
     for a in definitions() {
         for m in &a.r#match {
@@ -473,16 +477,7 @@ pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdap
     candidates.sort_by(|a, b| {
         (b.0, b.1, b.2.adapter.id.as_str()).cmp(&(a.0, a.1, a.2.adapter.id.as_str()))
     });
-    let selected = candidates.first().map(|x| x.2).unwrap_or_else(|| {
-        definitions()
-            .iter()
-            .find(|x| x.adapter.id == "generic")
-            .expect("generic adapter is required")
-    });
-    let generic = definitions()
-        .iter()
-        .find(|x| x.adapter.id == "generic")
-        .expect("generic adapter is required");
+    let selected = candidates.first().map(|x| x.2).unwrap_or(generic);
     let merged;
     let a = if selected.adapter.id == generic.adapter.id {
         selected
@@ -491,7 +486,10 @@ pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdap
         &merged
     };
     let profile = effective_profile(model, a);
-    let canonical = toml::to_string(a).expect("adapter serialization");
+    let canonical = toml::to_string(a).unwrap_or_else(|error| {
+        tracing::warn!(error = %error, adapter = %a.adapter.id, "model adapter serialization failed");
+        format!("adapter:{}:v{}", a.adapter.id, a.adapter.version)
+    });
     let fingerprint = hex_sha256(&canonical);
     ResolvedModelAdapter {
         profile,
@@ -519,6 +517,29 @@ pub fn resolve_adapter(provider: Option<&str>, model: &str) -> ResolvedModelAdap
         recovery: a.recovery.clone(),
         server_requirements: a.server_requirements.clone(),
         transforms: a.transforms.clone(),
+    }
+}
+
+fn fallback_resolved_adapter(model: &str) -> ResolvedModelAdapter {
+    ResolvedModelAdapter {
+        profile: super::resolve::default_profile(model),
+        adapter_id: "generic".to_string(),
+        adapter_version: 0,
+        fingerprint: hex_sha256("fallback:generic"),
+        source_layers: vec!["fallback:generic".to_string()],
+        tool_format: None,
+        tool_choice: None,
+        max_parallel_tools: None,
+        require_structured_calls: false,
+        text_tool_repair: None,
+        tool_aliases: BTreeMap::new(),
+        argument_aliases: BTreeMap::new(),
+        prompt_fragments: Vec::new(),
+        prompt_system_role: None,
+        prompt_control_role: None,
+        recovery: RecoveryPolicy::default(),
+        server_requirements: ServerRequirements::default(),
+        transforms: Vec::new(),
     }
 }
 fn hex_sha256(input: &str) -> String {
