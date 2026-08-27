@@ -163,19 +163,26 @@ impl LaneQueue {
             .entry(ws.clone())
             .or_insert_with(|| WorkspaceLane::new(ws.clone()));
         lane.push(entry);
-        self.cursor = Some(ws);
     }
 
     pub fn remove_by_id(&mut self, job_id: &JobId) -> Option<QueueEntry> {
         let keys: Vec<WorkspaceId> = self.lanes.keys().cloned().collect();
         for ws in keys {
-            if let Some(lane) = self.lanes.get_mut(&ws) {
-                if let Some(pos) = lane.entries.iter().position(|e| &e.job_id == job_id) {
-                    return lane.entries.remove(pos);
-                }
+            if let Some(removed) = self.remove_by_id_in_workspace(job_id, &ws) {
+                return Some(removed);
             }
         }
         None
+    }
+
+    fn remove_by_id_in_workspace(
+        &mut self,
+        job_id: &JobId,
+        workspace_id: &WorkspaceId,
+    ) -> Option<QueueEntry> {
+        let lane = self.lanes.get_mut(workspace_id)?;
+        let pos = lane.entries.iter().position(|e| &e.job_id == job_id)?;
+        lane.entries.remove(pos)
     }
 
     /// Snapshot of lane sizes per workspace for diagnostics.
@@ -239,8 +246,16 @@ impl FairJobQueue {
     /// Insert an entry. Deduplicates by job id (existing entry kept
     /// in place). Returns the previous entry if any.
     pub fn insert(&mut self, entry: QueueEntry) -> Result<Option<QueueEntry>, QueueInsertError> {
-        if self.job_index.contains_key(&entry.job_id) {
-            return Ok(None);
+        if let Some(workspace_id) = self.job_index.get(&entry.job_id) {
+            let previous = self
+                .lanes
+                .values()
+                .filter_map(|queue| queue.lanes.get(workspace_id))
+                .flat_map(|lane| lane.entries.iter())
+                .find(|queued| queued.job_id == entry.job_id)
+                .cloned()
+                .unwrap_or(entry);
+            return Ok(Some(previous));
         }
 
         // Enforce bounds. Bounded queue: never silently drop existing
@@ -262,14 +277,15 @@ impl FairJobQueue {
             .lanes
             .entry(class)
             .or_insert_with(|| LaneQueue::new(class));
-        queue.admit(entry.clone());
+        let workspace_id = entry.workspace_id.clone();
+        let job_id = entry.job_id.clone();
+        queue.admit(entry);
         self.per_workspace_count
-            .entry(entry.workspace_id.clone())
+            .entry(workspace_id.clone())
             .and_modify(|c| *c += 1)
             .or_insert(1);
         self.total_count += 1;
-        self.job_index
-            .insert(entry.job_id.clone(), entry.workspace_id.clone());
+        self.job_index.insert(job_id, workspace_id);
         Ok(None)
     }
 
@@ -281,10 +297,12 @@ impl FairJobQueue {
         reason: QueueRemovalReason,
     ) -> Option<(QueueEntry, QueueRemovalReason)> {
         let mut removed: Option<QueueEntry> = None;
-        for queue in self.lanes.values_mut() {
-            if let Some(entry) = queue.remove_by_id(job_id) {
-                removed = Some(entry);
-                break;
+        if let Some(workspace_id) = self.job_index.get(job_id).cloned() {
+            for queue in self.lanes.values_mut() {
+                if let Some(entry) = queue.remove_by_id_in_workspace(job_id, &workspace_id) {
+                    removed = Some(entry);
+                    break;
+                }
             }
         }
         if let Some(entry) = removed {
@@ -390,6 +408,7 @@ impl FairJobQueue {
     /// the next.
     pub fn peek_candidates(&mut self, limit: usize) -> Vec<QueueEntry> {
         let mut out: Vec<QueueEntry> = Vec::with_capacity(limit);
+        let high_priority_burst = self.high_priority_burst;
         for _ in 0..limit {
             let entry = if let Some(outcome) = self.select_next() {
                 outcome.entry
@@ -400,6 +419,7 @@ impl FairJobQueue {
             let _ = self.insert(entry.clone());
             out.push(entry);
         }
+        self.high_priority_burst = high_priority_burst;
         out
     }
 }
@@ -466,8 +486,16 @@ mod tests {
         let mut q = FairJobQueue::new(cfg());
         q.insert(entry(JobPriority::Normal, "ws1")).unwrap();
         let prior = q.insert(entry(JobPriority::Normal, "ws1")).unwrap();
-        assert!(prior.is_none()); // no prior entry (already present, dedup)
+        assert!(prior.is_some());
         assert_eq!(q.total(), 1);
+    }
+
+    #[test]
+    fn insert_does_not_advance_cursor() {
+        let mut q = LaneQueue::new(PriorityClass::Normal);
+        q.admit(entry(JobPriority::Normal, "ws1"));
+        q.admit(entry(JobPriority::Normal, "ws2"));
+        assert!(q.cursor.is_none());
     }
 
     #[test]
@@ -564,5 +592,27 @@ mod tests {
         }
         let _ = q.peek_candidates(3);
         assert_eq!(q.total(), 3);
+    }
+
+    #[test]
+    fn peek_candidates_does_not_consume_high_priority_burst() {
+        let mut cfg = cfg();
+        cfg.fairness.max_high_priority_burst = 2;
+        let mut q = FairJobQueue::new(cfg);
+        for i in 0..3 {
+            q.insert(unique_entry(
+                JobPriority::Urgent,
+                &format!("urgent-{i}"),
+                "job",
+            ))
+            .unwrap();
+        }
+        q.insert(unique_entry(JobPriority::Normal, "normal", "job"))
+            .unwrap();
+
+        let _ = q.peek_candidates(2);
+        assert_eq!(q.select_next().unwrap().class, PriorityClass::Urgent);
+        assert_eq!(q.select_next().unwrap().class, PriorityClass::Urgent);
+        assert_eq!(q.select_next().unwrap().class, PriorityClass::Normal);
     }
 }

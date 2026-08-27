@@ -1252,6 +1252,24 @@ pub trait JobStore: Send + Sync {
     /// Filter jobs according to `query`.
     async fn list_jobs(&self, query: JobStoreQuery) -> Result<Vec<JobSummary>, JobStoreError>;
 
+    /// List full job records according to `query`. Implementations with a
+    /// durable backing store should override this to fetch the records in a
+    /// single operation; the default preserves compatibility for custom
+    /// stores.
+    async fn list_job_records(
+        &self,
+        query: JobStoreQuery,
+    ) -> Result<Vec<JobRecord>, JobStoreError> {
+        let summaries = self.list_jobs(query).await?;
+        let mut records = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            if let Some(record) = self.get_job(&summary.job_id).await? {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
     /// List all attempts for a job, ordered by sequence ascending.
     async fn list_attempts(&self, job_id: &JobId) -> Result<Vec<JobAttempt>, JobStoreError>;
 

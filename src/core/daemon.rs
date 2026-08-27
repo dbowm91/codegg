@@ -762,7 +762,16 @@ impl CoreDaemon {
         )
         .bind(&report.scope.project_id)
         .bind(&report.scope.workspace_id)
-        .bind(i64::try_from(generation).unwrap_or(i64::MAX))
+        .bind(match i64::try_from(generation) {
+            Ok(generation) => generation,
+            Err(_) => {
+                tracing::warn!(
+                    generation,
+                    "runtime asset generation exceeds SQLite integer range; metadata not persisted"
+                );
+                return;
+            }
+        })
         .bind(&report.fingerprint)
         .bind(report.completed_at.timestamp_millis())
         .bind(diagnostics)
@@ -7425,7 +7434,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn turn_started_emitted_on_submit() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
         // Set up an env var to register the openai provider so TurnSubmit
         // passes the provider-not-found check. The actual API call will
         // fail in the spawned agent loop, but we only care that TurnStarted
@@ -7501,7 +7513,11 @@ mod tests {
             turn_id
         );
 
-        std::env::remove_var("OPENAI_API_KEY");
+        if let Some(value) = previous_openai_key {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
     }
 
     #[tokio::test]
@@ -7702,7 +7718,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn turn_submit_uses_injected_runtime() {
+        let _env_guard = crate::auth::test_support::lock_env();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
         // Verify that CoreDaemon::TurnSubmit delegates to the injected
         // TurnRuntime instead of constructing DefaultTurnRuntime directly.
         std::env::set_var("OPENAI_API_KEY", "test-key-not-used");
@@ -7755,7 +7774,10 @@ mod tests {
             fake.called.load(std::sync::atomic::Ordering::SeqCst),
             "injected FakeTurnRuntime should have been invoked"
         );
-        // Note: do not remove OPENAI_API_KEY here to avoid racing
-        // with other tests that also set it. The env var is process-global.
+        if let Some(value) = previous_openai_key {
+            std::env::set_var("OPENAI_API_KEY", value);
+        } else {
+            std::env::remove_var("OPENAI_API_KEY");
+        }
     }
 }

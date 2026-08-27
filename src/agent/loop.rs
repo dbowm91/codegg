@@ -47,6 +47,7 @@ pub struct AgentLoopTerminalOutput {
 use crate::tool::plan::detect_plan_mode_change;
 use crate::tool::ToolRegistry;
 use futures_util::FutureExt;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -69,6 +70,15 @@ static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         .filter_map(|p| regex::Regex::new(p).ok())
         .collect()
 });
+static LOCAL_PATHS: LazyLock<(Option<String>, Option<String>)> = LazyLock::new(|| {
+    (
+        std::env::current_dir()
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+            .filter(|path| !path.is_empty()),
+        std::env::var("HOME").ok().filter(|path| !path.is_empty()),
+    )
+});
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tracing::instrument;
@@ -85,25 +95,26 @@ type ToolDefCache = (
 );
 
 fn redact_local_paths(input: &str) -> String {
-    let mut result = input.to_string();
+    let mut result = Cow::Borrowed(input);
 
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd_str = cwd.to_string_lossy();
-        if !cwd_str.is_empty() {
-            result = result.replace(&*cwd_str, "[CWD]");
-        }
-
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() {
-            result = result.replace(&home, "[HOME]");
+    for (path, replacement) in [
+        (LOCAL_PATHS.0.as_deref(), "[CWD]"),
+        (LOCAL_PATHS.1.as_deref(), "[HOME]"),
+    ] {
+        if let Some(path) = path {
+            if result.contains(path) {
+                result = Cow::Owned(result.replace(path, replacement));
+            }
         }
     }
 
     for re in PATH_REDACTION_PATTERNS.iter() {
-        result = re.replace_all(&result, "[REDACTED_PATH]").to_string();
+        if re.is_match(&result) {
+            result = Cow::Owned(re.replace_all(&result, "[REDACTED_PATH]").into_owned());
+        }
     }
 
-    result
+    result.into_owned()
 }
 
 /// Observation phase for cache-aware context packer diagnostics (Phase 5).

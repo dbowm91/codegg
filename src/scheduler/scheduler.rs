@@ -458,27 +458,25 @@ impl JobScheduler {
             limit: Some(limit as u32),
             session_id: None,
         };
-        let durable = self.store.list_jobs(query).await?;
+        let durable = self.store.list_job_records(query).await?;
         let durable_ids: std::collections::HashSet<JobId> =
             durable.iter().map(|j| j.job_id.clone()).collect();
 
         // 1. Insert durable jobs not already in the queue.
-        for summary in durable {
+        for job in durable {
             // Skip if not eligible (not_before / deadline / dependencies).
-            if let Some(job) = self.store.get_job(&summary.job_id).await? {
-                if !job_eligible(&job) {
-                    continue;
-                }
-                let mut entry = QueueEntry::from_job(&job);
-                entry.recompute_aging(&self.config, Utc::now());
-                let mut q = self.queue.lock().await;
-                match q.insert(entry) {
-                    Ok(Some(_)) => duplicates += 1,
-                    Ok(None) => added += 1,
-                    Err(_) => {
-                        // Overflow; record and emit event.
-                        self.queue_overflows.fetch_add(1, Ordering::SeqCst);
-                    }
+            if !job_eligible(&job) {
+                continue;
+            }
+            let mut entry = QueueEntry::from_job(&job);
+            entry.recompute_aging(&self.config, Utc::now());
+            let mut q = self.queue.lock().await;
+            match q.insert(entry) {
+                Ok(Some(_)) => duplicates += 1,
+                Ok(None) => added += 1,
+                Err(_) => {
+                    // Overflow; record and emit event.
+                    self.queue_overflows.fetch_add(1, Ordering::SeqCst);
                 }
             }
         }
@@ -589,26 +587,24 @@ impl JobScheduler {
             limit: Some(1000),
             session_id: None,
         };
-        let jobs = self.store.list_jobs(query).await?;
+        let jobs = self.store.list_job_records(query).await?;
 
         // Collect active source hashes grouped by workspace root
         let mut workspace_digests: std::collections::HashMap<
             String,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
-        for summary in &jobs {
-            if let Some(job) = self.store.get_job(&summary.job_id).await? {
-                if let codegg_core::jobs::JobPayload::Python {
-                    source_hash: Some(hash),
-                    ..
-                } = &job.payload
-                {
-                    if let Some(ws_root) = job.labels.get("workspace_root") {
-                        workspace_digests
-                            .entry(ws_root.clone())
-                            .or_default()
-                            .insert(hash.clone());
-                    }
+        for job in &jobs {
+            if let codegg_core::jobs::JobPayload::Python {
+                source_hash: Some(hash),
+                ..
+            } = &job.payload
+            {
+                if let Some(ws_root) = job.labels.get("workspace_root") {
+                    workspace_digests
+                        .entry(ws_root.clone())
+                        .or_default()
+                        .insert(hash.clone());
                 }
             }
         }

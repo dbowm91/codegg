@@ -79,8 +79,8 @@ run_full() {
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo test --workspace --locked -- --test-threads=1"
     (cd "$REPO_ROOT" && cargo test --workspace --locked -- --test-threads=1)
 
-    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check -p codegg --locked --features server,plugins,lsp-test-support"
-    (cd "$REPO_ROOT" && cargo check -p codegg --locked --features server,plugins,lsp-test-support)
+    echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo test -p codegg --locked --features server,plugins,lsp-test-support -- --test-threads=1"
+    (cd "$REPO_ROOT" && cargo test -p codegg --locked --features server,plugins,lsp-test-support -- --test-threads=1)
 
     echo "==> Full verification passed."
 }

@@ -310,6 +310,33 @@ impl JobStore for InMemoryJobStore {
         Ok(out)
     }
 
+    async fn list_job_records(
+        &self,
+        query: JobStoreQuery,
+    ) -> Result<Vec<JobRecord>, JobStoreError> {
+        let guard = self.inner.lock().await;
+        let mut out: Vec<JobRecord> = guard
+            .jobs
+            .values()
+            .filter(|r| match &query.workspace_id {
+                Some(w) => r.workspace_id == *w,
+                None => true,
+            })
+            .filter(|r| query.states.is_empty() || query.states.contains(&r.state))
+            .filter(|r| query.kinds.is_empty() || query.kinds.contains(&r.kind))
+            .filter(|r| match &query.session_id {
+                Some(s) => r.session_id.as_deref() == Some(s.as_str()),
+                None => true,
+            })
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+        if let Some(limit) = query.limit {
+            out.truncate(limit as usize);
+        }
+        Ok(out)
+    }
+
     async fn list_attempts(&self, job_id: &JobId) -> Result<Vec<JobAttempt>, JobStoreError> {
         let guard = self.inner.lock().await;
         let ids = match guard.attempts_by_job.get(job_id) {
@@ -1138,6 +1165,77 @@ impl JobStore for SqliteJobStore {
             out.truncate(limit as usize);
         }
         Ok(out)
+    }
+
+    async fn list_job_records(
+        &self,
+        query: JobStoreQuery,
+    ) -> Result<Vec<JobRecord>, JobStoreError> {
+        let mut sql = String::from(
+            r#"
+            SELECT id, workspace_id, session_id, turn_id, kind, source_json,
+                   priority, payload_json, resource_json, retry_json,
+                   idempotency, state, current_attempt_id, attempt_count,
+                   not_before, deadline, schedule_id,
+                   time_created, time_updated, time_terminal,
+                   cancel_requested_at, cancel_reason, labels_json,
+                   parent_job_id, parent_attempt_id, parent_call_id,
+                   parent_program_id, parent_instruction_sequence, relation_kind,
+                   (SELECT GROUP_CONCAT(depends_on_job_id, ',')
+                    FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
+            FROM job WHERE 1=1
+            "#,
+        );
+        if query.workspace_id.is_some() {
+            sql.push_str(" AND workspace_id = ?");
+        }
+        if !query.states.is_empty() {
+            sql.push_str(&format!(
+                " AND state IN ({})",
+                query
+                    .states
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        if !query.kinds.is_empty() {
+            sql.push_str(&format!(
+                " AND kind IN ({})",
+                query
+                    .kinds
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        if query.session_id.is_some() {
+            sql.push_str(" AND session_id = ?");
+        }
+        sql.push_str(" ORDER BY time_updated DESC");
+        if let Some(limit) = query.limit {
+            sql.push_str(&format!(" LIMIT {}", limit));
+        }
+        let mut q = sqlx::query(&sql);
+        if let Some(w) = &query.workspace_id {
+            q = q.bind(w.as_str());
+        }
+        for s in &query.states {
+            q = q.bind(s.as_str());
+        }
+        for k in &query.kinds {
+            q = q.bind(k.as_str());
+        }
+        if let Some(s) = &query.session_id {
+            q = q.bind(s);
+        }
+        let rows = q
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        rows.into_iter().map(|row| row_to_job(&row)).collect()
     }
 
     async fn list_attempts(&self, job_id: &JobId) -> Result<Vec<JobAttempt>, JobStoreError> {
