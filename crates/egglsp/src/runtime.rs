@@ -126,10 +126,10 @@ impl LspProcessRuntime {
 
     /// Snapshot the stderr ring buffer (cloned, bounded).
     pub fn stderr_snapshot(&self) -> Vec<String> {
-        let guard = self
-            .stderr_buffer
-            .lock()
-            .expect("stderr buffer mutex poisoned");
+        // Mutex poisoning is rare but recoverable: a previous holder
+        // panicked. We still prefer to surface what we have rather
+        // than crash the supervisor task that needs this snapshot.
+        let guard = self.stderr_buffer.lock().unwrap_or_else(|e| e.into_inner());
         guard.snapshot()
     }
 
@@ -141,10 +141,7 @@ impl LspProcessRuntime {
         if max_lines == 0 {
             return Vec::new();
         }
-        let guard = self
-            .stderr_buffer
-            .lock()
-            .expect("stderr buffer mutex poisoned");
+        let guard = self.stderr_buffer.lock().unwrap_or_else(|e| e.into_inner());
         let snapshot = guard.snapshot();
         let start = snapshot.len().saturating_sub(max_lines);
         snapshot[start..].to_vec()
@@ -236,7 +233,7 @@ pub fn spawn_process_runtime(
                     let trimmed = line.trim_end_matches(['\n', '\r']);
                     let mut buf = stderr_buffer_for_reader
                         .lock()
-                        .expect("stderr buffer mutex poisoned");
+                        .unwrap_or_else(|e| e.into_inner());
                     buf.push(trimmed.to_string());
                 }
                 Err(_) => break,

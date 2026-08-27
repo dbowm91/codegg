@@ -2089,7 +2089,14 @@ impl AgentLoop {
                     }),
                 };
                 tokio::spawn(async move {
-                    hooks.emit_event(event_input).await;
+                    let result = AssertUnwindSafe(async move {
+                        hooks.emit_event(event_input).await;
+                    })
+                    .catch_unwind()
+                    .await;
+                    if let Err(e) = result {
+                        tracing::error!(panic = ?e, "hook emission task panicked");
+                    }
                 });
             }
         }
@@ -2338,7 +2345,14 @@ impl AgentLoop {
                     }),
                 };
                 tokio::spawn(async move {
-                    hooks.emit_event(event_input).await;
+                    let result = AssertUnwindSafe(async move {
+                        hooks.emit_event(event_input).await;
+                    })
+                    .catch_unwind()
+                    .await;
+                    if let Err(e) = result {
+                        tracing::error!(panic = ?e, "hook emission task panicked");
+                    }
                 });
             }
 
@@ -2829,11 +2843,10 @@ impl AgentLoop {
 
             // Auto-invoke security-review subagent if triggered by high-risk tools or sensitive paths
             if just_executed_tools {
-                let high_risk_findings: Vec<_> = self
+                let high_risk_findings: Vec<&crate::security::finding::SecurityFinding> = self
                     .recent_findings
                     .iter()
                     .filter(|f| f.is_high_signal())
-                    .cloned()
                     .collect();
                 let edited_paths: Vec<String> = tool_calls
                     .iter()
@@ -3050,7 +3063,14 @@ impl AgentLoop {
                     }),
                 };
                 tokio::spawn(async move {
-                    hooks.emit_event(event_input).await;
+                    let result = AssertUnwindSafe(async move {
+                        hooks.emit_event(event_input).await;
+                    })
+                    .catch_unwind()
+                    .await;
+                    if let Err(e) = result {
+                        tracing::error!(panic = ?e, "hook emission task panicked");
+                    }
                 });
             }
         }
@@ -3074,11 +3094,10 @@ impl AgentLoop {
 
         // Auto-invoke security-review subagent at session end for comprehensive review
         {
-            let findings: Vec<_> = self
+            let findings: Vec<&crate::security::finding::SecurityFinding> = self
                 .recent_findings
                 .iter()
                 .filter(|f| f.is_high_signal())
-                .cloned()
                 .collect();
             self.maybe_spawn_security_review(&findings, &[], true);
         }
@@ -3166,7 +3185,7 @@ impl AgentLoop {
     /// Spawns as a background task — never blocks the main agent loop.
     fn maybe_spawn_security_review(
         &self,
-        triggered_findings: &[crate::security::finding::SecurityFinding],
+        triggered_findings: &[&crate::security::finding::SecurityFinding],
         edited_paths: &[String],
         at_session_end: bool,
     ) {

@@ -1764,8 +1764,14 @@ impl Tool for BashTool {
         let (mut result, output, execution_outcome, delegated_run_id) = if should_active_route {
             // ACTIVE ROUTING: dispatch to structured backend
             tracing::info!("Active routing dispatch for: {command}");
-            let decision_ref = decision.as_ref().unwrap();
-            let plan_ref = plan.as_ref().unwrap();
+            // `should_active_route` requires `(command_intent_config,
+            // intent, plan)` to all be `Some`; mirror that here so we
+            // don't unwrap against a future refactor that decouples
+            // active-routing from these options.
+            let (decision_ref, plan_ref) = match (decision.as_ref(), plan.as_ref()) {
+                (Some(d), Some(p)) => (d, p),
+                _ => unreachable!("should_active_route implies decision and plan are Some"),
+            };
             let planned_backend = plan_to_planned_backend(Some(&plan_ref.backend));
 
             match self

@@ -521,15 +521,16 @@ impl JobScheduler {
         // 3. Update oldest-queued-age.
         {
             let mut q = self.queue.lock().await;
-            q.recompute_aging(Utc::now());
+            let now = Utc::now();
+            q.recompute_aging(now);
             let mut oldest = self.oldest_queued_age_secs.lock().await;
             *oldest = q
                 .lanes()
                 .values()
                 .flat_map(|lane_q| lane_q.lanes.values())
                 .flat_map(|lane| lane.entries.iter())
-                .map(|e| (Utc::now() - e.submitted_at).num_seconds().max(0) as u64)
-                .min();
+                .map(|e| (now - e.submitted_at).num_seconds().max(0) as u64)
+                .max();
         }
 
         // 4. Update ready-window counts by priority.

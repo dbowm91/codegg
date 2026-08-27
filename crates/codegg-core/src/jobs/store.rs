@@ -188,11 +188,31 @@ fn priority_from_str(s: &str) -> JobPriority {
 /// Convert a persisted i64 counter to its `u32` domain type without
 /// silent truncation of corrupt/hostile rows.
 fn u32_from_i64(v: i64) -> Result<u32, JobStoreError> {
-    u32::try_from(v).map_err(|_| {
-        JobStoreError::Storage(StorageError::Database(format!(
-            "integer out of range for u32: {v}"
-        )))
-    })
+    u32::try_from(v)
+        .map_err(|_| JobStoreError::Storage(StorageError::Database(format!("u32 overflow: {v}"))))
+}
+
+/// Apply the four filter predicates shared by `list_jobs` and
+/// `list_job_records`. Centralising the filter keeps the two callers
+/// in lock-step when new query fields are added.
+fn matches_query(r: &JobRecord, query: &JobStoreQuery) -> bool {
+    if let Some(w) = &query.workspace_id {
+        if r.workspace_id != *w {
+            return false;
+        }
+    }
+    if !query.states.is_empty() && !query.states.contains(&r.state) {
+        return false;
+    }
+    if !query.kinds.is_empty() && !query.kinds.contains(&r.kind) {
+        return false;
+    }
+    if let Some(s) = &query.session_id {
+        if r.session_id.as_deref() != Some(s.as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 // ── In-memory implementation ──────────────────────────────────────────────
@@ -279,16 +299,7 @@ impl JobStore for InMemoryJobStore {
         let mut out: Vec<JobSummary> = guard
             .jobs
             .values()
-            .filter(|r| match &query.workspace_id {
-                Some(w) => r.workspace_id == *w,
-                None => true,
-            })
-            .filter(|r| query.states.is_empty() || query.states.contains(&r.state))
-            .filter(|r| query.kinds.is_empty() || query.kinds.contains(&r.kind))
-            .filter(|r| match &query.session_id {
-                Some(s) => r.session_id.as_deref() == Some(s.as_str()),
-                None => true,
-            })
+            .filter(|r| matches_query(r, &query))
             .map(|r| JobSummary {
                 job_id: r.job_id.clone(),
                 workspace_id: r.workspace_id.clone(),
@@ -318,16 +329,7 @@ impl JobStore for InMemoryJobStore {
         let mut out: Vec<JobRecord> = guard
             .jobs
             .values()
-            .filter(|r| match &query.workspace_id {
-                Some(w) => r.workspace_id == *w,
-                None => true,
-            })
-            .filter(|r| query.states.is_empty() || query.states.contains(&r.state))
-            .filter(|r| query.kinds.is_empty() || query.kinds.contains(&r.kind))
-            .filter(|r| match &query.session_id {
-                Some(s) => r.session_id.as_deref() == Some(s.as_str()),
-                None => true,
-            })
+            .filter(|r| matches_query(r, &query))
             .cloned()
             .collect();
         out.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
@@ -1109,8 +1111,8 @@ impl JobStore for SqliteJobStore {
             sql.push_str(" AND session_id = ?");
         }
         sql.push_str(" ORDER BY time_updated DESC");
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+        if query.limit.is_some() {
+            sql.push_str(" LIMIT ?");
         }
         let mut q = sqlx::query(&sql);
         if let Some(w) = &query.workspace_id {
@@ -1124,6 +1126,9 @@ impl JobStore for SqliteJobStore {
         }
         if let Some(s) = &query.session_id {
             q = q.bind(s);
+        }
+        if let Some(limit) = query.limit {
+            q = q.bind(limit as i64);
         }
         let rows = q
             .fetch_all(&self.pool)
@@ -1215,8 +1220,8 @@ impl JobStore for SqliteJobStore {
             sql.push_str(" AND session_id = ?");
         }
         sql.push_str(" ORDER BY time_updated DESC");
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+        if query.limit.is_some() {
+            sql.push_str(" LIMIT ?");
         }
         let mut q = sqlx::query(&sql);
         if let Some(w) = &query.workspace_id {
@@ -1230,6 +1235,9 @@ impl JobStore for SqliteJobStore {
         }
         if let Some(s) = &query.session_id {
             q = q.bind(s);
+        }
+        if let Some(limit) = query.limit {
+            q = q.bind(limit as i64);
         }
         let rows = q
             .fetch_all(&self.pool)
