@@ -236,7 +236,11 @@ impl NotificationRouter {
             }
         }
 
-        best_idx.map(|i| queue.remove(i).unwrap())
+        best_idx.map(|i| {
+            queue
+                .remove(i)
+                .expect("index from enumerate() over the locked queue")
+        })
     }
 
     /// Drain up to `max_items` speakable events from the queue and synthesize
@@ -275,7 +279,11 @@ impl NotificationRouter {
         let mut events: Vec<NotificationEvent> = indices
             .iter()
             .rev()
-            .map(|&i| queue.remove(i).unwrap())
+            .map(|&i| {
+                queue
+                    .remove(i)
+                    .expect("index from enumerate() over the locked queue")
+            })
             .collect();
         events.reverse();
 
@@ -338,7 +346,7 @@ impl NotificationRouter {
     }
 
     pub async fn persist_notification(&self, pool: &sqlx::SqlitePool, event: &NotificationEvent) {
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "INSERT OR IGNORE INTO notification_history (id, session_id, turn_id, kind, priority, message, created_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
@@ -350,7 +358,10 @@ impl NotificationRouter {
         .bind(&event.message)
         .bind(event.created_at.to_rfc3339())
         .execute(pool)
-        .await;
+        .await
+        {
+            tracing::warn!(error = %e, event_id = %event.id, "persist_notification failed");
+        }
     }
 
     pub async fn get_notification_history(
@@ -375,7 +386,13 @@ impl NotificationRouter {
 
         q = q.bind(limit as i64);
 
-        let rows = q.fetch_all(pool).await.unwrap_or_default();
+        let rows = match q.fetch_all(pool).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, "get_notification_history query failed");
+                return Vec::new();
+            }
+        };
 
         rows.into_iter()
             .filter_map(|row| {
@@ -471,20 +488,28 @@ impl AudioArbiter {
 pub async fn speak_text(text: &str) {
     #[cfg(target_os = "macos")]
     {
-        let _ = tokio::process::Command::new("say").arg(text).output().await;
+        if let Err(e) = tokio::process::Command::new("say").arg(text).output().await {
+            tracing::debug!(error = %e, "TTS 'say' failed");
+        }
     }
     #[cfg(target_os = "linux")]
     {
-        if tokio::process::Command::new("spd-say")
+        match tokio::process::Command::new("spd-say")
             .arg(text)
             .output()
             .await
-            .is_err()
         {
-            let _ = tokio::process::Command::new("espeak-ng")
-                .arg(text)
-                .output()
-                .await;
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(error = %e, "TTS 'spd-say' failed; trying espeak-ng");
+                if let Err(e) = tokio::process::Command::new("espeak-ng")
+                    .arg(text)
+                    .output()
+                    .await
+                {
+                    tracing::debug!(error = %e, "TTS 'espeak-ng' failed");
+                }
+            }
         }
     }
 }
@@ -492,17 +517,23 @@ pub async fn speak_text(text: &str) {
 pub async fn stop_speech() {
     #[cfg(target_os = "macos")]
     {
-        let _ = tokio::process::Command::new("pkill")
+        if let Err(e) = tokio::process::Command::new("pkill")
             .arg("say")
             .output()
-            .await;
+            .await
+        {
+            tracing::debug!(error = %e, "stop_speech 'pkill say' failed");
+        }
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = tokio::process::Command::new("pkill")
+        if let Err(e) = tokio::process::Command::new("pkill")
             .arg("spd-say")
             .output()
-            .await;
+            .await
+        {
+            tracing::debug!(error = %e, "stop_speech 'pkill spd-say' failed");
+        }
     }
 }
 

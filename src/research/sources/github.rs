@@ -479,12 +479,6 @@ impl GitHubSource {
     }
 }
 
-impl Default for GitHubSource {
-    fn default() -> Self {
-        Self::try_new().unwrap()
-    }
-}
-
 impl ResearchSourceAdapter for GitHubSource {
     fn name(&self) -> &'static str {
         "github"
