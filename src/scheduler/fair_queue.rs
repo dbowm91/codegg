@@ -529,15 +529,19 @@ pub struct SelectionOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     use codegg_core::jobs::JobId;
+
+    fn test_now() -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap()
+    }
 
     fn cfg() -> ResolvedSchedulerConfig {
         ResolvedSchedulerConfig::default()
     }
 
     fn entry(prio: JobPriority, ws: &str) -> QueueEntry {
-        let now = Utc::now();
+        let now = test_now();
         QueueEntry {
             job_id: JobId::new_unchecked(format!("{}-{}", ws, prio.as_str())),
             workspace_id: WorkspaceId::new_unchecked(ws.to_string()),
@@ -549,7 +553,7 @@ mod tests {
     }
 
     fn unique_entry(prio: JobPriority, ws: &str, suffix: &str) -> QueueEntry {
-        let now = Utc::now();
+        let now = test_now();
         QueueEntry {
             job_id: JobId::new_unchecked(format!("{}-{}-{}", ws, prio.as_str(), suffix)),
             workspace_id: WorkspaceId::new_unchecked(ws.to_string()),
@@ -629,9 +633,9 @@ mod tests {
         cfg.fairness.aging_secs = 5;
         let mut q = FairJobQueue::new(cfg);
         let mut e = entry(JobPriority::Normal, "ws1");
-        e.submitted_at = Utc::now() - chrono::Duration::seconds(15);
+        e.submitted_at = test_now() - chrono::Duration::seconds(15);
         q.insert(e).unwrap();
-        q.recompute_aging(Utc::now());
+        q.recompute_aging(test_now());
         // After aging, Normal (rank 2) promoted by 3 -> rank 0 (Urgent).
         let a = q.select_next().unwrap();
         assert_eq!(a.class, PriorityClass::Urgent);
@@ -643,9 +647,9 @@ mod tests {
         cfg.fairness.aging_secs = 5;
         let mut q = FairJobQueue::new(cfg);
         let mut e = entry(JobPriority::Normal, "ws1");
-        e.submitted_at = Utc::now() - chrono::Duration::seconds(7);
+        e.submitted_at = test_now() - chrono::Duration::seconds(7);
         q.insert(e).unwrap();
-        q.recompute_aging(Utc::now());
+        q.recompute_aging(test_now());
         // After one aging window, Normal (rank 2) -> Interactive (rank 1).
         let a = q.select_next().unwrap();
         assert_eq!(a.class, PriorityClass::Interactive);

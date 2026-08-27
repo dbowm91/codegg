@@ -810,7 +810,7 @@ impl GitTool {
         let family = egggit::detect_operation_state_for_root(workdir)
             .map(|s| s.family().label().to_string())
             .unwrap_or_else(|_| "none".to_string());
-        let _ = crate::git_run_store::persist_recovery(
+        let persisted_run_id = crate::git_run_store::persist_recovery(
             &self.run_store,
             &result,
             workdir,
@@ -818,6 +818,9 @@ impl GitTool {
             action,
         )
         .await;
+        if persisted_run_id.is_none() && self.run_store.is_some() {
+            tracing::warn!("git recovery completed but its RunStore record was not persisted");
+        }
         Ok(crate::git_mutation_projector::project_recovery(
             &result, action, &family,
         ))

@@ -107,7 +107,9 @@ pub async fn run_security_context_enrichment<E: SecurityContextExecutor + ?Sized
 
         request_count += 1;
 
-        let resp_ref = response.as_ref().unwrap();
+        let Some(resp_ref) = response.as_ref() else {
+            continue;
+        };
         let prompts = prompts_from_security_context(&plan.target, resp_ref);
         let enriched_evidence = evidence_from_security_context(&plan.target, resp_ref);
 

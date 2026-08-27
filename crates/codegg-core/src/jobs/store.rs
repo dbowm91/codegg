@@ -747,7 +747,9 @@ impl JobStore for InMemoryJobStore {
             .collect();
         let mut touched: HashSet<JobId> = HashSet::new();
         for aid in attempt_ids {
-            let attempt = guard.attempts.get(&aid).cloned().unwrap();
+            let Some(attempt) = guard.attempts.get(&aid).cloned() else {
+                continue;
+            };
             let updated_attempt = JobAttempt {
                 state: AttemptState::Interrupted,
                 completed_at: Some(now),
@@ -759,7 +761,9 @@ impl JobStore for InMemoryJobStore {
             touched.insert(attempt.job_id.clone());
         }
         for job_id in &touched {
-            let mut job = guard.jobs.get(job_id).cloned().unwrap();
+            let Some(mut job) = guard.jobs.get(job_id).cloned() else {
+                continue;
+            };
             let eligible = match job.idempotency {
                 IdempotencyClass::ReadOnly => policy.requeue_read_only,
                 IdempotencyClass::SafeRepeat => policy.requeue_safe_repeat,
@@ -2005,13 +2009,11 @@ impl JobStore for SqliteJobStore {
                 let time_updated: i64 = row.get("time_updated");
                 let schedule_id: Option<String> = row.get("schedule_id");
                 let cancel_requested_at: Option<i64> = row.get("cancel_requested_at");
-                queue.push(job_id);
+                queue.push(job_id.clone());
                 let state = JobState::from_str_lossy(&state);
                 if !state.is_terminal() {
                     summaries.push(JobSummary {
-                        job_id: JobId::new_unchecked(
-                            queue.last().expect("just pushed descendant").clone(),
-                        ),
+                        job_id: JobId::new_unchecked(job_id),
                         workspace_id: WorkspaceId::new_unchecked(workspace_id),
                         kind: JobKind::from_str_lossy(&kind),
                         priority: priority_from_str(&priority),

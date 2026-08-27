@@ -96,6 +96,40 @@ pub struct RunningAttempt {
     pub cancellation: CancellationToken,
 }
 
+struct CompletionCache {
+    entries: HashMap<JobId, (u64, ExecutorCompletion)>,
+    order: BTreeMap<u64, JobId>,
+}
+
+impl CompletionCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            order: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&mut self, job_id: JobId, seq: u64, completion: ExecutorCompletion) {
+        if let Some((old_seq, _)) = self.entries.get(&job_id) {
+            self.order.remove(old_seq);
+        }
+        self.entries.insert(job_id.clone(), (seq, completion));
+        self.order.insert(seq, job_id);
+
+        if self.entries.len() > 1024 {
+            if let Some((old_seq, oldest_job_id)) = self.order.pop_first() {
+                if self
+                    .entries
+                    .get(&oldest_job_id)
+                    .is_some_and(|(seq, _)| *seq == old_seq)
+                {
+                    self.entries.remove(&oldest_job_id);
+                }
+            }
+        }
+    }
+}
+
 pub struct JobScheduler {
     store: Arc<dyn JobStore>,
     workspaces: Arc<WorkspaceServiceRegistry>,
@@ -108,13 +142,16 @@ pub struct JobScheduler {
     /// bounded executor projection that completed the work. Durable job and
     /// attempt state remains authoritative across restart. Values carry the
     /// insertion sequence so eviction is oldest-first.
-    completions: Arc<AsyncMutex<HashMap<JobId, (u64, ExecutorCompletion)>>>,
+    completions: Arc<AsyncMutex<CompletionCache>>,
     /// Monotonic insertion counter for `completions`.
     completions_seq: Arc<AtomicU64>,
     /// Per-workspace running attempts (denormalized for snapshot).
     running_per_workspace: Arc<AsyncMutex<HashMap<WorkspaceId, usize>>>,
     /// Per-priority ready-window counts (denormalized).
     ready_counts: Arc<AsyncMutex<BTreeMap<String, usize>>>,
+    /// Job-kind counts for queued and running jobs, refreshed during
+    /// reconciliation so snapshots avoid a hot-path store query.
+    job_kind_counts: Arc<AsyncMutex<BTreeMap<String, usize>>>,
     /// Total running count.
     running_total: Arc<AtomicU64>,
     /// Total admit blocks recorded.
@@ -151,6 +188,7 @@ impl JobScheduler {
         let running = Arc::new(AsyncMutex::new(HashMap::new()));
         let running_per_workspace = Arc::new(AsyncMutex::new(HashMap::new()));
         let ready_counts = Arc::new(AsyncMutex::new(BTreeMap::new()));
+        let job_kind_counts = Arc::new(AsyncMutex::new(BTreeMap::new()));
         let oldest_queued_age_secs = Arc::new(AsyncMutex::new(None));
         let event_tx = Arc::new(AsyncMutex::new(None));
         Arc::new(Self {
@@ -163,10 +201,11 @@ impl JobScheduler {
             queue,
             dispatch: AsyncMutex::new(()),
             running,
-            completions: Arc::new(AsyncMutex::new(HashMap::new())),
+            completions: Arc::new(AsyncMutex::new(CompletionCache::new())),
             completions_seq: Arc::new(AtomicU64::new(0)),
             running_per_workspace,
             ready_counts,
+            job_kind_counts,
             running_total: Arc::new(AtomicU64::new(0)),
             admission_blocks: Arc::new(AtomicU64::new(0)),
             admission_block_reasons: Arc::new(AsyncMutex::new(BTreeMap::new())),
@@ -395,10 +434,12 @@ impl JobScheduler {
     ) -> Result<ExecutorCompletion, JobSchedulerError> {
         let deadline = Instant::now() + wait_timeout;
         loop {
+            let notified = self.notify.notified();
             if let Some(completion) = self
                 .completions
                 .lock()
                 .await
+                .entries
                 .get(job_id)
                 .map(|(_, c)| c)
                 .cloned()
@@ -436,7 +477,13 @@ impl JobScheduler {
                     job_id
                 )));
             }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                return Err(JobSchedulerError::Internal(format!(
+                    "timed out waiting for job {}",
+                    job_id
+                )));
+            }
         }
     }
 
@@ -468,8 +515,7 @@ impl JobScheduler {
             if !job_eligible(&job) {
                 continue;
             }
-            let mut entry = QueueEntry::from_job(&job);
-            entry.recompute_aging(&self.config, Utc::now());
+            let entry = QueueEntry::from_job(&job);
             let mut q = self.queue.lock().await;
             match q.insert(entry) {
                 Ok(Some(_)) => duplicates += 1,
@@ -518,32 +564,50 @@ impl JobScheduler {
             }
         }
 
-        // 3. Update oldest-queued-age.
-        {
+        // 3. Update oldest-queued-age and ready-window counts without
+        // holding the queue lock while acquiring the statistics locks.
+        let (oldest, ready_counts) = {
             let mut q = self.queue.lock().await;
             let now = Utc::now();
             q.recompute_aging(now);
-            let mut oldest = self.oldest_queued_age_secs.lock().await;
-            *oldest = q
+            let oldest = q
                 .lanes()
                 .values()
                 .flat_map(|lane_q| lane_q.lanes.values())
                 .flat_map(|lane| lane.entries.iter())
                 .map(|e| (now - e.submitted_at).num_seconds().max(0) as u64)
                 .max();
-        }
+            let ready_counts = q
+                .lanes()
+                .iter()
+                .filter_map(|(class, lane_q)| {
+                    let total = lane_q.total();
+                    (total > 0).then(|| (format!("{:?}", class), total))
+                })
+                .collect::<BTreeMap<_, _>>();
+            (oldest, ready_counts)
+        };
+        *self.oldest_queued_age_secs.lock().await = oldest;
+        *self.ready_counts.lock().await = ready_counts;
 
-        // 4. Update ready-window counts by priority.
-        {
-            let q = self.queue.lock().await;
-            let mut counts = self.ready_counts.lock().await;
-            counts.clear();
-            for (class, lane_q) in q.lanes() {
-                let label = format!("{:?}", class);
-                let total = lane_q.total();
-                if total > 0 {
-                    *counts.entry(label).or_insert(0) += total;
+        // 4. Refresh the bounded job-kind distribution used by snapshots.
+        let kind_query = codegg_core::jobs::store::JobStoreQuery {
+            states: vec![JobState::Queued, JobState::Running],
+            workspace_id: None,
+            kinds: vec![],
+            limit: Some(10_000),
+            session_id: None,
+        };
+        match self.store.list_jobs(kind_query).await {
+            Ok(summaries) => {
+                let mut counts = BTreeMap::new();
+                for summary in summaries {
+                    *counts.entry(summary.kind.as_str().to_string()).or_insert(0) += 1;
                 }
+                *self.job_kind_counts.lock().await = counts;
+            }
+            Err(e) => {
+                tracing::debug!("reconcile: job-kind listing failed: {e}");
             }
         }
 
@@ -857,6 +921,7 @@ impl JobScheduler {
         let me = self.clone();
         let attempt_id = attempt.attempt_id.clone();
         let job_id_for_task = job.job_id.clone();
+        let workspace_id_for_task = job.workspace_id.clone();
         let lease_for_task = lease;
         {
             let executor = Arc::clone(&exec);
@@ -918,16 +983,7 @@ impl JobScheduler {
                 {
                     let mut completions_guard = completions.lock().await;
                     let seq = completions_seq.fetch_add(1, Ordering::Relaxed);
-                    completions_guard.insert(job_id_for_task.clone(), (seq, completion.clone()));
-                    if completions_guard.len() > 1024 {
-                        if let Some(oldest) = completions_guard
-                            .iter()
-                            .min_by_key(|(_, (seq, _))| *seq)
-                            .map(|(k, _)| k.clone())
-                        {
-                            completions_guard.remove(&oldest);
-                        }
-                    }
+                    completions_guard.insert(job_id_for_task.clone(), seq, completion.clone());
                 }
                 // The permit is dropped when ctx is consumed
                 // above; we no longer hold it here.
@@ -967,14 +1023,15 @@ impl JobScheduler {
                     }
                 }
                 // Unregister running.
-                {
+                let workspace_id = {
                     let mut rg = running.lock().await;
-                    if let Some(ra) = rg.remove(&attempt_id) {
-                        let mut rpw_g = rpw.lock().await;
-                        if let Some(c) = rpw_g.get_mut(&ra.workspace_id) {
-                            *c = c.saturating_sub(1);
-                        }
-                    }
+                    rg.remove(&attempt_id)
+                        .map(|ra| ra.workspace_id)
+                        .unwrap_or(workspace_id_for_task)
+                };
+                let mut rpw_g = rpw.lock().await;
+                if let Some(c) = rpw_g.get_mut(&workspace_id) {
+                    *c = c.saturating_sub(1);
                 }
                 running_total.fetch_sub(1, Ordering::SeqCst);
                 drop(lease_for_task);
@@ -1051,27 +1108,7 @@ impl JobScheduler {
 
         let durable_queued_count = ready_window_count;
 
-        // Job-kind distribution over queued + running records.
-        let mut by_kind_local = BTreeMap::<String, usize>::new();
-        let kind_query = codegg_core::jobs::store::JobStoreQuery {
-            states: vec![JobState::Queued, JobState::Running],
-            workspace_id: None,
-            kinds: vec![],
-            limit: Some(10_000),
-            session_id: None,
-        };
-        match self.store.list_jobs(kind_query).await {
-            Ok(summaries) => {
-                for summary in &summaries {
-                    *by_kind_local
-                        .entry(summary.kind.as_str().to_string())
-                        .or_insert(0) += 1;
-                }
-            }
-            Err(e) => {
-                tracing::debug!("snapshot: job-kind listing failed: {e}");
-            }
-        }
+        let by_kind_local = self.job_kind_counts.lock().await.clone();
 
         let resources = crate::scheduler::snapshot::ResourceSummary::from_admission(
             &admission,
@@ -1417,3 +1454,48 @@ impl JobProgressSink for DurableProgressSink {
 fn _silence_executor_health() {}
 #[allow(dead_code)]
 fn _silence_executor_metrics() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn completion() -> ExecutorCompletion {
+        ExecutorCompletion {
+            status: ExecutorStatus::Completed,
+            summary: "ok".to_string(),
+            run_id: None,
+            metrics: ExecutorMetrics::default(),
+        }
+    }
+
+    #[test]
+    fn completion_cache_evicts_oldest_and_replaces_in_order() {
+        let mut cache = CompletionCache::new();
+        for seq in 0..1025 {
+            cache.insert(
+                JobId::new_unchecked(format!("job-{seq}")),
+                seq,
+                completion(),
+            );
+        }
+
+        assert_eq!(cache.entries.len(), 1024);
+        assert!(!cache.entries.contains_key(&JobId::new_unchecked("job-0")));
+        assert!(cache.entries.contains_key(&JobId::new_unchecked("job-1")));
+
+        cache.insert(JobId::new_unchecked("job-1024"), 1025, completion());
+        assert_eq!(cache.entries.len(), 1024);
+        assert!(cache.entries.contains_key(&JobId::new_unchecked("job-1")));
+        assert_eq!(
+            cache
+                .entries
+                .get(&JobId::new_unchecked("job-1024"))
+                .map(|v| v.0),
+            Some(1025)
+        );
+
+        cache.insert(JobId::new_unchecked("job-1025"), 1026, completion());
+        assert_eq!(cache.entries.len(), 1024);
+        assert!(!cache.entries.contains_key(&JobId::new_unchecked("job-1")));
+    }
+}

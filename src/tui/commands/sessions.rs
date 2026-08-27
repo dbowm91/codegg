@@ -1806,7 +1806,11 @@ pub(crate) fn apply_template_session_created(
 
     if let Some(ref tx) = app.tui_cmd_tx {
         let session_id = session.id.clone();
-        let _ = tx.try_send(TuiCommand::LoadSessionMessages { session_id });
+        if let Err(error) = tx.try_send(TuiCommand::LoadSessionMessages {
+            session_id: session_id.clone(),
+        }) {
+            tracing::debug!(%session_id, ?error, "failed to queue session message load");
+        }
     }
     app.messages_state.toasts.info(&format!(
         "Session '{}' created from template",
@@ -1875,7 +1879,11 @@ pub(crate) async fn handle_create_from_template(
 
             if let Some(ref tx) = app.tui_cmd_tx {
                 let session_id = session.id.clone();
-                let _ = tx.try_send(TuiCommand::LoadSessionMessages { session_id });
+                if let Err(error) = tx.try_send(TuiCommand::LoadSessionMessages {
+                    session_id: session_id.clone(),
+                }) {
+                    tracing::debug!(%session_id, ?error, "failed to queue session message load");
+                }
             }
 
             app.messages_state.toasts.info(&format!(
