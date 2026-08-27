@@ -200,7 +200,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             Some(pool) => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(pool),
             None => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::new(),
         });
-        let _ = notification_service.recover_from_pool().await;
+        if let Err(error) = notification_service.recover_from_pool().await {
+            tracing::warn!(error = %error, "failed to recover tool-program notifications");
+        }
 
         // ── Provider resolution ──────────────────────────────────────
         let mut registry = crate::provider::ProviderRegistry::new();

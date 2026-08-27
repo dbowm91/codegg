@@ -97,7 +97,7 @@ pub async fn persist_mutation(
     };
 
     if !result.stdout.is_empty() {
-        let _ = store
+        if let Err(error) = store
             .write_artifact(
                 &handle,
                 ArtifactInput {
@@ -107,10 +107,17 @@ pub async fn persist_mutation(
                     safe_for_model: false,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                run_id = %handle.run_id,
+                error = %error,
+                "failed to persist git stdout artifact"
+            );
+        }
     }
     if !result.stderr.is_empty() {
-        let _ = store
+        if let Err(error) = store
             .write_artifact(
                 &handle,
                 ArtifactInput {
@@ -120,10 +127,17 @@ pub async fn persist_mutation(
                     safe_for_model: false,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                run_id = %handle.run_id,
+                error = %error,
+                "failed to persist git stderr artifact"
+            );
+        }
     }
     if let Ok(delta_json) = serde_json::to_vec_pretty(&result.delta) {
-        let _ = store
+        if let Err(error) = store
             .write_artifact(
                 &handle,
                 ArtifactInput {
@@ -133,11 +147,18 @@ pub async fn persist_mutation(
                     safe_for_model: true,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                run_id = %handle.run_id,
+                error = %error,
+                "failed to persist git mutation delta artifact"
+            );
+        }
     }
     let summary = crate::git_mutation_projector::project_mutation(result);
     if !summary.is_empty() {
-        let _ = store
+        if let Err(error) = store
             .write_artifact(
                 &handle,
                 ArtifactInput {
@@ -147,7 +168,14 @@ pub async fn persist_mutation(
                     safe_for_model: true,
                 },
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                run_id = %handle.run_id,
+                error = %error,
+                "failed to persist git mutation summary artifact"
+            );
+        }
     }
 
     let completion = RunCompletion {

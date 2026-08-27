@@ -357,7 +357,7 @@ pub async fn stash_push(
     include_untracked: bool,
     paths: Vec<String>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let mut pathspecs = Vec::with_capacity(paths.len());
     for p in &paths {
         pathspecs.push(Pathspec::new(p).map_err(GitMutationError::from)?);

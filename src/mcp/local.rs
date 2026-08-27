@@ -405,13 +405,20 @@ impl LocalClient {
     }
 
     pub async fn shutdown(&mut self) -> Result<(), McpError> {
-        let _ = self
+        if let Err(error) = self
             .send_notification("notifications/cancelled", json!({}))
-            .await;
+            .await
+        {
+            tracing::warn!(error = %error, "failed to send MCP cancellation notification");
+        }
         self.shutdown_notify.notify_waiters();
         if let Some(ref mut child) = self.child {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            if let Err(error) = child.kill().await {
+                tracing::warn!(error = %error, "failed to kill MCP child during shutdown");
+            }
+            if let Err(error) = child.wait().await {
+                tracing::warn!(error = %error, "failed to reap MCP child during shutdown");
+            }
         }
         if let Some(task) = self.stderr_task.take() {
             let _ = task.await;

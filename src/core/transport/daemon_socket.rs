@@ -645,11 +645,17 @@ async fn handle_client(
                             for event in events {
                                 let frame = CoreFrame::Event(event);
                                 if let Ok(json) = serde_json::to_string(&frame) {
-                                    let _ = w.write_all(json.as_bytes()).await;
-                                    let _ = w.write_all(b"\n").await;
+                                    if let Err(error) = w.write_all(json.as_bytes()).await {
+                                        tracing::warn!(error = %error, "failed to write replay event to daemon socket");
+                                    }
+                                    if let Err(error) = w.write_all(b"\n").await {
+                                        tracing::warn!(error = %error, "failed to write replay event delimiter to daemon socket");
+                                    }
                                 }
                             }
-                            let _ = w.flush().await;
+                            if let Err(error) = w.flush().await {
+                                tracing::warn!(error = %error, "failed to flush daemon socket replay");
+                            }
                             // `_sub_client_id` is a wire field kept for
                             // compatibility; the daemon-issued id in
                             // `client_id` (the closure variable) is the one

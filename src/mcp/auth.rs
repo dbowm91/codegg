@@ -856,8 +856,12 @@ async fn handle_callback(
         body
     );
 
-    let _ = stream.write_all(resp.as_bytes()).await;
-    let _ = stream.flush().await;
+    if let Err(error) = stream.write_all(resp.as_bytes()).await {
+        tracing::warn!(error = %error, "failed to write OAuth callback response");
+    }
+    if let Err(error) = stream.flush().await {
+        tracing::warn!(error = %error, "failed to flush OAuth callback response");
+    }
 
     let _ = tx.send(code);
     Ok(())

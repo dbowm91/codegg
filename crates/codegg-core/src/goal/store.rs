@@ -81,8 +81,9 @@ struct GoalRow {
     completed_at: Option<i64>,
 }
 
-fn millis_to_datetime(ms: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(ms).unwrap_or_default()
+fn millis_to_datetime(ms: i64) -> Result<DateTime<Utc>, StorageError> {
+    DateTime::from_timestamp_millis(ms)
+        .ok_or_else(|| StorageError::Database(format!("invalid goal timestamp: {ms}")))
 }
 
 fn datetime_to_millis(dt: &DateTime<Utc>) -> i64 {
@@ -142,10 +143,10 @@ fn row_to_goal(row: GoalRow) -> Result<Goal, StorageError> {
         open_questions,
         budget,
         usage,
-        created_at: millis_to_datetime(row.created_at),
-        updated_at: millis_to_datetime(row.updated_at),
-        started_at: row.started_at.map(millis_to_datetime),
-        completed_at: row.completed_at.map(millis_to_datetime),
+        created_at: millis_to_datetime(row.created_at)?,
+        updated_at: millis_to_datetime(row.updated_at)?,
+        started_at: row.started_at.map(millis_to_datetime).transpose()?,
+        completed_at: row.completed_at.map(millis_to_datetime).transpose()?,
     })
 }
 
@@ -579,6 +580,29 @@ mod tests {
         let error = store.get(&goal.id).await.unwrap_err();
         assert!(
             matches!(error, StorageError::Database(message) if message.contains("invalid goal status"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalid_timestamp_is_rejected() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "sess1", "proj1").await;
+        let store = GoalStore::new(pool.clone());
+        let goal = store
+            .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
+            .await
+            .unwrap();
+
+        sqlx::query("UPDATE goal SET created_at = ? WHERE id = ?")
+            .bind(i64::MAX)
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let error = store.get(&goal.id).await.unwrap_err();
+        assert!(
+            matches!(error, StorageError::Database(message) if message.contains("invalid goal timestamp"))
         );
     }
 

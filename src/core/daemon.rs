@@ -113,7 +113,7 @@ impl CoreDaemon {
         daemon_id: String,
         generation: String,
     ) -> Self {
-        let config = crate::config::schema::Config::load().unwrap_or_default();
+        let config = super::load_config_or_default();
         let capacity = config
             .daemon
             .as_ref()
@@ -354,10 +354,16 @@ impl CoreDaemon {
     ) -> Result<crate::agent::asset_context::AssetContext, AppError> {
         let project_id = crate::agent::asset_context::ProjectId::parse(context.project_id.as_str())
             .map_err(|e| AppError::Other(anyhow::anyhow!(e.to_string())))?;
+        let config_revision = u64::try_from(context.binding_revision).map_err(|_| {
+            AppError::Other(anyhow::anyhow!(
+                "invalid negative binding revision: {}",
+                context.binding_revision
+            ))
+        })?;
         let mut builder = crate::agent::asset_context::AssetContextBuilder::new()
             .with_project_id(project_id)
             .with_workspace_root(context.workspace_root.clone())
-            .with_config_revision(u64::try_from(context.binding_revision).unwrap_or_default());
+            .with_config_revision(config_revision);
         if let Some(session_id) = session_id {
             builder = builder.with_session_id(session_id);
         }
@@ -691,6 +697,10 @@ impl CoreDaemon {
             let Ok(generation) = row.try_get::<i64, _>("generation") else {
                 continue;
             };
+            let Ok(generation) = u64::try_from(generation) else {
+                tracing::warn!("ignoring negative runtime asset generation during hydration");
+                continue;
+            };
             let fingerprint = row
                 .try_get::<Option<String>, _>("fingerprint")
                 .ok()
@@ -698,7 +708,7 @@ impl CoreDaemon {
             self.asset_refresh
                 .restore_metadata(
                     crate::agent::asset_refresh::AssetScope::new(project_id, workspace_id),
-                    u64::try_from(generation).unwrap_or_default(),
+                    generation,
                     fingerprint,
                 )
                 .await;
@@ -2315,7 +2325,7 @@ impl CoreDaemon {
                 // also validates provider existence internally, so this is
                 // intentionally duplicated for backward-compatible error handling.
                 let mut registry = crate::provider::ProviderRegistry::new();
-                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let config = super::load_config_or_default();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
                 let provider_name = model.split('/').next().unwrap_or("openai").to_string();
                 let _model_name = model.split('/').next_back().unwrap_or(&model).to_string();
@@ -3260,7 +3270,7 @@ impl CoreDaemon {
                         message: "Core client missing database pool".to_string(),
                     });
                 };
-                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
                 let discovery = crate::provider::discovery::ModelDiscoveryService::new(
@@ -4846,7 +4856,7 @@ impl CoreDaemon {
                 })
             }
             CoreRequest::SnapshotModels => {
-                let config = crate::config::schema::Config::load().unwrap_or_default();
+                let config = super::load_config_or_default();
                 let mut registry = crate::provider::ProviderRegistry::new();
                 crate::provider::register_builtin_with_config(&mut registry, &config);
                 let model_ids: Vec<String> = if let Some(pool) = self.pool.clone() {

@@ -3,7 +3,7 @@ use codegg::lsp::client::parse_publish_diagnostics;
 use codegg::lsp::diagnostics::DiagnosticsOutput;
 use codegg::lsp::language::{detect_language, language_id_to_server_id};
 use codegg::tool::lsp::to_lsp_position;
-use codegg::tool::{Tool, ToolCategory};
+use codegg::tool::{Tool, ToolCategory, ToolExecutionContext};
 
 fn make_tool() -> codegg::tool::lsp::LspTool {
     codegg::tool::lsp::LspTool::new(codegg::lsp::service::LspService::new_arc(
@@ -2471,6 +2471,28 @@ async fn workspaceSymbol_requires_symbol() {
         .await
         .unwrap_err();
     assert!(matches!(err, ToolError::Execution(ref m) if m.contains("symbol")));
+}
+
+#[tokio::test]
+async fn structured_workspace_symbol_uses_execution_root() {
+    let root = tempfile::tempdir().expect("create tempdir");
+    let tool = make_tool();
+    let mut ctx = ToolExecutionContext::with_backend(codegg::tool::ToolBackendKind::Native);
+    ctx.cwd = root.path().to_path_buf();
+
+    let err = tool
+        .execute_structured(
+            serde_json::json!({
+                "operation": "workspaceSymbol",
+                "symbol": "needle"
+            }),
+            Some(ctx),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ToolError::Execution(ref message) if message.contains(&root.path().display().to_string()))
+    );
 }
 
 // ── LspTool::lsp_doctor (Phase 13) ─────────────────────────────────────

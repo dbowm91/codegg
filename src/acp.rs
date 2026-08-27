@@ -5,7 +5,6 @@
 //! remain the authorities for execution and state.
 
 use crate::agent;
-use crate::config::schema::Config;
 use crate::core::instance::{connect_or_start_daemon, ConnectOrStartOptions};
 use crate::core::transport::SocketCoreClient;
 use crate::core::{new_request, CoreClient};
@@ -356,7 +355,7 @@ fn native_agents(
     _session_id: &str,
     project_root: Option<&Path>,
 ) -> Result<Vec<crate::protocol::dto::Agent>, crate::error::AppError> {
-    let config = Config::load().unwrap_or_default();
+    let config = crate::core::load_config_or_default();
     let agents = agent::resolve_agents_with_context(&config, project_root)
         .map_err(|e| crate::error::AppError::Other(anyhow::anyhow!(e.to_string())))?;
     agents

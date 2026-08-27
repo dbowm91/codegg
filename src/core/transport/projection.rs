@@ -193,7 +193,7 @@ impl ProjectionLifecycleSeam {
     pub fn fail_next(&self, boundary: ProjectionLifecycleBoundary, error: CriticalDeliveryError) {
         self.faults
             .lock()
-            .expect("projection lifecycle seam lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .entry(boundary)
             .or_default()
             .push_back(ProjectionLifecycleFault::Failure(error));
@@ -205,7 +205,7 @@ impl ProjectionLifecycleSeam {
         let gate = ProjectionLifecycleGate::new();
         self.faults
             .lock()
-            .expect("projection lifecycle seam lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .entry(boundary)
             .or_default()
             .push_back(ProjectionLifecycleFault::Pause(gate.clone()));
@@ -228,7 +228,7 @@ impl ProjectionLifecycleSeam {
         let fault = self
             .faults
             .lock()
-            .expect("projection lifecycle seam lock poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_mut(&boundary)
             .and_then(VecDeque::pop_front);
 

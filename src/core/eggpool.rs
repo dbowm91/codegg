@@ -1078,7 +1078,7 @@ impl EggpoolProvisioner {
                     .and_modify(|attempt| *attempt = attempt.saturating_add(1))
                     .or_insert(1)
                     .to_owned();
-                let config = codegg_config::schema::Config::load().unwrap_or_default();
+                let config = super::load_config_or_default();
                 let base = config
                     .provider_connections
                     .unwrap_or_default()
@@ -1216,7 +1216,7 @@ impl EggpoolProvisioner {
             .get_plaintext("eggpool", Some(&binding.account_ref), |_| true)
             .map_err(|_| RefreshError::CredentialMissing)?
             .ok_or(RefreshError::CredentialMissing)?;
-        let config = codegg_config::schema::Config::load().unwrap_or_default();
+        let config = super::load_config_or_default();
         let refresh_config = config.provider_connections.unwrap_or_default();
         let probe_options = codegg_providers::EggpoolProbeOptions {
             connect_timeout: Duration::from_millis(refresh_config.refresh_connect_timeout_ms),

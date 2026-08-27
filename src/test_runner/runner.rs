@@ -478,7 +478,12 @@ async fn kill_child(child: &mut Child) {
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
-            let pgid = pid as i32;
+            let Ok(pgid) = libc::pid_t::try_from(pid) else {
+                tracing::error!(pid, "child PID cannot be represented as a process-group ID");
+                let _ = child.kill().await;
+                let _ = tokio::time::timeout(GRACEFUL_KILL_TIMEOUT, child.wait()).await;
+                return;
+            };
             // Safety: -pgid targets the process group led by this child.
             unsafe {
                 libc::kill(-pgid, libc::SIGKILL);

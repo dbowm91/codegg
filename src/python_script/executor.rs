@@ -533,7 +533,9 @@ fn build_landlock_paths(
         if let Some(stdout) = child.stdout.take() {
             let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
         }
-        let _ = child.wait();
+        if let Err(error) = child.wait() {
+            tracing::warn!(error = %error, "failed to reap Python interpreter discovery child");
+        }
         let prefix = String::from_utf8_lossy(&bytes).trim().to_string();
         if !prefix.is_empty() {
             read_paths.push(PathBuf::from(prefix));

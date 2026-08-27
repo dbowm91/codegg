@@ -1209,10 +1209,12 @@ impl AgentLoop {
             } else {
                 "error".to_string()
             },
-            input_tokens: (self.state.unaccounted_input_tokens > 0)
-                .then_some(self.state.unaccounted_input_tokens as usize),
-            output_tokens: (self.state.unaccounted_output_tokens > 0)
-                .then_some(self.state.unaccounted_output_tokens as usize),
+            input_tokens: (self.state.unaccounted_input_tokens > 0).then(|| {
+                usize::try_from(self.state.unaccounted_input_tokens).unwrap_or(usize::MAX)
+            }),
+            output_tokens: (self.state.unaccounted_output_tokens > 0).then(|| {
+                usize::try_from(self.state.unaccounted_output_tokens).unwrap_or(usize::MAX)
+            }),
             cached_tokens: None,
             reasoning_tokens: None,
         });
@@ -2490,7 +2492,13 @@ impl AgentLoop {
                         if let Some(max_tokens) =
                             output.params.get("max_tokens").and_then(|v| v.as_u64())
                         {
-                            request.max_tokens = Some(max_tokens as usize);
+                            match usize::try_from(max_tokens) {
+                                Ok(max_tokens) => request.max_tokens = Some(max_tokens),
+                                Err(_) => tracing::warn!(
+                                    max_tokens,
+                                    "chat params hook returned max_tokens too large for this platform"
+                                ),
+                            }
                         }
                         for effect in effects {
                             crate::bus::global::GlobalEventBus::publish(

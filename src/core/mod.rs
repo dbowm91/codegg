@@ -22,6 +22,13 @@ pub mod transport;
 
 const CORE_EVENT_CHANNEL_CAPACITY: usize = 256;
 
+pub(crate) fn load_config_or_default() -> crate::config::schema::Config {
+    crate::config::schema::Config::load().unwrap_or_else(|error| {
+        tracing::warn!(error = %error, "failed to load config; using defaults");
+        crate::config::schema::Config::default()
+    })
+}
+
 #[async_trait]
 pub trait CoreClient: Send + Sync {
     async fn request(

@@ -390,6 +390,8 @@ pub(crate) struct EffectiveSecurityContextSettings {
 #[derive(Debug, Deserialize)]
 struct LspInput {
     operation: String,
+    #[serde(default, rename = "__codegg_execution_root")]
+    execution_root: Option<PathBuf>,
     #[serde(default)]
     file_path: Option<String>,
     #[serde(default)]
@@ -2615,9 +2617,12 @@ impl Tool for LspTool {
                         .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
                     k
                 } else {
-                    let root = std::env::current_dir().unwrap_or_default();
+                    let root = parsed
+                        .execution_root
+                        .as_deref()
+                        .unwrap_or(&self.allowed_root);
                     self.service
-                        .find_existing_client_for_root_hint(Some(&root), None)
+                        .find_existing_client_for_root_hint(Some(root), None)
                         .await
                         .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?
                         .0
@@ -4047,9 +4052,21 @@ impl Tool for LspTool {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
+        let input = if let Some(ctx) = ctx {
+            let mut input = input;
+            if let Some(object) = input.as_object_mut() {
+                object.insert(
+                    "__codegg_execution_root".to_string(),
+                    serde_json::Value::String(ctx.cwd.to_string_lossy().into_owned()),
+                );
+            }
+            input
+        } else {
+            input
+        };
         let output = self.execute(input).await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
         let output_value = serde_json::from_str::<serde_json::Value>(&output).ok();
@@ -5810,6 +5827,7 @@ diff --git a/src/lib.rs b/src/lib.rs
     fn security_context_input() -> LspInput {
         LspInput {
             operation: "securityContext".to_string(),
+            execution_root: None,
             file_path: Some("src/tool/mod.rs".to_string()),
             line: Some(1),
             column: Some(1),

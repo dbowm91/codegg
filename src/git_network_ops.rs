@@ -117,7 +117,7 @@ pub async fn fetch(
     prune: bool,
     all: bool,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let remote_name = match remote {
         Some(r) => Some(RemoteName::new(r)?),
         None => None,
@@ -187,7 +187,7 @@ pub async fn pull(
     strategy: PullStrategy,
     ff_only: bool,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let remote_name = match remote {
         Some(r) => Some(RemoteName::new(r)?),
         None => None,
@@ -290,7 +290,7 @@ pub async fn push(
     repo_root: &Path,
     req: PushRequest,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let remote_name = match req.remote {
         Some(r) => Some(RemoteName::new(&r)?),
         None => None,
@@ -352,7 +352,7 @@ pub async fn remote_add(
     name: &str,
     url: &str,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let rn = RemoteName::new(name)?;
     let op = GitOperation::RemoteAdd {
         name: rn,
@@ -367,7 +367,7 @@ pub async fn remote_remove(
     repo_root: &Path,
     name: &str,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let rn = RemoteName::new(name)?;
     let op = GitOperation::RemoteRemove { name: rn };
     exec.execute(&op, repo_root).await
@@ -384,7 +384,7 @@ pub async fn remote_set_url(
     url: &str,
     append: bool,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let rn = RemoteName::new(name)?;
     let op = GitOperation::RemoteSetUrl {
         name: rn,
@@ -402,7 +402,7 @@ pub async fn remote_rename(
     old_name: &str,
     new_name: &str,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let _old_rn = RemoteName::new(old_name)?;
     let _new_rn = RemoteName::new(new_name)?;
     let argv = vec![
@@ -551,7 +551,7 @@ pub async fn config_set(
     local_only: bool,
 ) -> Result<MutationResult, GitMutationError> {
     validate_config_key(key, local_only)?;
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ConfigSet {
         key: key.to_string(),
         value: value.to_string(),
@@ -569,7 +569,7 @@ pub async fn config_unset(
     local_only: bool,
 ) -> Result<MutationResult, GitMutationError> {
     validate_config_key(key, local_only)?;
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ConfigUnset {
         key: key.to_string(),
         global: false,
@@ -586,7 +586,7 @@ pub async fn config_get(
     local_only: bool,
 ) -> Result<MutationResult, GitMutationError> {
     validate_config_key(key, local_only)?;
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ConfigGet {
         key: key.to_string(),
         global: false,
@@ -603,7 +603,7 @@ pub async fn reset_soft(
     repo_root: &Path,
     rev: Option<&str>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ResetSoft {
         rev: rev.map(String::from),
     };
@@ -616,7 +616,7 @@ pub async fn reset_mixed(
     repo_root: &Path,
     rev: Option<&str>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ResetMixed {
         rev: rev.map(String::from),
     };
@@ -630,7 +630,7 @@ pub async fn reset_hard(
     repo_root: &Path,
     rev: Option<&str>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ResetHard {
         rev: rev.map(String::from),
     };
@@ -644,7 +644,7 @@ pub async fn reset_merge(
     repo_root: &Path,
     rev: Option<&str>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ResetMerge {
         rev: rev.map(String::from),
     };
@@ -658,7 +658,7 @@ pub async fn reset_keep(
     repo_root: &Path,
     rev: Option<&str>,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let op = GitOperation::ResetKeep {
         rev: rev.map(String::from),
     };
@@ -762,7 +762,7 @@ pub async fn clean_preview(
     repo_root: &Path,
     paths: Vec<String>,
 ) -> Result<CleanPreview, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let mut argv = vec![
         "git".to_string(),
         "clean".to_string(),
@@ -789,7 +789,7 @@ pub async fn clean(
     repo_root: &Path,
     req: CleanRequest,
 ) -> Result<MutationResult, GitMutationError> {
-    let _ = resolve_repo_root(repo_root)?;
+    resolve_repo_root(repo_root)?;
     let mut argv = vec!["git".to_string(), "clean".to_string()];
     if req.force {
         argv.push("-f".to_string());

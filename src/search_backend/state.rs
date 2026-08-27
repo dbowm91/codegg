@@ -28,7 +28,9 @@ static SEARCH_CONFIG: StdRwLock<Option<SearchConfig>> = StdRwLock::new(None);
 /// startup after the service is constructed and eggsearch is
 /// bootstrapped.
 pub fn install_mcp_service(svc: Arc<RwLock<McpService>>) {
-    let mut guard = MCP_SERVICE.write().expect("MCP_SERVICE lock poisoned");
+    let mut guard = MCP_SERVICE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = Some(svc);
 }
 
@@ -36,7 +38,7 @@ pub fn install_mcp_service(svc: Arc<RwLock<McpService>>) {
 pub fn mcp_service() -> Option<Arc<RwLock<McpService>>> {
     MCP_SERVICE
         .read()
-        .expect("MCP_SERVICE lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
 }
 
@@ -44,7 +46,9 @@ pub fn mcp_service() -> Option<Arc<RwLock<McpService>>> {
 /// overwrite the previous value (the production startup path calls
 /// this exactly once, but tests may override).
 pub fn install_search_config(cfg: SearchConfig) {
-    let mut guard = SEARCH_CONFIG.write().expect("SEARCH_CONFIG lock poisoned");
+    let mut guard = SEARCH_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *guard = Some(cfg);
 }
 
@@ -53,7 +57,7 @@ pub fn install_search_config(cfg: SearchConfig) {
 pub fn search_config() -> SearchConfig {
     SEARCH_CONFIG
         .read()
-        .expect("SEARCH_CONFIG lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
         .unwrap_or_default()
 }
@@ -67,10 +71,10 @@ pub fn search_config() -> SearchConfig {
 /// **Not** intended for production use.
 #[doc(hidden)]
 pub fn reset_for_tests() {
-    if let Ok(mut svc) = MCP_SERVICE.write() {
-        *svc = None;
-    }
-    if let Ok(mut cfg) = SEARCH_CONFIG.write() {
-        *cfg = None;
-    }
+    *MCP_SERVICE
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *SEARCH_CONFIG
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
 }

@@ -31,8 +31,12 @@ fn run_command_with_timeout(program: &str, args: &[&str]) -> Result<(), String> 
                 if Instant::now() >= deadline {
                     // Kill and reap so a hung child does not linger as
                     // an orphan past the timeout.
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    if let Err(error) = child.kill() {
+                        tracing::warn!(error = %error, "failed to kill timed-out IDE helper");
+                    }
+                    if let Err(error) = child.wait() {
+                        tracing::warn!(error = %error, "failed to reap timed-out IDE helper");
+                    }
                     return Err(format!(
                         "{} timed out after {:?}",
                         program, IDE_COMMAND_TIMEOUT
@@ -64,7 +68,9 @@ impl TempFilesGuard {
 impl Drop for TempFilesGuard {
     fn drop(&mut self) {
         for path in &self.paths {
-            let _ = std::fs::remove_file(path);
+            if let Err(error) = std::fs::remove_file(path) {
+                tracing::debug!(error = %error, path = %path.display(), "failed to remove IDE temp file");
+            }
         }
     }
 }

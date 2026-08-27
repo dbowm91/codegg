@@ -68,10 +68,18 @@ async fn ensure_local_session(app: &mut app::App) {
         match core_client.request(request).await {
             Ok(CoreResponse::Session { session }) => {
                 let session_id = session.id.clone();
-                app.session_state.session = crate::protocol_conversions::dto_to_session(session)
-                    .map_err(|e| tracing::error!(error = %e, "dto_to_session conversion failed"))
-                    .ok();
-                tracing::debug!(target: "codegg::tui::session", session_id = %session_id, "session created via core");
+                match crate::protocol_conversions::dto_to_session(session) {
+                    Ok(session) => {
+                        app.session_state.session = Some(session);
+                        tracing::debug!(target: "codegg::tui::session", session_id = %session_id, "session created via core");
+                    }
+                    Err(error) => {
+                        tracing::error!(error = %error, session_id = %session_id, "dto_to_session conversion failed");
+                        app.messages_state
+                            .toasts
+                            .error(&format!("Failed to create session: {error}"));
+                    }
+                }
             }
             Ok(CoreResponse::Error { code, message }) => {
                 tracing::debug!(target: "codegg::tui::session", code = %code, message = %message, "failed to create session via core");

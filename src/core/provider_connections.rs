@@ -209,7 +209,10 @@ impl ConnectionManager {
             revision: connection.revision,
         };
         let cell = {
-            let mut cache = self.cache.lock().expect("connection cache poisoned");
+            let mut cache = self
+                .cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             cache
                 .entry(key)
                 .or_insert_with(|| Arc::new(OnceCell::new()))
@@ -273,13 +276,19 @@ impl ConnectionManager {
 
     /// Drop all cached revisions for a connection.
     pub fn invalidate(&self, connection_id: &ProviderConnectionId) {
-        let mut cache = self.cache.lock().expect("connection cache poisoned");
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.retain(|key, _| &key.connection_id != connection_id);
     }
 
     /// Drop one exact cached revision, leaving other revisions untouched.
     pub fn invalidate_revision(&self, connection_id: &ProviderConnectionId, revision: u64) {
-        let mut cache = self.cache.lock().expect("connection cache poisoned");
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         cache.remove(&CacheKey {
             connection_id: connection_id.clone(),
             revision,
@@ -289,7 +298,7 @@ impl ConnectionManager {
     pub fn clear(&self) {
         self.cache
             .lock()
-            .expect("connection cache poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
 
@@ -323,7 +332,10 @@ impl ConnectionManager {
 
     #[cfg(test)]
     fn cache_len(&self) -> usize {
-        self.cache.lock().expect("connection cache poisoned").len()
+        self.cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 }
 
