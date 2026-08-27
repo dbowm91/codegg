@@ -4,6 +4,7 @@
 //! failure, and explicit shutdown. It owns the single authoritative
 //! process monitor to avoid double-waiting on child handles.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -89,7 +90,7 @@ impl LspProcessExitEvent {
 /// Retains the last `MAX_LINES` lines and at most `MAX_BYTES` total.
 #[derive(Debug, Clone)]
 pub struct StderrRingBuffer {
-    lines: Vec<String>,
+    lines: VecDeque<String>,
     total_bytes: usize,
 }
 
@@ -99,7 +100,7 @@ const MAX_BYTES: usize = 64 * 1024;
 impl StderrRingBuffer {
     pub fn new() -> Self {
         Self {
-            lines: Vec::new(),
+            lines: VecDeque::new(),
             total_bytes: 0,
         }
     }
@@ -107,13 +108,13 @@ impl StderrRingBuffer {
     /// Push a line, evicting oldest if over bounds.
     pub fn push(&mut self, line: String) {
         let line_bytes = line.len();
-        self.lines.push(line);
+        self.lines.push_back(line);
         self.total_bytes += line_bytes;
         // Evict oldest lines if over bounds.
         while self.lines.len() > MAX_LINES || self.total_bytes > MAX_BYTES {
-            if let Some(oldest) = self.lines.first() {
+            if let Some(oldest) = self.lines.front() {
                 self.total_bytes = self.total_bytes.saturating_sub(oldest.len());
-                self.lines.remove(0);
+                self.lines.pop_front();
             } else {
                 break;
             }
@@ -122,7 +123,7 @@ impl StderrRingBuffer {
 
     /// Return a snapshot of the current stderr lines.
     pub fn snapshot(&self) -> Vec<String> {
-        self.lines.clone()
+        self.lines.iter().cloned().collect()
     }
 
     /// Returns true if the buffer is empty.

@@ -500,7 +500,7 @@ async fn run_inner(
         .take()
         .ok_or_else(|| ManagedProcessError::ReadOutput(io::Error::other("stderr was not piped")))?;
 
-    let (overflow_tx, mut overflow_rx) = mpsc::unbounded_channel();
+    let (overflow_tx, mut overflow_rx) = mpsc::channel(2);
     let stdout_task = tokio::spawn(read_bounded(
         stdout,
         output_policy.stdout_limit,
@@ -720,7 +720,7 @@ async fn read_bounded<R>(
     mut reader: R,
     cap: usize,
     stream: OutputStream,
-    overflow_tx: mpsc::UnboundedSender<OutputStream>,
+    overflow_tx: mpsc::Sender<OutputStream>,
     overflow_policy: OverflowPolicy,
 ) -> Result<BoundedOutput, io::Error>
 where
@@ -736,7 +736,7 @@ where
         let was_truncated = output.is_truncated();
         output.append(&buffer[..read], cap);
         if !was_truncated && output.is_truncated() && overflow_policy == OverflowPolicy::Terminate {
-            let _ = overflow_tx.send(stream);
+            let _ = overflow_tx.try_send(stream);
         }
     }
 }
@@ -755,7 +755,7 @@ async fn wait_for_child(
     child: &mut Child,
     cancellation: &CancellationToken,
     process_timeout: Option<Duration>,
-    overflow_rx: &mut mpsc::UnboundedReceiver<OutputStream>,
+    overflow_rx: &mut mpsc::Receiver<OutputStream>,
     overflow_policy: OverflowPolicy,
 ) -> Result<(ExitStatus, TerminationReason, CleanupDiagnostics), ManagedProcessError> {
     let timeout_future = async move {

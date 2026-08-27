@@ -2,6 +2,7 @@
 
 use super::events::{AgentPlan, FileChangeKind, SessionEvent, ToolCallStatus, ToolRisk};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 // ---------------------------------------------------------------------------
 // Summary types for TUI display
@@ -112,7 +113,7 @@ pub struct TuiSessionState {
     pub goal: Option<String>,
     pub plan: Option<AgentPlan>,
     pub active_tool_calls: Vec<ToolCallSummary>,
-    pub recent_tool_calls: Vec<ToolCallSummary>,
+    pub recent_tool_calls: VecDeque<ToolCallSummary>,
     pub changed_files: Vec<ChangedFileSummary>,
     pub test_state: TestState,
     pub context_state: ContextState,
@@ -127,7 +128,7 @@ impl Default for TuiSessionState {
             goal: None,
             plan: None,
             active_tool_calls: Vec::new(),
-            recent_tool_calls: Vec::new(),
+            recent_tool_calls: VecDeque::new(),
             changed_files: Vec::new(),
             test_state: TestState::Unknown,
             context_state: ContextState::default(),
@@ -196,9 +197,9 @@ impl TuiSessionState {
                     tc.finished_at = Some(e.meta.created_at);
                     tc.duration_ms = e.duration_ms;
                     tc.output_preview = e.output_preview.clone();
-                    self.recent_tool_calls.push(tc);
+                    self.recent_tool_calls.push_back(tc);
                     if self.recent_tool_calls.len() > MAX_RECENT_TOOL_CALLS {
-                        self.recent_tool_calls.remove(0);
+                        self.recent_tool_calls.pop_front();
                     }
                 }
             }

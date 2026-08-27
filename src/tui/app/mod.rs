@@ -11675,7 +11675,9 @@ impl App {
                                 .iter()
                                 .filter_map(|m| m.as_str().map(ToOwned::to_owned))
                                 .collect();
-                            let _ = tx.send(TuiCommand::UpdateModels(model_ids)).await;
+                            if tx.send(TuiCommand::UpdateModels(model_ids)).await.is_err() {
+                                tracing::debug!("model refresh completion receiver is gone");
+                            }
                         }
                         Ok(crate::protocol::core::CoreResponse::Error { message, .. }) => {
                             tracing::warn!("model refresh via core failed: {}", message);

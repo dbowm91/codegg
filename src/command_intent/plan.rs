@@ -99,10 +99,12 @@ pub struct NativeCommand {
 
 impl NativeCommand {
     /// Build a native command from a complete, already-tokenized argv.
-    pub fn from_argv(mut argv: Vec<String>) -> Option<Self> {
-        let executable = argv.first()?.clone();
-        argv.remove(0);
-        Some(Self { executable, argv })
+    pub fn from_argv(argv: Vec<String>) -> Option<Self> {
+        let (executable, argv) = argv.split_first()?;
+        Some(Self {
+            executable: executable.clone(),
+            argv: argv.to_vec(),
+        })
     }
 
     /// Return the complete argv only at the managed-process boundary.

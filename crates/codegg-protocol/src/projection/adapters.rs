@@ -99,14 +99,14 @@ pub fn snapshot_from_snapshot_session(
         project_id: session.project_id.clone(),
         workspace_id,
         primary_session: summary,
-        secondary_sessions: Vec::new(),
+        secondary_sessions: Vec::new().into(),
         workspace,
         active_turn: None,
-        recent_turns: Vec::new(),
-        runs: Vec::new(),
-        jobs: Vec::new(),
-        tool_programs: Vec::new(),
-        diagnostics: Vec::new(),
+        recent_turns: Vec::new().into(),
+        runs: Vec::new().into(),
+        jobs: Vec::new().into(),
+        tool_programs: Vec::new().into(),
+        diagnostics: Vec::new().into(),
     };
 
     if !messages.is_empty() {
@@ -133,7 +133,7 @@ pub fn snapshot_from_snapshot_session(
                     truncated: false,
                 })
                 .collect(),
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             pending_permissions: pending_permissions
                 .iter()
                 .map(|id| PermissionProjection {
@@ -156,12 +156,12 @@ pub fn snapshot_from_snapshot_session(
                     resolved_at: None,
                 })
                 .collect(),
-            agent_tree: Vec::new(),
+            agent_tree: Vec::new().into(),
             subagent_count: *active_subagents,
             input_tokens: *input_tokens,
             output_tokens: *output_tokens,
         };
-        snap.recent_turns.push(turn);
+        snap.recent_turns.push_back(turn);
         snap.primary_session.has_active_turn = false;
     }
     Some(snap)

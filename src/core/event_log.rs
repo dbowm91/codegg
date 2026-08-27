@@ -187,7 +187,9 @@ impl EventLog {
             }
         }
 
-        let _ = self.tx.send(envelope);
+        if let Err(error) = self.tx.send(envelope) {
+            tracing::debug!(?error, "event log has no live subscribers");
+        }
 
         seq
     }

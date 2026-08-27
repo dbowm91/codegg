@@ -169,7 +169,10 @@ where
     usable.dedup();
     if usable.len() == 1 {
         RepositoryLineageEvidence::Unique {
-            remote: usable.remove(0),
+            remote: usable
+                .into_iter()
+                .next()
+                .expect("usable contains exactly one remote"),
         }
     } else {
         RepositoryLineageEvidence::Ambiguous { remotes: usable }

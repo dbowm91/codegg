@@ -57,8 +57,6 @@ use std::time::{Duration, Instant};
 
 static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
     let patterns = [
-        r"/home/[^\s/]+",
-        r"/Users/[^\s/]+",
         r"/var/[^\s/]+",
         r"/tmp/[^\s/]+",
         r"C:\\Users\\[^\s\\]+",
@@ -70,18 +68,11 @@ static PATH_REDACTION_PATTERNS: LazyLock<Vec<regex::Regex>> = LazyLock::new(|| {
         .filter_map(|p| regex::Regex::new(p).ok())
         .collect()
 });
-static LOCAL_PATHS: LazyLock<(Option<String>, Option<String>)> = LazyLock::new(|| {
-    (
-        std::env::current_dir()
-            .ok()
-            .map(|path| path.to_string_lossy().into_owned())
-            .filter(|path| !path.is_empty()),
-        std::env::var("HOME").ok().filter(|path| !path.is_empty()),
-    )
-});
 use tokio::sync::broadcast::error::TryRecvError;
 use tokio::sync::mpsc;
 use tracing::instrument;
+
+const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
 
 type ToolDefCache = (
     Option<String>,
@@ -94,16 +85,16 @@ type ToolDefCache = (
     Vec<crate::provider::ToolDefinition>,
 );
 
-fn redact_local_paths(input: &str) -> String {
+fn redact_local_paths(input: &str, local_paths: &(Option<String>, Option<String>)) -> String {
     let mut result = Cow::Borrowed(input);
 
     for (path, replacement) in [
-        (LOCAL_PATHS.0.as_deref(), "[CWD]"),
-        (LOCAL_PATHS.1.as_deref(), "[HOME]"),
+        (local_paths.0.as_deref(), "[CWD]"),
+        (local_paths.1.as_deref(), "[HOME]"),
     ] {
-        if let Some(path) = path {
-            if result.contains(path) {
-                result = Cow::Owned(result.replace(path, replacement));
+        if let Some(path) = path.filter(|path| !path.is_empty()) {
+            if let Cow::Owned(replaced) = replace_path_prefixes(&result, path, replacement) {
+                result = Cow::Owned(replaced);
             }
         }
     }
@@ -115,6 +106,33 @@ fn redact_local_paths(input: &str) -> String {
     }
 
     result.into_owned()
+}
+
+fn replace_path_prefixes<'a>(input: &'a str, path: &str, replacement: &str) -> Cow<'a, str> {
+    let mut output = String::with_capacity(input.len());
+    let mut copied_until = 0;
+    let mut replaced = false;
+
+    for (start, _) in input.match_indices(path) {
+        let end = start + path.len();
+        let has_path_boundary = input[end..].chars().next().map_or(true, |character| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+        });
+        if !has_path_boundary {
+            continue;
+        }
+        output.push_str(&input[copied_until..start]);
+        output.push_str(replacement);
+        copied_until = end;
+        replaced = true;
+    }
+
+    if replaced {
+        output.push_str(&input[copied_until..]);
+        Cow::Owned(output)
+    } else {
+        Cow::Borrowed(input)
+    }
 }
 
 /// Observation phase for cache-aware context packer diagnostics (Phase 5).
@@ -423,8 +441,8 @@ pub struct AgentLoop {
     pub(super) progress_recovery: RecoveryController,
     pub(super) recovery_parallel_limit: Option<usize>,
     pub(super) steering: AtomicBool,
-    pub(super) follow_up_tx: mpsc::UnboundedSender<String>,
-    pub(super) follow_up_rx: mpsc::UnboundedReceiver<String>,
+    pub(super) follow_up_tx: mpsc::Sender<String>,
+    pub(super) follow_up_rx: mpsc::Receiver<String>,
     pub(super) config: Config,
     pub(super) question_tx: Option<tokio::sync::oneshot::Sender<String>>,
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
@@ -437,16 +455,12 @@ pub struct AgentLoop {
     pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     pub(super) file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
     pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
-    #[allow(dead_code)]
-    pub(super) pricing_service: crate::util::pricing::PricingService,
     pub(super) security_service: crate::security::service::SecurityService,
     pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
     pub(super) todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
     pub(super) task_state_policy: crate::model_profile::types::TaskStatePolicy,
     pub(super) todo_pool: Option<sqlx::SqlitePool>,
     pub(super) event_store: Option<Arc<crate::session::EventStore>>,
-    #[allow(dead_code)]
-    pub(super) active_tool_timings: HashMap<String, Instant>,
     pub(super) execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     pub(super) original_user_prompt: Option<String>,
     pub(super) subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
@@ -457,8 +471,9 @@ pub struct AgentLoop {
     pub(super) goal_store: Option<Arc<crate::goal::GoalStore>>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
-    pub(super) steer_rx: Option<mpsc::UnboundedReceiver<String>>,
+    pub(super) steer_rx: Option<mpsc::Receiver<String>>,
     pub(super) pending_steer: Option<String>,
+    pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
     pub(super) artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
     pub(super) projection_config: crate::context::ProjectionConfig,
@@ -586,7 +601,7 @@ impl AgentLoop {
             map.insert(agent.name.clone(), agent.clone());
         }
 
-        let (follow_up_tx, follow_up_rx) = mpsc::unbounded_channel();
+        let (follow_up_tx, follow_up_rx) = mpsc::channel(FOLLOW_UP_CHANNEL_CAPACITY);
 
         let mut context_tracker = ContextTracker::new(128_000, 0.85);
         if let Some(ref compaction) = config.compaction {
@@ -633,7 +648,6 @@ impl AgentLoop {
         let usage_store = pool
             .clone()
             .map(|p| Arc::new(crate::session::UsageStore::new(p)));
-        let pricing_service = crate::util::pricing::PricingService::new();
         let security_service =
             crate::security::service::SecurityService::new(config.security.as_ref());
 
@@ -657,6 +671,10 @@ impl AgentLoop {
         let projection_config = Self::resolve_projection_config(&config);
         let context_packer_config = config.context_packer.clone().unwrap_or_default();
         let context_policy_config = config.context_policy.clone().unwrap_or_default();
+        let local_paths = (
+            Some(workspace_root.to_string_lossy().into_owned()).filter(|path| !path.is_empty()),
+            std::env::var("HOME").ok().filter(|path| !path.is_empty()),
+        );
 
         // Build the canonical tool broker from the configured registry.
         // The broker does not own the registry; it holds a pre-built catalog.
@@ -702,7 +720,6 @@ impl AgentLoop {
             snapshot_manager,
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
             usage_store,
-            pricing_service,
             security_service,
             recent_findings: Vec::new(),
             todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
@@ -713,7 +730,6 @@ impl AgentLoop {
             event_store: pool
                 .as_ref()
                 .map(|p| Arc::new(crate::session::EventStore::new(p.clone()))),
-            active_tool_timings: HashMap::new(),
             execution_policy: None,
             original_user_prompt: None,
             subagent_pool: None,
@@ -726,6 +742,7 @@ impl AgentLoop {
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
             steer_rx: None,
+            local_paths,
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
             artifact_store,
@@ -946,8 +963,8 @@ impl AgentLoop {
     /// - Follow-ups queued BEFORE `run()` starts are processed by that `run()` call
     /// - Follow-ups that arrive AFTER `run()` has already returned are NOT consumed
     ///   (they require another `run()` call or alternative event-driven handling)
-    /// - The channel is unbounded; callers should be mindful of memory if queueing many
-    pub fn follow_up_sender(&self) -> mpsc::UnboundedSender<String> {
+    /// - The channel is bounded; callers should handle a full queue.
+    pub fn follow_up_sender(&self) -> mpsc::Sender<String> {
         self.follow_up_tx.clone()
     }
 
@@ -1013,7 +1030,7 @@ impl AgentLoop {
         self.cancel_rx = Some(rx);
     }
 
-    pub fn set_steer_receiver(&mut self, rx: mpsc::UnboundedReceiver<String>) {
+    pub fn set_steer_receiver(&mut self, rx: mpsc::Receiver<String>) {
         self.steer_rx = Some(rx);
     }
 
@@ -1318,10 +1335,8 @@ impl AgentLoop {
             if !decision.should_continue {
                 if let Some(prompt) = decision.prompt {
                     // Final wrap-up prompt (e.g. budget-limited).
-                    if self.follow_up_tx.send(prompt).is_err() {
-                        tracing::warn!(
-                            "goal wrap-up prompt dropped: follow-up receiver unavailable"
-                        );
+                    if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                        tracing::warn!(?error, "goal wrap-up prompt dropped");
                     }
                     self.drain_follow_up(request, all_events, processor).await;
                 }
@@ -1338,8 +1353,8 @@ impl AgentLoop {
             // Reset per-turn token/tool counters so the next
             // accounting tick measures the *continuation* turn, not
             // a stale carry-over from the user's turn.
-            if self.follow_up_tx.send(prompt).is_err() {
-                tracing::warn!("goal continuation prompt dropped: follow-up receiver unavailable");
+            if let Err(error) = self.follow_up_tx.try_send(prompt) {
+                tracing::warn!(?error, "goal continuation prompt dropped");
             }
             self.drain_follow_up(request, all_events, processor).await;
             // After the continuation turn finishes, account for it
@@ -2882,7 +2897,7 @@ impl AgentLoop {
                     .map(|tc| tc.name.to_string())
                     .unwrap_or_default();
                 let success = tool_outcome_is_success(outcome);
-                let redacted_output = redact_local_paths(&outcome.model_text);
+                let redacted_output = redact_local_paths(&outcome.model_text, &self.local_paths);
                 crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                     tool_id: id.clone(),
                     tool_name,
@@ -2907,7 +2922,7 @@ impl AgentLoop {
                     }
                 }
 
-                let redacted_content = redact_local_paths(content);
+                let redacted_content = redact_local_paths(content, &self.local_paths);
 
                 let tool_args = tool_calls
                     .iter()
@@ -3553,7 +3568,8 @@ impl AgentLoop {
                         .map(|tc| tc.name.to_string())
                         .unwrap_or_default();
                     let success = tool_outcome_is_success(outcome);
-                    let redacted_output = redact_local_paths(&outcome.model_text);
+                    let redacted_output =
+                        redact_local_paths(&outcome.model_text, &self.local_paths);
                     crate::bus::global::GlobalEventBus::publish(AppEvent::ToolResult {
                         tool_id: id.clone(),
                         tool_name,
@@ -3578,7 +3594,7 @@ impl AgentLoop {
                         }
                     }
 
-                    let redacted_content = redact_local_paths(content);
+                    let redacted_content = redact_local_paths(content, &self.local_paths);
 
                     let tool_name_str = tool_calls
                         .iter()
@@ -3802,6 +3818,26 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::config::schema::{ResearchAutoTriggerConfig, ResearchConfig};
+
+    #[test]
+    fn local_path_redaction_uses_workspace_and_respects_path_boundaries() {
+        let paths = (
+            Some("/Users/alice/project".to_string()),
+            Some("/Users/alice".to_string()),
+        );
+        let input = "/Users/alice/project/src/main.rs /Users/alice-other/file";
+
+        assert_eq!(
+            redact_local_paths(input, &paths),
+            "[CWD]/src/main.rs /Users/alice-other/file"
+        );
+    }
+
+    #[test]
+    fn local_path_redaction_ignores_empty_paths() {
+        let paths = (Some(String::new()), Some(String::new()));
+        assert_eq!(redact_local_paths("plain text", &paths), "plain text");
+    }
 
     fn config_with_trigger(enabled: bool, min_confidence: f32) -> Config {
         Config {

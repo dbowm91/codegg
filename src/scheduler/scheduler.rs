@@ -1279,7 +1279,9 @@ impl JobScheduler {
     async fn emit_event(&self, event: SchedulerEvent) {
         let g = self.event_tx.lock().await;
         if let Some(tx) = g.as_ref() {
-            let _ = tx.send(event).await;
+            if let Err(error) = tx.send(event).await {
+                tracing::warn!(?error, "scheduler event receiver is unavailable");
+            }
         }
     }
 

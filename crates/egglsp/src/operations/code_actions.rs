@@ -204,7 +204,9 @@ pub fn select_source_action_edit(
             }
         }
         1 => {
-            let (ca, _title) = edit_bearing.remove(0);
+            let (ca, _title) = edit_bearing
+                .pop()
+                .expect("edit_bearing has exactly one element");
             Ok(ca.edit.clone().expect("checked above"))
         }
         _ => {

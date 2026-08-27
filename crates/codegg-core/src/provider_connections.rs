@@ -60,7 +60,9 @@ impl ProviderKind {
             "google" => Self::Google,
             "azure_openai" => Self::AzureOpenAi,
             value if value.strip_prefix("other:").is_some() => {
-                let custom = value.strip_prefix("other:").unwrap_or_default();
+                let custom = value
+                    .strip_prefix("other:")
+                    .expect("other: prefix was checked above");
                 validate_reference("provider kind", custom)?;
                 Self::Other(custom.to_owned())
             }

@@ -1138,7 +1138,7 @@ impl JobStore for SqliteJobStore {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
-        let mut out: Vec<JobSummary> = rows
+        let out: Vec<JobSummary> = rows
             .into_iter()
             .map(|row| -> Result<JobSummary, JobStoreError> {
                 let job_id: String = row.get("id");
@@ -1170,9 +1170,6 @@ impl JobStore for SqliteJobStore {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(limit) = query.limit {
-            out.truncate(limit as usize);
-        }
         Ok(out)
     }
 

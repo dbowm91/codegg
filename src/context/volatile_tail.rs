@@ -229,8 +229,7 @@ pub fn estimate_message_tokens(msg: &Message) -> usize {
             let tc_tokens: usize = tool_calls
                 .iter()
                 .map(|tc| {
-                    estimate_tokens(tc.name.as_ref())
-                        + estimate_tokens(tc.arguments.to_string().as_str())
+                    estimate_tokens(tc.name.as_ref()) + estimate_tokens(&tc.arguments.to_string())
                 })
                 .sum();
             text_tokens + tc_tokens

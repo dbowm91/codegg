@@ -55,7 +55,7 @@ pub fn idle_snapshot() -> SessionProjectionSnapshot {
             time_updated_at: Some(0),
             recent_summary: None,
         },
-        secondary_sessions: Vec::new(),
+        secondary_sessions: Vec::new().into(),
         workspace: WorkspaceSummaryProjection {
             workspace_id: FIXTURE_WORKSPACE_ID.into(),
             canonical_root: "/fixture".into(),
@@ -70,11 +70,11 @@ pub fn idle_snapshot() -> SessionProjectionSnapshot {
             health: WorkspaceHealthProjection::default(),
         },
         active_turn: None,
-        recent_turns: Vec::new(),
-        runs: Vec::new(),
-        jobs: Vec::new(),
-        tool_programs: Vec::new(),
-        diagnostics: Vec::new(),
+        recent_turns: Vec::new().into(),
+        runs: Vec::new().into(),
+        jobs: Vec::new().into(),
+        tool_programs: Vec::new().into(),
+        diagnostics: Vec::new().into(),
     }
 }
 
@@ -99,7 +99,8 @@ pub fn active_turn_snapshot() -> SessionProjectionSnapshot {
             visibility: VisibilityClass::Public,
             created_at: 1,
             truncated: false,
-        }],
+        }]
+        .into(),
         tools: vec![ToolProjection {
             tool_id: "tool-1".into(),
             tool_name: "Bash".into(),
@@ -112,10 +113,11 @@ pub fn active_turn_snapshot() -> SessionProjectionSnapshot {
             started_at: Some(1),
             completed_at: None,
             duration_ms: None,
-        }],
-        pending_permissions: Vec::new(),
-        pending_questions: Vec::new(),
-        agent_tree: Vec::new(),
+        }]
+        .into(),
+        pending_permissions: Vec::new().into(),
+        pending_questions: Vec::new().into(),
+        agent_tree: Vec::new().into(),
         subagent_count: 0,
         input_tokens: Some(0),
         output_tokens: Some(0),
@@ -145,17 +147,18 @@ pub fn completed_snapshot() -> SessionProjectionSnapshot {
             visibility: VisibilityClass::Public,
             created_at: 1,
             truncated: false,
-        }],
-        tools: Vec::new(),
-        pending_permissions: Vec::new(),
-        pending_questions: Vec::new(),
-        agent_tree: Vec::new(),
+        }]
+        .into(),
+        tools: Vec::new().into(),
+        pending_permissions: Vec::new().into(),
+        pending_questions: Vec::new().into(),
+        agent_tree: Vec::new().into(),
         subagent_count: 0,
         input_tokens: Some(10),
         output_tokens: Some(20),
     };
-    snap.recent_turns.push(turn);
-    snap.runs.push(RunProjection {
+    snap.recent_turns.push_back(turn);
+    snap.runs.push_back(RunProjection {
         run_id: "run-1".into(),
         kind: "test".into(),
         command: "cargo test".into(),
@@ -168,7 +171,7 @@ pub fn completed_snapshot() -> SessionProjectionSnapshot {
         artifact_count: 0,
         pinned: false,
     });
-    snap.jobs.push(JobProjection {
+    snap.jobs.push_back(JobProjection {
         job_id: "job-1".into(),
         workspace_id: FIXTURE_WORKSPACE_ID.into(),
         kind: "test".into(),
@@ -194,8 +197,8 @@ pub fn permission_pending_snapshot() -> SessionProjectionSnapshot {
         updated_at: 5,
         stop_reason: None,
         error: None,
-        messages: Vec::new(),
-        tools: Vec::new(),
+        messages: Vec::new().into(),
+        tools: Vec::new().into(),
         pending_permissions: vec![PermissionProjection {
             permission_id: "perm-1".into(),
             tool: "Bash".into(),
@@ -203,9 +206,10 @@ pub fn permission_pending_snapshot() -> SessionProjectionSnapshot {
             status: PermissionStatus::Pending,
             created_at: 5,
             resolved_at: None,
-        }],
-        pending_questions: Vec::new(),
-        agent_tree: Vec::new(),
+        }]
+        .into(),
+        pending_questions: Vec::new().into(),
+        agent_tree: Vec::new().into(),
         subagent_count: 0,
         input_tokens: Some(0),
         output_tokens: Some(0),
@@ -250,11 +254,11 @@ pub fn active_turn_event_script() -> Vec<ReducerEventInput> {
                     updated_at: 1,
                     stop_reason: None,
                     error: None,
-                    messages: Vec::new(),
-                    tools: Vec::new(),
-                    pending_permissions: Vec::new(),
-                    pending_questions: Vec::new(),
-                    agent_tree: Vec::new(),
+                    messages: Vec::new().into(),
+                    tools: Vec::new().into(),
+                    pending_permissions: Vec::new().into(),
+                    pending_questions: Vec::new().into(),
+                    agent_tree: Vec::new().into(),
                     subagent_count: 0,
                     input_tokens: None,
                     output_tokens: None,

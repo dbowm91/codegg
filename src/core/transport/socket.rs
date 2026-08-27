@@ -201,11 +201,18 @@ impl SocketCoreClient {
                                         response,
                                     } => {
                                         if let Some((_, tx)) = pending.remove(&request_id) {
-                                            let _ = tx.send(Ok(*response));
+                                            if tx.send(Ok(*response)).is_err() {
+                                                tracing::debug!(
+                                                    %request_id,
+                                                    "socket response requester is gone"
+                                                );
+                                            }
                                         }
                                     }
                                     CoreFrame::Event(envelope) => {
-                                        let _ = event_bus.send(envelope);
+                                        if event_bus.send(envelope).is_err() {
+                                            tracing::debug!("socket event bus has no subscribers");
+                                        }
                                     }
                                     CoreFrame::Pong => {}
                                     CoreFrame::ServerHello(hello) => {
@@ -291,9 +298,14 @@ impl SocketCoreClient {
             for entry in pending.iter() {
                 let request_id = entry.key().clone();
                 if let Some((_, tx)) = pending.remove(&request_id) {
-                    let _ = tx.send(Err(AppError::Other(anyhow::anyhow!(
-                        "socket core connection closed"
-                    ))));
+                    if tx
+                        .send(Err(AppError::Other(anyhow::anyhow!(
+                            "socket core connection closed"
+                        ))))
+                        .is_err()
+                    {
+                        tracing::debug!(%request_id, "socket response requester is gone");
+                    }
                 }
             }
             server_hello_notify.notify_waiters();

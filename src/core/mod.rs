@@ -74,7 +74,11 @@ impl InprocCoreClient {
                 .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
             daemon.start_event_bridge();
             daemon.recover_state().await;
-            let _ = daemon.recover_jobs().await;
+            if daemon.recover_jobs().await.is_none() {
+                tracing::error!(
+                    "durable job recovery produced no report during core initialization"
+                );
+            }
         }
         Ok(())
     }

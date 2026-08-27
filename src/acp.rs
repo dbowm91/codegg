@@ -204,7 +204,21 @@ pub async fn run() -> Result<(), crate::error::AppError> {
                             prompt.cancel(true);
                             cancel_if_ready(client.as_ref(), prompt).await;
                         }
-                        if let Some(binding) = sessions.remove(&sid) { if let (Some(client), Some(sub)) = (client.as_ref(), binding.subscription_id) { let _ = client.request(new_request(uuid::Uuid::new_v4().to_string(), CoreRequest::ProjectionUnsubscribe { subscription_id: sub })).await; } }
+                        if let Some(binding) = sessions.remove(&sid) {
+                            if let (Some(client), Some(sub)) =
+                                (client.as_ref(), binding.subscription_id)
+                            {
+                                let request = new_request(
+                                    uuid::Uuid::new_v4().to_string(),
+                                    CoreRequest::ProjectionUnsubscribe {
+                                        subscription_id: sub,
+                                    },
+                                );
+                                if let Err(error) = client.request(request).await {
+                                    tracing::debug!(%error, "projection unsubscribe failed during session close");
+                                }
+                            }
+                        }
                         write_result(&stdout, request.id.unwrap_or(Value::Null), json!({})).await?;
                     }
                     "shutdown" => { write_result(&stdout, request.id.unwrap_or(Value::Null), Value::Null).await?; break; }
@@ -419,7 +433,7 @@ async fn replay_snapshot(
     else {
         return write_result(stdout, id, json!({"sessionId": sid})).await;
     };
-    let mut turns = snapshot.recent_turns.clone();
+    let mut turns: Vec<_> = snapshot.recent_turns.iter().cloned().collect();
     if let Some(active) = snapshot.active_turn.clone() {
         turns.push(active);
     }

@@ -2341,7 +2341,7 @@ async fn test_follow_up_sender_channel_works() {
     let mut agent_loop = build_agent_loop_with_error_config(scripted_provider.clone(), registry);
 
     let follow_up_tx = agent_loop.follow_up_sender();
-    follow_up_tx.send("Test follow-up".to_string()).ok();
+    follow_up_tx.try_send("Test follow-up".to_string()).ok();
 
     let request = make_chat_request("Hello");
     let result = agent_loop.run(request).await;
@@ -2377,7 +2377,7 @@ async fn test_follow_up_queued_before_run_is_processed() {
 
     // Queue follow-up BEFORE first run()
     let follow_up_tx = agent_loop.follow_up_sender();
-    follow_up_tx.send("Early follow-up".to_string()).ok();
+    follow_up_tx.try_send("Early follow-up".to_string()).ok();
 
     let request = make_chat_request("Hello");
     let result = agent_loop.run(request).await;
@@ -2452,7 +2452,9 @@ async fn test_follow_up_with_tool_call() {
     let request = make_chat_request("Initial prompt");
 
     // Send follow-up BEFORE run() to ensure it's queued when drain_follow_up is called
-    follow_up_tx.send("Follow-up with tool".to_string()).ok();
+    follow_up_tx
+        .try_send("Follow-up with tool".to_string())
+        .ok();
 
     let result = agent_loop.run(request).await;
     assert!(result.is_ok(), "Should complete successfully");

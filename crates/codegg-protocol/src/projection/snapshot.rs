@@ -6,6 +6,7 @@
 //! [`SessionProjectionSnapshot`] values.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
@@ -41,7 +42,7 @@ pub struct SessionProjectionSnapshot {
     pub primary_session: SessionSummaryProjection,
     /// Bounded summaries of other sessions in the same project, kept
     /// for cross-session visibility in the TUI sidebar.
-    pub secondary_sessions: Vec<SessionSummaryProjection>,
+    pub secondary_sessions: VecDeque<SessionSummaryProjection>,
     /// Bounded summary of the active workspace.
     pub workspace: WorkspaceSummaryProjection,
     /// Active turn projection. `None` when no turn is in flight.
@@ -50,15 +51,15 @@ pub struct SessionProjectionSnapshot {
     /// [`crate::projection::limits::MAX_PROJECTION_RECENT_TOOLS`] of
     /// turn slots — older turns collapse into
     /// [`SessionSummaryProjection::recent_summary`].
-    pub recent_turns: Vec<crate::projection::dto::TurnProjection>,
+    pub recent_turns: VecDeque<crate::projection::dto::TurnProjection>,
     /// Active and recently completed runs.
-    pub runs: Vec<RunProjection>,
+    pub runs: VecDeque<RunProjection>,
     /// Active and recently observed durable jobs.
-    pub jobs: Vec<JobProjection>,
+    pub jobs: VecDeque<JobProjection>,
     /// Active and recently completed background tool programs.
-    pub tool_programs: Vec<ToolProgramSummary>,
+    pub tool_programs: VecDeque<ToolProgramSummary>,
     /// Bounded diagnostic list emitted by the reducer.
-    pub diagnostics: Vec<ProjectionDiagnostic>,
+    pub diagnostics: VecDeque<ProjectionDiagnostic>,
 }
 
 impl SessionProjectionSnapshot {
@@ -91,7 +92,7 @@ impl SessionProjectionSnapshot {
                 time_updated_at: None,
                 recent_summary: None,
             },
-            secondary_sessions: Vec::new(),
+            secondary_sessions: VecDeque::new(),
             workspace: WorkspaceSummaryProjection {
                 workspace_id: workspace_id.to_string(),
                 canonical_root: String::new(),
@@ -106,28 +107,28 @@ impl SessionProjectionSnapshot {
                 health: Default::default(),
             },
             active_turn: None,
-            recent_turns: Vec::new(),
-            runs: Vec::new(),
-            jobs: Vec::new(),
-            tool_programs: Vec::new(),
-            diagnostics: Vec::new(),
+            recent_turns: VecDeque::new(),
+            runs: VecDeque::new(),
+            jobs: VecDeque::new(),
+            tool_programs: VecDeque::new(),
+            diagnostics: VecDeque::new(),
         }
     }
 
     /// Push a diagnostic, dropping the oldest if the cap is reached.
     pub fn push_diagnostic(&mut self, diag: ProjectionDiagnostic) {
         if self.diagnostics.len() >= MAX_PROJECTION_DIAGNOSTICS {
-            self.diagnostics.remove(0);
+            self.diagnostics.pop_front();
         }
-        self.diagnostics.push(diag);
+        self.diagnostics.push_back(diag);
     }
 
     /// Push a run summary, dropping the oldest if the cap is reached.
     pub fn push_run(&mut self, run: RunProjection) {
         if self.runs.len() >= MAX_PROJECTION_RUNS {
-            self.runs.remove(0);
+            self.runs.pop_front();
         }
-        self.runs.push(run);
+        self.runs.push_back(run);
     }
 
     /// Upsert a job, dropping the oldest if the cap is reached.
@@ -137,9 +138,9 @@ impl SessionProjectionSnapshot {
             return;
         }
         if self.jobs.len() >= MAX_PROJECTION_JOBS {
-            self.jobs.remove(0);
+            self.jobs.pop_front();
         }
-        self.jobs.push(job);
+        self.jobs.push_back(job);
     }
 
     /// Upsert a tool program summary, dropping the oldest if the cap
@@ -154,9 +155,9 @@ impl SessionProjectionSnapshot {
             return;
         }
         if self.tool_programs.len() >= MAX_PROJECTION_TOOL_PROGRAMS {
-            self.tool_programs.remove(0);
+            self.tool_programs.pop_front();
         }
-        self.tool_programs.push(program);
+        self.tool_programs.push_back(program);
     }
 }
 

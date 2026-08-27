@@ -66,7 +66,7 @@ impl ContextHandle {
             .strip_prefix("ctx://")
             .ok_or(ContextHandleError::InvalidScheme)?;
 
-        let mut parts: Vec<&str> = rest.split('/').collect();
+        let parts: Vec<&str> = rest.split('/').collect();
 
         // Must have exactly: kind / session_id / turn_index / tool_call_id
         if parts.len() < 4 {
@@ -76,15 +76,16 @@ impl ContextHandle {
             return Err(ContextHandleError::ExtraSegments);
         }
 
-        let kind_str = parts.remove(0);
+        let mut parts = parts.into_iter();
+        let kind_str = parts.next().ok_or(ContextHandleError::MissingSegments)?;
         let kind = match kind_str {
             "tool" => ContextHandleKind::Tool,
             other => return Err(ContextHandleError::UnsupportedKind(other.to_string())),
         };
 
-        let session_id = parts.remove(0);
-        let turn_str = parts.remove(0);
-        let tool_call_id = parts.remove(0);
+        let session_id = parts.next().ok_or(ContextHandleError::MissingSegments)?;
+        let turn_str = parts.next().ok_or(ContextHandleError::MissingSegments)?;
+        let tool_call_id = parts.next().ok_or(ContextHandleError::MissingSegments)?;
 
         // Validate segments are non-empty
         if session_id.is_empty() {

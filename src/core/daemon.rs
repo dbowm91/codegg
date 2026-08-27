@@ -4740,10 +4740,23 @@ impl CoreDaemon {
                 match active.as_ref() {
                     Some(handle) if handle.turn_id == turn_id => {
                         if let Some(ref steer_tx) = handle.steer_tx {
-                            if steer_tx.send(text).is_err() {
-                                tracing::debug!(turn_id = %turn_id, "turn steering receiver already closed");
+                            match steer_tx.try_send(text) {
+                                Ok(()) => Ok(CoreResponse::Ack),
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    tracing::debug!(turn_id = %turn_id, "turn steering receiver already closed");
+                                    Ok(CoreResponse::Error {
+                                        code: "steer_unavailable".to_string(),
+                                        message: "Turn steering receiver is unavailable"
+                                            .to_string(),
+                                    })
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    Ok(CoreResponse::Error {
+                                        code: "steer_queue_full".to_string(),
+                                        message: "Turn steering queue is full".to_string(),
+                                    })
+                                }
                             }
-                            Ok(CoreResponse::Ack)
                         } else {
                             Ok(CoreResponse::Error {
                                 code: "steer_not_supported".to_string(),
@@ -7277,10 +7290,10 @@ mod tests {
     ) -> (
         tokio::sync::watch::Sender<bool>,
         tokio::sync::watch::Receiver<bool>,
-        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio::sync::mpsc::Receiver<String>,
     ) {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
         let mut active = runtime.active_turn.write().await;
         *active = Some(crate::core::session_runtime::TurnHandle {
             turn_id: turn_id.to_string(),
@@ -7709,7 +7722,7 @@ mod tests {
         ) -> Result<crate::agent::turn_runtime::TurnRunOutput, crate::error::AppError> {
             self.called.store(true, std::sync::atomic::Ordering::SeqCst);
             let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
-            let (steer_tx, _steer_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (steer_tx, _steer_rx) = tokio::sync::mpsc::channel(32);
             Ok(crate::agent::turn_runtime::TurnRunOutput {
                 cancel_tx,
                 steer_tx,

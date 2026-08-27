@@ -22,7 +22,7 @@
 //! sequence; never the full snapshot.
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use codegg_protocol::projection::caps::ProjectionCapabilities;
 use codegg_protocol::projection::controller::{
@@ -161,7 +161,7 @@ pub struct ProjectionClientState {
     /// Per-tab cached artifact handle descriptors (bounded).
     artifact_handles: HashMap<String, Vec<ArtifactHandleCacheEntry>>,
     /// Per-tab cached artifact excerpts (bounded; cleared on tab close/reconnect).
-    artifact_excerpts: HashMap<String, Vec<ArtifactExcerptCacheEntry>>,
+    artifact_excerpts: HashMap<String, VecDeque<ArtifactExcerptCacheEntry>>,
     /// Counter incremented on every resync request surfaced to the UI.
     resync_requests: u64,
 }
@@ -423,9 +423,9 @@ impl ProjectionClientState {
         // Replace prior excerpt for the same handle.
         entry.retain(|e| e.handle_id != excerpt.handle_id);
         if entry.len() >= MAX_ARTIFACT_EXCERPTS_PER_TAB {
-            entry.remove(0);
+            entry.pop_front();
         }
-        entry.push(excerpt);
+        entry.push_back(excerpt);
         true
     }
 
@@ -436,11 +436,11 @@ impl ProjectionClientState {
             .unwrap_or(&[])
     }
 
-    pub fn artifact_excerpts(&self, tab_id: &str) -> &[ArtifactExcerptCacheEntry] {
+    pub fn artifact_excerpts(&self, tab_id: &str) -> Vec<ArtifactExcerptCacheEntry> {
         self.artifact_excerpts
             .get(tab_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map(|v| v.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Clear all artifact state for a tab. Called on tab close and on

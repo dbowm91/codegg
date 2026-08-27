@@ -375,11 +375,11 @@ impl ProjectionReducer {
                     );
                 };
                 if turn.messages.len() >= MAX_PROJECTION_MESSAGES {
-                    turn.messages.remove(0);
+                    turn.messages.pop_front();
                 }
                 let mut message = message.clone();
                 message.normalise();
-                turn.messages.push(message);
+                turn.messages.push_back(message);
                 ApplyOutcome::Applied
             }
             ProjectionEvent::ReasoningAppended { message_id, delta } => {
@@ -412,9 +412,9 @@ impl ProjectionReducer {
                     };
                     message.normalise();
                     if turn.messages.len() >= MAX_PROJECTION_MESSAGES {
-                        turn.messages.remove(0);
+                        turn.messages.pop_front();
                     }
-                    turn.messages.push(message);
+                    turn.messages.push_back(message);
                 }
                 ApplyOutcome::Applied
             }
@@ -428,11 +428,11 @@ impl ProjectionReducer {
                     );
                 };
                 if turn.tools.len() >= MAX_PROJECTION_RECENT_TOOLS {
-                    turn.tools.remove(0);
+                    turn.tools.pop_front();
                 }
                 let mut tool = tool.clone();
                 tool.normalise();
-                turn.tools.push(tool);
+                turn.tools.push_back(tool);
                 ApplyOutcome::Applied
             }
             ProjectionEvent::ToolCompleted {
@@ -487,9 +487,9 @@ impl ProjectionReducer {
                     };
                     tool.normalise();
                     if turn.tools.len() >= MAX_PROJECTION_RECENT_TOOLS {
-                        turn.tools.remove(0);
+                        turn.tools.pop_front();
                     }
-                    turn.tools.push(tool);
+                    turn.tools.push_back(tool);
                     ApplyOutcome::Reconciled
                 }
             }
@@ -533,9 +533,9 @@ impl ProjectionReducer {
                     tool.normalise();
                     error.clear();
                     if turn.tools.len() >= MAX_PROJECTION_RECENT_TOOLS {
-                        turn.tools.remove(0);
+                        turn.tools.pop_front();
                     }
-                    turn.tools.push(tool);
+                    turn.tools.push_back(tool);
                     ApplyOutcome::Reconciled
                 }
             }
@@ -551,9 +551,9 @@ impl ProjectionReducer {
                 let mut permission = permission.clone();
                 permission.normalise();
                 if turn.pending_permissions.len() >= MAX_PROJECTION_PENDING_PERMISSIONS {
-                    turn.pending_permissions.remove(0);
+                    turn.pending_permissions.pop_front();
                 }
-                turn.pending_permissions.push(permission);
+                turn.pending_permissions.push_back(permission);
                 snapshot.primary_session.pending_permission_count = turn
                     .pending_permissions
                     .iter()
@@ -610,9 +610,9 @@ impl ProjectionReducer {
                 let mut question = question.clone();
                 question.normalise();
                 if turn.pending_questions.len() >= MAX_PROJECTION_PENDING_QUESTIONS {
-                    turn.pending_questions.remove(0);
+                    turn.pending_questions.pop_front();
                 }
-                turn.pending_questions.push(question);
+                turn.pending_questions.push_back(question);
                 snapshot.primary_session.pending_question_count = turn
                     .pending_questions
                     .iter()
@@ -728,9 +728,9 @@ impl ProjectionReducer {
                 let mut node = node.clone();
                 node.normalise();
                 if turn.agent_tree.len() >= MAX_PROJECTION_SUBAGENTS {
-                    turn.agent_tree.remove(0);
+                    turn.agent_tree.pop_front();
                 }
-                turn.agent_tree.push(node);
+                turn.agent_tree.push_back(node);
                 snapshot.primary_session.active_subagents = turn
                     .agent_tree
                     .iter()
@@ -882,7 +882,7 @@ impl ProjectionReducer {
                 artifact.normalise();
                 if snapshot.runs.len() >= MAX_PROJECTION_RUNS {
                     // ensure the corresponding run slot is reachable
-                    snapshot.runs.remove(0);
+                    snapshot.runs.pop_front();
                 }
                 // Find the run that owns this artifact and bump its count.
                 if let Some(run) = snapshot.runs.iter_mut().find(|r| {
@@ -1298,13 +1298,13 @@ impl ProjectionState for SessionProjectionSnapshot {
             return;
         }
         if self.secondary_sessions.len() >= crate::projection::limits::MAX_PROJECTION_SESSIONS {
-            self.secondary_sessions.remove(0);
+            self.secondary_sessions.pop_front();
         }
-        self.secondary_sessions.push(summary);
+        self.secondary_sessions.push_back(summary);
     }
 
     fn push_recent_turn(&mut self, turn: crate::projection::dto::TurnProjection) {
-        self.recent_turns.insert(0, turn);
+        self.recent_turns.push_front(turn);
         if self.recent_turns.len() > MAX_PROJECTION_RECENT_TOOLS {
             self.recent_turns.truncate(MAX_PROJECTION_RECENT_TOOLS);
         }
@@ -1332,11 +1332,11 @@ mod tests {
             updated_at: 0,
             stop_reason: None,
             error: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-            pending_permissions: Vec::new(),
-            pending_questions: Vec::new(),
-            agent_tree: Vec::new(),
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
             subagent_count: 0,
             input_tokens: None,
             output_tokens: None,
@@ -1435,11 +1435,11 @@ mod tests {
             updated_at: 0,
             stop_reason: None,
             error: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-            pending_permissions: Vec::new(),
-            pending_questions: Vec::new(),
-            agent_tree: Vec::new(),
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
             subagent_count: 0,
             input_tokens: None,
             output_tokens: None,
@@ -1476,11 +1476,11 @@ mod tests {
             updated_at: 0,
             stop_reason: None,
             error: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-            pending_permissions: Vec::new(),
-            pending_questions: Vec::new(),
-            agent_tree: Vec::new(),
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
             subagent_count: 0,
             input_tokens: None,
             output_tokens: None,
@@ -1521,11 +1521,11 @@ mod tests {
             updated_at: 0,
             stop_reason: None,
             error: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-            pending_permissions: Vec::new(),
-            pending_questions: Vec::new(),
-            agent_tree: Vec::new(),
+            messages: Vec::new().into(),
+            tools: Vec::new().into(),
+            pending_permissions: Vec::new().into(),
+            pending_questions: Vec::new().into(),
+            agent_tree: Vec::new().into(),
             subagent_count: 0,
             input_tokens: None,
             output_tokens: None,

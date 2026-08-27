@@ -159,18 +159,22 @@ impl WsRateLimiter {
         let now = Instant::now();
         let mut cache = self.cache.lock().await;
 
-        // Window-prune every key and drop keys whose windows emptied
-        // so the map stays bounded by currently-active clients.
-        cache.retain(|_, requests| {
-            requests.retain(|&t| now.duration_since(t) < self.window);
-            !requests.is_empty()
-        });
+        // Only the requested key needs pruning. Stale keys remain bounded by
+        // the hard cap and are eligible for deterministic oldest-entry
+        // eviction when a new key arrives.
+        cache
+            .entry(key.to_string())
+            .or_default()
+            .retain(|&t| now.duration_since(t) < self.window);
 
-        // Evict an arbitrary entry when still at capacity; lenient but
-        // bounded under sustained key churn.
-        if cache.len() >= MAX_WS_RATE_LIMITER_KEYS && !cache.contains_key(key) {
-            if let Some(first) = cache.keys().next().cloned() {
-                cache.remove(&first);
+        if cache.len() > MAX_WS_RATE_LIMITER_KEYS {
+            if let Some(oldest_key) = cache
+                .iter()
+                .filter(|(candidate, _)| candidate.as_str() != key)
+                .min_by_key(|(_, requests)| requests.last().copied())
+                .map(|(candidate, _)| candidate.clone())
+            {
+                cache.remove(&oldest_key);
             }
         }
 
@@ -219,5 +223,19 @@ mod tests {
             "ws rate limiter key map grew unbounded: {} keys",
             cache.len()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ws_rate_limiter_keeps_recent_key_when_evicting() {
+        let limiter = WsRateLimiter::new(100, 60);
+        for i in 0..MAX_WS_RATE_LIMITER_KEYS {
+            assert!(limiter.check_rate_limit(&format!("session-{i}")).await);
+        }
+        assert!(limiter.check_rate_limit("active-session").await);
+        assert!(limiter.check_rate_limit("new-session").await);
+
+        let cache = limiter.cache.lock().await;
+        assert!(cache.contains_key("active-session"));
+        assert!(cache.len() <= MAX_WS_RATE_LIMITER_KEYS);
     }
 }

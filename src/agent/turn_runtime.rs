@@ -144,7 +144,7 @@ pub struct TurnRunOutput {
     /// Sender to signal the agent loop to cancel.
     pub cancel_tx: tokio::sync::watch::Sender<bool>,
     /// Sender to deliver steering instructions to the agent loop.
-    pub steer_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    pub steer_tx: tokio::sync::mpsc::Sender<String>,
 }
 
 /// The turn runtime trait abstracts the full agent turn lifecycle.
@@ -585,7 +585,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         agent_loop.set_cancel_receiver(cancel_rx);
 
-        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
         agent_loop.set_steer_receiver(steer_rx);
 
         // ── Spawn agent loop ─────────────────────────────────────────

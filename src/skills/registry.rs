@@ -373,7 +373,7 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
     for (_name, mut group) in by_name {
         group.sort_by_key(|c| c.source_kind.precedence_rank());
 
-        let mut valid_candidates: Vec<_> = group
+        let valid_candidates: Vec<_> = group
             .iter()
             .filter(|c| {
                 c.diagnostics
@@ -395,7 +395,10 @@ fn resolve(candidates: Vec<SkillCandidate>, _config: &AssetDiscoveryConfig) -> R
             continue;
         }
 
-        let winner = valid_candidates.remove(0);
+        let winner = valid_candidates
+            .into_iter()
+            .next()
+            .expect("valid_candidates is non-empty after the guard above");
         let shadowed: Vec<ShadowedAlternative> = group
             .iter()
             .filter(|c| {

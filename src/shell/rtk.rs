@@ -11,6 +11,19 @@ use crate::shell::projector::{
     ProjectionResult, ProjectionSupport,
 };
 
+#[cfg(unix)]
+fn kill_pid(pid: u32, force: bool) {
+    let mut command = Command::new("kill");
+    if force {
+        command.arg("-9");
+    }
+    match command.arg(pid.to_string()).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => tracing::debug!(pid, force, ?status, "kill command did not succeed"),
+        Err(error) => tracing::warn!(pid, force, %error, "failed to invoke kill command"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Workstream 2: Structured capability probe diagnostics
 // ---------------------------------------------------------------------------
@@ -866,9 +879,7 @@ impl RtkProjector {
             Err(_) => {
                 #[cfg(unix)]
                 {
-                    let _ = std::process::Command::new("kill")
-                        .arg(pid.to_string())
-                        .output();
+                    kill_pid(pid, false);
                 }
                 // Bounded grace period so the detached helper thread can
                 // reap the killed child and exit; escalate to SIGKILL if
@@ -878,10 +889,7 @@ impl RtkProjector {
                 #[cfg(unix)]
                 {
                     if !reaped {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-9")
-                            .arg(pid.to_string())
-                            .output();
+                        kill_pid(pid, true);
                         let _ = rx.recv_timeout(Self::KILL_GRACE);
                     }
                 }
@@ -1049,9 +1057,7 @@ impl RtkProjector {
             Err(_) => {
                 #[cfg(unix)]
                 {
-                    let _ = std::process::Command::new("kill")
-                        .arg(pid.to_string())
-                        .output();
+                    kill_pid(pid, false);
                 }
                 // Bounded grace period so the detached helper thread can
                 // reap the killed child and exit; escalate to SIGKILL if
@@ -1061,10 +1067,7 @@ impl RtkProjector {
                 #[cfg(unix)]
                 {
                     if !reaped {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-9")
-                            .arg(pid.to_string())
-                            .output();
+                        kill_pid(pid, true);
                         let _ = rx.recv_timeout(Self::KILL_GRACE);
                     }
                 }
@@ -1216,9 +1219,7 @@ fn run_with_timeout(
         Err(_) => {
             #[cfg(unix)]
             {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .output();
+                kill_pid(pid, false);
             }
             Err(TimedOutError::TimedOut)
         }
@@ -1292,9 +1293,7 @@ fn run_with_stdin_timeout(
         Err(_) => {
             #[cfg(unix)]
             {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .output();
+                kill_pid(pid, false);
             }
             Err(TimedOutError::TimedOut)
         }

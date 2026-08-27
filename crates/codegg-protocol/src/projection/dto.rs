@@ -11,6 +11,7 @@
 //! replace the field with a handle variant instead of panicking.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 use crate::projection::limits::{
     truncate_str, MAX_PROJECTION_RUN_SUMMARY_BYTES, MAX_PROJECTION_STRING_BYTES,
@@ -172,11 +173,11 @@ pub struct TurnProjection {
     pub updated_at: i64,
     pub stop_reason: Option<String>,
     pub error: Option<String>,
-    pub messages: Vec<MessageProjection>,
-    pub tools: Vec<ToolProjection>,
-    pub pending_permissions: Vec<PermissionProjection>,
-    pub pending_questions: Vec<QuestionProjection>,
-    pub agent_tree: Vec<AgentTreeNodeProjection>,
+    pub messages: VecDeque<MessageProjection>,
+    pub tools: VecDeque<ToolProjection>,
+    pub pending_permissions: VecDeque<PermissionProjection>,
+    pub pending_questions: VecDeque<QuestionProjection>,
+    pub agent_tree: VecDeque<AgentTreeNodeProjection>,
     pub subagent_count: usize,
     pub input_tokens: Option<usize>,
     pub output_tokens: Option<usize>,

@@ -55,7 +55,7 @@ pub enum AttachMode {
 pub struct TurnHandle {
     pub turn_id: String,
     pub cancel_tx: watch::Sender<bool>,
-    pub steer_tx: Option<mpsc::UnboundedSender<String>>,
+    pub steer_tx: Option<mpsc::Sender<String>>,
     pub started_at: DateTime<Utc>,
     /// Immutable runtime-asset identity captured when this turn started.
     pub asset_pin:
