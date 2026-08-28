@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use codegg_core::jobs::schedule::{
@@ -410,6 +411,43 @@ async fn cancellation_terminal_rejected() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn in_memory_terminal_heartbeat_is_rejected() {
+    let store = InMemoryJobStore::new();
+    let w = ws();
+    let job = store.create_job(default_new_job(&w)).await.unwrap();
+    let attempt = store
+        .begin_attempt(&job.job_id, &DaemonGeneration::new())
+        .await
+        .unwrap();
+    store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .unwrap();
+    store
+        .finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id.clone(),
+            state: AttemptState::Completed,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .unwrap();
+
+    let error = store
+        .record_heartbeat(&attempt.attempt_id, Utc::now())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        JobStoreError::InvalidAttemptTransition {
+            from: AttemptState::Completed,
+            to: AttemptState::Running,
+            ..
+        }
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn unknown_persisted_kind_does_not_execute() {
     // Unsupported kind is persisted but the dispatcher would refuse it.
     let store = Arc::new(InMemoryJobStore::new()) as Arc<dyn JobStore>;
@@ -600,6 +638,79 @@ async fn sqlite_create_get_list_round_trip() {
     for s in &summaries {
         assert_eq!(s.workspace_id, w);
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sqlite_timeout_round_trip_and_large_batch_fetch() {
+    let pool = setup_sqlite().await;
+    let store = SqliteJobStore::new(pool);
+    let w = ws();
+    let mut spec = default_new_job(&w);
+    spec.timeout = Some(Duration::from_millis(1_234));
+    let job = store.create_job(spec).await.unwrap();
+
+    let fetched = store.get_job(&job.job_id).await.unwrap().unwrap();
+    assert_eq!(fetched.timeout, Some(Duration::from_millis(1_234)));
+
+    let mut ids: Vec<JobId> = (0..1_001)
+        .map(|n| JobId::new_unchecked(format!("missing-{n}")))
+        .collect();
+    ids.push(job.job_id.clone());
+    let fetched_batch = store.get_jobs(&ids).await.unwrap();
+    assert_eq!(fetched_batch.len(), 1);
+    assert_eq!(fetched_batch[0].job_id, job.job_id);
+    assert_eq!(fetched_batch[0].timeout, fetched.timeout);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn attempt_lifecycle_rejects_terminal_heartbeat_and_reports_state() {
+    let pool = setup_sqlite().await;
+    let store = SqliteJobStore::new(pool);
+    let w = ws();
+    let job = store.create_job(default_new_job(&w)).await.unwrap();
+    let attempt = store
+        .begin_attempt(&job.job_id, &DaemonGeneration::new())
+        .await
+        .unwrap();
+    store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .unwrap();
+    store
+        .finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id.clone(),
+            state: AttemptState::Completed,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .unwrap();
+
+    let heartbeat_error = store
+        .record_heartbeat(&attempt.attempt_id, Utc::now())
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        heartbeat_error,
+        JobStoreError::InvalidAttemptTransition {
+            from: AttemptState::Completed,
+            to: AttemptState::Running,
+            ..
+        }
+    ));
+
+    let running_error = store
+        .mark_attempt_running(&attempt.attempt_id)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        running_error,
+        JobStoreError::InvalidAttemptTransition {
+            from: AttemptState::Completed,
+            to: AttemptState::Running,
+            ..
+        }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]

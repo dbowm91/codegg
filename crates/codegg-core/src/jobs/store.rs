@@ -533,6 +533,13 @@ impl JobStore for InMemoryJobStore {
             .get(attempt_id)
             .cloned()
             .ok_or_else(|| JobStoreError::AttemptNotFound(attempt_id.to_string()))?;
+        if attempt.state.is_terminal() {
+            return Err(JobStoreError::InvalidAttemptTransition {
+                attempt: attempt_id.to_string(),
+                from: attempt.state,
+                to: AttemptState::Running,
+            });
+        }
         let updated = JobAttempt {
             heartbeat_at: Some(at),
             updated_at: at,
@@ -993,6 +1000,14 @@ impl JobStore for SqliteJobStore {
         let resource_json = serialize_resources(&spec.resource_request)?;
         let kind_str = spec.kind.as_str();
         let priority_str = priority_to_str(spec.priority);
+        let timeout_ms = spec
+            .timeout
+            .map(|timeout| {
+                i64::try_from(timeout.as_millis()).map_err(|_| {
+                    JobStoreError::InvalidPayload("job timeout exceeds SQLite range".to_string())
+                })
+            })
+            .transpose()?;
         let idempotency_str = match spec.idempotency {
             IdempotencyClass::ReadOnly => "read_only",
             IdempotencyClass::SafeRepeat => "safe_repeat",
@@ -1006,13 +1021,13 @@ impl JobStore for SqliteJobStore {
                 id, workspace_id, session_id, turn_id, kind, source_json,
                 priority, payload_json, resource_json, retry_json,
                 idempotency, state, current_attempt_id, attempt_count,
-                not_before, deadline, schedule_id,
+                not_before, deadline, timeout_ms, schedule_id,
                 time_created, time_updated, time_terminal,
                 cancel_requested_at, cancel_reason, labels_json,
                 parent_job_id, parent_attempt_id, parent_call_id,
                 parent_program_id, parent_instruction_sequence, relation_kind
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, 0,
-                      ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?, ?, ?, ?)
+                      ?, ?, ?, ?, ?, ?, NULL, NULL, '{}', '{}', ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(job_id.as_str())
@@ -1028,6 +1043,7 @@ impl JobStore for SqliteJobStore {
         .bind(idempotency_str)
         .bind(spec.not_before.map(|d| d.timestamp_millis()))
         .bind(spec.deadline.map(|d| d.timestamp_millis()))
+        .bind(timeout_ms)
         .bind(spec.schedule_id.as_ref().map(|s| s.as_str()))
         .bind(now.timestamp_millis())
         .bind(now.timestamp_millis())
@@ -1097,7 +1113,7 @@ impl JobStore for SqliteJobStore {
             SELECT id, workspace_id, session_id, turn_id, kind, source_json,
                    priority, payload_json, resource_json, retry_json,
                    idempotency, state, current_attempt_id, attempt_count,
-                   not_before, deadline, schedule_id,
+                   not_before, deadline, timeout_ms, schedule_id,
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
@@ -1119,34 +1135,39 @@ impl JobStore for SqliteJobStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            r#"
-            SELECT id, workspace_id, session_id, turn_id, kind, source_json,
-                   priority, payload_json, resource_json, retry_json,
-                   idempotency, state, current_attempt_id, attempt_count,
-                   not_before, deadline, schedule_id,
-                   time_created, time_updated, time_terminal,
-                   cancel_requested_at, cancel_reason, labels_json,
-                   parent_job_id, parent_attempt_id, parent_call_id,
-                   parent_program_id, parent_instruction_sequence, relation_kind,
-                   (SELECT GROUP_CONCAT(depends_on_job_id, ',')
-                    FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
-            FROM job WHERE id IN ({placeholders})
-            "#
-        );
-        let mut query = sqlx::query(&sql);
-        for id in ids {
-            query = query.bind(id.as_str());
+        const MAX_IDS_PER_QUERY: usize = 900;
+        let mut records = Vec::new();
+        for batch in ids.chunks(MAX_IDS_PER_QUERY) {
+            let placeholders = std::iter::repeat("?")
+                .take(batch.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                r#"
+                SELECT id, workspace_id, session_id, turn_id, kind, source_json,
+                       priority, payload_json, resource_json, retry_json,
+                       idempotency, state, current_attempt_id, attempt_count,
+                       not_before, deadline, timeout_ms, schedule_id,
+                       time_created, time_updated, time_terminal,
+                       cancel_requested_at, cancel_reason, labels_json,
+                       parent_job_id, parent_attempt_id, parent_call_id,
+                       parent_program_id, parent_instruction_sequence, relation_kind,
+                       (SELECT GROUP_CONCAT(depends_on_job_id, ',')
+                        FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
+                FROM job WHERE id IN ({placeholders})
+                "#
+            );
+            let mut query = sqlx::query(&sql);
+            for id in batch {
+                query = query.bind(id.as_str());
+            }
+            let rows = query
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+            records.extend(rows.iter().map(row_to_job).collect::<Result<Vec<_>, _>>()?);
         }
-        let rows = query
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
-        rows.iter().map(row_to_job).collect()
+        Ok(records)
     }
 
     async fn list_jobs(&self, query: JobStoreQuery) -> Result<Vec<JobSummary>, JobStoreError> {
@@ -1290,7 +1311,7 @@ impl JobStore for SqliteJobStore {
             SELECT id, workspace_id, session_id, turn_id, kind, source_json,
                    priority, payload_json, resource_json, retry_json,
                    idempotency, state, current_attempt_id, attempt_count,
-                   not_before, deadline, schedule_id,
+                   not_before, deadline, timeout_ms, schedule_id,
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
@@ -1440,7 +1461,7 @@ impl JobStore for SqliteJobStore {
             SELECT id, workspace_id, session_id, turn_id, kind, source_json,
                    priority, payload_json, resource_json, retry_json,
                    idempotency, state, current_attempt_id, attempt_count,
-                   not_before, deadline, schedule_id,
+                   not_before, deadline, timeout_ms, schedule_id,
                    time_created, time_updated, time_terminal,
                    cancel_requested_at, cancel_reason, labels_json,
                    parent_job_id, parent_attempt_id, parent_call_id,
@@ -1559,9 +1580,18 @@ impl JobStore for SqliteJobStore {
         .await
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         if result.rows_affected() == 0 {
+            let row = sqlx::query("SELECT state FROM job_attempt WHERE id = ?")
+                .bind(attempt_id.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+            let Some(row) = row else {
+                return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+            };
+            let state = AttemptState::from_str_lossy(row.get("state"));
             return Err(JobStoreError::InvalidAttemptTransition {
                 attempt: attempt_id.to_string(),
-                from: AttemptState::Created,
+                from: state,
                 to: AttemptState::Running,
             });
         }
@@ -1595,16 +1625,31 @@ impl JobStore for SqliteJobStore {
         attempt_id: &AttemptId,
         at: DateTime<Utc>,
     ) -> Result<(), JobStoreError> {
-        let result =
-            sqlx::query("UPDATE job_attempt SET heartbeat_at = ?, time_updated = ? WHERE id = ?")
-                .bind(at.timestamp_millis())
-                .bind(at.timestamp_millis())
+        let result = sqlx::query(
+            "UPDATE job_attempt SET heartbeat_at = ?, time_updated = ? \
+             WHERE id = ? AND state IN ('created', 'admitted', 'running')",
+        )
+        .bind(at.timestamp_millis())
+        .bind(at.timestamp_millis())
+        .bind(attempt_id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            let row = sqlx::query("SELECT state FROM job_attempt WHERE id = ?")
                 .bind(attempt_id.as_str())
-                .execute(&self.pool)
+                .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
-        if result.rows_affected() == 0 {
-            return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+            let Some(row) = row else {
+                return Err(JobStoreError::AttemptNotFound(attempt_id.to_string()));
+            };
+            let state = AttemptState::from_str_lossy(row.get("state"));
+            return Err(JobStoreError::InvalidAttemptTransition {
+                attempt: attempt_id.to_string(),
+                from: state,
+                to: AttemptState::Running,
+            });
         }
         Ok(())
     }
@@ -2198,6 +2243,7 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
     let payload: JobPayload = deserialize_payload(&payload_json)?;
     let resource_request: ResourceRequest = deserialize_resources(&resource_json)?;
     let retry_policy: RetryPolicy = deserialize_retry(&retry_json)?;
+    let timeout_ms: Option<i64> = row.get("timeout_ms");
     let idempotency = match idempotency_str.as_str() {
         "read_only" => IdempotencyClass::ReadOnly,
         "safe_repeat" => IdempotencyClass::SafeRepeat,
@@ -2228,7 +2274,17 @@ fn row_to_job(row: &sqlx::sqlite::SqliteRow) -> Result<JobRecord, JobStoreError>
         priority: priority_from_str(&priority_str),
         payload,
         resource_request,
-        timeout: None,
+        timeout: timeout_ms
+            .map(|ms| {
+                u64::try_from(ms)
+                    .map(std::time::Duration::from_millis)
+                    .map_err(|_| {
+                        JobStoreError::Storage(StorageError::Database(
+                            "negative job timeout".to_string(),
+                        ))
+                    })
+            })
+            .transpose()?,
         retry_policy,
         idempotency,
         state: JobState::from_str_lossy(&state_str),

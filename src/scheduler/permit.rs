@@ -87,14 +87,18 @@ impl ResourcePermitGuard {
     /// capacity (or for keeping it in use). Returns the reserved
     /// dimensions.
     pub fn detach(mut self) -> PermitDimensions {
-        let inner = self.inner.take().expect("detach called once");
+        let dimensions = self
+            .inner
+            .take()
+            .map(|inner| inner.dimensions)
+            .unwrap_or_default();
         // Drop runs after this returns; take clears `inner` so the
         // Drop impl sees `None` and does not double-release.
-        inner.dimensions
+        dimensions
     }
 
-    pub fn dimensions(&self) -> &PermitDimensions {
-        &self.inner.as_ref().expect("guard not detached").dimensions
+    pub fn dimensions(&self) -> Option<&PermitDimensions> {
+        self.inner.as_ref().map(|inner| &inner.dimensions)
     }
 
     pub fn is_live(&self) -> bool {

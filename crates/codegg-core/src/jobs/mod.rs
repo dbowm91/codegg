@@ -1391,10 +1391,13 @@ pub trait JobStore: Send + Sync {
     }
 
     /// M012-F04/F06: Cancel all non-terminal descendants of a parent
-    /// job. Returns the number of descendants that were cancelled or
-    /// had cancellation requested. Used by the scheduler when a parent
-    /// reaches a terminal state (timeout, cancel, daemon-generation
-    /// abandonment) to ensure descendants do not outlive the parent.
+    /// job. Returns the best-effort number of descendants that were
+    /// cancelled or had cancellation requested. The descendant snapshot
+    /// and individual cancellation requests can race with other lifecycle
+    /// transitions, so this count is not a reservation or guarantee.
+    /// Used by the scheduler when a parent reaches a terminal state
+    /// (timeout, cancel, daemon-generation abandonment) to ensure
+    /// descendants do not outlive the parent.
     async fn cancel_descendants(
         &self,
         parent_job_id: &JobId,

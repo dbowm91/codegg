@@ -127,6 +127,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 35 {
         migrate_and_record(pool, 35).await?;
     }
+    if current_version < 36 {
+        migrate_and_record(pool, 36).await?;
+    }
 
     Ok(())
 }
@@ -174,6 +177,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             33 => migrate_v33(pool).await?,
             34 => migrate_v34(pool).await?,
             35 => migrate_v35(pool).await?,
+            36 => migrate_v36(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1756,6 +1760,15 @@ async fn migrate_v35(pool: &SqlitePool) -> Result<(), StorageError> {
             .execute(pool)
             .await;
     Ok(())
+}
+
+/// Persist the optional per-job execution timeout for durable jobs.
+async fn migrate_v36(pool: &SqlitePool) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        pool,
+        "ALTER TABLE job ADD COLUMN timeout_ms INTEGER".to_string(),
+    )
+    .await
 }
 
 /// Session Projections Milestone 2: durable projection stream,

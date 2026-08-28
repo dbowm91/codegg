@@ -109,7 +109,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 35` (`storage/mod.rs:39`) is exported and
+`STORAGE_LAYOUT_VERSION = 36` (`storage/mod.rs:39`) is exported and
 referenced from `MigrationMarker.storage_layout_version` for the
 migration tooling that imports legacy project databases.
 
@@ -224,6 +224,7 @@ Key storage-layout migrations:
 - **v32**: Projection streams, events, checkpoints
 - **v33–v34**: Tool Program domain, notification claims
 - **v35**: Nullable typed lineage columns for child jobs
+- **v36**: Durable per-job execution timeouts
 
 ## Testing
 

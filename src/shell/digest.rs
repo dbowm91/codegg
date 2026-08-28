@@ -215,7 +215,7 @@ fn summarize(text: &str, max_chars: usize) -> String {
         truncated.push_str("\n... [truncated]");
         truncated
     } else {
-        text.to_string()
+        truncated
     }
 }
 

@@ -150,7 +150,7 @@ impl LaneQueue {
                 .find(|ws| !self.lanes.get(*ws).map(|l| l.is_empty()).unwrap_or(true))
                 .cloned()
         });
-        pick.map(|ws| self.lanes.get_mut(&ws).expect("lane exists"))
+        pick.and_then(|ws| self.lanes.get_mut(&ws))
     }
 
     pub fn admit(&mut self, entry: QueueEntry) {
@@ -398,12 +398,9 @@ impl FairJobQueue {
         let class = self.pick_class()?;
         // Drop the borrow on `self.lanes` before mutating other fields.
         let entry = {
-            let queue = self.lanes.get_mut(&class).expect("class exists");
+            let queue = self.lanes.get_mut(&class)?;
             let lane = queue.select_next()?;
-            if lane.entries.is_empty() {
-                return None;
-            }
-            lane.entries.pop_front().expect("non-empty")
+            lane.entries.pop_front()?
         };
         // update counters
         if let Some(c) = self.per_workspace_count.get_mut(&entry.workspace_id) {
