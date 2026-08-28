@@ -789,6 +789,22 @@ pub enum TuiCommand {
     ManifestPersistenceReset,
 }
 
+/// Send a [`TuiCommand`] on the bounded command channel, logging when a
+/// command is dropped because the channel is full or closed.
+pub(crate) fn send_tui(tx: &mpsc::Sender<TuiCommand>, cmd: TuiCommand) -> bool {
+    match tx.try_send(cmd) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("TUI command channel full; dropping command");
+            false
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::warn!("TUI command channel closed; dropping command");
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionMutationOp {
     Delete,
@@ -2412,7 +2428,14 @@ impl App {
                 // Delegate to the envelope-aware handler so the session
                 // guard, validation, and ownership check are applied
                 // uniformly for both local and remote transports.
-                let _ = self.apply_plugin_ui_envelope(envelope);
+                match self.apply_plugin_ui_envelope(envelope) {
+                    crate::tui::app::state::PluginUiApplyResult::Unsupported(error)
+                    | crate::tui::app::state::PluginUiApplyResult::Error(error) => {
+                        tracing::warn!(%error, "plugin UI envelope was not applied");
+                        self.messages_state.toasts.error("Plugin UI update failed");
+                    }
+                    _ => {}
+                }
             }
             Ok(RemoteTuiMessage::ProjectionCapabilitiesAck {
                 accepted,
@@ -2436,10 +2459,18 @@ impl App {
                 cursor: _,
                 retention_floor_seq: _,
             }) => {
-                let _ = self
+                if let crate::protocol::projection::controller::ControllerSubscribeOutcome::Failed {
+                    reason,
+                } = self
                     .projection_client
                     .controller_mut()
-                    .install_subscription(subscription_id, descriptor, *snapshot);
+                    .install_subscription(subscription_id, descriptor, *snapshot)
+                {
+                    tracing::warn!(%reason, "projection subscription installation failed");
+                    self.messages_state
+                        .toasts
+                        .error("Projection subscription failed");
+                }
             }
             Ok(RemoteTuiMessage::ProjectionReplay {
                 subscription_id,
@@ -2447,19 +2478,39 @@ impl App {
             }) => {
                 let descriptor = batch.descriptor.clone();
                 let events = batch.events.clone();
+                let (Some(session_id), Some(workspace_id)) = (
+                    descriptor.session_id.as_deref(),
+                    descriptor.workspace_id.as_deref(),
+                ) else {
+                    tracing::warn!(
+                        project_id = %descriptor.project_id,
+                        "projection replay descriptor lacks session or workspace identity"
+                    );
+                    self.messages_state
+                        .toasts
+                        .error("Projection replay is missing session identity");
+                    return;
+                };
                 let initial =
                     crate::protocol::projection::snapshot::SessionProjectionSnapshot::empty(
-                        descriptor.session_id.as_deref().unwrap_or(""),
+                        session_id,
                         &descriptor.project_id,
-                        descriptor.workspace_id.as_deref().unwrap_or(""),
+                        workspace_id,
                     );
-                let _ = self.projection_client.controller_mut().install_replay(
+                if let crate::protocol::projection::controller::ControllerSubscribeOutcome::Failed {
+                    reason,
+                } = self.projection_client.controller_mut().install_replay(
                     subscription_id,
                     descriptor,
                     events,
                     None,
                     initial,
-                );
+                ) {
+                    tracing::warn!(%reason, "projection replay installation failed");
+                    self.messages_state
+                        .toasts
+                        .error("Projection replay failed");
+                }
             }
             Ok(RemoteTuiMessage::ProjectionEvent {
                 subscription_id,
@@ -3991,13 +4042,13 @@ impl App {
             TuiMsg::ForkTreeSession { session_id } => {
                 self.close_dialog();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+                    let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
                 }
             }
             TuiMsg::ForkSession { session_id } => {
                 self.close_dialog();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+                    let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
                 }
             }
             TuiMsg::SubmitImportPreview => {
@@ -4177,17 +4228,17 @@ impl App {
             TuiMsg::OpenProjectPicker => self.open_project_picker(),
             TuiMsg::NextProjectTab => {
                 if let Some(tx) = self.tui_cmd_tx.clone() {
-                    let _ = tx.try_send(TuiCommand::NextProjectTab);
+                    let _ = send_tui(&tx, TuiCommand::NextProjectTab);
                 }
             }
             TuiMsg::PreviousProjectTab => {
                 if let Some(tx) = self.tui_cmd_tx.clone() {
-                    let _ = tx.try_send(TuiCommand::PreviousProjectTab);
+                    let _ = send_tui(&tx, TuiCommand::PreviousProjectTab);
                 }
             }
             TuiMsg::CloseProjectTab => {
                 if let Some(tx) = self.tui_cmd_tx.clone() {
-                    let _ = tx.try_send(TuiCommand::CloseProjectTab);
+                    let _ = send_tui(&tx, TuiCommand::CloseProjectTab);
                 }
             }
             TuiMsg::SelectProjectTabByIndex { index } => {
@@ -4196,7 +4247,7 @@ impl App {
             TuiMsg::UndoDelete => {
                 if let Some(session_id) = self.undo_session_id.take() {
                     if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = tx.try_send(TuiCommand::UndoDelete { session_id });
+                        let _ = send_tui(tx, TuiCommand::UndoDelete { session_id });
                     }
                     self.undo_until = None;
                 }
@@ -4206,17 +4257,17 @@ impl App {
             }
             TuiMsg::ResearchOpenRun { run_id } => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ResearchLoadRun { run_id });
+                    let _ = send_tui(tx, TuiCommand::ResearchLoadRun { run_id });
                 }
             }
             TuiMsg::ResearchRefreshRuns => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ResearchListRuns);
+                    let _ = send_tui(tx, TuiCommand::ResearchListRuns);
                 }
             }
             TuiMsg::ResearchLoadSection { run_id, section } => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ResearchLoadSection { run_id, section });
+                    let _ = send_tui(tx, TuiCommand::ResearchLoadSection { run_id, section });
                 }
             }
             TuiMsg::OpenSourcePreview {
@@ -4255,21 +4306,28 @@ impl App {
                                 let detail = RunDetailView::from_manifest(&manifest);
                                 let dialog = RunDetailDialog::new(detail, Arc::clone(&theme));
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(TuiCommand::OpenRunDetailLoaded { dialog });
+                                    let _ =
+                                        send_tui(tx, TuiCommand::OpenRunDetailLoaded { dialog });
                                 }
                             }
                             Ok(None) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
-                                        error: format!("Run not found: {}", run_id),
-                                    });
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Run not found: {}", run_id),
+                                        },
+                                    );
                                 }
                             }
                             Err(e) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
-                                        error: format!("Failed to load run: {}", e),
-                                    });
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Failed to load run: {}", e),
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -4298,11 +4356,14 @@ impl App {
             }
             TuiMsg::ShellInclude { id, mode } => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ShellInclude {
-                        id: id.parse().unwrap_or(0),
-                        mode,
-                        question: None,
-                    });
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::ShellInclude {
+                            id: id.parse().unwrap_or(0),
+                            mode,
+                            question: None,
+                        },
+                    );
                 }
             }
             TuiMsg::ShellAsk { id } => {
@@ -4332,28 +4393,37 @@ impl App {
                             Ok(Some(manifest)) => {
                                 if manifest.rerun.is_some() {
                                     if let Some(ref tx) = tx {
-                                        let _ = tx.try_send(TuiCommand::ShellRerun { id: 0 });
+                                        let _ = send_tui(tx, TuiCommand::ShellRerun { id: 0 });
                                     }
                                 } else {
                                     if let Some(ref tx) = tx {
-                                        let _ = tx.try_send(TuiCommand::OpenRunDetailError {
-                                            error: "Run has no rerun descriptor".to_string(),
-                                        });
+                                        let _ = send_tui(
+                                            tx,
+                                            TuiCommand::OpenRunDetailError {
+                                                error: "Run has no rerun descriptor".to_string(),
+                                            },
+                                        );
                                     }
                                 }
                             }
                             Ok(None) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
-                                        error: format!("Run not found: {}", run_id),
-                                    });
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Run not found: {}", run_id),
+                                        },
+                                    );
                                 }
                             }
                             Err(e) => {
                                 if let Some(ref tx) = tx {
-                                    let _ = tx.try_send(TuiCommand::OpenRunDetailError {
-                                        error: format!("Failed to load run: {}", e),
-                                    });
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::OpenRunDetailError {
+                                            error: format!("Failed to load run: {}", e),
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -4604,11 +4674,14 @@ impl App {
                 match key.code {
                     crossterm::event::KeyCode::Char('i') => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellInclude {
-                                id,
-                                mode: "all".to_string(),
-                                question: None,
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ShellInclude {
+                                    id,
+                                    mode: "all".to_string(),
+                                    question: None,
+                                },
+                            );
                         }
                         self.close_dialog();
                         return;
@@ -4624,14 +4697,14 @@ impl App {
                     }
                     crossterm::event::KeyCode::Char('r') => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
+                            let _ = send_tui(tx, TuiCommand::ShellRerun { id });
                         }
                         self.close_dialog();
                         return;
                     }
                     crossterm::event::KeyCode::Char('k') => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellKill { id });
+                            let _ = send_tui(tx, TuiCommand::ShellKill { id });
                         }
                         self.close_dialog();
                         return;
@@ -4941,10 +5014,10 @@ impl App {
                                             match self.resolve_shell_id(id_str) {
                                                 Some(id) => {
                                                     if let Some(ref tx) = self.tui_cmd_tx {
-                                                        let _ = tx.try_send(TuiCommand::ShellAsk {
-                                                            id,
-                                                            question,
-                                                        });
+                                                        let _ = send_tui(
+                                                            tx,
+                                                            TuiCommand::ShellAsk { id, question },
+                                                        );
                                                     }
                                                 }
                                                 None => {
@@ -5454,12 +5527,15 @@ impl App {
             if let Some(ref tx) = self.tui_cmd_tx {
                 let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
                 let model = Some(self.agent_state.current_model.clone());
-                let _ = tx.try_send(TuiCommand::PluginCommandRun {
-                    spec: spec.clone(),
-                    args: arg_list,
-                    session_id,
-                    model,
-                });
+                let _ = send_tui(
+                    tx,
+                    TuiCommand::PluginCommandRun {
+                        spec: spec.clone(),
+                        args: arg_list,
+                        session_id,
+                        model,
+                    },
+                );
             }
             self.ui_state.command_mode = false;
             self.prompt_state.prompt.clear();
@@ -5778,7 +5854,7 @@ impl App {
                     } else if self.tui_cmd_tx.is_some() {
                         let session_id = session.id.clone();
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShareSession { session_id });
+                            let _ = send_tui(tx, TuiCommand::ShareSession { session_id });
                         }
                     } else {
                         self.messages_state
@@ -5899,7 +5975,7 @@ impl App {
             }
             "/worktree" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::WorktreeList);
+                    let _ = send_tui(tx, TuiCommand::WorktreeList);
                 } else {
                     let git_root = std::path::PathBuf::from(&self.session_state.project_dir);
                     let trees = tokio::runtime::Handle::current().block_on(async {
@@ -5936,10 +6012,13 @@ impl App {
                 {
                     let message = parts[1].trim_matches('"').to_string();
                     if let Some(ref tx) = self.tui_cmd_tx {
-                        let _ = tx.try_send(TuiCommand::TaskSchedule {
-                            interval_secs: duration.as_secs(),
-                            message,
-                        });
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::TaskSchedule {
+                                interval_secs: duration.as_secs(),
+                                message,
+                            },
+                        );
                     } else {
                         self.messages_state
                             .toasts
@@ -5953,7 +6032,7 @@ impl App {
             }
             "/tasks" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ListTasks);
+                    let _ = send_tui(tx, TuiCommand::ListTasks);
                 } else {
                     self.messages_state.toasts.info("No background tasks");
                 }
@@ -5968,7 +6047,7 @@ impl App {
                             "Usage: /task-del <id> (use the ID shown by /tasks; full schedule IDs also work)",
                         );
                 } else if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::DeleteTask { id: id.to_string() });
+                    let _ = send_tui(tx, TuiCommand::DeleteTask { id: id.to_string() });
                 } else {
                     self.messages_state
                         .toasts
@@ -5977,7 +6056,7 @@ impl App {
             }
             "/memory" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::MemorySummary);
+                    let _ = send_tui(tx, TuiCommand::MemorySummary);
                 } else {
                     self.handle_memory_command(None);
                 }
@@ -5985,7 +6064,7 @@ impl App {
             "/memory-search" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::MemorySearch { query });
+                    let _ = send_tui(tx, TuiCommand::MemorySearch { query });
                 } else {
                     self.handle_memory_command(Some(("search", &query)));
                 }
@@ -5993,7 +6072,7 @@ impl App {
             "/memory-list" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::MemorySummary);
+                    let _ = send_tui(tx, TuiCommand::MemorySummary);
                 } else {
                     self.handle_memory_command(Some(("list", &query)));
                 }
@@ -6001,7 +6080,7 @@ impl App {
             "/memory-remember" => {
                 let text = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::MemoryRemember { text });
+                    let _ = send_tui(tx, TuiCommand::MemoryRemember { text });
                 } else {
                     self.handle_memory_command(Some(("remember", &text)));
                 }
@@ -6009,7 +6088,7 @@ impl App {
             "/memory-forget" => {
                 let id = self.dialog_state.command_palette.query.trim().to_string();
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::MemoryForget { id });
+                    let _ = send_tui(tx, TuiCommand::MemoryForget { id });
                 } else {
                     self.handle_memory_command(Some(("forget", &id)));
                 }
@@ -6040,11 +6119,14 @@ impl App {
                             return;
                         }
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalSet {
-                                session_id,
-                                project_id,
-                                objective: args.to_string(),
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::GoalSet {
+                                    session_id,
+                                    project_id,
+                                    objective: args.to_string(),
+                                },
+                            );
                         }
                     }
                     "from-file" => {
@@ -6055,44 +6137,50 @@ impl App {
                             return;
                         }
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalFromFile {
-                                session_id,
-                                project_id,
-                                path: args.to_string(),
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::GoalFromFile {
+                                    session_id,
+                                    project_id,
+                                    path: args.to_string(),
+                                },
+                            );
                         }
                     }
                     "show" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalShow { session_id });
+                            let _ = send_tui(tx, TuiCommand::GoalShow { session_id });
                         }
                     }
                     "pause" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalPause { session_id });
+                            let _ = send_tui(tx, TuiCommand::GoalPause { session_id });
                         }
                     }
                     "resume" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalResume { session_id });
+                            let _ = send_tui(tx, TuiCommand::GoalResume { session_id });
                         }
                     }
                     "clear" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalClear { session_id });
+                            let _ = send_tui(tx, TuiCommand::GoalClear { session_id });
                         }
                     }
                     "done" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalDone { session_id });
+                            let _ = send_tui(tx, TuiCommand::GoalDone { session_id });
                         }
                     }
                     "checkpoint" => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalCheckpoint {
-                                session_id,
-                                project_id,
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::GoalCheckpoint {
+                                    session_id,
+                                    project_id,
+                                },
+                            );
                         }
                     }
                     "budget" => {
@@ -6103,10 +6191,13 @@ impl App {
                             return;
                         }
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::GoalBudget {
-                                session_id,
-                                subcommand: args.to_string(),
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::GoalBudget {
+                                    session_id,
+                                    subcommand: args.to_string(),
+                                },
+                            );
                         }
                     }
                     _ => {
@@ -6126,11 +6217,14 @@ impl App {
                             let goal_text = query.trim();
                             if !goal_text.is_empty() {
                                 if let Some(ref tx) = self.tui_cmd_tx {
-                                    let _ = tx.try_send(TuiCommand::GoalSet {
-                                        session_id,
-                                        project_id,
-                                        objective: goal_text.to_string(),
-                                    });
+                                    let _ = send_tui(
+                                        tx,
+                                        TuiCommand::GoalSet {
+                                            session_id,
+                                            project_id,
+                                            objective: goal_text.to_string(),
+                                        },
+                                    );
                                 }
                             } else {
                                 self.messages_state
@@ -6329,7 +6423,7 @@ impl App {
                 // and let the agent loop pick up the result via a
                 // TuiCommand::SendNotification on the way back.
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::RunDoctor);
+                    let _ = send_tui(tx, TuiCommand::RunDoctor);
                 } else {
                     self.messages_state
                         .toasts
@@ -6338,7 +6432,7 @@ impl App {
             }
             "/tool-contracts" => {
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ToolContracts);
+                    let _ = send_tui(tx, TuiCommand::ToolContracts);
                 } else {
                     self.messages_state
                         .toasts
@@ -7153,7 +7247,7 @@ impl App {
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::TestRun { scope, args });
+                    let _ = send_tui(tx, TuiCommand::TestRun { scope, args });
                 }
                 self.messages_state
                     .toasts
@@ -7219,13 +7313,19 @@ impl App {
                         let run_id_owned = run_id.to_string();
                         let section_owned = section.to_string();
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ResearchLoadRun {
-                                run_id: run_id_owned.clone(),
-                            });
-                            let _ = tx.try_send(TuiCommand::ResearchLoadSection {
-                                run_id: run_id_owned,
-                                section: section_owned,
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ResearchLoadRun {
+                                    run_id: run_id_owned.clone(),
+                                },
+                            );
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ResearchLoadSection {
+                                    run_id: run_id_owned,
+                                    section: section_owned,
+                                },
+                            );
                         }
                     }
                 }
@@ -7278,11 +7378,14 @@ impl App {
                                 Ok(r) => (Some(Box::new(r)), None),
                                 Err(e) => (None, Some(e)),
                             };
-                            let _ = tx.try_send(TuiCommand::SecurityReviewFinished {
-                                id: run_id,
-                                receipt,
-                                error,
-                            });
+                            let _ = send_tui(
+                                &tx,
+                                TuiCommand::SecurityReviewFinished {
+                                    id: run_id,
+                                    receipt,
+                                    error,
+                                },
+                            );
                         },
                     );
                     self.security_review_running =
@@ -7339,11 +7442,14 @@ impl App {
                             _ => "all".to_string(),
                         };
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellInclude {
-                                id,
-                                mode,
-                                question: None,
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ShellInclude {
+                                    id,
+                                    mode,
+                                    question: None,
+                                },
+                            );
                         }
                     }
                     None => {
@@ -7360,7 +7466,7 @@ impl App {
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellRerun { id });
+                            let _ = send_tui(tx, TuiCommand::ShellRerun { id });
                         }
                     }
                     None => {
@@ -7377,7 +7483,7 @@ impl App {
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellKill { id });
+                            let _ = send_tui(tx, TuiCommand::ShellKill { id });
                         }
                     }
                     None => {
@@ -7390,7 +7496,7 @@ impl App {
             "/shell-list" => {
                 self.ui_state.command_mode = false;
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::ShellList);
+                    let _ = send_tui(tx, TuiCommand::ShellList);
                 } else {
                     let recent = self.shell_store.list_recent(10);
                     if recent.is_empty() {
@@ -7426,7 +7532,7 @@ impl App {
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellShow { id });
+                            let _ = send_tui(tx, TuiCommand::ShellShow { id });
                         }
                     }
                     None => {
@@ -7447,11 +7553,14 @@ impl App {
                 match self.resolve_shell_id(id_str) {
                     Some(id) => {
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::ShellExpand {
-                                id,
-                                stream: stream_str.to_string(),
-                                range: range_str,
-                            });
+                            let _ = send_tui(
+                                tx,
+                                TuiCommand::ShellExpand {
+                                    id,
+                                    stream: stream_str.to_string(),
+                                    range: range_str,
+                                },
+                            );
                         }
                     }
                     None => {
@@ -8143,10 +8252,13 @@ impl App {
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
                 if let Some(ref tx) = self.tui_cmd_tx {
-                    let _ = tx.try_send(TuiCommand::RunHumanShell {
-                        command,
-                        promote_after,
-                    });
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::RunHumanShell {
+                            command,
+                            promote_after,
+                        },
+                    );
                 }
                 return;
             }
@@ -8386,22 +8498,13 @@ impl App {
                 .error("Internal error: command channel unavailable");
             return false;
         };
-        match tx.try_send(cmd) {
-            Ok(()) => true,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("TUI command channel full; dropping command");
-                self.messages_state
-                    .toasts
-                    .error("Command queue is full; please retry");
-                false
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::warn!("TUI command channel closed; dropping command");
-                self.messages_state
-                    .toasts
-                    .error("Command channel closed; please retry");
-                false
-            }
+        if send_tui(tx, cmd) {
+            true
+        } else {
+            self.messages_state
+                .toasts
+                .error("Unable to queue TUI command; please retry");
+            false
         }
     }
 
@@ -8724,12 +8827,15 @@ impl App {
         };
 
         if let Some(tx) = self.tui_cmd_tx.clone() {
-            let _ = tx.try_send(TuiCommand::StartGetProject {
-                request_id,
-                project_id: project_id.clone(),
-                picker_generation,
-                picker_request_id,
-            });
+            let _ = send_tui(
+                &tx,
+                TuiCommand::StartGetProject {
+                    request_id,
+                    project_id: project_id.clone(),
+                    picker_generation,
+                    picker_request_id,
+                },
+            );
         }
 
         // Pin the project_id; phase will be advanced by the apply.
@@ -8779,11 +8885,14 @@ impl App {
         // Start session list for the active tab.
         if let Some(tab_id) = self.project_tabs.active_tab_id().cloned() {
             if let Some(tx) = self.tui_cmd_tx.clone() {
-                let _ = tx.try_send(TuiCommand::StartListProjectSessions {
-                    tab_id,
-                    project_id: self.active_project_id().unwrap_or("").to_string(),
-                    workspace_id,
-                });
+                let _ = send_tui(
+                    &tx,
+                    TuiCommand::StartListProjectSessions {
+                        tab_id,
+                        project_id: self.active_project_id().unwrap_or("").to_string(),
+                        workspace_id,
+                    },
+                );
             }
         }
 
@@ -8820,7 +8929,7 @@ impl App {
         }
 
         if let Some(tx) = self.tui_cmd_tx.clone() {
-            let _ = tx.try_send(TuiCommand::StartRegisterWorkspace { path });
+            let _ = send_tui(&tx, TuiCommand::StartRegisterWorkspace { path });
         }
 
         // Move to RegistrationConfirm placeholder; the apply will
@@ -9632,7 +9741,7 @@ impl App {
 
     fn load_sessions_dialog(&mut self) {
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ReloadSessions);
+            let _ = send_tui(tx, TuiCommand::ReloadSessions);
         }
     }
 
@@ -9645,9 +9754,12 @@ impl App {
         let session_id = session.id.clone();
 
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::DeleteSession {
-                session_id: session_id.clone(),
-            });
+            let _ = send_tui(
+                tx,
+                TuiCommand::DeleteSession {
+                    session_id: session_id.clone(),
+                },
+            );
         }
         self.undo_session_id = Some(session_id);
         self.undo_until = Some(Instant::now() + std::time::Duration::from_secs(30));
@@ -9665,10 +9777,13 @@ impl App {
         let is_archived = session.time_archived.is_some();
 
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ArchiveSession {
-                session_id,
-                unarchive: is_archived,
-            });
+            let _ = send_tui(
+                tx,
+                TuiCommand::ArchiveSession {
+                    session_id,
+                    unarchive: is_archived,
+                },
+            );
         }
     }
 
@@ -9681,7 +9796,7 @@ impl App {
         let session_id = session.id.clone();
 
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+            let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
         }
     }
 
@@ -9723,7 +9838,7 @@ impl App {
 
     fn apply_template(&mut self, key: String, template: SessionTemplate) {
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::CreateFromTemplate { key, template });
+            let _ = send_tui(tx, TuiCommand::CreateFromTemplate { key, template });
         }
     }
 
@@ -10440,7 +10555,7 @@ impl App {
             browser.loading = true;
         }
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ResearchListRuns);
+            let _ = send_tui(tx, TuiCommand::ResearchListRuns);
         }
     }
 
@@ -10451,9 +10566,12 @@ impl App {
         }
         let run_id_owned = run_id.to_string();
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ResearchLoadRun {
-                run_id: run_id_owned,
-            });
+            let _ = send_tui(
+                tx,
+                TuiCommand::ResearchLoadRun {
+                    run_id: run_id_owned,
+                },
+            );
         }
     }
 
@@ -10592,14 +10710,14 @@ impl App {
         // current state.
         let tx = self.tui_cmd_tx.clone();
         if let Some(tx) = tx {
-            let _ = tx.try_send(TuiCommand::SessionSelectionRefresh);
+            let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
         }
     }
 
     fn open_tree_dialog(&mut self) {
         self.open_dialog(Dialog::Tree);
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::OpenTreeDialog);
+            let _ = send_tui(tx, TuiCommand::OpenTreeDialog);
         }
     }
 
@@ -10612,7 +10730,7 @@ impl App {
         self.close_dialog();
 
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::ForkSession { session_id });
+            let _ = send_tui(tx, TuiCommand::ForkSession { session_id });
         }
     }
 
@@ -10629,7 +10747,7 @@ impl App {
                     Some(src) => {
                         import.set_preview_loading(true);
                         if let Some(ref tx) = self.tui_cmd_tx {
-                            let _ = tx.try_send(TuiCommand::PreviewImport { source: src });
+                            let _ = send_tui(tx, TuiCommand::PreviewImport { source: src });
                         }
                     }
                     None => {
@@ -10643,7 +10761,7 @@ impl App {
 
                 if let Some(ref tx) = self.tui_cmd_tx {
                     if let Some(src) = source {
-                        let _ = tx.try_send(TuiCommand::ConfirmImport { source: src });
+                        let _ = send_tui(tx, TuiCommand::ConfirmImport { source: src });
                     }
                 }
             }
@@ -11051,10 +11169,13 @@ impl App {
 
     fn spawn_subagent(&self, agent_name: &str, prompt: &str) {
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::SpawnSubagent {
-                agent_name: agent_name.to_string(),
-                prompt: prompt.trim().to_string(),
-            });
+            let _ = send_tui(
+                tx,
+                TuiCommand::SpawnSubagent {
+                    agent_name: agent_name.to_string(),
+                    prompt: prompt.trim().to_string(),
+                },
+            );
         }
     }
 
@@ -11136,12 +11257,18 @@ impl App {
                 .register_open_session(tab_id.clone(), sess_id.clone());
         }
         if let Some(ref tx) = self.tui_cmd_tx {
-            let _ = tx.try_send(TuiCommand::LoadSessionMessages {
-                session_id: sess_id.clone(),
-            });
-            let _ = tx.try_send(TuiCommand::RefreshSessionState {
-                session_id: sess_id,
-            });
+            let _ = send_tui(
+                tx,
+                TuiCommand::LoadSessionMessages {
+                    session_id: sess_id.clone(),
+                },
+            );
+            let _ = send_tui(
+                tx,
+                TuiCommand::RefreshSessionState {
+                    session_id: sess_id,
+                },
+            );
         }
         // Refresh sidebar git status for the new project so render
         // never blocks on git probing.
@@ -15225,6 +15352,15 @@ mod enqueue_tui_command_tests {
             "should surface a toast on closed channel"
         );
     }
+
+    #[test]
+    fn direct_send_helper_reports_full_channel() {
+        let (tx, mut rx) = mpsc::channel::<TuiCommand>(1);
+        tx.try_send(TuiCommand::OpenTreeDialog)
+            .expect("first command fits");
+        assert!(!send_tui(&tx, TuiCommand::OpenTreeDialog));
+        assert!(rx.try_recv().is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -15364,5 +15500,40 @@ mod projection_adoption_tests {
         .expect("serializable");
         app.handle_remote_event(json);
         assert_eq!(app.projection_client.subscription_count(), 1);
+    }
+
+    #[test]
+    fn projection_replay_without_identity_is_rejected() {
+        let mut app = App::new_for_testing("/tmp".into());
+        let descriptor = crate::protocol::projection::replay::ProjectionStreamDescriptor {
+            stream_id: crate::protocol::projection::replay::ProjectionStreamId::new(
+                "session-missing-workspace",
+            )
+            .expect("stream id"),
+            kind: crate::protocol::projection::replay::ProjectionStreamKind::Session,
+            project_id: "p1".into(),
+            workspace_id: None,
+            session_id: Some("s1".into()),
+            projection_version: 1,
+            retention_floor_seq: 0,
+            high_water_seq: 0,
+            latest_checkpoint_seq: None,
+        };
+        let json = serde_json::to_value(RemoteTuiMessage::ProjectionReplay {
+            subscription_id: ProjectionSubscriptionId::new("sub-missing-workspace"),
+            batch: crate::protocol::projection::replay::ProjectionReplayBatch {
+                descriptor,
+                events: Vec::new(),
+                snapshot: None,
+                replay_start_seq: 0,
+                replay_end_seq: 0,
+                current_high_water: 0,
+                truncation_flag: false,
+                next_cursor: None,
+            },
+        })
+        .expect("serializable");
+        app.handle_remote_event(json);
+        assert_eq!(app.projection_client.subscription_count(), 0);
     }
 }

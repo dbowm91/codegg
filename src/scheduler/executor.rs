@@ -8,6 +8,7 @@
 //! reconstruct shell from the typed payload.
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -200,8 +201,19 @@ pub trait JobExecutor: Send + Sync {
 /// `dispatch(&job)` to find the executor responsible for a given
 /// `JobRecord`.
 pub struct ExecutorRegistry {
-    executors: HashMap<ExecutorKind, Arc<dyn JobExecutor>>,
+    executors: HashMap<ExecutorKind, ExecutorRecord>,
     health: HashMap<ExecutorKind, ExecutorHealth>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ExecutorStats {
+    pub(crate) total_invocations: Arc<AtomicU64>,
+    pub(crate) total_failures: Arc<AtomicU64>,
+}
+
+struct ExecutorRecord {
+    executor: Arc<dyn JobExecutor>,
+    stats: ExecutorStats,
 }
 
 impl Default for ExecutorRegistry {
@@ -227,12 +239,23 @@ impl ExecutorRegistry {
             return Err(ExecutorRegistryError::Duplicate(kind));
         }
         self.health.insert(kind, exec.health());
-        self.executors.insert(kind, exec);
+        self.executors.insert(
+            kind,
+            ExecutorRecord {
+                executor: exec,
+                stats: ExecutorStats {
+                    total_invocations: Arc::new(AtomicU64::new(0)),
+                    total_failures: Arc::new(AtomicU64::new(0)),
+                },
+            },
+        );
         Ok(())
     }
 
     pub fn get(&self, kind: ExecutorKind) -> Option<Arc<dyn JobExecutor>> {
-        self.executors.get(&kind).map(Arc::clone)
+        self.executors
+            .get(&kind)
+            .map(|record| Arc::clone(&record.executor))
     }
 
     pub fn for_job(&self, job: &JobRecord) -> Option<Arc<dyn JobExecutor>> {
@@ -250,9 +273,25 @@ impl ExecutorRegistry {
         let mut v: Vec<(ExecutorKind, ExecutorHealth)> = self
             .executors
             .iter()
-            .map(|(k, e)| (*k, e.health()))
+            .map(|(k, record)| (*k, record.executor.health()))
             .collect();
         v.sort_by_key(|(k, _)| k.as_str());
+        v
+    }
+
+    pub(crate) fn stats(&self, kind: ExecutorKind) -> Option<ExecutorStats> {
+        self.executors.get(&kind).map(|record| record.stats.clone())
+    }
+
+    pub(crate) fn health_snapshot_with_stats(
+        &self,
+    ) -> Vec<(ExecutorKind, ExecutorHealth, ExecutorStats)> {
+        let mut v: Vec<_> = self
+            .executors
+            .iter()
+            .map(|(kind, record)| (*kind, record.executor.health(), record.stats.clone()))
+            .collect();
+        v.sort_by_key(|(kind, _, _)| kind.as_str());
         v
     }
 }

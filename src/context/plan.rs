@@ -89,8 +89,8 @@ impl ContextPlan {
         let mut control_blocks = Vec::new();
         let mut planned = Vec::with_capacity(request.messages.len());
 
-        for (sequence, message) in request.messages.iter().cloned().enumerate() {
-            let (kind, text, required) = message_block(&message);
+        for (sequence, message) in request.messages.iter().enumerate() {
+            let (kind, text, required) = message_block(message);
             let block = ContextBlock::new(
                 kind,
                 &format!("message:{sequence}"),
@@ -108,7 +108,7 @@ impl ContextPlan {
             }
             planned.push(PlannedMessage {
                 sequence,
-                message,
+                message: message.clone(),
                 cache_class: kind.tier(),
             });
         }

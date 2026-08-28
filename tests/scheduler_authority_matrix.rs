@@ -378,6 +378,15 @@ async fn test_job_produces_one_attempt_and_one_executor_entry() {
 
     assert_eq!(exec.entry_count(), 1, "exactly 1 executor entry");
     assert_eq!(exec.completion_count(), 1, "exactly 1 executor completion");
+    let executor_snapshot = scheduler
+        .snapshot()
+        .await
+        .executors
+        .into_iter()
+        .find(|executor| executor.executor == "test")
+        .expect("test executor should be in scheduler snapshot");
+    assert_eq!(executor_snapshot.total_invocations, 1);
+    assert_eq!(executor_snapshot.total_failures, 0);
 
     scheduler
         .shutdown(SchedulerShutdownMode::ImmediateInterrupt)

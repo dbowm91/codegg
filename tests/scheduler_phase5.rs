@@ -558,4 +558,12 @@ async fn reconcile_keeps_queued_jobs_beyond_claim_batch() {
         Some(&8),
         "snapshot must report job-kind counts"
     );
+    let workspace = snap
+        .per_workspace
+        .iter()
+        .find(|summary| summary.workspace_id == workspace_id)
+        .expect("queued-only workspace should be visible in snapshot");
+    assert_eq!(workspace.queued, 8);
+    assert_eq!(workspace.ready_window, 8);
+    assert_eq!(workspace.running, 0);
 }

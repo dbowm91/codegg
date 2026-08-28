@@ -1,7 +1,7 @@
 //! Command dispatch: routes TuiCommand variants to handler functions.
 
 use super::super::app::state::session::GitSidebarInfo;
-use super::super::app::{App, TuiCommand};
+use super::super::app::{send_tui, App, TuiCommand};
 
 #[allow(unused_imports)]
 use super::super::commands::agents::{apply_asset_refresh_finished, start_refresh_assets};
@@ -507,7 +507,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     app.dialog_state.connect_dialog = None;
                     app.close_dialog();
                     if let Some(tx) = app.tui_cmd_tx.clone() {
-                        let _ = tx.try_send(TuiCommand::SessionSelectionRefresh);
+                        let _ = send_tui(&tx, TuiCommand::SessionSelectionRefresh);
                     }
                 }
                 Err(error) => {
@@ -532,7 +532,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|d| d.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = tx.try_send(TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
                 }
             }
         }
@@ -567,7 +567,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     .map(|dialog| dialog.session_id.clone())
                     .unwrap_or_default();
                 if let Some(tx) = app.tui_cmd_tx.clone() {
-                    let _ = tx.try_send(TuiCommand::SessionSelectionLoad { session_id });
+                    let _ = send_tui(&tx, TuiCommand::SessionSelectionLoad { session_id });
                 }
             }
         }

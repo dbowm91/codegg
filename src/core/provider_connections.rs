@@ -425,7 +425,11 @@ mod tests {
             descriptor: &ProviderConnectionDescriptor,
         ) -> Result<Box<dyn codegg_providers::Provider>, ProviderConnectionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let base_url = descriptor.base_url.as_deref().unwrap();
+            let base_url = descriptor.base_url.as_deref().ok_or_else(|| {
+                ProviderConnectionError::InvalidDescriptor(
+                    "provider descriptor missing base_url".to_string(),
+                )
+            })?;
             Ok(Box::new(
                 codegg_providers::openai_compatible::OpenAiCompatibleProvider::simple(
                     "test-provider",

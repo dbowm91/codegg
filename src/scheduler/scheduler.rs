@@ -34,6 +34,7 @@ use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
 use futures_util::FutureExt;
 use tokio::sync::{mpsc, Mutex as AsyncMutex, Notify};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::scheduler::admission::{AdmissionController, AdmissionDecision};
@@ -138,6 +139,8 @@ pub struct JobScheduler {
     queue: Arc<AsyncMutex<FairJobQueue>>,
     dispatch: AsyncMutex<()>,
     running: Arc<AsyncMutex<HashMap<AttemptId, RunningAttempt>>>,
+    /// Join handles for executor tasks, drained during shutdown.
+    running_tasks: Arc<AsyncMutex<HashMap<AttemptId, JoinHandle<()>>>>,
     /// Recent in-process completions let daemon clients receive the same
     /// bounded executor projection that completed the work. Durable job and
     /// attempt state remains authoritative across restart. Values carry the
@@ -186,6 +189,7 @@ impl JobScheduler {
         let admission = Arc::new(AdmissionController::new(config.clone()));
         let queue = Arc::new(AsyncMutex::new(FairJobQueue::new(config.clone())));
         let running = Arc::new(AsyncMutex::new(HashMap::new()));
+        let running_tasks = Arc::new(AsyncMutex::new(HashMap::new()));
         let running_per_workspace = Arc::new(AsyncMutex::new(HashMap::new()));
         let ready_counts = Arc::new(AsyncMutex::new(BTreeMap::new()));
         let job_kind_counts = Arc::new(AsyncMutex::new(BTreeMap::new()));
@@ -201,6 +205,7 @@ impl JobScheduler {
             queue,
             dispatch: AsyncMutex::new(()),
             running,
+            running_tasks,
             completions: Arc::new(AsyncMutex::new(CompletionCache::new())),
             completions_seq: Arc::new(AtomicU64::new(0)),
             running_per_workspace,
@@ -923,6 +928,16 @@ impl JobScheduler {
         let job_id_for_task = job.job_id.clone();
         let workspace_id_for_task = job.workspace_id.clone();
         let lease_for_task = lease;
+        let executor_kind = exec.kind();
+        let executor_stats = {
+            let executors = self.executors.lock().await;
+            executors.stats(executor_kind)
+        };
+        if let Some(stats) = &executor_stats {
+            stats.total_invocations.fetch_add(1, Ordering::Relaxed);
+        }
+        let running_tasks = self.running_tasks.clone();
+        let task_attempt_id = attempt_id.clone();
         {
             let executor = Arc::clone(&exec);
             let store = self.store.clone();
@@ -933,7 +948,8 @@ impl JobScheduler {
             let completions_seq = self.completions_seq.clone();
             let event_tx = self.event_tx.clone();
             let notify = self.notify.clone();
-            tokio::spawn(async move {
+            let executor_stats = executor_stats.clone();
+            let task = tokio::spawn(async move {
                 let completion = if ctx.cancellation.is_cancelled() {
                     ExecutorCompletion {
                         status: ExecutorStatus::Cancelled,
@@ -996,6 +1012,11 @@ impl JobScheduler {
                         "executor completed but durable completion persistence failed"
                     );
                 }
+                if !matches!(completion.status, ExecutorStatus::Completed) {
+                    if let Some(stats) = &executor_stats {
+                        stats.total_failures.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
                 // M012-F04/C-13: Cancel active descendants when the
                 // parent attempt terminates (timeout, failure, cancel,
                 // interrupt). This ensures children are cleaned up
@@ -1029,11 +1050,12 @@ impl JobScheduler {
                         .map(|ra| ra.workspace_id)
                         .unwrap_or(workspace_id_for_task)
                 };
-                let mut rpw_g = rpw.lock().await;
-                if let Some(c) = rpw_g.get_mut(&workspace_id) {
-                    *c = c.saturating_sub(1);
+                {
+                    let mut rpw_g = rpw.lock().await;
+                    if let Some(c) = rpw_g.get_mut(&workspace_id) {
+                        *c = c.saturating_sub(1);
+                    }
                 }
-                running_total.fetch_sub(1, Ordering::SeqCst);
                 drop(lease_for_task);
                 // Forward event.
                 if completion.run_id.is_some() {
@@ -1057,9 +1079,18 @@ impl JobScheduler {
                         })
                         .await;
                 }
+                // Keep the running count visible until the final release
+                // event has been emitted, so shutdown cannot mistake an
+                // in-flight task for fully cleaned-up work.
+                running_total.fetch_sub(1, Ordering::SeqCst);
                 me.wake(WokeReason::ExecutorCompleted);
                 notify.notify_one();
+                running_tasks.lock().await.remove(&attempt_id);
             });
+            self.running_tasks
+                .lock()
+                .await
+                .insert(task_attempt_id, task);
         }
         Ok(true)
     }
@@ -1078,13 +1109,13 @@ impl JobScheduler {
         let executors_snap: Vec<ExecutorHealthSnapshot> = {
             let executors = self.executors.lock().await;
             executors
-                .health_snapshot()
+                .health_snapshot_with_stats()
                 .into_iter()
-                .map(|(k, h)| ExecutorHealthSnapshot {
+                .map(|(k, h, stats)| ExecutorHealthSnapshot {
                     executor: k.as_str().to_string(),
                     health: h,
-                    total_invocations: 0,
-                    total_failures: 0,
+                    total_invocations: stats.total_invocations.load(Ordering::Relaxed),
+                    total_failures: stats.total_failures.load(Ordering::Relaxed),
                 })
                 .collect()
         };
@@ -1094,16 +1125,22 @@ impl JobScheduler {
         for (label, count) in ready_counts.iter() {
             by_priority.insert(label.clone(), *count);
         }
-        let per_workspace: Vec<_> = rpw
-            .iter()
-            .map(
-                |(ws, running)| crate::scheduler::snapshot::PerWorkspaceSummary {
+        let mut workspace_ids: std::collections::BTreeSet<WorkspaceId> =
+            queued_per_workspace.keys().cloned().collect();
+        workspace_ids.extend(rpw.keys().cloned());
+        let per_workspace: Vec<_> = workspace_ids
+            .into_iter()
+            .map(|ws| {
+                let queued = queued_per_workspace.get(&ws).copied().unwrap_or(0);
+                crate::scheduler::snapshot::PerWorkspaceSummary {
                     workspace_id: ws.clone(),
-                    queued: queued_per_workspace.get(ws).copied().unwrap_or(0),
-                    running: *running,
-                    ready_window: queued_per_workspace.get(ws).copied().unwrap_or(0),
-                },
-            )
+                    queued,
+                    running: rpw.get(&ws).copied().unwrap_or(0),
+                    // The fair queue is the scheduler's ready window. The
+                    // legacy `queued` field is retained for wire compatibility.
+                    ready_window: queued,
+                }
+            })
             .collect();
 
         let durable_queued_count = ready_window_count;
@@ -1166,16 +1203,18 @@ impl JobScheduler {
             }
             SchedulerShutdownMode::DrainQueuedUntil(deadline) => {
                 let deadline_at = Instant::now() + deadline;
-                while Instant::now() < deadline_at && self.running_total.load(Ordering::SeqCst) > 0
+                while Instant::now() < deadline_at
+                    && (self.running_total.load(Ordering::SeqCst) > 0
+                        || !self.running_tasks.lock().await.is_empty())
                 {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                if self.running_total.load(Ordering::SeqCst) > 0 {
-                    let running = self.running.lock().await;
-                    for attempt in running.values() {
-                        attempt.cancellation.cancel();
+                if self.running_total.load(Ordering::SeqCst) > 0
+                    || !self.running_tasks.lock().await.is_empty()
+                {
+                    if self.running_total.load(Ordering::SeqCst) > 0 {
+                        self.cancel_running().await;
                     }
-                    drop(running);
                     self.wait_for_running_cleanup(SHUTDOWN_CLEANUP_GRACE).await;
                 }
             }
@@ -1207,26 +1246,48 @@ impl JobScheduler {
         for id in ids {
             let _ = self.request_cancel(&id, reason).await;
         }
-        let running = self.running.lock().await;
-        for attempt in running.values() {
-            attempt.cancellation.cancel();
-        }
+        self.cancel_running().await;
     }
 
     async fn wait_for_running_cleanup(&self, cleanup_grace: Duration) {
-        let deadline = Instant::now() + cleanup_grace;
-        while self.running_total.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            tokio::select! {
-                _ = self.notify.notified() => {}
-                _ = tokio::time::sleep(remaining.min(Duration::from_millis(50))) => {}
+        let mut handles: Vec<_> = self
+            .running_tasks
+            .lock()
+            .await
+            .drain()
+            .map(|(_, handle)| handle)
+            .collect();
+        if tokio::time::timeout(cleanup_grace, async {
+            for handle in &mut handles {
+                let _ = handle.await;
             }
-        }
-        if self.running_total.load(Ordering::SeqCst) > 0 {
+        })
+        .await
+        .is_err()
+        {
+            for handle in &handles {
+                handle.abort();
+            }
+            for handle in handles {
+                let _ = handle.await;
+            }
             tracing::warn!(
                 running = self.running_total.load(Ordering::SeqCst),
-                "scheduler shutdown cleanup deadline exceeded"
+                "scheduler shutdown cleanup deadline exceeded; executor tasks aborted"
             );
+        }
+    }
+
+    async fn cancel_running(&self) {
+        let cancellations: Vec<_> = self
+            .running
+            .lock()
+            .await
+            .values()
+            .map(|attempt| attempt.cancellation.clone())
+            .collect();
+        for cancellation in cancellations {
+            cancellation.cancel();
         }
     }
 

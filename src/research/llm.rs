@@ -133,7 +133,8 @@ mod tests {
         } else {
             trimmed
         };
-        let v: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(json_str).expect("fixture JSON with code fence must parse");
         assert_eq!(v["key"], "value");
     }
 
@@ -141,7 +142,7 @@ mod tests {
     fn strip_json_fences_plain() {
         let input = "{\"key\": \"value\"}";
         let trimmed = input.trim();
-        let v: serde_json::Value = serde_json::from_str(trimmed).unwrap();
+        let v: serde_json::Value = serde_json::from_str(trimmed).expect("fixture JSON must parse");
         assert_eq!(v["key"], "value");
     }
 }

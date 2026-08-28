@@ -5,6 +5,7 @@
 
 use super::super as app;
 use super::super::task_lifecycle::TuiTaskKind;
+use crate::tui::app::send_tui;
 use crate::util::truncate::truncate_prefix;
 
 pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bool) {
@@ -74,22 +75,29 @@ pub(crate) fn spawn_human_shell(app: &mut app::App, command: String, promote_aft
             match runtime.spawn(req, tx.clone()).await {
                 Ok(handle) => {
                     if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = ttx.try_send(app::TuiCommand::RegisterShellHandle {
-                            id: handle.id.0,
-                            handle,
-                        });
+                        let _ = send_tui(
+                            ttx,
+                            app::TuiCommand::RegisterShellHandle {
+                                id: handle.id.0,
+                                handle,
+                            },
+                        );
                     }
                     while let Some(event) = rx.recv().await {
                         if let Some(ref ttx) = tui_cmd_tx {
-                            let _ = ttx.try_send(app::TuiCommand::ShellEvent(event));
+                            let _ = send_tui(ttx, app::TuiCommand::ShellEvent(event));
                         }
                     }
                 }
                 Err(e) => {
                     if let Some(ref ttx) = tui_cmd_tx {
-                        let _ = ttx.try_send(app::TuiCommand::ShellEvent(
-                            crate::shell::ShellEvent::FailedToStart { id, error: e },
-                        ));
+                        let _ = send_tui(
+                            ttx,
+                            app::TuiCommand::ShellEvent(crate::shell::ShellEvent::FailedToStart {
+                                id,
+                                error: e,
+                            }),
+                        );
                     }
                 }
             }
@@ -448,10 +456,13 @@ pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
         let command = entry.command.clone();
         let promote_after = entry.promote_after;
         if let Some(ref tx) = app.tui_cmd_tx {
-            let _ = tx.try_send(app::TuiCommand::RunHumanShell {
-                command,
-                promote_after,
-            });
+            let _ = send_tui(
+                tx,
+                app::TuiCommand::RunHumanShell {
+                    command,
+                    promote_after,
+                },
+            );
         }
     } else {
         app.messages_state

@@ -34,8 +34,12 @@ impl ExclusivityKeyLabel {
 pub struct PerWorkspaceSummary {
     #[serde(deserialize_with = "deserialize_workspace_id")]
     pub workspace_id: WorkspaceId,
+    /// Number of queued jobs currently represented in the scheduler's
+    /// fair queue. Retained as the legacy queued field.
     pub queued: usize,
     pub running: usize,
+    /// Number of jobs in the scheduler's ready window. The fair queue is
+    /// that window, so this equals `queued` by contract.
     pub ready_window: usize,
 }
 
