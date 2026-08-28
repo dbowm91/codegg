@@ -1249,8 +1249,40 @@ pub trait JobStore: Send + Sync {
     /// Fetch a job by id.
     async fn get_job(&self, id: &JobId) -> Result<Option<JobRecord>, JobStoreError>;
 
+    /// Fetch multiple jobs in one store operation where supported. The
+    /// default keeps custom stores source-compatible.
+    async fn get_jobs(&self, ids: &[JobId]) -> Result<Vec<JobRecord>, JobStoreError> {
+        let mut records = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(record) = self.get_job(id).await? {
+                records.push(record);
+            }
+        }
+        Ok(records)
+    }
+
     /// Filter jobs according to `query`.
     async fn list_jobs(&self, query: JobStoreQuery) -> Result<Vec<JobSummary>, JobStoreError>;
+
+    /// Count jobs grouped by kind for the requested states. The default is
+    /// intentionally compatible with custom stores; durable stores can push
+    /// this aggregation into their backing database.
+    async fn count_jobs_by_kind_state(
+        &self,
+        states: &[JobState],
+    ) -> Result<std::collections::BTreeMap<String, usize>, JobStoreError> {
+        let summaries = self
+            .list_jobs(crate::jobs::store::JobStoreQuery {
+                states: states.to_vec(),
+                ..Default::default()
+            })
+            .await?;
+        let mut counts = std::collections::BTreeMap::new();
+        for summary in summaries {
+            *counts.entry(summary.kind.as_str().to_string()).or_insert(0) += 1;
+        }
+        Ok(counts)
+    }
 
     /// List full job records according to `query`. Implementations with a
     /// durable backing store should override this to fetch the records in a

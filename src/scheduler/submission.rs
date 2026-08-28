@@ -74,6 +74,7 @@ pub enum JobSubmissionError {
     InvalidPayload(String),
 }
 
+#[derive(Clone)]
 struct IdempotentSubmission {
     fingerprint: String,
     job_id: JobId,
@@ -156,53 +157,73 @@ impl JobSubmissionService {
         apply_resource_policy(&mut spec);
         let fingerprint = fingerprint(&spec);
 
-        // Serializing submissions with the same facade makes the
-        // create/enqueue boundary idempotent under concurrent transport
-        // retries. The durable job is still authoritative after return.
-        let mut idempotency = self.idempotency.lock().await;
+        // Check the in-memory retry index without holding its lock across
+        // durable reads. The durable job remains authoritative after return.
         if let Some(key_ref) = key.as_ref() {
-            if let Some(existing) = idempotency.get(key_ref) {
+            let indexed = {
+                let idempotency = self.idempotency.lock().await;
+                idempotency.get(key_ref).cloned()
+            };
+            if let Some(existing) = indexed {
                 if existing.fingerprint != fingerprint {
                     return Err(JobSubmissionError::SubmissionKeyConflict);
                 }
                 if let Some(job) = self.store.get_job(&existing.job_id).await? {
                     return Ok(to_submitted(&job));
                 }
-                idempotency.remove(key_ref);
+                let mut idempotency = self.idempotency.lock().await;
+                if idempotency
+                    .get(key_ref)
+                    .is_some_and(|current| current.job_id == existing.job_id)
+                {
+                    idempotency.remove(key_ref);
+                }
             }
 
             // Rebuild the retry index after a daemon restart from the
             // durable payloads. The in-memory map is only a fast path; it
             // must not be the source of invocation identity.
-            let summaries = self
+            let existing_jobs = self
                 .store
-                .list_jobs(codegg_core::jobs::JobStoreQuery {
+                .list_job_records(codegg_core::jobs::store::JobStoreQuery {
                     workspace_id: Some(spec.workspace_id.clone()),
                     limit: Some(256),
                     ..Default::default()
                 })
                 .await?;
-            for summary in summaries {
-                let Some(existing_job) = self.store.get_job(&summary.job_id).await? else {
-                    continue;
-                };
+            for existing_job in existing_jobs {
                 if !payload_matches_submission_key(&existing_job.payload, key_ref.as_str()) {
                     continue;
                 }
                 if fingerprint_record(&existing_job) != fingerprint {
                     return Err(JobSubmissionError::SubmissionKeyConflict);
                 }
-                idempotency.insert(
-                    key_ref.clone(),
-                    IdempotentSubmission {
-                        fingerprint: fingerprint.clone(),
-                        job_id: summary.job_id.clone(),
-                    },
-                );
+                let mut idempotency = self.idempotency.lock().await;
+                if let Some(current) = idempotency.get(key_ref) {
+                    if current.fingerprint != fingerprint {
+                        return Err(JobSubmissionError::SubmissionKeyConflict);
+                    }
+                } else {
+                    idempotency.insert(
+                        key_ref.clone(),
+                        IdempotentSubmission {
+                            fingerprint: fingerprint.clone(),
+                            job_id: existing_job.job_id.clone(),
+                        },
+                    );
+                }
                 return Ok(to_submitted(&existing_job));
             }
         }
 
+        // Serialize only the create/enqueue boundary for keyed submissions;
+        // the potentially large durable scans above happen without this
+        // mutex held.
+        let mut idempotency = if key.is_some() {
+            Some(self.idempotency.lock().await)
+        } else {
+            None
+        };
         let job = self.store.create_job(spec).await?;
         crate::test_failpoint::hit("tool_program_after_job_persist");
         if let Err(error) = self.scheduler.enqueue_existing(job.clone()).await {
@@ -217,7 +238,7 @@ impl JobSubmissionService {
                     codegg_core::jobs::CancelReason::new("submission", "scheduler enqueue failed"),
                 )
                 .await;
-            if let Some(key) = key.as_ref() {
+            if let (Some(key), Some(idempotency)) = (key.as_ref(), idempotency.as_mut()) {
                 idempotency.insert(
                     key.clone(),
                     IdempotentSubmission {
@@ -228,7 +249,7 @@ impl JobSubmissionService {
             }
             return Err(error.into());
         }
-        if let Some(key) = key {
+        if let (Some(key), Some(idempotency)) = (key, idempotency.as_mut()) {
             idempotency.insert(
                 key,
                 IdempotentSubmission {

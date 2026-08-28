@@ -6,7 +6,7 @@
 //! state-machine tests and migration tests that do not need to
 //! round-trip through SQL.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -232,6 +232,68 @@ struct Inner {
     attempts_by_job: HashMap<JobId, Vec<AttemptId>>,
 }
 
+fn begin_attempt_locked(
+    guard: &mut Inner,
+    id: &JobId,
+    generation: &DaemonGeneration,
+) -> Result<JobAttempt, JobStoreError> {
+    let job = guard
+        .jobs
+        .get(id)
+        .cloned()
+        .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))?;
+    if matches!(job.state, JobState::Running) {
+        return Err(JobStoreError::JobAlreadyRunning(
+            id.to_string(),
+            job.current_attempt_id
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
+        ));
+    }
+    if job.state.is_terminal() {
+        return Err(JobStoreError::AlreadyTerminal(id.to_string(), job.state));
+    }
+    validate_state_transition(job.state, JobState::Running).map_err(|mut e| {
+        if let JobStoreError::InvalidTransition { job: ref mut s, .. } = e {
+            *s = id.to_string();
+        }
+        e
+    })?;
+    let now = Utc::now();
+    let attempt_id = AttemptId::new_unchecked(uuid::Uuid::new_v4().to_string());
+    let next_seq = job.attempt_count + 1;
+    let attempt = JobAttempt {
+        attempt_id: attempt_id.clone(),
+        job_id: id.clone(),
+        sequence: next_seq,
+        state: AttemptState::Created,
+        daemon_generation: generation.clone(),
+        executor: None,
+        run_id: None,
+        heartbeat_at: None,
+        started_at: None,
+        completed_at: None,
+        error: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let updated_job = JobRecord {
+        state: JobState::Running,
+        attempt_count: next_seq,
+        current_attempt_id: Some(attempt_id.clone()),
+        updated_at: now,
+        ..job
+    };
+    guard.attempts.insert(attempt_id.clone(), attempt.clone());
+    guard
+        .attempts_by_job
+        .entry(id.clone())
+        .or_default()
+        .push(attempt_id);
+    guard.jobs.insert(id.clone(), updated_job);
+    Ok(attempt)
+}
+
 impl InMemoryJobStore {
     pub fn new() -> Self {
         Self {
@@ -294,6 +356,14 @@ impl JobStore for InMemoryJobStore {
         Ok(guard.jobs.get(id).cloned())
     }
 
+    async fn get_jobs(&self, ids: &[JobId]) -> Result<Vec<JobRecord>, JobStoreError> {
+        let guard = self.inner.lock().await;
+        Ok(ids
+            .iter()
+            .filter_map(|id| guard.jobs.get(id).cloned())
+            .collect())
+    }
+
     async fn list_jobs(&self, query: JobStoreQuery) -> Result<Vec<JobSummary>, JobStoreError> {
         let guard = self.inner.lock().await;
         let mut out: Vec<JobSummary> = guard
@@ -339,6 +409,20 @@ impl JobStore for InMemoryJobStore {
         Ok(out)
     }
 
+    async fn count_jobs_by_kind_state(
+        &self,
+        states: &[JobState],
+    ) -> Result<BTreeMap<String, usize>, JobStoreError> {
+        let guard = self.inner.lock().await;
+        let mut counts = BTreeMap::new();
+        for job in guard.jobs.values() {
+            if states.contains(&job.state) {
+                *counts.entry(job.kind.as_str().to_string()).or_insert(0) += 1;
+            }
+        }
+        Ok(counts)
+    }
+
     async fn list_attempts(&self, job_id: &JobId) -> Result<Vec<JobAttempt>, JobStoreError> {
         let guard = self.inner.lock().await;
         let ids = match guard.attempts_by_job.get(job_id) {
@@ -382,61 +466,7 @@ impl JobStore for InMemoryJobStore {
         generation: &DaemonGeneration,
     ) -> Result<JobAttempt, JobStoreError> {
         let mut guard = self.inner.lock().await;
-        let job = guard
-            .jobs
-            .get(id)
-            .cloned()
-            .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))?;
-        if matches!(job.state, JobState::Running) {
-            return Err(JobStoreError::JobAlreadyRunning(
-                id.to_string(),
-                job.current_attempt_id
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
-            ));
-        }
-        if job.state.is_terminal() {
-            return Err(JobStoreError::AlreadyTerminal(id.to_string(), job.state));
-        }
-        validate_state_transition(job.state, JobState::Running).map_err(|mut e| {
-            if let JobStoreError::InvalidTransition { job: ref mut s, .. } = e {
-                *s = id.to_string();
-            }
-            e
-        })?;
-        let now = Utc::now();
-        let attempt_id = AttemptId::new_unchecked(uuid::Uuid::new_v4().to_string());
-        let next_seq = job.attempt_count + 1;
-        let attempt = JobAttempt {
-            attempt_id: attempt_id.clone(),
-            job_id: id.clone(),
-            sequence: next_seq,
-            state: AttemptState::Created,
-            daemon_generation: generation.clone(),
-            executor: None,
-            run_id: None,
-            heartbeat_at: None,
-            started_at: None,
-            completed_at: None,
-            error: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let updated_job = JobRecord {
-            state: JobState::Running,
-            attempt_count: next_seq,
-            current_attempt_id: Some(attempt_id.clone()),
-            updated_at: now,
-            ..job
-        };
-        guard.attempts.insert(attempt_id.clone(), attempt.clone());
-        guard
-            .attempts_by_job
-            .entry(id.clone())
-            .or_insert_with(Vec::new)
-            .push(attempt_id);
-        guard.jobs.insert(id.clone(), updated_job);
-        Ok(attempt)
+        begin_attempt_locked(&mut guard, id, generation)
     }
 
     async fn mark_attempt_running(&self, attempt_id: &AttemptId) -> Result<(), JobStoreError> {
@@ -654,7 +684,7 @@ impl JobStore for InMemoryJobStore {
         // `retry_job` is a thin convenience wrapper: re-enqueue (if
         // currently Failed/TimedOut/Interrupted) and start a new
         // attempt. Eligibility is gated by the persisted retry policy.
-        let guard = self.inner.lock().await;
+        let mut guard = self.inner.lock().await;
         let job = guard
             .jobs
             .get(id)
@@ -690,11 +720,19 @@ impl JobStore for InMemoryJobStore {
                 job.idempotency
             )));
         }
-        // Fall through to begin_attempt by releasing the lock and
-        // delegating to the trait method.
-        drop(guard);
-        self.enqueue(id).await?;
-        self.begin_attempt(id, generation).await
+        validate_state_transition(job.state, JobState::Queued).map_err(|mut e| {
+            if let JobStoreError::InvalidTransition { job: ref mut s, .. } = e {
+                *s = id.to_string();
+            }
+            e
+        })?;
+        let updated = JobRecord {
+            state: JobState::Queued,
+            updated_at: Utc::now(),
+            ..job
+        };
+        guard.jobs.insert(id.clone(), updated);
+        begin_attempt_locked(&mut guard, id, generation)
     }
 
     async fn block_job(&self, id: &JobId) -> Result<JobRecord, JobStoreError> {
@@ -1077,6 +1115,40 @@ impl JobStore for SqliteJobStore {
         Ok(Some(row_to_job(&row)?))
     }
 
+    async fn get_jobs(&self, ids: &[JobId]) -> Result<Vec<JobRecord>, JobStoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            r#"
+            SELECT id, workspace_id, session_id, turn_id, kind, source_json,
+                   priority, payload_json, resource_json, retry_json,
+                   idempotency, state, current_attempt_id, attempt_count,
+                   not_before, deadline, schedule_id,
+                   time_created, time_updated, time_terminal,
+                   cancel_requested_at, cancel_reason, labels_json,
+                   parent_job_id, parent_attempt_id, parent_call_id,
+                   parent_program_id, parent_instruction_sequence, relation_kind,
+                   (SELECT GROUP_CONCAT(depends_on_job_id, ',')
+                    FROM job_dependency WHERE job_id = job.id) AS depends_on_csv
+            FROM job WHERE id IN ({placeholders})
+            "#
+        );
+        let mut query = sqlx::query(&sql);
+        for id in ids {
+            query = query.bind(id.as_str());
+        }
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        rows.iter().map(row_to_job).collect()
+    }
+
     async fn list_jobs(&self, query: JobStoreQuery) -> Result<Vec<JobSummary>, JobStoreError> {
         let mut sql = String::from(
             r#"
@@ -1171,6 +1243,42 @@ impl JobStore for SqliteJobStore {
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(out)
+    }
+
+    async fn count_jobs_by_kind_state(
+        &self,
+        states: &[JobState],
+    ) -> Result<BTreeMap<String, usize>, JobStoreError> {
+        if states.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT kind, COUNT(*) AS count FROM job WHERE state IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for state in states {
+                separated.push_bind(state.as_str());
+            }
+        }
+        query.push(") GROUP BY kind");
+        let rows = query
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let mut counts = BTreeMap::new();
+        for row in rows {
+            let kind: String = row.get("kind");
+            let count: i64 = row.get("count");
+            let count = usize::try_from(count).map_err(|_| {
+                JobStoreError::Storage(StorageError::Database(format!(
+                    "job kind count overflow: {count}"
+                )))
+            })?;
+            counts.insert(kind, count);
+        }
+        Ok(counts)
     }
 
     async fn list_job_records(

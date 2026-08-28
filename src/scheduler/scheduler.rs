@@ -117,7 +117,7 @@ impl CompletionCache {
         self.entries.insert(job_id.clone(), (seq, completion));
         self.order.insert(seq, job_id);
 
-        if self.entries.len() > 1024 {
+        while self.entries.len() > 1024 {
             if let Some((old_seq, oldest_job_id)) = self.order.pop_first() {
                 if self
                     .entries
@@ -514,10 +514,22 @@ impl JobScheduler {
         let durable_ids: std::collections::HashSet<JobId> =
             durable.iter().map(|j| j.job_id.clone()).collect();
 
+        let dependency_ids: std::collections::HashSet<JobId> = durable
+            .iter()
+            .flat_map(|job| job.depends_on.iter().cloned())
+            .collect();
+        let dependency_states: std::collections::HashMap<JobId, JobState> = self
+            .store
+            .get_jobs(&dependency_ids.into_iter().collect::<Vec<_>>())
+            .await?
+            .into_iter()
+            .map(|job| (job.job_id, job.state))
+            .collect();
+
         // 1. Insert durable jobs not already in the queue.
         for job in durable {
             // Skip if not eligible (not_before / deadline / dependencies).
-            if !job_eligible(&job) {
+            if !job_eligible(&job, &dependency_states) {
                 continue;
             }
             let entry = QueueEntry::from_job(&job);
@@ -550,16 +562,18 @@ impl JobScheduler {
             }
             v
         };
-        let to_remove: Vec<JobId> = {
-            let mut v = Vec::new();
-            for job_id in candidates {
-                match self.store.get_job(&job_id).await {
-                    Ok(Some(job)) if matches!(job.state, JobState::Queued) => {}
-                    _ => v.push(job_id),
-                }
-            }
-            v
-        };
+        let queued_ids: std::collections::HashSet<JobId> = self
+            .store
+            .get_jobs(&candidates)
+            .await?
+            .into_iter()
+            .filter(|job| matches!(job.state, JobState::Queued))
+            .map(|job| job.job_id)
+            .collect();
+        let to_remove: Vec<JobId> = candidates
+            .into_iter()
+            .filter(|job_id| !queued_ids.contains(job_id))
+            .collect();
         {
             let mut q = self.queue.lock().await;
             for id in to_remove {
@@ -571,46 +585,42 @@ impl JobScheduler {
 
         // 3. Update oldest-queued-age and ready-window counts without
         // holding the queue lock while acquiring the statistics locks.
-        let (oldest, ready_counts) = {
+        let queue_snapshot = {
             let mut q = self.queue.lock().await;
             let now = Utc::now();
             q.recompute_aging(now);
-            let oldest = q
-                .lanes()
-                .values()
-                .flat_map(|lane_q| lane_q.lanes.values())
-                .flat_map(|lane| lane.entries.iter())
-                .map(|e| (now - e.submitted_at).num_seconds().max(0) as u64)
-                .max();
-            let ready_counts = q
-                .lanes()
+            q.lanes()
                 .iter()
-                .filter_map(|(class, lane_q)| {
-                    let total = lane_q.total();
-                    (total > 0).then(|| (format!("{:?}", class), total))
+                .map(|(class, lane_q)| {
+                    let oldest = lane_q
+                        .lanes
+                        .values()
+                        .flat_map(|lane| lane.entries.iter())
+                        .map(|e| {
+                            now.signed_duration_since(e.submitted_at)
+                                .num_seconds()
+                                .max(0) as u64
+                        })
+                        .max();
+                    (format!("{:?}", class), lane_q.total(), oldest)
                 })
-                .collect::<BTreeMap<_, _>>();
-            (oldest, ready_counts)
+                .collect::<Vec<_>>()
         };
+        let oldest = queue_snapshot.iter().filter_map(|(_, _, age)| *age).max();
+        let ready_counts = queue_snapshot
+            .into_iter()
+            .filter_map(|(class, total, _)| (total > 0).then_some((class, total)))
+            .collect::<BTreeMap<_, _>>();
         *self.oldest_queued_age_secs.lock().await = oldest;
         *self.ready_counts.lock().await = ready_counts;
 
-        // 4. Refresh the bounded job-kind distribution used by snapshots.
-        let kind_query = codegg_core::jobs::store::JobStoreQuery {
-            states: vec![JobState::Queued, JobState::Running],
-            workspace_id: None,
-            kinds: vec![],
-            limit: Some(10_000),
-            session_id: None,
-        };
-        match self.store.list_jobs(kind_query).await {
-            Ok(summaries) => {
-                let mut counts = BTreeMap::new();
-                for summary in summaries {
-                    *counts.entry(summary.kind.as_str().to_string()).or_insert(0) += 1;
-                }
-                *self.job_kind_counts.lock().await = counts;
-            }
+        // 4. Refresh the job-kind distribution used by snapshots.
+        match self
+            .store
+            .count_jobs_by_kind_state(&[JobState::Queued, JobState::Running])
+            .await
+        {
+            Ok(counts) => *self.job_kind_counts.lock().await = counts,
             Err(e) => {
                 tracing::debug!("reconcile: job-kind listing failed: {e}");
             }
@@ -661,7 +671,7 @@ impl JobScheduler {
 
         // Collect active source hashes grouped by workspace root
         let mut workspace_digests: std::collections::HashMap<
-            String,
+            WorkspaceId,
             std::collections::HashSet<String>,
         > = std::collections::HashMap::new();
         for job in &jobs {
@@ -670,25 +680,29 @@ impl JobScheduler {
                 ..
             } = &job.payload
             {
-                if let Some(ws_root) = job.labels.get("workspace_root") {
-                    workspace_digests
-                        .entry(ws_root.clone())
-                        .or_default()
-                        .insert(hash.clone());
-                }
+                workspace_digests
+                    .entry(job.workspace_id.clone())
+                    .or_default()
+                    .insert(hash.clone());
             }
         }
 
         // Clean up each workspace's source store
-        for (ws_root, digests) in &workspace_digests {
+        for (workspace_id, digests) in &workspace_digests {
+            let Some(workspace) = self.workspaces.workspaces().resolve(workspace_id).await else {
+                tracing::debug!(%workspace_id, "skipping orphan cleanup for unknown workspace");
+                continue;
+            };
             let active: Vec<&str> = digests.iter().map(|s| s.as_str()).collect();
             let removed = crate::python_script::source_store::PythonSourceStore::cleanup_stale(
-                std::path::Path::new(ws_root),
+                &workspace.canonical_root,
                 &active,
             );
             if removed > 0 {
                 tracing::info!(
-                    "python source orphan cleanup: removed {removed} files from {ws_root}"
+                    %workspace_id,
+                    root = %workspace.canonical_root.display(),
+                    "python source orphan cleanup: removed {removed} files"
                 );
             }
         }
@@ -922,6 +936,13 @@ impl JobScheduler {
         }
         self.running_total.fetch_add(1, Ordering::SeqCst);
 
+        self.emit_event(SchedulerEvent::JobAdmitted {
+            job_id: job.job_id.to_string(),
+            attempt_id: attempt.attempt_id.clone(),
+            run_id: None,
+        })
+        .await;
+
         // Dispatch via the already-validated executor; record completion.
         let me = self.clone();
         let attempt_id = attempt.attempt_id.clone();
@@ -1057,19 +1078,6 @@ impl JobScheduler {
                     }
                 }
                 drop(lease_for_task);
-                // Forward event.
-                if completion.run_id.is_some() {
-                    let g = event_tx.lock().await;
-                    if let Some(tx) = g.as_ref() {
-                        let _ = tx
-                            .send(SchedulerEvent::JobAdmitted {
-                                job_id: job_id_for_task.to_string(),
-                                attempt_id: attempt_id.clone(),
-                                run_id: completion.run_id.clone(),
-                            })
-                            .await;
-                    }
-                }
                 let g = event_tx.lock().await;
                 if let Some(tx) = g.as_ref() {
                     let _ = tx
@@ -1431,7 +1439,10 @@ pub enum JobSchedulerError {
     Internal(String),
 }
 
-fn job_eligible(job: &JobRecord) -> bool {
+fn job_eligible(
+    job: &JobRecord,
+    dependency_states: &std::collections::HashMap<JobId, JobState>,
+) -> bool {
     if !matches!(job.state, JobState::Queued) {
         return false;
     }
@@ -1446,8 +1457,10 @@ fn job_eligible(job: &JobRecord) -> bool {
             return false;
         }
     }
-    if !job.depends_on.is_empty() {
-        return false;
+    for dependency in &job.depends_on {
+        if !matches!(dependency_states.get(dependency), Some(JobState::Completed)) {
+            return false;
+        }
     }
     true
 }

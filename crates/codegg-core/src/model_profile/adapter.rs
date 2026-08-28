@@ -209,7 +209,7 @@ fn definitions() -> &'static [AdapterDefinition] {
             .iter()
             .map(|(id, source)| {
                 let definition: AdapterDefinition =
-                    toml::from_str(source).unwrap_or_else(|e| panic!("built-in adapter {id}: {e}"));
+                    toml::from_str(source).expect("invalid built-in adapter definition");
                 assert_eq!(&definition.adapter.id, id);
                 definition
             })

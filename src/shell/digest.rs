@@ -88,12 +88,14 @@ impl ShellDigest {
                 });
             }
             ShellStatus::Running | ShellStatus::Exited => {
-                if exit_code.is_some_and(|c| c != 0) && failures.is_empty() {
-                    failures.push(ShellFailure {
-                        kind: ShellFailureKind::GenericNonZeroExit,
-                        message: format!("process exited with code {}", exit_code.unwrap()),
-                        location: None,
-                    });
+                if let Some(code) = exit_code.filter(|code| *code != 0) {
+                    if failures.is_empty() {
+                        failures.push(ShellFailure {
+                            kind: ShellFailureKind::GenericNonZeroExit,
+                            message: format!("process exited with code {code}"),
+                            location: None,
+                        });
+                    }
                 }
             }
         }
@@ -201,12 +203,19 @@ impl ShellDigest {
 }
 
 fn summarize(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        text.to_string()
-    } else {
-        let mut truncated: String = text.chars().take(max_chars).collect();
+    let mut chars = text.chars();
+    let mut truncated = String::new();
+    for _ in 0..max_chars {
+        let Some(character) = chars.next() else {
+            return text.to_string();
+        };
+        truncated.push(character);
+    }
+    if chars.next().is_some() {
         truncated.push_str("\n... [truncated]");
         truncated
+    } else {
+        text.to_string()
     }
 }
 
@@ -282,7 +291,7 @@ fn extract_panics(text: &str, failures: &mut Vec<ShellFailure>) {
 fn extract_location_after(text: &str, offset: usize) -> Option<String> {
     static RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?m)^\s*-->\s+(.+):\d+:\d+").unwrap());
-    let after = &text[offset..];
+    let after = text.get(offset..)?;
     RE.captures(after)
         .and_then(|cap| cap.get(1))
         .map(|m| m.as_str().trim().to_string())
@@ -517,6 +526,11 @@ mod tests {
         assert!(s.contains("[truncated]"));
         let s = summarize(&"é".repeat(600), 500);
         assert!(s.contains("[truncated]"));
+    }
+
+    #[test]
+    fn location_extraction_ignores_invalid_utf8_offset() {
+        assert_eq!(extract_location_after("é --> file.rs:1:1", 1), None);
     }
 
     #[test]

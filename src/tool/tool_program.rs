@@ -614,7 +614,8 @@ impl ToolProgramTool {
 
         if let Ok(Some(record)) =
             crate::tool::tool_program_result::ToolProgramResultStore::new(workspace_root)
-                .load(&program_id)
+                .load_async(&program_id)
+                .await
         {
             return Ok(crate::tool::tool_program_result::result_to_json(&record));
         }

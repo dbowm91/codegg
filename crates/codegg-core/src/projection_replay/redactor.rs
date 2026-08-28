@@ -352,12 +352,7 @@ impl ProjectionFieldRedactor {
                         // in the replacement is appended verbatim.
                         // The captured value (last group) is
                         // dropped.
-                        let first = caps.get(1).unwrap().as_str();
-                        if rule.replacement.contains("$1") {
-                            rule.replacement.replace("$1", first)
-                        } else {
-                            rule.replacement.to_string()
-                        }
+                        render_replacement(rule, caps)
                     } else {
                         rule.replacement.to_string()
                     }
@@ -457,6 +452,15 @@ impl ProjectionFieldRedactor {
             // through unchanged.
             other => other.clone(),
         }
+    }
+}
+
+fn render_replacement(rule: &RedactionRule, caps: &regex::Captures<'_>) -> String {
+    let first = caps.get(1).map(|capture| capture.as_str()).unwrap_or("");
+    if rule.replacement.contains("$1") {
+        rule.replacement.replace("$1", first)
+    } else {
+        rule.replacement.to_string()
     }
 }
 
@@ -582,6 +586,18 @@ fn is_secret_key(lower_key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_first_capture_does_not_panic() {
+        let rule = RedactionRule {
+            name: "optional",
+            pattern: r"(prefix)?secret",
+            replacement: "$1[REDACTED]",
+        };
+        let regex = Regex::new(rule.pattern).unwrap();
+        let captures = regex.captures("secret").unwrap();
+        assert_eq!(render_replacement(&rule, &captures), "[REDACTED]");
+    }
 
     fn r() -> ProjectionFieldRedactor {
         ProjectionFieldRedactor::new()

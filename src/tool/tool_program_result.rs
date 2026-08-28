@@ -230,6 +230,36 @@ impl ToolProgramResultStore {
         Ok(record)
     }
 
+    /// Persist a result without blocking a Tokio worker thread.
+    pub async fn persist_async(
+        &self,
+        program_id: &str,
+        attempt_id: &str,
+        selected_backend: impl Into<String> + Send + 'static,
+        result: ProgramResult,
+        call_artifacts: Vec<ProgramArtifactHandle>,
+        child_artifacts: Vec<ChildArtifactHandle>,
+        output_artifact: Option<String>,
+    ) -> Result<ProgramResultRecord, ToolProgramResultError> {
+        let store = self.clone();
+        let program_id = program_id.to_string();
+        let attempt_id = attempt_id.to_string();
+        let selected_backend = selected_backend.into();
+        tokio::task::spawn_blocking(move || {
+            store.persist(
+                &program_id,
+                &attempt_id,
+                selected_backend,
+                result,
+                call_artifacts,
+                child_artifacts,
+                output_artifact,
+            )
+        })
+        .await
+        .map_err(|error| ToolProgramResultError::Io(std::io::Error::other(error)))?
+    }
+
     pub fn load(
         &self,
         program_id: &str,
@@ -276,6 +306,18 @@ impl ToolProgramResultStore {
             });
         }
         Ok(Some(record))
+    }
+
+    /// Load a result without blocking a Tokio worker thread.
+    pub async fn load_async(
+        &self,
+        program_id: &str,
+    ) -> Result<Option<ProgramResultRecord>, ToolProgramResultError> {
+        let store = self.clone();
+        let program_id = program_id.to_string();
+        tokio::task::spawn_blocking(move || store.load(&program_id))
+            .await
+            .map_err(|error| ToolProgramResultError::Io(std::io::Error::other(error)))?
     }
 
     fn path(&self, program_id: &str) -> PathBuf {

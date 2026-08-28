@@ -45,7 +45,12 @@ impl<'a> IrVerifier<'a> {
         }
 
         // Check that the last instruction is Return
-        let last_op = &self.ir.instructions.last().unwrap().op;
+        let last_op = &self
+            .ir
+            .instructions
+            .last()
+            .expect("instructions non-empty after guard")
+            .op;
         if !matches!(last_op, IrOp::Return) {
             return Err(ToolProgramError::Verify(Diagnostic::new(
                 DiagnosticCode::VerificationFailed,

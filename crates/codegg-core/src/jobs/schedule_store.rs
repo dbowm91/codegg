@@ -263,7 +263,9 @@ impl ScheduleStore for InMemoryScheduleStore {
 
             let (kind, missed_policy, overlap, template, last_occurrence) = {
                 let guard = self.schedules.lock().await;
-                let r = guard.get(sid_str).unwrap();
+                let r = guard
+                    .get(sid_str)
+                    .expect("due schedule exists after collection");
                 (
                     r.kind.clone(),
                     r.missed_run_policy.clone(),

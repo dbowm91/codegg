@@ -397,7 +397,8 @@ impl ToolProgramNotificationService {
             let Some(root) = workspace_root else { continue };
             let loaded =
                 crate::tool::tool_program_result::ToolProgramResultStore::new(Path::new(&root))
-                    .load(&program_id)
+                    .load_async(&program_id)
+                    .await
                     .ok()
                     .flatten();
             if let Some(record) = loaded {

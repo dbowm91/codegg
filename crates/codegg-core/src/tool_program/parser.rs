@@ -145,7 +145,10 @@ fn convert_stmt(
             if let Expr::SubmitJobExpr { op, config, .. } = &value {
                 if targets.len() == 1 {
                     return Ok(Stmt::SubmitJob {
-                        target: targets.into_iter().next().unwrap(),
+                        target: targets
+                            .into_iter()
+                            .next()
+                            .expect("SubmitJob requires exactly one target"),
                         op: *op.clone(),
                         config: *config.clone(),
                         span: Span::new(0, 0),

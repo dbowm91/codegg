@@ -168,11 +168,9 @@ where
     usable.sort_by_key(NormalizedRemote::equality_key);
     usable.dedup();
     if usable.len() == 1 {
-        RepositoryLineageEvidence::Unique {
-            remote: usable
-                .into_iter()
-                .next()
-                .expect("usable contains exactly one remote"),
+        match usable.into_iter().next() {
+            Some(remote) => RepositoryLineageEvidence::Unique { remote },
+            None => RepositoryLineageEvidence::NoRemote,
         }
     } else {
         RepositoryLineageEvidence::Ambiguous { remotes: usable }
@@ -383,7 +381,13 @@ fn run_git(path: &Path, args: &[&str]) -> Result<Output, RepositoryLineageError>
         .spawn()
         .map_err(RepositoryLineageError::Spawn)?;
 
-    let stdout = child.stdout.take().expect("stdout was configured as piped");
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(RepositoryLineageError::Spawn(std::io::Error::other(
+            "git stdout was not configured as piped",
+        )));
+    };
     let mut bytes = Vec::with_capacity(MAX_CONFIG_OUTPUT_BYTES.min(4096));
     stdout
         .take((MAX_CONFIG_OUTPUT_BYTES + 1) as u64)

@@ -97,6 +97,7 @@ pub struct ShellOutputStore {
     max_entries: usize,
     pub max_bytes_per_command: usize,
     pub max_total_bytes: usize,
+    total_bytes: usize,
 }
 
 impl ShellOutputStore {
@@ -127,6 +128,7 @@ impl ShellOutputStore {
             max_entries,
             max_bytes_per_command,
             max_total_bytes,
+            total_bytes: 0,
         }
     }
 
@@ -159,12 +161,14 @@ impl ShellOutputStore {
     pub fn append_stdout(&mut self, id: ShellCommandId, data: &[u8]) {
         if let Some(entry) = self.find_mut(id) {
             entry.stdout.append(data);
+            self.total_bytes = self.total_bytes.saturating_add(data.len());
         }
     }
 
     pub fn append_stderr(&mut self, id: ShellCommandId, data: &[u8]) {
         if let Some(entry) = self.find_mut(id) {
             entry.stderr.append(data);
+            self.total_bytes = self.total_bytes.saturating_add(data.len());
         }
     }
 
@@ -236,16 +240,17 @@ impl ShellOutputStore {
 
     fn evict(&mut self) {
         while self.entries.len() > self.max_entries {
-            self.entries.pop_front();
-        }
-        let mut total: usize = 0;
-        for e in &self.entries {
-            total += e.stdout.total_bytes;
-            total += e.stderr.total_bytes;
-        }
-        while total > self.max_total_bytes && self.entries.len() > 1 {
             if let Some(evicted) = self.entries.pop_front() {
-                total = total
+                self.total_bytes = self
+                    .total_bytes
+                    .saturating_sub(evicted.stdout.total_bytes)
+                    .saturating_sub(evicted.stderr.total_bytes);
+            }
+        }
+        while self.total_bytes > self.max_total_bytes && self.entries.len() > 1 {
+            if let Some(evicted) = self.entries.pop_front() {
+                self.total_bytes = self
+                    .total_bytes
                     .saturating_sub(evicted.stdout.total_bytes)
                     .saturating_sub(evicted.stderr.total_bytes);
             } else {

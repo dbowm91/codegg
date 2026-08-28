@@ -1629,7 +1629,7 @@ impl JobExecutor for ToolProgramExecutor {
         // the interpreter or nested calls again.
         let result_store =
             crate::tool::tool_program_result::ToolProgramResultStore::new(&ctx.workspace_root);
-        match result_store.load(&program_id) {
+        match result_store.load_async(&program_id).await {
             Ok(Some(record)) => {
                 if execution_mode == "background" {
                     if let Some(service) = &self.notification_service {
@@ -1883,7 +1883,7 @@ impl JobExecutor for ToolProgramExecutor {
         let result_record = match crate::tool::tool_program_result::ToolProgramResultStore::new(
             &ctx.workspace_root,
         )
-        .persist(
+        .persist_async(
             &program_id,
             ctx.attempt_id.as_str(),
             selected_backend,
@@ -1891,7 +1891,9 @@ impl JobExecutor for ToolProgramExecutor {
             call_artifacts,
             child_artifacts,
             output_artifact,
-        ) {
+        )
+        .await
+        {
             Ok(record) => Some(record),
             Err(error) => {
                 return ExecutorCompletion {
