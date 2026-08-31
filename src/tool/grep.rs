@@ -164,7 +164,7 @@ impl Tool for GrepTool {
             validate_path(search_path, &allowed_root)?
         };
 
-        let walk = WalkBuilder::new(search_path)
+        let walk = WalkBuilder::new(&canonical_search)
             .hidden(false)
             .git_ignore(true)
             .follow_links(false)

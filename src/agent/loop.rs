@@ -81,6 +81,7 @@ type ToolDefCache = (
     String,
     u64,
     bool,
+    Option<crate::config::schema::ToolDeferralConfig>,
     Vec<crate::provider::ToolDefinition>,
     Vec<crate::provider::ToolDefinition>,
 );
@@ -1627,6 +1628,7 @@ impl AgentLoop {
             ref cache_mcp_count,
             cache_perm_ver,
             cache_expose_raw,
+            ref cache_tool_deferral,
             ref cached_defs,
             ref cached_deferred,
         )) = self.tool_def_cache
@@ -1637,18 +1639,10 @@ impl AgentLoop {
                 && cache_mcp_count == &mcp_tool_revision
                 && cache_perm_ver == permission_version
                 && cache_expose_raw == expose_raw_search
+                && cache_tool_deferral == &self.config.tool_deferral
             {
                 let mut definitions = cached_defs.clone();
                 self.deferred_tool_definitions = cached_deferred.clone();
-
-                // Separate MCP tools into immediate vs deferred
-                for mcp_def in mcp_tools {
-                    if mcp_def.defer_loading == Some(true) {
-                        self.deferred_tool_definitions.push(mcp_def);
-                    } else {
-                        definitions.push(mcp_def);
-                    }
-                }
 
                 if let Some(ref plugin_svc) = self.plugin_service {
                     let input = serde_json::json!({
@@ -1831,6 +1825,7 @@ impl AgentLoop {
             mcp_tool_revision,
             permission_version,
             expose_raw_search,
+            self.config.tool_deferral.clone(),
             definitions.clone(),
             deferred,
         ));

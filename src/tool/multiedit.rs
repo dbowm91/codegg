@@ -107,18 +107,14 @@ impl Tool for MultiEditTool {
         let parsed: MultiEditInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid multiedit input: {e}")))?;
 
-        let path_str_for_config = parsed.path.clone();
-
-        let path = if parsed.path.starts_with('/') {
-            std::path::PathBuf::from(&parsed.path)
-        } else {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join(&parsed.path)
-        };
-
         let allowed_root = self.allowed_root.clone();
         let unrestricted = self.unrestricted;
+        let path_str_for_config = parsed.path.clone();
+        let path = if std::path::Path::new(&parsed.path).is_absolute() || unrestricted {
+            PathBuf::from(&parsed.path)
+        } else {
+            allowed_root.join(&parsed.path)
+        };
         let path_for_read = path.clone();
 
         let content = tokio::task::spawn_blocking(move || {
@@ -210,10 +206,13 @@ impl Tool for MultiEditTool {
             std::fs::write(&canonical, &content)
                 .map_err(|e| ToolError::Execution(format!("failed to write file: {e}")))?;
 
-            Ok::<_, ToolError>(format!(
-                "Applied {} edits to {}",
-                parsed.edits.len(),
-                path_for_display
+            Ok::<_, ToolError>((
+                format!(
+                    "Applied {} edits to {}",
+                    parsed.edits.len(),
+                    path_for_display
+                ),
+                content,
             ))
         })
         .await
@@ -223,20 +222,15 @@ impl Tool for MultiEditTool {
         if let Some(ref svc) = self.preflight {
             let path_str = path_str_for_config;
             if is_config_file(&path_str) {
-                let content_after = tokio::task::spawn_blocking({
-                    let path_str = path_str.clone();
-                    move || std::fs::read_to_string(&path_str).unwrap_or_default()
-                })
-                .await
-                .unwrap_or_default();
+                let content_after = result.1.as_str();
                 let ext = std::path::Path::new(&path_str)
                     .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("");
                 let config_decision = match ext {
-                    "json" | "jsonc" | "json5" => svc.check_json_valid(&content_after).await,
-                    "toml" => svc.check_toml_valid(&content_after).await,
-                    _ => svc.check_config(&content_after).await,
+                    "json" | "jsonc" | "json5" => svc.check_json_valid(content_after).await,
+                    "toml" => svc.check_toml_valid(content_after).await,
+                    _ => svc.check_config(content_after).await,
                 };
                 match config_decision {
                     PreflightDecision::Block { findings } => {
@@ -252,9 +246,9 @@ impl Tool for MultiEditTool {
         }
 
         if preflight_warnings.is_empty() {
-            Ok(result)
+            Ok(result.0)
         } else {
-            Ok(format!("{}\n\n{}", preflight_warnings.join("\n"), result))
+            Ok(format!("{}\n\n{}", preflight_warnings.join("\n"), result.0))
         }
     }
 }

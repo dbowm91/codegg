@@ -76,52 +76,29 @@ impl Tool for WriteTool {
         let (existed, old_content, final_path, formatted) =
             tokio::task::spawn_blocking(move || {
                 let original_path = Path::new(&path_str);
-                let parent = original_path.parent().map(|p| p.to_path_buf());
-                let file_name = original_path
-                    .file_name()
-                    .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
-
-                let validated_parent = if !unrestricted {
-                    let parent_to_validate = parent.clone().unwrap_or_else(|| PathBuf::from("."));
-
-                    crate::tool::util::check_path_for_symlinks(&parent_to_validate)?;
-
-                    let root_canonical = allowed_root
-                        .canonicalize()
-                        .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
-
-                    if parent_to_validate.exists() {
-                        let canonical_parent = parent_to_validate.canonicalize().map_err(|_| {
-                            ToolError::Execution(format!(
-                                "invalid path: {}",
-                                parent_to_validate.display()
-                            ))
-                        })?;
-                        if !canonical_parent.starts_with(&root_canonical) {
-                            return Err(ToolError::Permission(format!(
-                                "path '{}' is outside allowed directory",
-                                parent_to_validate.display()
-                            )));
-                        }
-                        canonical_parent
-                    } else {
-                        parent_to_validate.clone()
-                    }
+                let validated_path = if !unrestricted {
+                    crate::tool::util::validate_target_path(original_path, &allowed_root)?
                 } else {
-                    let parent_to_validate = parent.clone().unwrap_or_else(|| PathBuf::from("."));
-                    crate::tool::util::check_path_for_symlinks(&parent_to_validate)?;
-                    parent_to_validate.canonicalize().map_err(|_| {
+                    let parent_to_validate = original_path
+                        .parent()
+                        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+                    crate::tool::util::check_path_for_symlinks(parent_to_validate)?;
+                    let parent_canonical = parent_to_validate.canonicalize().map_err(|_| {
                         ToolError::Execution(format!(
                             "invalid path: {}",
                             parent_to_validate.display()
                         ))
-                    })?
+                    })?;
+                    let file_name = original_path
+                        .file_name()
+                        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
+                    parent_canonical.join(file_name)
                 };
 
-                std::fs::create_dir_all(&validated_parent)
-                    .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-                let validated_path = validated_parent.join(file_name);
+                if let Some(parent) = validated_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                }
 
                 let existed = std::path::Path::new(&validated_path).exists();
                 let old_content = if existed {

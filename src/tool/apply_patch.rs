@@ -1,7 +1,9 @@
 use crate::error::ToolError;
 use crate::preflight::{PreflightDecision, PreflightService};
 use crate::tool::patch_util::apply_unified_diff;
-use crate::tool::util::{canonicalize_path, check_path_for_symlinks, validate_path};
+use crate::tool::util::{
+    canonicalize_path, check_path_for_symlinks, validate_path, validate_target_path,
+};
 use crate::tool::{Tool, ToolCategory};
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -374,38 +376,6 @@ fn parse_rename(patch: &str) -> Option<(String, String)> {
     None
 }
 
-fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
-    check_path_for_symlinks(path)?;
-    let root_canonical = allowed_root
-        .canonicalize()
-        .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
-
-    let candidate = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        root_canonical.join(path)
-    };
-
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
-    check_path_for_symlinks(parent)?;
-    let parent_canonical = parent
-        .canonicalize()
-        .map_err(|_| ToolError::Execution(format!("invalid path: {}", parent.display())))?;
-    if !parent_canonical.starts_with(&root_canonical) {
-        return Err(ToolError::Permission(format!(
-            "path '{}' is outside allowed directory",
-            path.display()
-        )));
-    }
-
-    let file_name = candidate
-        .file_name()
-        .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?;
-    Ok(parent_canonical.join(file_name))
-}
-
 fn validate_target_path_unrestricted(path: &Path) -> Result<PathBuf, ToolError> {
     check_path_for_symlinks(path)?;
     let parent = path
@@ -474,6 +444,33 @@ mod tests {
             }
             other => panic!("unexpected error type: {other:?}"),
         }
+    }
+
+    #[test]
+    fn validate_target_path_rejects_dotdot_through_missing_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let err = validate_target_path(Path::new("missing/../../outside.txt"), &root)
+            .expect_err("must reject traversal through a missing parent");
+        assert!(matches!(err, ToolError::Permission(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn validate_target_path_allows_missing_nested_parent() {
+        let temp = TempDir::new().expect("temp dir");
+        let root = temp.path().join("root");
+        std::fs::create_dir_all(&root).expect("create root");
+
+        let validated = validate_target_path(Path::new("nested/deeper/new.txt"), &root)
+            .expect("missing nested parent should be allowed");
+        assert_eq!(
+            validated,
+            root.canonicalize()
+                .expect("canonical root")
+                .join("nested/deeper/new.txt")
+        );
     }
 
     #[test]

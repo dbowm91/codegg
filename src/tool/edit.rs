@@ -264,7 +264,7 @@ fn try_edit(content: &str, old_string: &str, new_string: &str) -> Option<String>
 
 fn exact_match(content: &str, old_string: &str, new_string: &str) -> Option<String> {
     if content.contains(old_string) {
-        Some(content.replace(old_string, new_string))
+        Some(content.replacen(old_string, new_string, 1))
     } else {
         None
     }
@@ -670,4 +670,15 @@ fn find_similar_block(content: &str, old_string: &str) -> String {
     let start_line = best_start + 1;
     let end_line = best_start + window_size;
     format!("\n\nDid you mean lines {}-{}?", start_line, end_line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_edit;
+
+    #[test]
+    fn exact_match_replaces_only_the_first_duplicate() {
+        let result = try_edit("same\nsame", "same", "new").expect("match should be found");
+        assert_eq!(result, "new\nsame");
+    }
 }

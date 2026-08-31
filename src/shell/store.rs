@@ -160,15 +160,25 @@ impl ShellOutputStore {
 
     pub fn append_stdout(&mut self, id: ShellCommandId, data: &[u8]) {
         if let Some(entry) = self.find_mut(id) {
+            let retained_before = entry.stdout.head.len() + entry.stdout.tail.len();
             entry.stdout.append(data);
-            self.total_bytes = self.total_bytes.saturating_add(data.len());
+            let retained_after = entry.stdout.head.len() + entry.stdout.tail.len();
+            self.total_bytes = self
+                .total_bytes
+                .saturating_add(retained_after.saturating_sub(retained_before));
+            self.evict();
         }
     }
 
     pub fn append_stderr(&mut self, id: ShellCommandId, data: &[u8]) {
         if let Some(entry) = self.find_mut(id) {
+            let retained_before = entry.stderr.head.len() + entry.stderr.tail.len();
             entry.stderr.append(data);
-            self.total_bytes = self.total_bytes.saturating_add(data.len());
+            let retained_after = entry.stderr.head.len() + entry.stderr.tail.len();
+            self.total_bytes = self
+                .total_bytes
+                .saturating_add(retained_after.saturating_sub(retained_before));
+            self.evict();
         }
     }
 
@@ -243,16 +253,16 @@ impl ShellOutputStore {
             if let Some(evicted) = self.entries.pop_front() {
                 self.total_bytes = self
                     .total_bytes
-                    .saturating_sub(evicted.stdout.total_bytes)
-                    .saturating_sub(evicted.stderr.total_bytes);
+                    .saturating_sub(evicted.stdout.head.len() + evicted.stdout.tail.len())
+                    .saturating_sub(evicted.stderr.head.len() + evicted.stderr.tail.len());
             }
         }
         while self.total_bytes > self.max_total_bytes && self.entries.len() > 1 {
             if let Some(evicted) = self.entries.pop_front() {
                 self.total_bytes = self
                     .total_bytes
-                    .saturating_sub(evicted.stdout.total_bytes)
-                    .saturating_sub(evicted.stderr.total_bytes);
+                    .saturating_sub(evicted.stdout.head.len() + evicted.stdout.tail.len())
+                    .saturating_sub(evicted.stderr.head.len() + evicted.stderr.tail.len());
             } else {
                 break;
             }
@@ -476,6 +486,22 @@ mod tests {
         store.insert_started(&req2);
         store.append_stdout(req2.id, b"ok");
         assert!(store.get(req1.id).is_none() || store.get(req2.id).is_some());
+    }
+
+    #[test]
+    fn store_total_limit_counts_retained_bytes_not_observed_bytes() {
+        let mut store = ShellOutputStore::with_limits(100, 2_000_000, 700_000);
+        let req1 = make_req(1, "noisy cmd");
+        store.insert_started(&req1);
+        store.append_stdout(req1.id, &[b'x'; 1_000_000]);
+
+        let req2 = make_req(2, "second cmd");
+        store.insert_started(&req2);
+        store.append_stdout(req2.id, &[b'y'; 100_000]);
+
+        assert!(store.get(req1.id).is_some());
+        assert_eq!(store.get(req1.id).unwrap().stdout.head.len(), HEAD_CAP);
+        assert_eq!(store.get(req1.id).unwrap().stdout.tail.len(), TAIL_CAP);
     }
 
     #[test]

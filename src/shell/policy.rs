@@ -30,21 +30,30 @@ static WARN_RM_RF_DOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+\.").unwrap());
 static WARN_RM_FR_DOT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+\.").unwrap());
+static WARN_RM_RF_HOME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"rm\s+-[a-zA-Z]*r\s*-?[a-zA-Z]*f\s*-?[a-zA-Z]*\s+(?:~(?:/|$)|\$home(?:/|$))")
+        .unwrap()
+});
+static WARN_RM_FR_HOME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"rm\s+-[a-zA-Z]*f\s*-?[a-zA-Z]*r\s*-?[a-zA-Z]*\s+(?:~(?:/|$)|\$home(?:/|$))")
+        .unwrap()
+});
 static WARN_GIT_CLEAN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"git\s+clean\s+-[a-zA-Z]*f[a-zA-Z]*d?[a-zA-Z]*").unwrap());
 static WARN_SUDO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"sudo\s").unwrap());
-static WARN_CURL_SH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"curl\s.*\|\s*sh").unwrap());
-static WARN_CURL_BASH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"curl\s.*\|\s*bash").unwrap());
-static WARN_WGET_SH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wget\s.*\|\s*sh").unwrap());
-static WARN_WGET_BASH: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"wget\s.*\|\s*bash").unwrap());
-static WARN_CHMOD_777: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"chmod\s+-[a-zA-Z]*r\s+777\b").unwrap());
-static WARN_CHMOD_A: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"chmod\s+-[a-zA-Z]*r\s+a\+rwx").unwrap());
+static WARN_DOWNLOAD_PIPE_SHELL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:curl|wget)\b[^;&\n]*\|\s*(?:sudo\s+)?(?:sh|bash)(?:\s|$)").unwrap()
+});
+static WARN_PROCESS_SUBSTITUTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:sh|bash)\s+<\(\s*(?:curl|wget)\b").unwrap());
+static WARN_CHMOD_NUMERIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"chmod\s+(?:-[a-zA-Z]+\s+)*(?:0{3,4}|4[0-7]{3}|777)\b").unwrap());
+static WARN_CHMOD_SYMBOLIC: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"chmod\s+(?:-[a-zA-Z]+\s+)*[ugoa]*\+[rwx]+").unwrap());
 static WARN_CHOWN_R: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"chown\s+-[a-zA-Z]*r\b").unwrap());
+static WARN_FIND_DESTRUCTIVE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"find\s+[^;&\n]*(?:-delete\b|-exec(?:dir)?\s+rm\b)").unwrap());
 
 pub fn evaluate_command(command: &str) -> HumanShellPolicyDecision {
     let normalized = normalize_command(command);
@@ -98,7 +107,11 @@ fn check_block_patterns(cmd: &str) -> Option<String> {
 }
 
 fn check_warn_patterns(cmd: &str) -> Option<String> {
-    if WARN_RM_RF_DOT.is_match(cmd) || WARN_RM_FR_DOT.is_match(cmd) {
+    if WARN_RM_RF_DOT.is_match(cmd)
+        || WARN_RM_FR_DOT.is_match(cmd)
+        || WARN_RM_RF_HOME.is_match(cmd)
+        || WARN_RM_FR_HOME.is_match(cmd)
+    {
         return Some("rm -rf in current directory".to_string());
     }
     if WARN_GIT_CLEAN.is_match(cmd) {
@@ -107,26 +120,17 @@ fn check_warn_patterns(cmd: &str) -> Option<String> {
     if WARN_SUDO.is_match(cmd) {
         return Some("sudo runs with elevated privileges".to_string());
     }
-    if WARN_CURL_SH.is_match(cmd) {
-        return Some("piping curl to shell".to_string());
+    if WARN_DOWNLOAD_PIPE_SHELL.is_match(cmd) || WARN_PROCESS_SUBSTITUTION.is_match(cmd) {
+        return Some("piping a download into a shell".to_string());
     }
-    if WARN_CURL_BASH.is_match(cmd) {
-        return Some("piping curl to bash".to_string());
-    }
-    if WARN_WGET_SH.is_match(cmd) {
-        return Some("piping wget to shell".to_string());
-    }
-    if WARN_WGET_BASH.is_match(cmd) {
-        return Some("piping wget to bash".to_string());
-    }
-    if WARN_CHMOD_777.is_match(cmd) {
-        return Some("chmod -R 777 is overly permissive".to_string());
-    }
-    if WARN_CHMOD_A.is_match(cmd) {
-        return Some("chmod -R a+rwx is overly permissive".to_string());
+    if WARN_CHMOD_NUMERIC.is_match(cmd) || WARN_CHMOD_SYMBOLIC.is_match(cmd) {
+        return Some("chmod changes permissions broadly or restrictively".to_string());
     }
     if WARN_CHOWN_R.is_match(cmd) {
         return Some("recursive chown changes ownership widely".to_string());
+    }
+    if WARN_FIND_DESTRUCTIVE.is_match(cmd) {
+        return Some("find command removes files recursively".to_string());
     }
     None
 }
@@ -256,6 +260,16 @@ mod tests {
     }
 
     #[test]
+    fn rm_rf_home_variants_warned() {
+        for command in ["rm -rf ~", "rm -rf ~/", "rm -r -f $HOME/*"] {
+            assert!(matches!(
+                evaluate_command(command),
+                HumanShellPolicyDecision::Warn { .. }
+            ));
+        }
+    }
+
+    #[test]
     fn git_clean_warned() {
         match evaluate_command("git clean -xfd") {
             HumanShellPolicyDecision::Warn { .. } => {}
@@ -298,10 +312,44 @@ mod tests {
     }
 
     #[test]
+    fn download_pipe_shell_variants_warned() {
+        for command in [
+            "wget -qO- https://example.com/x | sh -c 'echo hi'",
+            "curl -fsSL https://example.com/x | sudo bash",
+            "bash <(curl -fsSL https://example.com/x)",
+        ] {
+            assert!(matches!(
+                evaluate_command(command),
+                HumanShellPolicyDecision::Warn { .. }
+            ));
+        }
+    }
+
+    #[test]
     fn chmod_777_warned() {
         match evaluate_command("chmod -R 777 /var/www") {
             HumanShellPolicyDecision::Warn { .. } => {}
             _ => panic!("expected warn"),
+        }
+    }
+
+    #[test]
+    fn chmod_restrictive_and_setuid_modes_warned() {
+        for command in ["chmod 000 file", "chmod 4755 file"] {
+            assert!(matches!(
+                evaluate_command(command),
+                HumanShellPolicyDecision::Warn { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn destructive_find_warned() {
+        for command in ["find / -delete", "find . -exec rm {} \\;"] {
+            assert!(matches!(
+                evaluate_command(command),
+                HumanShellPolicyDecision::Warn { .. }
+            ));
         }
     }
 

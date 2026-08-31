@@ -28,6 +28,82 @@ pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolEr
     Ok(canonical)
 }
 
+/// Validate a file target whose leaf and/or parent directories may not exist.
+/// Existing path prefixes are canonicalized so symlinks and `..` cannot escape
+/// the allowed root, while the missing suffix is resolved lexically.
+pub fn validate_target_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
+    let root_canonical = allowed_root
+        .canonicalize()
+        .map_err(|_| ToolError::Execution("invalid allowed root".to_string()))?;
+    let candidate = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root_canonical.join(path)
+    };
+    let candidate = lexically_normalize(&candidate);
+
+    check_path_for_symlinks(&candidate)?;
+
+    let mut existing = candidate.clone();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        let component = existing
+            .file_name()
+            .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?
+            .to_os_string();
+        suffix.push(component);
+        existing = existing
+            .parent()
+            .ok_or_else(|| ToolError::Execution("invalid path".to_string()))?
+            .to_path_buf();
+    }
+
+    check_path_for_symlinks(&existing)?;
+    let existing_canonical = existing
+        .canonicalize()
+        .map_err(|_| ToolError::Execution(format!("invalid path: {}", existing.display())))?;
+    if !existing_canonical.starts_with(&root_canonical) {
+        return Err(ToolError::Permission(format!(
+            "path '{}' is outside allowed directory",
+            path.display()
+        )));
+    }
+
+    let mut normalized = existing_canonical;
+    for component in suffix.iter().rev() {
+        if component == std::ffi::OsStr::new(".") {
+            continue;
+        }
+        if component == std::ffi::OsStr::new("..") {
+            normalized.pop();
+        } else {
+            normalized.push(component);
+        }
+        if !normalized.starts_with(&root_canonical) {
+            return Err(ToolError::Permission(format!(
+                "path '{}' is outside allowed directory",
+                path.display()
+            )));
+        }
+    }
+
+    Ok(normalized)
+}
+
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
 pub fn canonicalize_path(path: &Path) -> Result<PathBuf, ToolError> {
     check_path_for_symlinks(path)?;
     path.canonicalize()

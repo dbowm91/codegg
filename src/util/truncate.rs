@@ -20,12 +20,10 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    let safe_end = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|&i| i <= max_bytes)
-        .last()
-        .unwrap_or(0);
+    let mut safe_end = max_bytes;
+    while safe_end > 0 && !text.is_char_boundary(safe_end) {
+        safe_end -= 1;
+    }
     format!("{}... [truncated]", &text[..safe_end])
 }
 
@@ -36,12 +34,10 @@ pub fn truncate_prefix(text: &str, max_bytes: usize) -> &str {
         return text;
     }
 
-    let safe_end = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|&i| i <= max_bytes)
-        .last()
-        .unwrap_or(0);
+    let mut safe_end = max_bytes;
+    while safe_end > 0 && !text.is_char_boundary(safe_end) {
+        safe_end -= 1;
+    }
     &text[..safe_end]
 }
 
@@ -53,10 +49,10 @@ pub fn truncate_suffix(text: &str, max_bytes: usize) -> &str {
     }
 
     let min_start = text.len().saturating_sub(max_bytes);
-    let safe_start = text
-        .char_indices()
-        .find_map(|(i, _)| (i >= min_start).then_some(i))
-        .unwrap_or(text.len());
+    let mut safe_start = min_start;
+    while safe_start < text.len() && !text.is_char_boundary(safe_start) {
+        safe_start += 1;
+    }
     &text[safe_start..]
 }
 
