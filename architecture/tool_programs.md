@@ -430,7 +430,7 @@ milestones in the Tool Programs subsystem are closed.
 
 ### Storage Layout
 
-Storage version: **35** (`STORAGE_LAYOUT_VERSION` in `storage/mod.rs`).
+Storage version: **36** (`STORAGE_LAYOUT_VERSION` in `storage/mod.rs`).
 Tool program tables (`tool_program`, `tool_program_call`) were
 introduced in migration v33 and are additive.
 

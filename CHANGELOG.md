@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documented
 
-- Skills refresh (`.opencode/skills/`): corrected stale claims in `context`, `core`, `jobs`, `server`, `skills`, `architecture-review`, `tool-program-harness`, and `shell_session` guides (full `CoreRuntimeDeps` field list, `NewJob` lineage fields, `TuiMessage` crate location, `run_server` daemon parameter, `ContextPolicyConfig` tool-palette fields, current `STORAGE_LAYOUT_VERSION = 35`). Added a new `tui` skill covering command registration, sync dispatch, the async spawn-and-complete guard pattern, and dialog invariants.
+- Skills refresh (`.opencode/skills/`): corrected stale claims in `context`, `core`, `jobs`, `server`, `skills`, `architecture-review`, `tool-program-harness`, and `shell_session` guides (full `CoreRuntimeDeps` field list, `NewJob` lineage fields, `TuiMessage` crate location, `run_server` daemon parameter, `ContextPolicyConfig` tool-palette fields, current `STORAGE_LAYOUT_VERSION = 36`). Added a new `tui` skill covering command registration, sync dispatch, the async spawn-and-complete guard pattern, and dialog invariants.
 - `AGENTS.md`: fixed the `CoreRuntimeDeps` gotcha to list all 15 fields, documented both fake LSP server binaries (`egglsp-test-server` for egglsp crate tests, `codegg-lsp-test-server` for root-level tests), added a Skills Index mapping each skill to its architecture doc, and indexed the `docs/` directory.
 - Moved the completed architecture-docs audit from `architecture/review-findings.md` to `plans/archive/architecture-doc-review-findings.md` with a closure note; updated `architecture/overview.md`.
-- `architecture/core.md` and `architecture/workspace.md`: clarified that workspace tables arrived in migration v22 while the current layout version is 35.
+- `architecture/core.md` and `architecture/workspace.md`: clarified that workspace tables arrived in migration v22 while the current layout version is 36.
 
 ### Added
 

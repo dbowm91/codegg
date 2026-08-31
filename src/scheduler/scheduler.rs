@@ -370,11 +370,14 @@ impl JobScheduler {
                 let result = std::panic::AssertUnwindSafe(async move {
                     let g = event_tx.lock().await;
                     if let Some(tx) = g.as_ref() {
-                        let _ = tx
+                        if let Err(error) = tx
                             .send(SchedulerEvent::SchedulerWoke {
                                 reason: reason_clone,
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::debug!(?error, "scheduler wake event receiver is unavailable");
+                        }
                     }
                 })
                 .catch_unwind()
@@ -805,15 +808,24 @@ impl JobScheduler {
                 .await;
                 // Re-insert the entry so we try again next tick.
                 let mut q = self.queue.lock().await;
-                let _ = q.insert(entry);
+                if let Err(error) = q.insert(entry) {
+                    tracing::error!(
+                        job_id = %job.job_id,
+                        %error,
+                        "scheduler failed to requeue an admission-blocked job"
+                    );
+                    return Err(JobSchedulerError::Internal(format!(
+                        "failed to requeue admission-blocked job {}: {error}",
+                        job.job_id
+                    )));
+                }
                 return Ok(false);
             }
             AdmissionDecision::Impossible(reason) => {
                 self.admission_impossible.fetch_add(1, Ordering::SeqCst);
                 // Mark the job Failed in durable state.
-                let _ = self
-                    .mark_unschedulable(&job, &format!("{:?}", reason))
-                    .await;
+                self.mark_unschedulable(&job, &format!("{:?}", reason))
+                    .await?;
                 return Ok(false);
             }
         };
@@ -829,7 +841,17 @@ impl JobScheduler {
                     job.workspace_id
                 );
                 let mut q = self.queue.lock().await;
-                let _ = q.insert(entry);
+                if let Err(error) = q.insert(entry) {
+                    tracing::error!(
+                        job_id = %job.job_id,
+                        %error,
+                        "scheduler failed to requeue a job after workspace lease failure"
+                    );
+                    return Err(JobSchedulerError::Internal(format!(
+                        "failed to requeue job {} after workspace lease failure: {error}",
+                        job.job_id
+                    )));
+                }
                 return Ok(false);
             }
         };
@@ -1080,12 +1102,18 @@ impl JobScheduler {
                 drop(lease_for_task);
                 let g = event_tx.lock().await;
                 if let Some(tx) = g.as_ref() {
-                    let _ = tx
+                    if let Err(error) = tx
                         .send(SchedulerEvent::JobResourceReleased {
                             job_id: job_id_for_task.to_string(),
                             attempt_id: attempt_id.clone(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::debug!(
+                            ?error,
+                            "scheduler resource-release event receiver is unavailable"
+                        );
+                    }
                 }
                 // Keep the running count visible until the final release
                 // event has been emitted, so shutdown cannot mistake an
@@ -1252,7 +1280,9 @@ impl JobScheduler {
             ids.extend(jobs.into_iter().map(|job| job.job_id));
         }
         for id in ids {
-            let _ = self.request_cancel(&id, reason).await;
+            if let Err(error) = self.request_cancel(&id, reason).await {
+                tracing::warn!(job_id = %id, %error, "scheduler failed to cancel a job during shutdown");
+            }
         }
         self.cancel_running().await;
     }
@@ -1267,7 +1297,9 @@ impl JobScheduler {
             .collect();
         if tokio::time::timeout(cleanup_grace, async {
             for handle in &mut handles {
-                let _ = handle.await;
+                if let Err(error) = handle.await {
+                    tracing::warn!(%error, "scheduler executor task failed during shutdown cleanup");
+                }
             }
         })
         .await
@@ -1277,7 +1309,9 @@ impl JobScheduler {
                 handle.abort();
             }
             for handle in handles {
-                let _ = handle.await;
+                if let Err(error) = handle.await {
+                    tracing::debug!(%error, "scheduler executor task ended after shutdown abort");
+                }
             }
             tracing::warn!(
                 running = self.running_total.load(Ordering::SeqCst),

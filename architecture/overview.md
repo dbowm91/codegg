@@ -271,7 +271,7 @@ Counts below were re-verified against the current tree (see source column).
 | Built-in slash commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
 | Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 35 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Storage layout version | 36 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Integration test files | 164 | `tests/*.rs` |
 | Architecture docs | 73 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
