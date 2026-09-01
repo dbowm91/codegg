@@ -8,6 +8,22 @@ use codegg_core::jobs::{
 };
 use codegg_core::workspace_services::{WorkspaceServicePolicy, WorkspaceServiceRegistry};
 
+struct DurableWorktreeOwnerResolver {
+    runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+}
+
+#[async_trait::async_trait]
+impl codegg_core::worktree_service::WorktreeOwnerResolver for DurableWorktreeOwnerResolver {
+    async fn is_terminal(&self, owner: &codegg_core::identity::AgentRunId) -> Result<bool, String> {
+        Ok(self
+            .runs
+            .get_run(owner)
+            .await
+            .map_err(|error| error.to_string())?
+            .is_some_and(|run| run.status.is_terminal()))
+    }
+}
+
 fn default_connection_manager(
     pool: &sqlx::SqlitePool,
 ) -> Option<Arc<crate::core::provider_connections::ConnectionManager>> {
@@ -58,6 +74,8 @@ pub struct CoreRuntimeDeps {
     /// have not yet been migrated; production daemons always populate
     /// this.
     pub workspace_services: Option<Arc<WorkspaceServiceRegistry>>,
+    /// M003: durable daemon-owned managed worktree service.
+    pub worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
     /// Phase 3: workspace service lifecycle policy. Tunables for
     /// `max_active_workspaces` and `idle_evict_after`. The daemon
     /// constructs a default policy if the caller does not supply one.
@@ -101,6 +119,7 @@ impl Clone for CoreRuntimeDeps {
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
+            worktree_service: self.worktree_service.clone(),
             workspace_service_policy: self.workspace_service_policy.clone(),
             job_store: Arc::clone(&self.job_store),
             schedule_store: Arc::clone(&self.schedule_store),
@@ -137,6 +156,10 @@ impl CoreRuntimeDeps {
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
+            worktree_service: Some(codegg_core::worktree_service::WorktreeService::memory(
+                std::path::PathBuf::from(".codegg/worktrees"),
+                Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+            )),
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -171,6 +194,10 @@ impl CoreRuntimeDeps {
             turn_runtime,
             lsp_service: None,
             workspace_services: None,
+            worktree_service: Some(codegg_core::worktree_service::WorktreeService::memory(
+                std::path::PathBuf::from(".codegg/worktrees"),
+                Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+            )),
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,
@@ -205,14 +232,26 @@ impl CoreRuntimeDeps {
             pool.clone(),
         );
         Self {
-            pool: Some(pool),
+            pool: Some(pool.clone()),
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
-            agent_run_store,
+            agent_run_store: agent_run_store.clone(),
             run_control,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
+            worktree_service: Some(
+                codegg_core::worktree_service::WorktreeService::sqlite(
+                    pool.clone(),
+                    codegg_core::storage::DaemonPaths::default()
+                        .data_root()
+                        .join(codegg_core::worktree_service::DEFAULT_WORKTREE_DIRECTORY),
+                    Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
+                )
+                .with_owner_resolver(Arc::new(DurableWorktreeOwnerResolver {
+                    runs: agent_run_store.clone(),
+                })),
+            ),
             workspace_service_policy: WorkspaceServicePolicy::default(),
             job_store,
             schedule_store,

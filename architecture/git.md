@@ -31,6 +31,7 @@ logging, or persistence surfaces.
 | RunStore | `src/git_run_store.rs` | `persist_mutation`, `persist_recovery` |
 | Tool surface | `src/tool/git.rs` | `GitTool` with `subcommand`, `mutation` (40 actions), `recover`, `operation_state` |
 | Canonical env policy | `crates/codegg-git/src/process_policy.rs` | `ALLOWED_ENV_VARS` (21), `ALWAYS_STRIPPED_ENV_VARS` (28) — single source of truth |
+| Managed worktree lifecycle | `crates/codegg-core/src/worktree_service.rs` | Durable worktree identity/lease state over hardened add/remove helpers |
 
 ## How It Works
 
@@ -93,6 +94,22 @@ hard-deny set (e.g. `GIT_ASKPASS`) is always stripped.
 `push_permission_hint` produces human-readable scope descriptions.
 
 `PullStrategy` enum: `Merge`, `Rebase`, `FastForwardOnly`.
+
+### Managed worktrees
+
+The M003 `WorktreeService` owns only CodeGG-managed local worktree
+lifecycles. It resolves the repository root and base HEAD with structured
+read APIs, acquires the shared repository/worktree mutation lock, and invokes
+the hardened `codegg-core::worktree` add/remove helpers through
+`spawn_blocking`. It does not clone repositories, perform network Git
+operations, or replace `GitMutationExecutor` for ordinary Git mutations.
+
+Its deterministic branch/path names are validated by `BranchName` and
+`ObjectId`; cleanup refreshes structured status and operation state before
+removing and never force-removes dirty, conflicted, unknown, or unmanaged
+worktrees. Scheduler jobs that perform the lifecycle reserve
+`exclusive:worktree-mutation`, matching the existing Git mutation resource
+profile.
 Fetch with `--prune` uses `ManagedGitArgv` fallback (not modeled by typed
 parser).
 

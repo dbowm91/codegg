@@ -56,6 +56,10 @@ pub struct CoreDaemon {
     /// `with_deps_and_identity` if the caller did not supply one via
     /// `CoreRuntimeDeps::with_workspace_services`.
     pub workspace_services: Arc<WorkspaceServiceRegistry>,
+    /// M003: durable managed worktree ownership and lease service.
+    pub worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
+    /// Bounded startup reconciliation against Git's actual worktree list.
+    _worktree_reconcile_handle: Option<tokio::task::JoinHandle<()>>,
     /// Daemon-owned Eggpool provisioning service. It is present only for
     /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
     pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,
@@ -81,6 +85,9 @@ pub struct CoreDaemon {
 impl Drop for CoreDaemon {
     fn drop(&mut self) {
         if let Some(handle) = self._projection_maintenance_handle.take() {
+            handle.abort();
+        }
+        if let Some(handle) = self._worktree_reconcile_handle.take() {
             handle.abort();
         }
     }
@@ -210,6 +217,12 @@ impl CoreDaemon {
                 workspaces.clone(),
                 Arc::new(ProductionWorkspaceServicesFactory),
                 deps.workspace_service_policy.clone(),
+            )
+        });
+        let worktree_service = deps.worktree_service.clone().unwrap_or_else(|| {
+            codegg_core::worktree_service::WorktreeService::memory(
+                std::path::PathBuf::from(".codegg/worktrees"),
+                Arc::new(codegg_core::workspace_services::WorkspaceLockTable::new()),
             )
         });
         // Keep `deps.workspace_services` in sync so callers reading the
@@ -363,6 +376,19 @@ impl CoreDaemon {
             let _handle = scheduler.spawn_run();
         }
 
+        let worktree_reconcile_handle = if deps.pool.is_some() {
+            tokio::runtime::Handle::try_current().ok().map(|handle| {
+                let service = worktree_service.clone();
+                handle.spawn(async move {
+                    if let Err(error) = service.reconcile_all().await {
+                        tracing::warn!(?error, "managed worktree startup reconciliation failed");
+                    }
+                })
+            })
+        } else {
+            None
+        };
+
         Self {
             daemon_id,
             generation,
@@ -377,6 +403,8 @@ impl CoreDaemon {
             workspaces,
             context_resolver,
             workspace_services,
+            worktree_service,
+            _worktree_reconcile_handle: worktree_reconcile_handle,
             eggpool_provisioner,
             selection_service,
             asset_refresh,
@@ -3846,6 +3874,142 @@ impl CoreDaemon {
                     Err(e) => Ok(CoreResponse::Error {
                         code: "worktree_list_failed".to_string(),
                         message: e.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ManagedWorktreeGet { worktree_id } => {
+                let id = match codegg_core::identity::WorktreeId::parse(&worktree_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "managed_worktree_invalid_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self.worktree_service.refresh(&id).await {
+                    Ok(record) => Ok(CoreResponse::ManagedWorktree {
+                        worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
+                            &record,
+                        ),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "managed_worktree_get_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ManagedWorktreeList {
+                workspace_id,
+                repository_id,
+                run_id,
+                include_removed,
+            } => {
+                let workspace_id = match workspace_id {
+                    Some(value) => match codegg_core::workspace::WorkspaceId::parse(&value) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "managed_worktree_invalid_workspace_id".into(),
+                                message: error.to_string(),
+                            })
+                        }
+                    },
+                    None => None,
+                };
+                let repository_id = match repository_id {
+                    Some(value) => match codegg_core::identity::RepositoryId::parse(&value) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "managed_worktree_invalid_repository_id".into(),
+                                message: error.to_string(),
+                            })
+                        }
+                    },
+                    None => None,
+                };
+                let owner_run_id = match run_id {
+                    Some(value) => match codegg_core::identity::AgentRunId::parse(&value) {
+                        Ok(id) => Some(id),
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "managed_worktree_invalid_run_id".into(),
+                                message: error.to_string(),
+                            })
+                        }
+                    },
+                    None => None,
+                };
+                match self
+                    .worktree_service
+                    .list(codegg_core::worktree_service::WorktreeQuery {
+                        workspace_id,
+                        repository_id,
+                        owner_run_id,
+                        include_removed,
+                    })
+                    .await
+                {
+                    Ok(records) => Ok(CoreResponse::ManagedWorktrees {
+                        worktrees: records
+                            .iter()
+                            .map(codegg_core::protocol_conversions::managed_worktree_to_dto)
+                            .collect(),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "managed_worktree_list_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ManagedWorktreeCleanup {
+                worktree_id,
+                lease_generation,
+            } => {
+                let id = match codegg_core::identity::WorktreeId::parse(&worktree_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "managed_worktree_invalid_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self.worktree_service.cleanup(&id, lease_generation).await {
+                    Ok(record) => Ok(CoreResponse::ManagedWorktreeCleaned {
+                        worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
+                            &record,
+                        ),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "managed_worktree_cleanup_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::ManagedWorktreeArchive {
+                worktree_id,
+                lease_generation,
+            } => {
+                let id = match codegg_core::identity::WorktreeId::parse(&worktree_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "managed_worktree_invalid_id".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match self.worktree_service.archive(&id, lease_generation).await {
+                    Ok(record) => Ok(CoreResponse::ManagedWorktreeArchived {
+                        worktree: codegg_core::protocol_conversions::managed_worktree_to_dto(
+                            &record,
+                        ),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "managed_worktree_archive_failed".into(),
+                        message: error.to_string(),
                     }),
                 }
             }

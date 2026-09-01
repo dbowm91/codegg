@@ -498,6 +498,32 @@ pub struct WorkspaceServiceHealthDto {
     pub config_revision: u64,
 }
 
+/// Bounded operator-facing projection of a daemon-managed worktree.  The
+/// locator is included for local operator inspection; ownership remains
+/// represented by opaque IDs and is never inferred from the path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagedWorktreeDto {
+    pub worktree_id: String,
+    pub project_id: String,
+    pub repository_id: String,
+    pub workspace_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    pub repository_root: String,
+    pub path: String,
+    #[serde(default)]
+    pub branch: Option<String>,
+    pub base_commit: String,
+    pub managed: bool,
+    pub state: String,
+    pub health: String,
+    pub lease_generation: u64,
+    #[serde(default)]
+    pub owner_run_id: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// Wire-format config diagnostic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigDiagnosticDto {

@@ -165,6 +165,30 @@ pub fn workspace_service_snapshot_to_dto(
     }
 }
 
+/// Convert a durable managed worktree to its bounded protocol projection.
+pub fn managed_worktree_to_dto(
+    record: &crate::worktree_service::WorktreeRecord,
+) -> codegg_protocol::dto::ManagedWorktreeDto {
+    codegg_protocol::dto::ManagedWorktreeDto {
+        worktree_id: record.worktree_id.to_string(),
+        project_id: record.project_id.to_string(),
+        repository_id: record.repository_id.to_string(),
+        workspace_id: record.workspace_id.to_string(),
+        node_id: record.node_id.as_ref().map(ToString::to_string),
+        repository_root: record.repository_root.to_string_lossy().into_owned(),
+        path: record.path.to_string_lossy().into_owned(),
+        branch: record.branch.clone(),
+        base_commit: record.base_commit.clone(),
+        managed: record.managed,
+        state: record.state.as_str().to_string(),
+        health: record.health.as_str().to_string(),
+        lease_generation: record.lease_generation,
+        owner_run_id: record.owner_run_id.as_ref().map(ToString::to_string),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    }
+}
+
 // ── Project Catalog M004 conversion helpers ─────────────────────────────
 
 fn bounded_wire_text(value: &str, max: usize) -> String {

@@ -10,6 +10,10 @@ delegates to `egggit`; mutating operations (add/remove) use hardened
 `std::process::Command` subprocesses with a security-enforced
 environment policy shared with the root crate's `GitMutationExecutor`.
 
+The durable M003 service in `crates/codegg-core/src/worktree_service.rs`
+adds ownership and lifecycle state around these primitives. It is a daemon
+domain service, not a replacement Git executor.
+
 ## Where It Lives
 
 | Layer | Path | Role |
@@ -18,6 +22,8 @@ environment policy shared with the root crate's `GitMutationExecutor`.
 | Read-only engine | `crates/egggit/src/worktree.rs` | Async `list_worktrees` (porcelain parser), `find_git_root`, `is_git_file`, `is_git_worktree` |
 | Root re-export | `src/lib.rs:12` | `pub use codegg_core::worktree;` |
 | Mutation executor | `src/git_mutations.rs` | All other git mutations (worktree add/remove are in codegg-core) |
+| Durable service | `crates/codegg-core/src/worktree_service.rs` | SQLite records, leases, reconciliation, health, and safe cleanup |
+| Durable schema | `crates/codegg-core/src/session/schema.rs` | M003 migration 39: managed worktrees and lease history |
 
 The `src/worktree/` directory referenced in older docs **does not exist**.
 All worktree code lives in codegg-core, re-exported for root-crate callers.
@@ -50,6 +56,42 @@ the provided `git_root`, including symlink-safe resolution.
 
 The canonical policy lists live in `codegg-git` and are re-exported
 from codegg-core as `POLICY_ALLOWED_ENV_VARS` / `POLICY_ALWAYS_STRIPPED_ENV_VARS`.
+
+### Durable managed lifecycle
+
+`WorktreeService` owns CodeGG-created worktrees through a durable
+`WorktreeRecord` and a generation-fenced `WorktreeLease`:
+
+```text
+reserve -> preparing -> ready -> in_use -> ready
+                              \\-> releasing -> removed
+                              \\-> archived -> removed
+                              \\-> orphaned (uncertain/unsafe state)
+```
+
+Records carry typed project, repository, workspace, worktree, and run
+identities; the canonical repository root, managed path, branch, base commit,
+health, lifecycle state, and lease generation are persisted. A partial unique
+index permits at most one active lease per worktree, while the record owner and
+generation are checked for every renew, release, archive, and cleanup action.
+
+Managed paths are deterministic (`<daemon-data>/worktrees/<repository-id>/wt-<short-worktree-id>`)
+and outside the repository root. Branch names are derived from the durable
+worktree identity and validated with `BranchName`; base commits are validated
+with `ObjectId`. Manual worktrees are only returned as external discoveries
+and are never claimed or automatically removed.
+
+Creation and removal run through `spawn_blocking` under the repository lock.
+Creation verifies both Git registration and the worktree `.git` pointer before
+marking a record ready. Refresh and restart reconciliation use structured
+`egggit` status and operation-state reads. Missing, dirty, conflicted,
+unknown, or unregistered worktrees become attention/orphan states. Cleanup
+refreshes immediately before removal, checks the expected generation and
+managed-root/symlink boundary, and never uses `--force`.
+
+SQLite-backed daemons start a bounded reconciliation task. An active durable
+run remains leased until its run record is terminal; a terminal run is
+released but not destructively cleaned up during reconciliation.
 
 ### Utility functions
 
@@ -87,6 +129,7 @@ Internal type in egggit. Converted to legacy `Worktree` via
 |----------|------|-----------|
 | `list_worktrees` | :33 | `async fn(git_root: &Path) -> Result<Vec<Worktree>, AppError>` |
 | `create_worktree` | :40 | `fn(git_root, path, branch, create_branch) -> Result<(), AppError>` |
+| `create_worktree_at` | — | `fn(git_root, path, branch, create_branch, base) -> Result<(), AppError>` |
 | `remove_worktree` | :68 | `fn(git_root, path, force) -> Result<(), AppError>` |
 | `find_git_root` | :120 | `fn(start: &Path) -> Option<PathBuf>` |
 | `is_git_file` | :124 | `fn(git_path: &Path) -> bool` |

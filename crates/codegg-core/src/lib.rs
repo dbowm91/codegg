@@ -29,3 +29,4 @@ pub mod tool_program;
 pub mod workspace;
 pub mod workspace_services;
 pub mod worktree;
+pub mod worktree_service;

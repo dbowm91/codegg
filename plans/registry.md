@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M003 ready | M001 and M002 closed; M003 is dependency-ready, while M004-M006 remain gated in roadmap order. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M003 active | M001 and M002 closed; M003 implementation is active and M004-M006 remain gated in roadmap order. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -45,11 +45,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | M001 closure accepted; typed run/workspace ownership is available. |
+| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | M001 closure accepted; implementation is active against the typed run/workspace ownership contract. |
 
 ## Closure work and dependencies
 
-All previously active closure lines are closed. M001 and M002 are closed by their linked records; M003 is dependency-ready. M004-M006 remain blocked by their additional declared dependencies.
+All previously active closure lines are closed. M001 and M002 are closed by their linked records; M003 implementation is active and its closure evidence is being gathered. M004-M006 remain blocked by their additional declared dependencies.
 
 Historical closed control points remain:
 

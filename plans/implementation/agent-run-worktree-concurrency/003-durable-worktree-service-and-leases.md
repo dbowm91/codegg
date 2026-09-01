@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Milestone 003 — Durable Worktree Service and Leases
 
-Status: ready
+Status: active
 
 Repository baseline: `b08d33b7e52bde1bde1ddcddeeee3c7c157a4103`
 

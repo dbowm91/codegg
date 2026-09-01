@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{
     CancelResultDto, ConfigDiagnosticDto, JobAttemptDto, JobQueryDto, JobRecordDto, JobSubmitDto,
-    JobSummaryDto, ProjectDetailsDto, ProjectHealthDto, ProjectRegisterRequestDto,
-    ProjectSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto, RunSummaryDto,
-    ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto,
+    JobSummaryDto, ManagedWorktreeDto, ProjectDetailsDto, ProjectHealthDto,
+    ProjectRegisterRequestDto, ProjectSummaryDto, RecoveryReportDto, RunQueryDto, RunRecordDto,
+    RunSummaryDto, ScheduleCreateDto, ScheduleRecordDto, ScheduleSummaryDto, SessionBindingDto,
     WorkspaceServiceHealthDto,
 };
 use crate::provider::{
@@ -237,6 +237,18 @@ pub enum CoreResponse {
         previous_revision: u64,
         new_revision: u64,
         diagnostics: Vec<ConfigDiagnosticDto>,
+    },
+    ManagedWorktree {
+        worktree: ManagedWorktreeDto,
+    },
+    ManagedWorktrees {
+        worktrees: Vec<ManagedWorktreeDto>,
+    },
+    ManagedWorktreeCleaned {
+        worktree: ManagedWorktreeDto,
+    },
+    ManagedWorktreeArchived {
+        worktree: ManagedWorktreeDto,
     },
     /// Project Catalog M004: bounded project catalog list.
     ProjectList {
@@ -765,6 +777,31 @@ pub enum CoreRequest {
     },
     WorktreeList {
         project_dir: String,
+    },
+    /// M003: inspect one durable CodeGG-managed worktree.
+    ManagedWorktreeGet {
+        worktree_id: String,
+    },
+    /// M003: list bounded durable managed worktree records.
+    ManagedWorktreeList {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        repository_id: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
+        include_removed: bool,
+    },
+    /// M003: request safe cleanup. The caller must supply the observed lease
+    /// generation so stale cleanup cannot target a re-leased worktree.
+    ManagedWorktreeCleanup {
+        worktree_id: String,
+        lease_generation: u64,
+    },
+    ManagedWorktreeArchive {
+        worktree_id: String,
+        lease_generation: u64,
     },
     /// Phase 2: register or look up the workspace rooted at `root`.
     /// Returns the same workspace id on every call (idempotent).

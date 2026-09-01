@@ -136,6 +136,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 38 {
         migrate_and_record(pool, 38).await?;
     }
+    if current_version < 39 {
+        migrate_and_record(pool, 39).await?;
+    }
 
     Ok(())
 }
@@ -186,6 +189,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             36 => migrate_v36(pool).await?,
             37 => migrate_v37(pool).await?,
             38 => migrate_v38(pool).await?,
+            39 => migrate_v39(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1890,6 +1894,59 @@ async fn migrate_v38(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_mailbox_pending ON agent_run_mailbox(run_id, state, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_agent_run_mailbox_created ON agent_run_mailbox(run_id, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_agent_run_journal_recent ON agent_run_journal(run_id, sequence)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M003: durable CodeGG-managed worktree records and lease history.  Manual
+/// Git worktrees are intentionally not backfilled: without an authoritative
+/// owner and repository relation, claiming them would make cleanup unsafe.
+async fn migrate_v39(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS managed_worktree (
+            worktree_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            repository_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            node_id TEXT,
+            repository_root TEXT NOT NULL,
+            path TEXT NOT NULL,
+            branch TEXT,
+            base_commit TEXT NOT NULL,
+            managed INTEGER NOT NULL DEFAULT 1 CHECK (managed IN (0, 1)),
+            state TEXT NOT NULL CHECK (state IN ('reserved','preparing','ready','in_use','releasing','archived','orphaned','removed')),
+            health TEXT NOT NULL CHECK (health IN ('clean','dirty','conflicted','missing','git_error','unknown')),
+            lease_generation INTEGER NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+            owner_run_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(repository_id, path)
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS worktree_lease (
+            worktree_id TEXT NOT NULL,
+            owner_run_id TEXT NOT NULL,
+            generation INTEGER NOT NULL CHECK (generation > 0),
+            acquired_at INTEGER NOT NULL,
+            renewed_at INTEGER NOT NULL,
+            released_at INTEGER,
+            PRIMARY KEY(worktree_id, generation),
+            FOREIGN KEY(worktree_id) REFERENCES managed_worktree(worktree_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_worktree_active_lease ON worktree_lease(worktree_id) WHERE released_at IS NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_worktree_active_path ON managed_worktree(repository_id, path) WHERE state <> 'removed'",
+        "CREATE INDEX IF NOT EXISTS idx_managed_worktree_workspace ON managed_worktree(workspace_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_managed_worktree_repository ON managed_worktree(repository_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_managed_worktree_owner ON managed_worktree(owner_run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_worktree_lease_owner ON worktree_lease(owner_run_id, released_at)",
     ] {
         sqlx::query(statement)
             .execute(pool)

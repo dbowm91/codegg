@@ -47,6 +47,13 @@ non-daemon harnesses. They may retain local compatibility services, but
 they do not provide the machine-wide singleton or global admission
 guarantees.
 
+Worktree lifecycle mutations use the same `exclusive:worktree-mutation`
+resource class as typed Git mutations and the workspace repository lock. The
+durable M003 `WorktreeService` is the lifecycle authority: it records reserve,
+lease-generation, health, reconciliation, and cleanup state while the
+scheduler remains the machine-capacity/admission authority. No worktree
+operation bypasses the hardened Git environment policy.
+
 ### Main loop (`scheduler.rs:625`)
 
 The scheduler loop runs until shutdown. Each iteration:

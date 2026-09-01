@@ -43,6 +43,20 @@ pub fn create_worktree(
     branch: &str,
     create_branch: bool,
 ) -> Result<(), AppError> {
+    create_worktree_at(git_root, path, branch, create_branch, None)
+}
+
+/// Create a worktree, optionally creating `branch` from an explicit base
+/// revision.  This keeps worktree creation on the same hardened Git
+/// subprocess boundary while allowing durable services to record the exact
+/// base commit they allocated.
+pub fn create_worktree_at(
+    git_root: &Path,
+    path: &Path,
+    branch: &str,
+    create_branch: bool,
+    base: Option<&str>,
+) -> Result<(), AppError> {
     let mut args = vec!["worktree", "add"];
     let path_str = path.to_string_lossy().to_string();
     args.push(&path_str);
@@ -51,6 +65,9 @@ pub fn create_worktree(
         args.push("-b");
     }
     args.push(branch);
+    if let Some(base) = base {
+        args.push(base);
+    }
 
     let output = hardened_git_command(&args, git_root)
         .output()
