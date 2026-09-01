@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Corrective Closure Addendum
 
-Status: active — M007 closed; M008 active
+Status: closed — M008 closed; strict corrective closure accepted
 
 Repository baseline reviewed: `b87d1d5b65aca96c700deb27e579374b3d158545`
 
@@ -233,7 +233,7 @@ Plan:
 
 - `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md`
 
-Status: ready.
+Status: closed; see `plans/closure/agent-run-worktree-concurrency/008-status.md`.
 
 Exit conditions:
 
