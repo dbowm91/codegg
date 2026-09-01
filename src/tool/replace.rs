@@ -22,7 +22,7 @@ pub struct ReplaceTool {
 impl ReplaceTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().expect("cannot determine workspace root"),
+            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
             preflight: None,
         }
@@ -175,6 +175,7 @@ impl Tool for ReplaceTool {
         let path_str_clone = path_str.clone();
         let pattern_clone = pattern.clone();
         let replacement_clone = replacement.clone();
+        let expected_content = content.clone();
 
         let (path_str_out, matches_len, old_content) = tokio::task::spawn_blocking(move || {
             let path = Path::new(&path_str_clone);
@@ -233,6 +234,11 @@ impl Tool for ReplaceTool {
 
             let content = std::fs::read_to_string(&canonical)
                 .map_err(|e| ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e)))?;
+            if content != expected_content {
+                return Err(ToolError::Execution(
+                    "file changed while replace preflight was running; retry".to_string(),
+                ));
+            }
 
             let matches: Vec<_> = re.find_iter(&content).collect();
             if matches.is_empty() {

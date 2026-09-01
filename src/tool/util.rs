@@ -7,7 +7,14 @@ use crate::error::ToolError;
 /// under `/var/...`, `/tmp/...`, and `/etc/...` continue to work on
 /// macOS, where the public prefix is a symlink to the real
 /// directory under `/private/`.
-const MACOS_SYSTEM_ALIASES: &[&str] = &["/var", "/tmp", "/etc"];
+const MACOS_SYSTEM_ALIASES: &[&str] = &[
+    "/var",
+    "/tmp",
+    "/etc",
+    "/private/var",
+    "/private/tmp",
+    "/private/etc",
+];
 
 pub fn validate_path(path: &Path, allowed_root: &Path) -> Result<PathBuf, ToolError> {
     check_path_for_symlinks(path)?;

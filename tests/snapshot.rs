@@ -302,6 +302,48 @@ async fn test_restore_to_path_rejects_traversal_path() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn test_restore_uses_distinct_temporary_files_for_similar_names() {
+    let pool = create_test_pool().await;
+    insert_test_project_and_session(&pool).await;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let manager = SnapshotManager::new(pool, temp_dir.path().to_path_buf());
+
+    let mut files = HashMap::new();
+    for (path, content) in [("archive.tar.gz", "gz"), ("archive.tar", "tar")] {
+        files.insert(
+            path.to_string(),
+            FileSnapshot {
+                path: path.to_string(),
+                content: content.to_string(),
+                hash: "hash".to_string(),
+                timestamp: 0,
+            },
+        );
+    }
+    let snapshot = SnapshotView {
+        id: "snap".to_string(),
+        session_id: "test-session".to_string(),
+        files,
+        created_at: 0,
+        label: None,
+    };
+
+    manager.restore(&snapshot).await.unwrap();
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("archive.tar.gz")).unwrap(),
+        "gz"
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join("archive.tar")).unwrap(),
+        "tar"
+    );
+    assert!(fs::read_dir(temp_dir.path())
+        .unwrap()
+        .flatten()
+        .all(|entry| !entry.file_name().to_string_lossy().ends_with(".tmp")));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn test_capture_skips_binary_and_large_files() {
     let pool = create_test_pool().await;
     insert_test_project_and_session(&pool).await;

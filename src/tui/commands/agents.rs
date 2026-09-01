@@ -145,7 +145,7 @@ fn cli_compat_context(workspace_root: &std::path::Path) -> AssetContext {
 /// Production CLI bootstrap helper. Reads `current_dir` exactly once at
 /// the boundary so the agent registry no longer needs to.
 fn cli_compat_context_from_cwd() -> AssetContext {
-    let cwd = std::env::current_dir().expect("cannot determine workspace root");
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     cli_compat_context(&cwd)
 }
 

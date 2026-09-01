@@ -316,6 +316,7 @@ impl ToolRegistry {
     /// wrappers that construct a `ToolRegistryOptions` and call this.
     pub fn with_options(options: ToolRegistryOptions) -> Self {
         let mut registry = Self::new();
+        let workspace_root = options.workspace_root.clone();
 
         // --- File-system / shell tools (always native) ---
         let bash_tool = if let Some(ref store) = options.run_store {
@@ -339,12 +340,30 @@ impl ToolRegistry {
             bash_tool
         };
         registry.register(bash_tool);
-        registry.register(crate::tool::read::ReadTool::default());
-        registry.register(crate::tool::edit::EditTool::default());
-        registry.register(crate::tool::write::WriteTool::default());
-        registry.register(crate::tool::glob::GlobTool::default());
-        registry.register(crate::tool::grep::GrepTool::default());
-        registry.register(crate::tool::list::ListTool::default());
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::read::ReadTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::read::ReadTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::edit::EditTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::edit::EditTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::write::WriteTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::write::WriteTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::glob::GlobTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::glob::GlobTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::grep::GrepTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::grep::GrepTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::list::ListTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::list::ListTool::default(),
+        });
         registry.register(crate::tool::task::TaskTool::default());
         registry.register(crate::tool::webfetch::WebFetchTool::default());
         registry.register(crate::tool::websearch::WebSearchTool::default());
@@ -417,9 +436,22 @@ impl ToolRegistry {
             options.asset_snapshot,
             options.asset_pin,
         ));
-        registry.register(crate::tool::apply_patch::ApplyPatchTool::new());
-        registry.register(crate::tool::diff::DiffTool::default());
-        registry.register(crate::tool::replace::ReplaceTool::default());
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => {
+                crate::tool::apply_patch::ApplyPatchTool::default().with_allowed_root(root.clone())
+            }
+            None => crate::tool::apply_patch::ApplyPatchTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::diff::DiffTool::default().with_allowed_root(root.clone()),
+            None => crate::tool::diff::DiffTool::default(),
+        });
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => {
+                crate::tool::replace::ReplaceTool::default().with_allowed_root(root.clone())
+            }
+            None => crate::tool::replace::ReplaceTool::default(),
+        });
         registry.register(crate::tool::review::ReviewTool::default());
         registry.register(crate::tool::terminal::TerminalTool::default());
         let test_tool = if let Some(ref store) = options.run_store {
@@ -478,10 +510,14 @@ impl ToolRegistry {
                         crate::config::schema::LspConfig::default(),
                     ))
                 });
-                registry.register(crate::tool::lsp::LspTool::with_cache_config(
+                let tool = crate::tool::lsp::LspTool::with_cache_config(
                     lsp_service,
                     options.lsp_cache_config,
-                ));
+                );
+                registry.register(match workspace_root.as_ref() {
+                    Some(root) => tool.with_allowed_root(root.clone()),
+                    None => tool,
+                });
             }
             ToolImplementationBackend::Disabled => {
                 registry.register(crate::tool::disabled::DisabledTool::new(
@@ -503,10 +539,14 @@ impl ToolRegistry {
                             crate::config::schema::LspConfig::default(),
                         ))
                     });
-                    registry.register(crate::tool::lsp::LspTool::with_cache_config(
+                    let tool = crate::tool::lsp::LspTool::with_cache_config(
                         lsp_service,
                         options.lsp_cache_config,
-                    ));
+                    );
+                    registry.register(match workspace_root.as_ref() {
+                        Some(root) => tool.with_allowed_root(root.clone()),
+                        None => tool,
+                    });
                 } else {
                     // MCP configured, no fallback. Don't register a
                     // model-visible tool. The diagnostic

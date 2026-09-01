@@ -321,7 +321,7 @@ Codegg daemon owns execution at a time. All implementation lives in
 
 | Path | Purpose |
 |------|---------|
-| `daemon.lock` | Advisory exclusive lock (`flock(LOCK_EX \| LOCK_NB)`) — authoritative identity |
+| `daemon.lock` | Advisory exclusive lock on Unix (`flock(LOCK_EX \| LOCK_NB)`) — authoritative identity |
 | `daemon.json` | Atomic metadata record (diagnostic only) |
 | `core.sock` | Unix domain socket the daemon binds |
 | `daemon.log` | Debug log (best-effort, rotated at 10 MB) |
@@ -334,10 +334,13 @@ Production locations:
 
 Override via `CODEGG_DAEMON_HOME`.
 
-**`DaemonInstanceGuard`** is an RAII guard that holds the flock for the
-daemon's lifetime. On drop it removes the metadata file (if owned by this
-guard) and releases the lock. The OS also releases the flock automatically
-on process exit.
+**`DaemonInstanceGuard`** is an RAII guard that holds the platform lock for the
+daemon's lifetime. On Unix this is a non-blocking exclusive flock; on drop it
+removes the metadata file (if owned by this guard) and releases the lock. The
+OS also releases the lock automatically on process exit. Windows builds are
+currently compatibility-only and do not enforce the singleton lock; production
+Windows support requires a native `LockFileEx` implementation before the
+singleton guarantee can apply there.
 
 **`DaemonInstanceMetadata`** (`daemon.json`) carries: `daemon_id`,
 `generation` (UUID), `pid`, `socket_path`, `protocol_version`,

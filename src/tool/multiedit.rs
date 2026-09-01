@@ -30,7 +30,7 @@ pub struct MultiEditTool {
 impl MultiEditTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().expect("cannot determine workspace root"),
+            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             unrestricted: false,
             preflight: None,
         }

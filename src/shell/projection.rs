@@ -418,6 +418,10 @@ impl CommandOutputStore {
     }
 
     /// Allocates the next monotonic command run ID.
+    ///
+    /// Relaxed ordering is sufficient because this atomic is only an ID
+    /// allocator; the store's mutable insertion API provides the ordering
+    /// contract for records and retained output.
     pub fn alloc_id(&self) -> CommandRunId {
         CommandRunId(self.next_id.fetch_add(1, Ordering::Relaxed))
     }
@@ -425,8 +429,8 @@ impl CommandOutputStore {
     /// Inserts raw stdout/stderr bytes for a command and returns the
     /// resulting output handles.
     ///
-    /// Per-stream bytes are truncated to `limits.max_single_stream_bytes`
-    /// when they exceed the cap; in that case the stream is marked
+    /// Per-stream bytes are bounded to `limits.max_single_stream_bytes`
+    /// using a head/tail split when they exceed the cap; in that case the stream is marked
     /// [`OutputCompleteness::Partial`] on the returned [`CommandRun`].
     /// UTF-8 validity is checked on the retained prefix only — total byte
     /// counts reflect what was observed on the stream, not what was
@@ -761,7 +765,12 @@ impl CommandOutputStore {
         if stream.len() <= cap {
             (stream.to_vec(), OutputCompleteness::Complete)
         } else {
-            (stream[..cap].to_vec(), OutputCompleteness::Partial)
+            let head_len = cap / 4;
+            let tail_len = cap - head_len;
+            let mut retained = Vec::with_capacity(cap);
+            retained.extend_from_slice(&stream[..head_len]);
+            retained.extend_from_slice(&stream[stream.len() - tail_len..]);
+            (retained, OutputCompleteness::Partial)
         }
     }
 
@@ -1147,8 +1156,11 @@ mod tests {
         assert!(run.is_partial());
         let h = run.stdout_handle().unwrap();
         assert_eq!(store.byte_len(h), Some(16));
-        // the retained prefix must match the first 16 bytes of the input
-        assert_eq!(store.get_stream(h).unwrap(), &stdout[..16]);
+        // Retention keeps the beginning for context and the end where
+        // failures commonly appear.
+        let retained = store.get_stream(h).unwrap();
+        assert_eq!(&retained[..4], &stdout[..4]);
+        assert_eq!(&retained[4..], &stdout[1024 - 12..]);
     }
 
     #[test]

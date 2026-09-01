@@ -1306,7 +1306,8 @@ impl CommandOutputProjector for RawProjector {
             run.stderr.completeness,
             crate::shell::projection::OutputCompleteness::Partial
         ) {
-            warnings.push("raw retention is partial; only a prefix is retained".to_string());
+            warnings
+                .push("raw retention is partial; only a head and tail are retained".to_string());
         }
 
         let exactness = if run.is_partial() {

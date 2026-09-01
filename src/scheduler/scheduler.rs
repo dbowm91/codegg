@@ -1340,42 +1340,22 @@ impl JobScheduler {
     ) -> Result<(), JobSchedulerError> {
         // The job remains in JobStore; mark the attempt as failed.
         // We use begin_attempt to create the attempt if needed.
-        let attempt = match self
+        let attempt = self
             .store
             .begin_attempt(&job.job_id, &self.daemon_generation)
-            .await
-        {
-            Ok(a) => Some(a),
-            Err(e) => {
-                tracing::warn!(
-                    job_id = %job.job_id,
-                    %e,
-                    "mark_unschedulable: begin_attempt failed"
-                );
-                None
-            }
+            .await?;
+        self.store.mark_attempt_running(&attempt.attempt_id).await?;
+        let completion = AttemptCompletion {
+            attempt_id: attempt.attempt_id.clone(),
+            state: AttemptState::Failed,
+            error: Some(JobErrorRecord {
+                class: FailureClass::Validation,
+                message: reason.to_string(),
+                transient: false,
+            }),
+            run_id: None,
         };
-        if let Some(a) = attempt {
-            if let Err(e) = self.store.mark_attempt_running(&a.attempt_id).await {
-                tracing::warn!(
-                    job_id = %job.job_id,
-                    attempt_id = %a.attempt_id,
-                    %e,
-                    "mark_unschedulable: mark_attempt_running failed"
-                );
-            }
-            let completion = AttemptCompletion {
-                attempt_id: a.attempt_id.clone(),
-                state: AttemptState::Failed,
-                error: Some(JobErrorRecord {
-                    class: FailureClass::Validation,
-                    message: reason.to_string(),
-                    transient: false,
-                }),
-                run_id: None,
-            };
-            self.store.finish_attempt(completion).await?;
-        }
+        self.store.finish_attempt(completion).await?;
         Ok(())
     }
 

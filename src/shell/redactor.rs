@@ -201,6 +201,27 @@ impl RedactRule for CloudCredentialRule {
     }
 }
 
+/// Provider tokens that are commonly emitted by CLIs and CI systems without
+/// an assignment or authorization-header wrapper.
+struct ProviderTokenRule;
+
+impl RedactRule for ProviderTokenRule {
+    fn name(&self) -> &str {
+        "provider-token"
+    }
+
+    fn redact(&self, text: &str) -> (String, usize) {
+        let mut count = 0usize;
+        let out = PROVIDER_TOKEN_RE
+            .replace_all(text, |_: &regex::Captures| {
+                count += 1;
+                "[REDACTED:provider-token]"
+            })
+            .into_owned();
+        (out, count)
+    }
+}
+
 /// URLs with embedded credentials.
 ///
 /// Matches `https://user:password@host` or `http://user:pass@host` patterns.
@@ -323,6 +344,16 @@ static AZURE_CONN_STR_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid azure conn str regex")
 });
 
+/// Token formats emitted by common provider CLIs and CI integrations.
+/// Minimum lengths mirror the repository's security scanner to avoid
+/// redacting short examples and ordinary prose.
+static PROVIDER_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82,}|xox[baprs]-[A-Za-z0-9-]{10,}|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{20,})",
+    )
+    .expect("valid provider token regex")
+});
+
 /// URL with embedded credentials: `scheme://user:pass@host`.
 static EMBEDDED_CRED_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(https?://)([^@\s]{1,64}):([^@\s]{4,128})@"#)
@@ -368,6 +399,7 @@ impl Redactor {
                 Box::new(EnvSecretRule),
                 Box::new(PemBlockRule),
                 Box::new(CloudCredentialRule),
+                Box::new(ProviderTokenRule),
                 Box::new(EmbeddedCredentialUrlRule),
                 Box::new(SessionMaterialRule),
             ],
@@ -530,6 +562,27 @@ mod tests {
         let input = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
         let result = redactor.redact(input);
         assert!(result.text.contains("[REDACTED:aws-secret-key]"));
+    }
+
+    #[test]
+    fn common_provider_tokens_are_redacted_without_assignment_syntax() {
+        let redactor = Redactor::new();
+        let github_pat = format!("github_pat_{}", "A".repeat(82));
+        let input = format!(
+            r#"{{"token":"ghp_{}"}} --token xoxb-1234567890 npm_{} pypi-{} {}"#,
+            "A".repeat(36),
+            "A".repeat(20),
+            "A".repeat(20),
+            github_pat
+        );
+        let result = redactor.redact(&input);
+        assert_eq!(result.replacements, 5);
+        assert!(result.text.contains("[REDACTED:provider-token]"));
+        assert!(!result.text.contains("ghp_"));
+        assert!(!result.text.contains("xoxb-"));
+        assert!(!result.text.contains("npm_"));
+        assert!(!result.text.contains("pypi-"));
+        assert!(!result.text.contains("github_pat_"));
     }
 
     #[test]

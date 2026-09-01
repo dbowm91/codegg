@@ -306,22 +306,7 @@ impl SnapshotManager {
         tokio::task::spawn_blocking(move || {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
-                    let full_path = project_root.join(&rel_path);
-                    if let Some(parent) = full_path.parent() {
-                        if !parent.exists() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                format!("failed to create directory {}: {}", parent.display(), e)
-                            })?;
-                        }
-                        // After mkdir, re-verify containment with
-                        // symlink rejection before writing.
-                        ensure_contained_parent(parent, &canonical_project_root)?;
-                    }
-                    let temp_path = full_path.with_extension("tmp");
-                    write_durable(&temp_path, &file_snapshot.content)?;
-                    if let Err(e) = std::fs::rename(&temp_path, &full_path) {
-                        return Err(format!("failed to rename {}: {}", temp_path.display(), e));
-                    }
+                    restore_file(&canonical_project_root, &rel_path, &file_snapshot.content)?;
                 }
                 Ok(())
             })();
@@ -361,21 +346,7 @@ impl SnapshotManager {
         tokio::task::spawn_blocking(move || {
             let result: Result<(), String> = (|| {
                 for (rel_path, file_snapshot) in files {
-                    let full_path = target.join(&rel_path);
-                    if let Some(parent) = full_path.parent() {
-                        if !parent.exists() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                format!("failed to create directory {}: {}", parent.display(), e)
-                            })?;
-                        }
-                        // After mkdir, re-verify containment with
-                        // symlink rejection before writing.
-                        ensure_contained_parent(parent, &canonical_target)?;
-                    }
-                    let temp_path = full_path.with_extension("tmp");
-                    write_durable(&temp_path, &file_snapshot.content)?;
-                    std::fs::rename(&temp_path, &full_path)
-                        .map_err(|e| format!("failed to rename {}: {}", temp_path.display(), e))?;
+                    restore_file(&canonical_target, &rel_path, &file_snapshot.content)?;
                 }
                 Ok(())
             })();
@@ -408,14 +379,151 @@ impl SnapshotManager {
 /// Write file contents durably: create, write, and fsync before any
 /// rename so the rename cannot land while data blocks are not on
 /// stable storage (mirrors `run_store::write_file_durable`).
+#[cfg(not(unix))]
 fn write_durable(path: &Path, data: impl AsRef<[u8]>) -> Result<(), String> {
     use std::io::Write;
-    let mut file = std::fs::File::create(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW);
+    }
+    let mut file = options
+        .open(path)
         .map_err(|e| format!("failed to create {}: {}", path.display(), e))?;
     file.write_all(data.as_ref())
         .map_err(|e| format!("failed to write {}: {}", path.display(), e))?;
     file.sync_all()
         .map_err(|e| format!("failed to sync {}: {}", path.display(), e))
+}
+
+/// Restore one file with a unique temporary name, cleanup on failure, and a
+/// best-effort directory sync after the atomic rename. The temporary file is
+/// created with `O_NOFOLLOW` on Unix, while the parent is checked immediately
+/// before the write to keep the path-validation window narrow.
+fn restore_file(root: &Path, relative_path: &str, content: &str) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        restore_file_unix(root, relative_path, content)
+    }
+
+    #[cfg(not(unix))]
+    {
+        let full_path = root.join(relative_path);
+        let parent = full_path
+            .parent()
+            .ok_or_else(|| format!("invalid restore path: {}", full_path.display()))?;
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create directory {}: {}", parent.display(), e))?;
+        }
+        ensure_contained_parent(parent, root)?;
+        let file_name = full_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("invalid restore path: {}", full_path.display()))?;
+        let temp_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+        if let Err(error) = write_durable(&temp_path, content) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&temp_path, &full_path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(format!(
+                "failed to rename {}: {}",
+                temp_path.display(),
+                error
+            ));
+        }
+        sync_parent_dir(&full_path);
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn restore_file_unix(root: &Path, relative_path: &str, content: &str) -> Result<(), String> {
+    use rustix::fs::{fsync, mkdirat, openat, renameat, AtFlags, Mode, OFlags, CWD};
+    use rustix::io::write;
+
+    let components: Vec<_> = Path::new(relative_path)
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_os_string()),
+            std::path::Component::CurDir => None,
+            _ => None,
+        })
+        .collect();
+    let (file_name, parent_components) = components
+        .split_last()
+        .ok_or_else(|| format!("invalid restore path: {relative_path}"))?;
+
+    let directory_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mut directory = openat(CWD, root, directory_flags, Mode::empty())
+        .map_err(|e| format!("failed to open restore root {}: {e}", root.display()))?;
+
+    for component in parent_components {
+        let next = match openat(&directory, component, directory_flags, Mode::empty()) {
+            Ok(next) => next,
+            Err(error) if error == rustix::io::Errno::NOENT => {
+                match mkdirat(&directory, component, Mode::RWXU) {
+                    Ok(()) | Err(rustix::io::Errno::EXIST) => {}
+                    Err(error) => {
+                        return Err(format!("failed to create restore directory: {error}"))
+                    }
+                }
+                openat(&directory, component, directory_flags, Mode::empty())
+                    .map_err(|error| format!("failed to open restore directory: {error}"))?
+            }
+            Err(error) => return Err(format!("failed to open restore directory: {error}")),
+        };
+        directory = next;
+    }
+
+    let temp_name = format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        uuid::Uuid::new_v4()
+    );
+    let temp_flags =
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let temp = openat(&directory, &temp_name, temp_flags, Mode::RUSR | Mode::WUSR)
+        .map_err(|error| format!("failed to create temporary restore file: {error}"))?;
+    let mut written = 0;
+    while written < content.len() {
+        match write(&temp, &content.as_bytes()[written..]) {
+            Ok(0) => {
+                let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
+                return Err("failed to write temporary restore file: wrote zero bytes".to_string());
+            }
+            Ok(count) => written += count,
+            Err(error) => {
+                let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
+                return Err(format!("failed to write temporary restore file: {error}"));
+            }
+        }
+    }
+    if let Err(error) = fsync(&temp) {
+        let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
+        return Err(format!("failed to sync temporary restore file: {error}"));
+    }
+    drop(temp);
+
+    if let Err(error) = renameat(&directory, &temp_name, &directory, file_name) {
+        let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
+        return Err(format!("failed to rename restored file: {error}"));
+    }
+    let _ = fsync(&directory);
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
 }
 
 /// Reject paths whose components include `..`, Windows drive
@@ -442,6 +550,7 @@ fn is_safe_relative_path(path: &Path) -> bool {
 /// (non-symlink) directory whose canonical path stays inside
 /// `canonical_root`. Fails closed on stat or canonicalize errors,
 /// shrinking the create-then-check TOCTOU window around restore.
+#[cfg(not(unix))]
 fn ensure_contained_parent(parent: &Path, canonical_root: &Path) -> Result<(), String> {
     let meta = match parent.symlink_metadata() {
         Ok(meta) => meta,

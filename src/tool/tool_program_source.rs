@@ -114,15 +114,17 @@ impl ToolProgramSourceStore {
             ));
         }
         let path = self.base_dir.join(&reference.relative_path);
-        let metadata = path
-            .symlink_metadata()
+        let mut source_file = open_source_file(&path, &reference.relative_path)?;
+        let metadata = source_file
+            .metadata()
             .map_err(|_| ToolProgramSourceError::NotFound(reference.digest.clone()))?;
-        if metadata.file_type().is_symlink() {
+        if !metadata.is_file() {
             return Err(ToolProgramSourceError::InvalidReference(
                 reference.relative_path.clone(),
             ));
         }
-        let bytes = std::fs::read(&path)
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::read_to_end(&mut source_file, &mut bytes)
             .map_err(|_| ToolProgramSourceError::NotFound(reference.digest.clone()))?;
         if bytes.len() as u64 != reference.length {
             return Err(ToolProgramSourceError::DigestMismatch {
@@ -140,6 +142,42 @@ impl ToolProgramSourceStore {
         String::from_utf8(bytes)
             .map_err(|_| ToolProgramSourceError::InvalidReference(reference.digest.clone()))
     }
+}
+
+#[cfg(unix)]
+fn open_source_file(
+    path: &Path,
+    relative_path: &str,
+) -> Result<std::fs::File, ToolProgramSourceError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                ToolProgramSourceError::NotFound(relative_path.to_string())
+            } else if error.raw_os_error() == Some(libc::ELOOP) {
+                ToolProgramSourceError::InvalidReference(relative_path.to_string())
+            } else {
+                ToolProgramSourceError::Io(error)
+            }
+        })
+}
+
+#[cfg(not(unix))]
+fn open_source_file(
+    path: &Path,
+    relative_path: &str,
+) -> Result<std::fs::File, ToolProgramSourceError> {
+    std::fs::File::open(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ToolProgramSourceError::NotFound(relative_path.to_string())
+        } else {
+            ToolProgramSourceError::Io(error)
+        }
+    })
 }
 
 pub fn digest(source: &str) -> String {
