@@ -25,6 +25,7 @@ mod provider_turn;
 pub mod registry;
 pub mod router;
 pub mod run_control;
+pub mod run_integration;
 pub mod specialized_runtime;
 pub mod task_tool_runtime;
 pub mod team;

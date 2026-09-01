@@ -20,6 +20,7 @@ pub mod protocol_conversions;
 pub mod provider_connections;
 pub mod repository_lineage;
 pub mod resilience;
+pub mod run_result;
 pub mod run_store;
 pub mod session;
 pub mod snapshot;

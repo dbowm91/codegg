@@ -15,6 +15,7 @@ use tokio::sync::Mutex;
 
 use crate::identity::{AgentRunId, AgentTaskId, NodeId, ProjectId, RepositoryId, WorktreeId};
 use crate::jobs::{AttemptId, JobId};
+use crate::run_result::AgentRunResult;
 use crate::workspace::WorkspaceId;
 
 pub const MAX_RUN_RESULT_BYTES: usize = 16 * 1024;
@@ -414,6 +415,11 @@ pub trait AgentRunStore: Send + Sync {
         id: &AgentRunId,
         attempt_id: AttemptId,
     ) -> Result<AgentRunRecord, AgentRunStoreError>;
+    async fn attach_worktree(
+        &self,
+        id: &AgentRunId,
+        worktree_id: WorktreeId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError>;
     async fn transition_task(
         &self,
         id: &AgentTaskId,
@@ -432,6 +438,11 @@ pub trait AgentRunStore: Send + Sync {
         failure_class: Option<String>,
         failure_message: Option<String>,
     ) -> Result<AgentRunRecord, AgentRunStoreError>;
+    async fn save_result(&self, result: AgentRunResult) -> Result<(), AgentRunStoreError>;
+    async fn get_result(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<Option<AgentRunResult>, AgentRunStoreError>;
     async fn request_cancel(&self, id: &AgentRunId) -> Result<AgentRunRecord, AgentRunStoreError>;
 }
 
@@ -440,6 +451,7 @@ struct MemoryState {
     tasks: HashMap<AgentTaskId, AgentTaskRecord>,
     runs: HashMap<AgentRunId, AgentRunRecord>,
     delegation: HashMap<String, AgentTaskId>,
+    results: HashMap<AgentRunId, AgentRunResult>,
 }
 
 #[derive(Default)]
@@ -748,6 +760,29 @@ impl AgentRunStore for InMemoryAgentRunStore {
         run.updated_at = Utc::now().timestamp_millis();
         Ok(run.clone())
     }
+    async fn attach_worktree(
+        &self,
+        id: &AgentRunId,
+        worktree_id: WorktreeId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        let run = state
+            .runs
+            .get_mut(id)
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+        if run
+            .worktree_id
+            .as_ref()
+            .is_some_and(|current| current != &worktree_id)
+        {
+            return Err(AgentRunStoreError::InvalidRelation(
+                "run is already attached to another worktree".into(),
+            ));
+        }
+        run.worktree_id = Some(worktree_id);
+        run.updated_at = Utc::now().timestamp_millis();
+        Ok(run.clone())
+    }
     async fn transition_task(
         &self,
         id: &AgentTaskId,
@@ -818,6 +853,29 @@ impl AgentRunStore for InMemoryAgentRunStore {
             }
         }
         Ok(finished_run)
+    }
+    async fn save_result(&self, result: AgentRunResult) -> Result<(), AgentRunStoreError> {
+        let mut state = self.state.lock().await;
+        if !state.runs.contains_key(&result.run_id) {
+            return Err(AgentRunStoreError::RunNotFound(result.run_id.to_string()));
+        }
+        let bounded = result.bounded();
+        let encoded = bounded
+            .encode_bounded()
+            .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
+        if encoded.len() > crate::run_result::MAX_RESULT_BYTES {
+            return Err(AgentRunStoreError::Serialization(
+                "agent run result exceeds storage bound".into(),
+            ));
+        }
+        state.results.insert(bounded.run_id.clone(), bounded);
+        Ok(())
+    }
+    async fn get_result(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<Option<AgentRunResult>, AgentRunStoreError> {
+        Ok(self.state.lock().await.results.get(id).cloned())
     }
     async fn request_cancel(&self, id: &AgentRunId) -> Result<AgentRunRecord, AgentRunStoreError> {
         let mut state = self.state.lock().await;
@@ -960,8 +1018,8 @@ async fn load_run(
 }
 
 async fn update_run(pool: &SqlitePool, run: &AgentRunRecord) -> Result<(), AgentRunStoreError> {
-    sqlx::query("UPDATE agent_run SET job_id = ?, attempt_id = ?, status = ?, terminal = ?, result_ref = ?, failure_class = ?, failure_message = ?, cancellation_requested = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE run_id = ?")
-        .bind(run.job_id.as_ref().map(JobId::as_str)).bind(run.attempt_id.as_ref().map(AttemptId::as_str)).bind(run.status.as_str()).bind(run.terminal.as_ref().map(AgentRunTerminal::as_str)).bind(run.result_ref.as_deref()).bind(run.failure_class.as_deref()).bind(run.failure_message.as_deref()).bind(i64::from(run.cancellation_requested)).bind(run.started_at).bind(run.finished_at).bind(run.updated_at).bind(run.run_id.as_str()).execute(pool).await.map_err(storage_error)?;
+    sqlx::query("UPDATE agent_run SET worktree_id = ?, job_id = ?, attempt_id = ?, status = ?, terminal = ?, result_ref = ?, failure_class = ?, failure_message = ?, cancellation_requested = ?, started_at = ?, finished_at = ?, updated_at = ? WHERE run_id = ?")
+        .bind(run.worktree_id.as_ref().map(WorktreeId::as_str)).bind(run.job_id.as_ref().map(JobId::as_str)).bind(run.attempt_id.as_ref().map(AttemptId::as_str)).bind(run.status.as_str()).bind(run.terminal.as_ref().map(AgentRunTerminal::as_str)).bind(run.result_ref.as_deref()).bind(run.failure_class.as_deref()).bind(run.failure_message.as_deref()).bind(i64::from(run.cancellation_requested)).bind(run.started_at).bind(run.finished_at).bind(run.updated_at).bind(run.run_id.as_str()).execute(pool).await.map_err(storage_error)?;
     Ok(())
 }
 
@@ -1171,6 +1229,25 @@ impl AgentRunStore for SqliteAgentRunStore {
         update_run(&self.pool, &run).await?;
         Ok(run)
     }
+    async fn attach_worktree(
+        &self,
+        id: &AgentRunId,
+        worktree_id: WorktreeId,
+    ) -> Result<AgentRunRecord, AgentRunStoreError> {
+        let mut run = self
+            .get_run(id)
+            .await?
+            .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
+        if run.worktree_id.as_ref().is_some_and(|v| v != &worktree_id) {
+            return Err(AgentRunStoreError::InvalidRelation(
+                "run is already attached to another worktree".into(),
+            ));
+        }
+        run.worktree_id = Some(worktree_id);
+        run.updated_at = Utc::now().timestamp_millis();
+        update_run(&self.pool, &run).await?;
+        Ok(run)
+    }
     async fn transition_task(
         &self,
         id: &AgentTaskId,
@@ -1245,6 +1322,48 @@ impl AgentRunStore for SqliteAgentRunStore {
         sqlx::query("UPDATE agent_task SET status = ?, updated_at = ? WHERE task_id = ? AND status NOT IN ('completed','failed','interrupted','cancelled')").bind(outcome.task_status().as_str()).bind(now).bind(run.task_id.as_str()).execute(&mut *tx).await.map_err(storage_error)?;
         tx.commit().await.map_err(storage_error)?;
         Ok(self.get_run(id).await?.unwrap_or(run))
+    }
+    async fn save_result(&self, result: AgentRunResult) -> Result<(), AgentRunStoreError> {
+        let bounded = result.bounded();
+        let encoded = bounded
+            .encode_bounded()
+            .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
+        if encoded.len() > crate::run_result::MAX_RESULT_BYTES {
+            return Err(AgentRunStoreError::Serialization(
+                "agent run result exceeds storage bound".into(),
+            ));
+        }
+        let exists = sqlx::query("SELECT 1 FROM agent_run WHERE run_id = ?")
+            .bind(bounded.run_id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?
+            .is_some();
+        if !exists {
+            return Err(AgentRunStoreError::RunNotFound(bounded.run_id.to_string()));
+        }
+        sqlx::query("INSERT INTO agent_run_result (run_id, result_json, created_at, updated_at) VALUES (?, ?, strftime('%s','now') * 1000, strftime('%s','now') * 1000) ON CONFLICT(run_id) DO UPDATE SET result_json = excluded.result_json, updated_at = excluded.updated_at")
+            .bind(bounded.run_id.as_str())
+            .bind(encoded)
+            .execute(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        Ok(())
+    }
+    async fn get_result(
+        &self,
+        id: &AgentRunId,
+    ) -> Result<Option<AgentRunResult>, AgentRunStoreError> {
+        let row = sqlx::query("SELECT result_json FROM agent_run_result WHERE run_id = ?")
+            .bind(id.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(storage_error)?;
+        row.map(|row| {
+            serde_json::from_str(row.get::<String, _>("result_json").as_str())
+                .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))
+        })
+        .transpose()
     }
     async fn request_cancel(&self, id: &AgentRunId) -> Result<AgentRunRecord, AgentRunStoreError> {
         let mut run = self
@@ -1435,5 +1554,29 @@ mod tests {
         let loaded = store.get_run(&first.run.run_id).await.unwrap().unwrap();
         assert_eq!(loaded.job_id.unwrap().as_str(), "job-1");
         assert_eq!(loaded.attempt_id.unwrap().as_str(), "attempt-1");
+        let structured = crate::run_result::AgentRunResult {
+            run_id: first.run.run_id.clone(),
+            status: crate::run_result::AgentRunResultStatus::Succeeded,
+            summary: "machine-derived result".into(),
+            worktree_id: None,
+            base_commit: Some("abc123".into()),
+            result_commit: Some("def456".into()),
+            changed_paths: vec!["src/lib.rs".into()],
+            validation: vec![crate::run_result::ValidationEvidence {
+                kind: "cargo test".into(),
+                status: crate::run_result::ValidationStatus::Passed,
+                summary: "focused test passed".into(),
+            }],
+            findings: Vec::new(),
+            artifacts: Vec::new(),
+            repository_state: crate::run_result::RepositoryState::Clean,
+            retryability: crate::run_result::Retryability::NotRetryable,
+            recovery_hint: None,
+        };
+        store.save_result(structured.clone()).await.unwrap();
+        assert_eq!(
+            store.get_result(&first.run.run_id).await.unwrap(),
+            Some(structured)
+        );
     }
 }

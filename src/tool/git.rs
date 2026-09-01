@@ -11,10 +11,19 @@ use crate::git_service::{GitExecutionService, GitPayload};
 use crate::tool::{Tool, ToolCategory};
 use codegg_git::parse_git_argv;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildGitPolicy {
+    /// An isolated child may stage and commit its own work. Network,
+    /// history-rewrite, remote/config, reset, clean, and recovery operations
+    /// remain parent/operator authorities.
+    LocalCommitOnly,
+}
+
 pub struct GitTool {
     timeout: Duration,
     workdir: PathBuf,
     run_store: Option<std::sync::Arc<dyn codegg_core::run_store::RunStore>>,
+    child_policy: Option<ChildGitPolicy>,
 }
 
 impl GitTool {
@@ -23,6 +32,7 @@ impl GitTool {
             timeout: Duration::from_secs(30),
             workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             run_store: None,
+            child_policy: None,
         }
     }
 
@@ -41,6 +51,11 @@ impl GitTool {
         store: std::sync::Arc<dyn codegg_core::run_store::RunStore>,
     ) -> Self {
         self.run_store = Some(store);
+        self
+    }
+
+    pub fn with_child_policy(mut self, policy: ChildGitPolicy) -> Self {
+        self.child_policy = Some(policy);
         self
     }
 
@@ -311,6 +326,12 @@ impl Tool for GitTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'subcommand' parameter".to_string()))?;
 
+        if self.child_policy.is_some() && !Self::is_read_only(subcommand) {
+            return Err(ToolError::Permission(
+                "isolated child Git policy requires typed local stage/commit operations".into(),
+            ));
+        }
+
         let args: Vec<String> = input["args"]
             .as_array()
             .map(|arr| {
@@ -326,6 +347,7 @@ impl Tool for GitTool {
                 timeout,
                 workdir: workdir.clone(),
                 run_store: self.run_store.clone(),
+                child_policy: self.child_policy,
             };
             if let Some(result) = tool.try_structured_read(subcommand, &args).await {
                 return result;
@@ -397,6 +419,21 @@ impl GitTool {
         workdir: &std::path::Path,
         timeout_secs: u64,
     ) -> Result<String, ToolError> {
+        if matches!(self.child_policy, Some(ChildGitPolicy::LocalCommitOnly))
+            && !matches!(
+                mutation,
+                "stage_paths"
+                    | "stage_all"
+                    | "stage_tracked"
+                    | "unstage_paths"
+                    | "unstage_all"
+                    | "commit"
+            )
+        {
+            return Err(ToolError::Permission(format!(
+                "isolated child Git policy denies mutation '{mutation}'"
+            )));
+        }
         let exec = GitMutationExecutor::new()
             .with_env_policy(GitEnvPolicy::default())
             .with_timeout(Duration::from_secs(timeout_secs.max(1)));
@@ -1133,5 +1170,22 @@ mod schema_tests {
                     .contains("Mutually exclusive"),
             "recover.description must note mutual exclusion with mutation"
         );
+    }
+
+    #[tokio::test]
+    async fn isolated_child_denies_network_and_history_mutations() {
+        let tool = GitTool::new().with_child_policy(ChildGitPolicy::LocalCommitOnly);
+        for input in [
+            serde_json::json!({"mutation": "push", "workdir": "."}),
+            serde_json::json!({"mutation": "reset_hard", "target": "HEAD", "workdir": "."}),
+            serde_json::json!({"mutation": "remote_add", "remote": "x", "url": "https://example.invalid", "workdir": "."}),
+            serde_json::json!({"subcommand": "push", "args": [], "workdir": "."}),
+        ] {
+            let error = tool.execute(input).await.unwrap_err();
+            assert!(
+                matches!(error, ToolError::Permission(_)),
+                "unexpected child-policy result: {error:?}"
+            );
+        }
     }
 }

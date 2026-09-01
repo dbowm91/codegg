@@ -182,6 +182,16 @@ not rejected merely because the compatibility pool's local semaphore is full.
 `JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
 the run record is the attributable delegated-agent ownership layer.
 
+For M004, the subagent executor resolves whether the requested child retains
+mutation capability before constructing its request. Durable mutating runs
+must acquire a managed worktree lease during `Preparing`; if the worktree
+service or repository identity is unavailable, the run fails explicitly and
+does not execute a model turn. The effective child root is then propagated to
+all filesystem/shell/Git tools. The executor persists a bounded structured
+result from actual Git status and keeps dirty/conflicted worktrees retained.
+Parent integration is explicit and uses the typed mutation API only after
+base/repository/clean-target preconditions pass.
+
 The on-disk schema lives in `crates/codegg-config/src/schema.rs`:
 
 ```toml

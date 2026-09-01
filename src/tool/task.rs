@@ -562,7 +562,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently"
+        "Spawn a subagent to handle a task independently. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -589,7 +589,7 @@ impl Tool for TaskTool {
                 "allowed_paths": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "List of directories the subagent is allowed to access (action=spawn)"
+                    "description": "List of directories the subagent is allowed to access (action=spawn). Mutating durable runs are narrowed to their managed worktree."
                 },
                 "task_id": {
                     "description": "Durable AgentTaskId or legacy numeric task ID"

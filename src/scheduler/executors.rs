@@ -380,6 +380,7 @@ pub struct SubagentJobExecutor {
     pool: Arc<crate::agent::worker::SubAgentPool>,
     agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
     run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
+    worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
 }
 
 impl SubagentJobExecutor {
@@ -388,6 +389,7 @@ impl SubagentJobExecutor {
             pool,
             agent_runs: None,
             run_control: None,
+            worktree_service: None,
         }
     }
 
@@ -399,6 +401,7 @@ impl SubagentJobExecutor {
             pool,
             agent_runs: Some(agent_runs),
             run_control: None,
+            worktree_service: None,
         }
     }
 
@@ -411,6 +414,21 @@ impl SubagentJobExecutor {
             pool,
             agent_runs: Some(agent_runs),
             run_control,
+            worktree_service: None,
+        }
+    }
+
+    pub fn new_with_agent_runs_and_control_and_worktree(
+        pool: Arc<crate::agent::worker::SubAgentPool>,
+        agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+        run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
+        worktree_service: Arc<codegg_core::worktree_service::WorktreeService>,
+    ) -> Self {
+        Self {
+            pool,
+            agent_runs: Some(agent_runs),
+            run_control,
+            worktree_service: Some(worktree_service),
         }
     }
 }
@@ -441,7 +459,7 @@ impl JobExecutor for SubagentJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (prompt, agent, parent_id, denied_tools, allowed_paths, max_tool_calls, run_id) =
+        let (prompt, agent, parent_id, denied_tools, mut allowed_paths, max_tool_calls, run_id) =
             match &ctx.job.payload {
                 JobPayload::Subagent {
                     prompt,
@@ -493,23 +511,16 @@ impl JobExecutor for SubagentJobExecutor {
             .bytes()
             .take(8)
             .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-        let workspace_root = allowed_paths.first().map(std::path::PathBuf::from);
-
-        let request = crate::agent::worker::SubAgentRequest {
-            task_id,
-            run_id: run_id.clone(),
-            prompt,
-            agent,
-            parent_id,
-            parent_run_id: None,
-            denied_tools,
-            allowed_paths,
-            description: format!("Scheduler job {}", ctx.job.job_id.as_str()),
-            depth: 1,
-            max_tool_calls: max_tool_calls.map(|m| m as usize),
-            parent_model: None,
-            workspace_root,
-        };
+        let mut workspace_root = allowed_paths.first().map(std::path::PathBuf::from);
+        let mut owned_worktree = None;
+        let needs_isolation = self.pool.requires_isolation(&agent, &denied_tools);
+        if needs_isolation && run_id.is_none() {
+            return failure_completion(
+                started,
+                ExecutorStatus::Failed,
+                "mutating delegated run must use the durable scheduler path for isolation".into(),
+            );
+        }
 
         let run_id_for_lifecycle = run_id.clone();
         if let (Some(store), Some(run_id)) = (&self.agent_runs, run_id.as_ref()) {
@@ -529,6 +540,129 @@ impl JobExecutor for SubagentJobExecutor {
                     ExecutorStatus::Failed,
                     format!("agent run preparation failed: {error}"),
                 );
+            }
+            if needs_isolation {
+                let Some(worktree_service) = self.worktree_service.as_ref() else {
+                    let _ = store
+                        .finish(
+                            run_id,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                            None,
+                            Some("isolation_unavailable".into()),
+                            Some(
+                                "mutating delegated run requires managed worktree isolation".into(),
+                            ),
+                        )
+                        .await;
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "mutating delegated run requires managed worktree isolation".into(),
+                    );
+                };
+                let run = match store.get_run(run_id).await {
+                    Ok(Some(run)) => run,
+                    Ok(None) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            "agent run disappeared during preparation".into(),
+                        )
+                    }
+                    Err(error) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("agent run lookup failed: {error}"),
+                        )
+                    }
+                };
+                let task = match store.get_task(&run.task_id).await {
+                    Ok(Some(task)) => task,
+                    Ok(None) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            "agent task disappeared during preparation".into(),
+                        )
+                    }
+                    Err(error) => {
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("agent task lookup failed: {error}"),
+                        )
+                    }
+                };
+                let Some(repository_id) = task.repository_id else {
+                    let message = "mutating delegated run has no repository identity";
+                    let _ = store
+                        .finish(
+                            run_id,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                            None,
+                            Some("isolation_unavailable".into()),
+                            Some(message.into()),
+                        )
+                        .await;
+                    return failure_completion(started, ExecutorStatus::Failed, message.into());
+                };
+                let Some(repository_root) = workspace_root.clone() else {
+                    let message = "mutating delegated run has no repository root";
+                    let _ = store
+                        .finish(
+                            run_id,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                            None,
+                            Some("isolation_unavailable".into()),
+                            Some(message.into()),
+                        )
+                        .await;
+                    return failure_completion(started, ExecutorStatus::Failed, message.into());
+                };
+                let request = codegg_core::worktree_service::CreateWorktreeRequest {
+                    project_id: task.project_id,
+                    repository_id,
+                    workspace_id: task.workspace_id,
+                    node_id: None,
+                    repository_root,
+                    owner_run_id: run_id.clone(),
+                };
+                let (record, lease) = match worktree_service.create(&request).await {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let _ = store
+                            .finish(
+                                run_id,
+                                codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                None,
+                                Some("worktree_create_failed".into()),
+                                Some(error.to_string()),
+                            )
+                            .await;
+                        return failure_completion(
+                            started,
+                            ExecutorStatus::Failed,
+                            format!("worktree allocation failed: {error}"),
+                        );
+                    }
+                };
+                if let Err(error) = store
+                    .attach_worktree(run_id, record.worktree_id.clone())
+                    .await
+                {
+                    let _ = worktree_service
+                        .release_lease(&record.worktree_id, run_id, lease.generation)
+                        .await;
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("worktree linkage failed: {error}"),
+                    );
+                }
+                allowed_paths = vec![record.path.to_string_lossy().into_owned()];
+                workspace_root = Some(record.path.clone());
+                owned_worktree = Some((record, lease));
             }
             if let Some(control) = &self.run_control {
                 let _ = control
@@ -553,6 +687,23 @@ impl JobExecutor for SubagentJobExecutor {
             }
         }
 
+        let request = crate::agent::worker::SubAgentRequest {
+            task_id,
+            run_id: run_id.clone(),
+            prompt,
+            agent,
+            parent_id,
+            parent_run_id: None,
+            denied_tools,
+            allowed_paths,
+            description: format!("Scheduler job {}", ctx.job.job_id.as_str()),
+            depth: 1,
+            max_tool_calls: max_tool_calls.map(|m| m as usize),
+            parent_model: None,
+            workspace_root,
+        };
+        let effective_workspace_root = request.workspace_root.clone();
+
         let result = if run_id_for_lifecycle.is_some() {
             self.pool
                 .spawner()
@@ -563,6 +714,18 @@ impl JobExecutor for SubagentJobExecutor {
         };
         match result {
             Ok(result) => {
+                if let Some((record, lease)) = owned_worktree.as_ref() {
+                    if let Some(service) = self.worktree_service.as_ref() {
+                        let _ = service.refresh(&record.worktree_id).await;
+                        let _ = service
+                            .release_lease(
+                                &record.worktree_id,
+                                &lease.owner_run_id,
+                                lease.generation,
+                            )
+                            .await;
+                    }
+                }
                 let status = if result.success {
                     ExecutorStatus::Completed
                 } else if ctx.cancellation.is_cancelled() {
@@ -573,6 +736,19 @@ impl JobExecutor for SubagentJobExecutor {
                 if let (Some(store), Some(run_id)) =
                     (&self.agent_runs, run_id_for_lifecycle.as_ref())
                 {
+                    let structured = collect_agent_run_result(
+                        run_id,
+                        result.success,
+                        &result.result,
+                        result.report.as_ref(),
+                        &result.validation,
+                        &result.artifacts,
+                        owned_worktree.as_ref().map(|(record, _)| record),
+                        effective_workspace_root.as_deref(),
+                        ctx.cancellation.is_cancelled(),
+                    )
+                    .await;
+                    let _ = store.save_result(structured).await;
                     let outcome = match status {
                         ExecutorStatus::Completed => {
                             codegg_core::agent_run::AgentRunTerminalOutcome::Completed
@@ -586,7 +762,7 @@ impl JobExecutor for SubagentJobExecutor {
                         .finish(
                             run_id,
                             outcome,
-                            Some(result.result.clone()),
+                            Some(format!("agent-run-result:{run_id}")),
                             (status != ExecutorStatus::Completed).then(|| "executor".into()),
                             (status != ExecutorStatus::Completed).then(|| result.result.clone()),
                         )
@@ -612,9 +788,34 @@ impl JobExecutor for SubagentJobExecutor {
                 }
             }
             Err(e) => {
+                if let Some((record, lease)) = owned_worktree.as_ref() {
+                    if let Some(service) = self.worktree_service.as_ref() {
+                        let _ = service.refresh(&record.worktree_id).await;
+                        let _ = service
+                            .release_lease(
+                                &record.worktree_id,
+                                &lease.owner_run_id,
+                                lease.generation,
+                            )
+                            .await;
+                    }
+                }
                 if let (Some(store), Some(run_id)) =
                     (&self.agent_runs, run_id_for_lifecycle.as_ref())
                 {
+                    let structured = collect_agent_run_result(
+                        run_id,
+                        false,
+                        &e,
+                        None,
+                        &[],
+                        &[],
+                        owned_worktree.as_ref().map(|(record, _)| record),
+                        effective_workspace_root.as_deref(),
+                        ctx.cancellation.is_cancelled(),
+                    )
+                    .await;
+                    let _ = store.save_result(structured).await;
                     let outcome = if ctx.cancellation.is_cancelled() {
                         codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
                     } else {
@@ -646,6 +847,107 @@ impl JobExecutor for SubagentJobExecutor {
             }
         }
     }
+}
+
+async fn collect_agent_run_result(
+    run_id: &codegg_core::identity::AgentRunId,
+    success: bool,
+    summary: &str,
+    report: Option<&crate::agent::worker::SubAgentReport>,
+    validation: &[codegg_core::run_result::ValidationEvidence],
+    artifacts: &[codegg_core::run_result::AgentRunArtifact],
+    worktree: Option<&codegg_core::worktree_service::WorktreeRecord>,
+    workspace_root: Option<&std::path::Path>,
+    cancelled: bool,
+) -> codegg_core::run_result::AgentRunResult {
+    let root = worktree
+        .map(|record| record.path.as_path())
+        .or(workspace_root);
+    let facts = match root {
+        Some(root) => egggit::status_v2::rich_repo_status(root).await.ok(),
+        None => None,
+    };
+    let repository_state = facts
+        .as_ref()
+        .map(|facts| {
+            if !facts.conflicted.is_empty() {
+                codegg_core::run_result::RepositoryState::Conflicted
+            } else if !facts.is_clean {
+                codegg_core::run_result::RepositoryState::Dirty
+            } else {
+                codegg_core::run_result::RepositoryState::Clean
+            }
+        })
+        .unwrap_or(codegg_core::run_result::RepositoryState::Unknown);
+    let mut changed_paths = facts
+        .as_ref()
+        .map(|facts| {
+            facts
+                .staged
+                .iter()
+                .chain(facts.unstaged.iter())
+                .chain(facts.untracked.iter())
+                .chain(facts.conflicted.iter())
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    changed_paths.sort();
+    changed_paths.dedup();
+    let base_commit = worktree.map(|record| record.base_commit.clone());
+    let result_commit = facts.as_ref().and_then(|facts| {
+        facts
+            .head
+            .clone()
+            .filter(|head| base_commit.as_deref() != Some(head.as_str()))
+    });
+    let status = if cancelled {
+        codegg_core::run_result::AgentRunResultStatus::Cancelled
+    } else if repository_state == codegg_core::run_result::RepositoryState::Conflicted {
+        codegg_core::run_result::AgentRunResultStatus::Conflicted
+    } else if success {
+        codegg_core::run_result::AgentRunResultStatus::Succeeded
+    } else {
+        codegg_core::run_result::AgentRunResultStatus::Failed
+    };
+    let retryability = if repository_state == codegg_core::run_result::RepositoryState::Conflicted {
+        codegg_core::run_result::Retryability::RequiresRecovery
+    } else if success {
+        codegg_core::run_result::Retryability::NotRetryable
+    } else {
+        codegg_core::run_result::Retryability::Retryable
+    };
+    codegg_core::run_result::AgentRunResult {
+        run_id: run_id.clone(),
+        status,
+        summary: summary.to_string(),
+        worktree_id: worktree.map(|record| record.worktree_id.clone()),
+        base_commit,
+        result_commit,
+        changed_paths,
+        validation: validation.to_vec(),
+        findings: report
+            .map(|report| {
+                report
+                    .findings
+                    .iter()
+                    .map(|finding| codegg_core::run_result::AgentRunFinding {
+                        severity: finding.severity.clone().unwrap_or_else(|| "info".into()),
+                        title: finding.title.clone(),
+                        rationale: finding.rationale.clone(),
+                        file: finding.file.clone(),
+                        line: finding.line,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        artifacts: artifacts.to_vec(),
+        repository_state,
+        retryability,
+        recovery_hint: (repository_state == codegg_core::run_result::RepositoryState::Conflicted)
+            .then(|| "inspect conflict entries, resolve, stage, then use typed recovery".into()),
+    }
+    .bounded()
 }
 
 /// Canonical executor for `JobKind::Python`. Validates source integrity,

@@ -209,7 +209,25 @@ impl TestTool {
             .wait_for_completion(&job.job_id, wait_for)
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
-        Ok(completion.summary)
+        let summary = completion.summary;
+        let status = match completion.status {
+            crate::scheduler::ExecutorStatus::Completed => "passed",
+            crate::scheduler::ExecutorStatus::Failed => "failed",
+            crate::scheduler::ExecutorStatus::Cancelled => "cancelled",
+            crate::scheduler::ExecutorStatus::TimedOut => "timed_out",
+            crate::scheduler::ExecutorStatus::Interrupted => "unknown",
+        };
+        let marker = serde_json::json!({
+            "job_id": job.job_id.as_str(),
+            "kind": "test",
+            "status": status,
+            "summary": summary,
+        });
+        Ok(format!(
+            "{}\nCODEGG_VALIDATION_RESULT:{}",
+            marker["summary"].as_str().unwrap_or_default(),
+            marker
+        ))
     }
 }
 

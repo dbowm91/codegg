@@ -139,6 +139,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 39 {
         migrate_and_record(pool, 39).await?;
     }
+    if current_version < 40 {
+        migrate_and_record(pool, 40).await?;
+    }
 
     Ok(())
 }
@@ -190,6 +193,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             37 => migrate_v37(pool).await?,
             38 => migrate_v38(pool).await?,
             39 => migrate_v39(pool).await?,
+            40 => migrate_v40(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1947,6 +1951,31 @@ async fn migrate_v39(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_managed_worktree_repository ON managed_worktree(repository_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_managed_worktree_owner ON managed_worktree(owner_run_id)",
         "CREATE INDEX IF NOT EXISTS idx_worktree_lease_owner ON worktree_lease(owner_run_id, released_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M004: durable structured results are separate from the bounded legacy
+/// result reference on `agent_run`, so callers can retrieve machine-derived
+/// repository facts without treating transcript text as authority.
+async fn migrate_v40(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_result (
+            run_id TEXT PRIMARY KEY,
+            result_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            CHECK(length(result_json) <= 32768),
+            FOREIGN KEY(run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_result_updated ON agent_run_result(updated_at)",
     ] {
         sqlx::query(statement)
             .execute(pool)

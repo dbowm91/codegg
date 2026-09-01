@@ -291,6 +291,8 @@ pub struct ToolRegistryOptions {
     /// should always set this; older call sites that omit it are
     /// tracked by the `check_daemon_cwd_usage` static guard.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Restrict a child Git tool to local staging and commit operations.
+    pub child_git_policy: Option<crate::tool::git::ChildGitPolicy>,
     /// Immutable runtime-asset snapshot captured for the current turn.
     pub asset_snapshot: Option<Arc<crate::agent::asset_snapshot::ProjectAssetSnapshot>>,
     /// Shared path-free audit identity for recording skill activations.
@@ -323,6 +325,20 @@ impl ToolRegistry {
             crate::tool::bash::BashTool::default().with_run_store(store.clone())
         } else {
             crate::tool::bash::BashTool::default()
+        };
+        let bash_tool = if let Some(root) = workspace_root.as_ref() {
+            bash_tool.with_allowed_paths(vec![root.to_string_lossy().into_owned()])
+        } else {
+            bash_tool
+        };
+        let bash_tool = if options.child_git_policy.is_some() {
+            if let Some(root) = workspace_root.clone() {
+                bash_tool.with_workspace_root(root)
+            } else {
+                bash_tool
+            }
+        } else {
+            bash_tool
         };
         let bash_tool = if let Some(command_intent) = options.command_intent.clone() {
             bash_tool.with_command_intent_config(command_intent)
@@ -453,7 +469,15 @@ impl ToolRegistry {
             None => crate::tool::replace::ReplaceTool::default(),
         });
         registry.register(crate::tool::review::ReviewTool::default());
-        registry.register(crate::tool::terminal::TerminalTool::default());
+        registry.register(match workspace_root.as_ref() {
+            Some(root) if options.child_git_policy.is_some() => {
+                crate::tool::terminal::TerminalTool::default()
+                    .with_workdir(root.clone())
+                    .with_allowed_root(root.clone())
+            }
+            Some(root) => crate::tool::terminal::TerminalTool::default().with_workdir(root.clone()),
+            None => crate::tool::terminal::TerminalTool::default(),
+        });
         let test_tool = if let Some(ref store) = options.run_store {
             crate::tool::test::TestTool::with_run_store(store.clone())
         } else {
@@ -485,6 +509,11 @@ impl ToolRegistry {
         let git_tool = match options.workspace_root.clone() {
             Some(root) => crate::tool::git::GitTool::default().with_workdir(root),
             None => crate::tool::git::GitTool::default(),
+        };
+        let git_tool = if let Some(policy) = options.child_git_policy {
+            git_tool.with_child_policy(policy)
+        } else {
+            git_tool
         };
         let git_tool = if let Some(ref store) = options.run_store {
             git_tool.with_run_store(store.clone())
@@ -561,10 +590,15 @@ impl ToolRegistry {
             }
         }
 
-        let commit_tool = if let Some(ref store) = options.run_store {
-            crate::tool::commit::CommitTool::new().with_run_store(store.clone())
+        let commit_tool = if let Some(root) = workspace_root.as_ref() {
+            crate::tool::commit::CommitTool::new().with_workdir(root.clone())
         } else {
             crate::tool::commit::CommitTool::new()
+        };
+        let commit_tool = if let Some(ref store) = options.run_store {
+            commit_tool.with_run_store(store.clone())
+        } else {
+            commit_tool
         };
         registry.register(commit_tool);
 
@@ -799,6 +833,7 @@ impl ToolRegistry {
             submission: None,
             command_intent: config.command_intent.clone(),
             workspace_root: None,
+            child_git_policy: None,
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,
@@ -838,6 +873,7 @@ impl ToolRegistry {
             submission: None,
             command_intent: None,
             workspace_root: None,
+            child_git_policy: None,
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,

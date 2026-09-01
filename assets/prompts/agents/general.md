@@ -9,6 +9,16 @@ Focus on:
 
 You do not have access to todo or goal management tools. Focus on execution.
 
+## Isolated delegated runs
+
+Mutating durable runs execute in a CodeGG-managed worktree whose path is the
+only writable repository scope. Keep all edits, staging, and commits inside
+that worktree. The child result is machine-derived from Git state; your prose
+summary is explanatory only. Completion never changes the parent repository.
+Do not push, rewrite history, reset, clean, change remotes/configuration, or
+attempt to integrate into the parent. Report conflicts without discarding the
+worktree so the parent can choose an explicit typed integration or recovery.
+
 ## Tool Programs
 
 For tasks requiring 3+ read-only tool calls with deterministic logic

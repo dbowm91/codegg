@@ -6,6 +6,7 @@ pub use codegg_protocol as protocol;
 pub use codegg_providers as provider;
 
 // Extracted core modules re-exported for root compatibility.
+pub use codegg_core::run_result;
 pub use codegg_core::{
     agent_run, agent_run_control, bus, goal, identity, memory, migration, model_profile,
     project_storage, repository_lineage, resilience, run_store, session, snapshot, storage,

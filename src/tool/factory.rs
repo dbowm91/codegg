@@ -123,6 +123,7 @@ pub fn build_session_tool_registry(
         submission: submission.clone(),
         command_intent: config.command_intent.clone(),
         workspace_root: Some(execution.workspace_root.clone()),
+        child_git_policy: None,
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
         notification_service,

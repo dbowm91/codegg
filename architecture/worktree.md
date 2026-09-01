@@ -93,6 +93,23 @@ SQLite-backed daemons start a bounded reconciliation task. An active durable
 run remains leased until its run record is terminal; a terminal run is
 released but not destructively cleaned up during reconciliation.
 
+### Agent-run mutation isolation (M004)
+
+The scheduler classifies delegated capability before child execution. A
+mutation-capable durable child receives a distinct managed worktree lease in
+the run's `Preparing` phase and all child repository tools are rooted there.
+The lease is refreshed before release; dirty or conflicted results remain
+retained and are not eligible for automatic cleanup. Read-only children avoid
+allocation and are filtered away from write, terminal, Bash, Git, and commit
+authority.
+
+The durable run result is stored in `agent_run_result` and is bounded before
+serialization. Parent integration is a separate operation: it requires the
+child's recorded base/result identity, the same repository, and a clean parent
+still at that base, then uses the typed Git mutation executor. Conflict
+outcomes are returned as structured recoverable results; successful child
+completion alone never changes the parent.
+
 ### Utility functions
 
 - `find_git_root(start)` — walks up the directory tree looking for `.git`

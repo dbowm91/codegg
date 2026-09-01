@@ -341,6 +341,7 @@ pub struct BashTool {
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     routing_disabled_override: Option<bool>,
+    workspace_root: Option<PathBuf>,
 }
 
 impl BashTool {
@@ -394,6 +395,7 @@ impl BashTool {
             submission: None,
             asset_pin: None,
             routing_disabled_override: None,
+            workspace_root: None,
         }
     }
 
@@ -409,6 +411,11 @@ impl BashTool {
 
     pub fn with_allowed_paths(mut self, paths: Vec<String>) -> Self {
         self.allowed_paths = Some(paths);
+        self
+    }
+
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.workspace_root = Some(root);
         self
     }
 
@@ -1545,6 +1552,32 @@ impl Default for BashTool {
     }
 }
 
+pub(crate) fn validate_child_workspace_command(
+    command: &str,
+    args: &[String],
+    root: &Path,
+) -> Result<(), ToolError> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut tokens = vec![command.to_string()];
+    tokens.extend(args.iter().cloned());
+    for token in tokens
+        .iter()
+        .flat_map(|value| value.split(|ch: char| ch.is_whitespace() || ";|&<>()".contains(ch)))
+    {
+        if matches!(token, ".." | "cd" | "pushd" | "popd") {
+            return Err(ToolError::Permission(
+                "isolated child shell cannot change or escape its worktree".into(),
+            ));
+        }
+        if token.starts_with('/') && !Path::new(token).starts_with(&root) {
+            return Err(ToolError::Permission(format!(
+                "isolated child shell path is outside worktree: {token}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Extract a `-C <path>` argument from a git argv. Returns the path if
 /// present and parseable. Used by bash-translated git dispatch to recover
 /// the repository root when `canonical_workdir` is unset (typical in tests
@@ -1663,10 +1696,18 @@ impl Tool for BashTool {
             None
         };
 
+        if let Some(root) = self.workspace_root.as_ref() {
+            validate_child_workspace_command(command, &[], root)?;
+        }
+
         let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
         let execution_timeout = Duration::from_secs(timeout_secs.max(1));
 
-        let workdir = input["workdir"].as_str().map(|s| s.to_string());
+        let workdir = input["workdir"].as_str().map(str::to_string).or_else(|| {
+            self.workspace_root
+                .as_ref()
+                .map(|root| root.to_string_lossy().into_owned())
+        });
 
         // Phase 04/10: Classify command intent, plan execution, and resolve routing.
         // When active routing is enabled for the command's family AND the plan
@@ -2196,6 +2237,14 @@ mod tests {
             pat,
             command
         );
+    }
+
+    #[test]
+    fn isolated_child_shell_rejects_parent_paths_and_directory_changes() {
+        let root = std::env::temp_dir().join("codegg-isolated-child-test");
+        assert!(validate_child_workspace_command("echo ok", &[], &root).is_ok());
+        assert!(validate_child_workspace_command("cd ..", &[], &root).is_err());
+        assert!(validate_child_workspace_command("echo ok > /tmp/parent.txt", &[], &root).is_err());
     }
 
     #[test]

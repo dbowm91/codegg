@@ -295,10 +295,11 @@ impl CoreDaemon {
             );
             // Register the default executor set synchronously.
             if let Err(error) = scheduler_arc
-                .register_default_executors_sync_with_agent_runs_and_control(
+                .register_default_executors_sync_with_agent_runs_and_control_and_worktree(
                     deps.legacy_agent.subagent_pool.clone(),
                     Some(deps.agent_run_store.clone()),
                     Some(deps.run_control.clone()),
+                    Some(worktree_service.clone()),
                 )
             {
                 tracing::error!(

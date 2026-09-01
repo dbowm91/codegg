@@ -135,6 +135,8 @@ pub struct SubAgentResult {
     pub success: bool,
     pub result: String,
     pub report: Option<SubAgentReport>,
+    pub validation: Vec<codegg_core::run_result::ValidationEvidence>,
+    pub artifacts: Vec<codegg_core::run_result::AgentRunArtifact>,
 }
 
 impl SubAgentResult {
@@ -144,6 +146,8 @@ impl SubAgentResult {
             success: true,
             result,
             report: None,
+            validation: Vec::new(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -153,6 +157,8 @@ impl SubAgentResult {
             success: true,
             result,
             report: Some(report),
+            validation: Vec::new(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -162,6 +168,8 @@ impl SubAgentResult {
             success: false,
             result: error,
             report: None,
+            validation: Vec::new(),
+            artifacts: Vec::new(),
         }
     }
 }
@@ -585,6 +593,35 @@ impl SubAgentPool {
         self.admission.active_count()
     }
 
+    /// Resolve the isolation policy from effective capability inputs before
+    /// the child loop is constructed. Unknown/custom agents are conservative:
+    /// an undeclared mutating tool is still potentially mutating and therefore
+    /// requires a managed worktree.
+    pub fn requires_isolation(&self, agent_name: &str, denied_tools: &[String]) -> bool {
+        let Some(agent) = self.agents.iter().find(|agent| agent.name == agent_name) else {
+            return true;
+        };
+        [
+            "write",
+            "edit",
+            "apply_patch",
+            "replace",
+            "multiedit",
+            "terminal",
+            "bash",
+            "git",
+            "commit",
+        ]
+        .into_iter()
+        .any(|tool| {
+            !denied_tools.iter().any(|denied| denied == tool)
+                && !agent
+                    .permissions
+                    .get(tool)
+                    .is_some_and(|level| level.eq_ignore_ascii_case("deny"))
+        })
+    }
+
     pub fn task_store(&self) -> Arc<TokioMutex<TaskStore>> {
         self.task_store.clone()
     }
@@ -973,7 +1010,7 @@ async fn run_subagent_task_with_cancel(
             }
         } => {
             match result {
-                Ok((output, report)) => {
+                Ok((output, report, validation, artifacts)) => {
                     GlobalEventBus::publish(AppEvent::SubagentCompleted {
                         session_id: session_id.clone(),
                         task_id,
@@ -981,11 +1018,14 @@ async fn run_subagent_task_with_cancel(
                         result_summary: output.chars().take(200).collect(),
                     });
                     // Don't update task store here - let handle_response do it
-                    if let Some(report) = report {
+                    let mut result = if let Some(report) = report {
                         SubAgentResult::success_with_report(task_id, output, report)
                     } else {
                         SubAgentResult::success(task_id, output)
-                    }
+                    };
+                    result.validation = validation;
+                    result.artifacts = artifacts;
+                    result
                 }
                 Err(ref e) => {
                     let error_msg = format!("Subagent task failed: {}", e);
@@ -1017,7 +1057,15 @@ async fn execute_agent_task(
     _session_store: Arc<SessionStore>,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
-) -> Result<(String, Option<SubAgentReport>), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<
+    (
+        String,
+        Option<SubAgentReport>,
+        Vec<codegg_core::run_result::ValidationEvidence>,
+        Vec<codegg_core::run_result::AgentRunArtifact>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
     let agent_name = &request.agent;
     let agent = agents
         .iter()
@@ -1028,11 +1076,15 @@ async fn execute_agent_task(
     // permissions beyond session/config/hard policy bounds.
     let session_rules = crate::permission::PermissionRuleset::default();
     let config_rules = crate::permission::config_ruleset(Some(&config));
-    let hard_deny = vec![
-        "commit".to_string(),
-        "todowrite".to_string(),
-        "todoread".to_string(),
-    ];
+    let mut hard_deny = vec!["todowrite".to_string(), "todoread".to_string()];
+    let safe_without_commit =
+        agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
+    // A child may only commit after the scheduler has given it an owned
+    // worktree. Pushes, history rewrites, and destructive cleanup remain
+    // independently denied by the child tool surface and Git policy.
+    if request.workspace_root.is_none() || !has_explicit_git_write(&safe_without_commit) {
+        hard_deny.push("commit".to_string());
+    }
     let safe_agent = agent.apply_safety_envelope(&session_rules, &config_rules, &hard_deny);
 
     // Build a fully resolved execution profile with model inheritance and alias resolution.
@@ -1063,7 +1115,17 @@ async fn execute_agent_task(
         .ok_or_else(|| format!("Provider '{}' not found", provider_name))?
         .clone_box();
 
-    let mut tool_registry = ToolRegistry::with_config(&config);
+    let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
+        workspace_root: request.workspace_root.clone(),
+        command_intent: config.command_intent.clone(),
+        child_git_policy: request
+            .workspace_root
+            .as_ref()
+            .map(|_| crate::tool::git::ChildGitPolicy::LocalCommitOnly),
+        tool_backends: crate::tool::ToolBackendConfig::from_config(&config),
+        lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
+        ..Default::default()
+    });
     // Subagents must NEVER have access to in-flight planning tools
     // (todowrite/todoread), long-horizon goal tools (goal_get,
     // goal_update_progress, goal_request_completion — not in
@@ -1341,19 +1403,88 @@ async fn execute_agent_task(
     }
 
     let report = serde_json::from_str::<SubAgentReport>(&output).ok();
+    let (validation, artifacts) = extract_validation_evidence(&events);
 
-    Ok((output, report))
+    Ok((output, report, validation, artifacts))
+}
+
+const VALIDATION_RESULT_PREFIX: &str = "CODEGG_VALIDATION_RESULT:";
+
+#[derive(Debug, Deserialize)]
+struct ValidationResultMarker {
+    job_id: String,
+    kind: String,
+    status: String,
+    summary: String,
+}
+
+fn extract_validation_evidence(
+    events: &[crate::provider::ChatEvent],
+) -> (
+    Vec<codegg_core::run_result::ValidationEvidence>,
+    Vec<codegg_core::run_result::AgentRunArtifact>,
+) {
+    let mut validation = Vec::new();
+    let mut artifacts = Vec::new();
+    for event in events {
+        let crate::provider::ChatEvent::ToolResult { content, .. } = event else {
+            continue;
+        };
+        for line in content.lines() {
+            let Some(payload) = line.strip_prefix(VALIDATION_RESULT_PREFIX) else {
+                continue;
+            };
+            let Ok(marker) = serde_json::from_str::<ValidationResultMarker>(payload) else {
+                continue;
+            };
+            let status = match marker.status.as_str() {
+                "passed" => codegg_core::run_result::ValidationStatus::Passed,
+                "failed" => codegg_core::run_result::ValidationStatus::Failed,
+                "cancelled" => codegg_core::run_result::ValidationStatus::Cancelled,
+                "timed_out" => codegg_core::run_result::ValidationStatus::TimedOut,
+                _ => codegg_core::run_result::ValidationStatus::Unknown,
+            };
+            validation.push(codegg_core::run_result::ValidationEvidence {
+                kind: marker.kind,
+                status,
+                summary: marker.summary,
+            });
+            artifacts.push(codegg_core::run_result::AgentRunArtifact {
+                kind: "validation_job".into(),
+                label: "scheduler validation job".into(),
+                reference: Some(format!("job:{}", marker.job_id)),
+            });
+        }
+    }
+    (validation, artifacts)
 }
 
 fn is_read_only_agent(agent: &Agent) -> bool {
-    ["write", "edit", "apply_patch", "replace", "multiedit"]
-        .iter()
-        .all(|tool| {
-            agent
-                .permissions
-                .get(*tool)
-                .is_some_and(|level| level == "deny")
-        })
+    [
+        "write",
+        "edit",
+        "apply_patch",
+        "replace",
+        "multiedit",
+        "terminal",
+        "bash",
+        "git",
+        "commit",
+    ]
+    .iter()
+    .all(|tool| {
+        agent
+            .permissions
+            .get(*tool)
+            .is_some_and(|level| level == "deny")
+    })
+}
+
+fn has_explicit_git_write(agent: &Agent) -> bool {
+    agent
+        .permissions
+        .get("git")
+        .is_some_and(|level| level.eq_ignore_ascii_case("allow"))
 }
 
 fn read_only_blocked_tools() -> Vec<String> {
@@ -1467,5 +1598,24 @@ mod admission_tests {
 
         drop(lease);
         assert_eq!(registry.active_count(), 0);
+    }
+
+    #[test]
+    fn scheduler_validation_markers_become_structured_evidence() {
+        let events = vec![crate::provider::ChatEvent::ToolResult {
+            tool_call_id: Arc::new("test-call".into()),
+            content: Arc::new(
+                "passed\nCODEGG_VALIDATION_RESULT:{\"job_id\":\"job-1\",\"kind\":\"test\",\"status\":\"passed\",\"summary\":\"12 tests passed\"}"
+                    .into(),
+            ),
+        }];
+        let (validation, artifacts) = extract_validation_evidence(&events);
+        assert_eq!(validation.len(), 1);
+        assert_eq!(
+            validation[0].status,
+            codegg_core::run_result::ValidationStatus::Passed
+        );
+        assert_eq!(validation[0].summary, "12 tests passed");
+        assert_eq!(artifacts[0].reference.as_deref(), Some("job:job-1"));
     }
 }

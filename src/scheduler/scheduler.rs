@@ -371,6 +371,21 @@ impl JobScheduler {
         agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
         run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
+        self.register_default_executors_sync_with_agent_runs_and_control_and_worktree(
+            subagent_pool,
+            agent_runs,
+            run_control,
+            None,
+        )
+    }
+
+    pub fn register_default_executors_sync_with_agent_runs_and_control_and_worktree(
+        &self,
+        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+        agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
+        run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
+        worktree_service: Option<Arc<codegg_core::worktree_service::WorktreeService>>,
+    ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
             ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
         };
@@ -382,9 +397,21 @@ impl JobScheduler {
         registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
         if let Some(pool) = subagent_pool {
             let executor = match agent_runs {
-                Some(store) => {
-                    SubagentJobExecutor::new_with_agent_runs_and_control(pool, store, run_control)
-                }
+                Some(store) => match worktree_service {
+                    Some(worktree_service) => {
+                        SubagentJobExecutor::new_with_agent_runs_and_control_and_worktree(
+                            pool,
+                            store,
+                            run_control,
+                            worktree_service,
+                        )
+                    }
+                    None => SubagentJobExecutor::new_with_agent_runs_and_control(
+                        pool,
+                        store,
+                        run_control,
+                    ),
+                },
                 None => SubagentJobExecutor::new(pool),
             };
             registry.register(Arc::new(executor))?;

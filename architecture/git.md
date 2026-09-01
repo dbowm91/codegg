@@ -339,6 +339,26 @@ cargo test --test git_recovery_integration
 cargo test --test git_execution_origin_matrix
 ```
 
+### Isolated delegated-run commits and integration
+
+Mutation-capable delegated runs are assigned a managed worktree before their
+agent loop is constructed. The child tool registry receives that worktree as
+its workspace root and applies `ChildGitPolicy::LocalCommitOnly` when the
+resolved parent authority includes `GitWrite`. This permits stage/unstage and
+local commits in the owned worktree while continuing to reject push, remote and
+credential configuration, history rewrites, broad clean/reset, and other
+network/destructive operations through their independent policy gates.
+
+The child result is persisted as a bounded, machine-readable
+`codegg_core::run_result::AgentRunResult`. Its base/result commits, changed
+paths, repository state, and findings are collected from Git facts rather than
+treated as claims in final model prose. A completed child does not mutate the
+parent repository. `AgentRunIntegrationService` performs an explicit,
+lineage-checked merge, cherry-pick, or rebase through the typed Git mutation
+executor and returns a structured success or conflict outcome; failed or dirty
+worktrees remain available for inspection under the worktree service's cleanup
+policy.
+
 ### Test counts (verified today)
 
 | Module / file | #[test] + #[tokio::test] |

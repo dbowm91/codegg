@@ -254,6 +254,22 @@ recovery use first-terminal-wins semantics; scheduler-owned cancellation and
 generation recovery reconcile the durable run rather than relying only on a
 live `CancellationToken`.
 
+Mutation-capable durable children are automatically allocated a
+`WorktreeLease` during `Preparing`, before the child loop is built. The
+request's filesystem, terminal, Bash, Git, and commit tools are rooted at the
+leased worktree; read-only children reuse the parent root and retain no write
+or Git authority. Child Git policy permits only local staging/commit, while
+push, remote/configuration, reset/clean, history integration, and recovery
+remain separately controlled.
+
+Completion persists a bounded `codegg_core::agent_run_result::AgentRunResult`
+with Git-derived base/result commits, changed paths, repository state,
+findings, validation/artifact slots, retryability, and recovery guidance.
+The transcript is explanatory only. `AgentRunIntegrationService` validates
+the recorded base and a clean, unchanged parent before dispatching an
+explicit typed merge, cherry-pick, or rebase; no child completion mutates the
+parent automatically.
+
 `SubAgentPool` remains the child-runtime adapter and retains semantic
 delegation limits such as depth, fan-out, and tool budgets. Scheduler-owned
 requests do not acquire the pool's machine-capacity semaphore, so resource

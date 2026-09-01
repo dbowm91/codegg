@@ -87,6 +87,7 @@ pub struct TerminalTool {
     workdir: Option<PathBuf>,
     blocked_commands: HashSet<&'static str>,
     allowlist: Option<HashSet<&'static str>>,
+    allowed_root: Option<PathBuf>,
 }
 
 impl TerminalTool {
@@ -132,11 +133,17 @@ impl TerminalTool {
                 "pkexec",
             ]),
             allowlist: None,
+            allowed_root: None,
         }
     }
 
     pub fn with_workdir(mut self, dir: PathBuf) -> Self {
         self.workdir = Some(dir);
+        self
+    }
+
+    pub fn with_allowed_root(mut self, root: PathBuf) -> Self {
+        self.allowed_root = Some(root);
         self
     }
 
@@ -282,6 +289,9 @@ impl Tool for TerminalTool {
             .unwrap_or_default();
 
         self.check_command_security(command, &args)?;
+        if let Some(root) = self.allowed_root.as_ref() {
+            crate::tool::bash::validate_child_workspace_command(command, &args, root)?;
+        }
 
         tracing::info!("Running terminal command: {} {:?}", command, args);
 
