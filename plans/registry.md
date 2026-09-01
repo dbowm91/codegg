@@ -33,6 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M001 ready | M001 is dependency-ready; M002-M006 are dependency-gated in roadmap order. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -42,11 +43,15 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-None currently. The Provider M007, Tool Programs M019, and DVR M007 closure records are accepted; no registered plan is waiting on a dependency.
+| Subsystem | Milestone | Plan | Why ready |
+|---|---|---|---|
+| Agent runs, async delegation, and worktree concurrency | M001 — durable AgentTask/AgentRun ownership and scheduler convergence | `plans/implementation/agent-run-worktree-concurrency/001-durable-agent-run-foundation.md` | Domain identity, runtime assets, scheduler ownership, nested-delegation seams, and agent-runtime correctness foundations are closed. |
 
 ## Closure work and dependencies
 
-All previously active closure lines are closed:
+All previously active closure lines are closed. The new agent-run/worktree workstream is implementation-active but has no closure pass yet; M001 is the only dependency-ready milestone.
+
+Historical closed control points remain:
 
 - Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record.
 - Tool Programs M019 independent strict review: `plans/closure/tool-programs/019-status.md`. `018-status.md` remains provisional implementation-authored historical evidence.
@@ -54,11 +59,21 @@ All previously active closure lines are closed:
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 
-An audit of this registry found no registered blocked or dependency-ready plan remaining on any of these closures. Verification remains deliberately light: no new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
+Verification remains deliberately light: the new workstream must use focused concurrency/restart/security tests plus the repository’s existing quick broad verification posture. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
-None. The previous blocker (DVR M006 waiting on strict Provider M007 and Tool Programs M019 closure records) is resolved: Provider M007, Tool Programs M019/M020, and DVR M007 all have accepted strict closure records.
+The later agent-run/worktree milestones are intentionally dependency-gated rather than independently executable:
+
+| Milestone | Plan | Blocker |
+|---|---|---|
+| M002 — run mailbox, journal, and async control | `plans/implementation/agent-run-worktree-concurrency/002-run-mailbox-journal-and-async-control.md` | M001 durable run ownership must close. |
+| M003 — durable worktree service and leases | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | M001 durable run ownership must close. |
+| M004 — isolated mutation and structured results | `plans/implementation/agent-run-worktree-concurrency/004-isolated-mutation-and-structured-results.md` | M002 and M003 must close. |
+| M005 — run groups and background joins | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | M002 and M004 must close. |
+| M006 — projection, compatibility, and closure | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | M001-M005 must close. |
+
+These are planning dependencies, not external blockers. No unrelated previously closed subsystem is reopened.
 
 ## Agent-runtime correctness execution order
 
@@ -66,7 +81,7 @@ None. The previous blocker (DVR M006 waiting on strict Provider M007 and Tool Pr
 2. M010 remains conditionally closed historical corrective evidence; its bootstrap/dead-branch/continuation cleanup must not regress.
 3. M011 owned the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence; it is closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
 4. The exact final candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
-5. The runtime-consolidation roadmap may simplify code around this closed boundary but must not rewrite M011 history or weaken its accepted invariants.
+5. The new agent-run/worktree roadmap consumes this closed runtime as a dependency and must not rewrite M011 history or weaken its accepted recovery/tool-outcome invariants.
 
 ## Agent-runtime correctness closure policy
 
