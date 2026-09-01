@@ -1,6 +1,10 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Milestone 004 — Isolated Mutation and Structured Results
 
-Status: blocked
+Status: closed
+
+Implementation commit: `37b9cc9c9442fbca20fa63072581b4be1067deaf`
+
+Closure record: `plans/closure/agent-run-worktree-concurrency/004-status.md`
 
 Repository baseline: `b08d33b7e52bde1bde1ddcddeeee3c7c157a4103`
 
@@ -23,7 +27,7 @@ Applicable ADRs:
 
 Primary class: capability/invariant
 
-Hard blockers: M002 and M003 must close.
+Hard blockers: M002 and M003 closed by their accepted closure records.
 
 ## 1. Objective
 

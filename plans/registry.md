@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M004 ready | M001-M003 closed; M004 is dependency-ready, while M005-M006 remain gated in roadmap order. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M005 ready | M001-M004 closed; M005 is dependency-ready, while M006 remains gated in roadmap order. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -45,11 +45,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Agent runs, async delegation, and worktree concurrency | M004 — isolated mutation and structured results | `plans/implementation/agent-run-worktree-concurrency/004-isolated-mutation-and-structured-results.md` | M002 and M003 closures accepted; owned worktree and run-control interfaces are stable. |
+| Agent runs, async delegation, and worktree concurrency | M005 — run groups and background joins | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | M002 and M004 closures accepted; owned worktree, run-control, and structured-result interfaces are stable. |
 
 ## Closure work and dependencies
 
-All previously active closure lines are closed. M001-M003 are closed by their linked records; M004 is now dependency-ready after the M003 closure audit. M005 and M006 remain blocked by their additional declared dependencies.
+All previously active closure lines are closed. M001-M004 are closed by their linked records; M005 is ready after the M004 closure audit. M006 remains blocked by its additional declared dependency on M005.
 
 Historical closed control points remain:
 
@@ -67,7 +67,6 @@ The later agent-run/worktree milestones are intentionally dependency-gated rathe
 
 | Milestone | Plan | Blocker |
 |---|---|---|
-| M005 — run groups and background joins | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | M002 and M004 must close. |
 | M006 — projection, compatibility, and closure | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | M001-M005 must close. |
 
 These are planning dependencies, not external blockers. No unrelated previously closed subsystem is reopened.
@@ -113,7 +112,8 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; M003 was subsequently implemented and closed, unblocking M004. |
-| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; M004 moved to ready after the declared dependency audit. |
+| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; its accepted dependency audit enabled M004. |
+| Agent runs, async delegation, and worktree concurrency | M004 — isolated mutation and structured results | closed | `plans/closure/agent-run-worktree-concurrency/004-status.md`; implementation commit `37b9cc9c`; M005 moved to ready and M006 remains blocked on M005. |
 | Agent runtime, model adaptation, and ACP | M017 — corrective integration evidence and closure | closed | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
