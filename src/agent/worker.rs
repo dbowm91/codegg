@@ -166,8 +166,10 @@ impl SubAgentResult {
 struct WorkerRequest {
     request: SubAgentRequest,
     response_tx: oneshot::Sender<SubAgentResult>,
-    lease: DescendantAdmissionLease,
+    lease: Option<DescendantAdmissionLease>,
     lineage_token: CancellationToken,
+    scheduler_cancel: CancellationToken,
+    scheduled: bool,
 }
 
 #[derive(Default)]
@@ -277,6 +279,8 @@ pub struct SubAgentPool {
     max_total_child_tool_calls: usize,
     admission: Arc<AdmissionRegistry>,
     lineage_tokens: Arc<TokioMutex<HashMap<String, CancellationToken>>>,
+    durable_submission: Arc<TokioMutex<Option<Arc<crate::scheduler::JobSubmissionService>>>>,
+    durable_agent_runs: Arc<TokioMutex<Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>>>,
 }
 
 impl SubAgentPool {
@@ -339,6 +343,8 @@ impl SubAgentPool {
                 max_total_child_tool_calls,
             }),
             lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
+            durable_submission: Arc::new(TokioMutex::new(None)),
+            durable_agent_runs: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -406,6 +412,8 @@ impl SubAgentPool {
                 max_total_child_tool_calls,
             }),
             lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
+            durable_submission: Arc::new(TokioMutex::new(None)),
+            durable_agent_runs: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -443,7 +451,7 @@ impl SubAgentPool {
                         let mut handles = active_handles.lock().await;
                         handles.retain(|h| !h.is_finished());
                     }
-                    Some(WorkerRequest { request, response_tx, lease, lineage_token }) = request_rx.recv() => {
+                    Some(WorkerRequest { request, response_tx, lease, lineage_token, scheduler_cancel, scheduled }) = request_rx.recv() => {
                         if cancel_token.is_cancelled() {
                             drop(lease);
                             if response_tx
@@ -472,7 +480,13 @@ impl SubAgentPool {
                             let _lease = lease;
 
                             // Wait for semaphore permit, but also check for cancellation
-                            let permit = tokio::select! {
+                            let permit = if scheduled {
+                                // Scheduler admission already owns the machine
+                                // capacity for this execution. Waiting on the
+                                // pool semaphore here would create a second
+                                // daemon capacity queue.
+                                None
+                            } else { Some(tokio::select! {
                                 biased;
                                 _ = cancel_token.cancelled() => {
                                     if response_tx
@@ -516,7 +530,7 @@ impl SubAgentPool {
                                         }
                                     }
                                 }
-                            };
+                            }) };
 
                             let task_id = request.task_id;
                             let result = run_subagent_task_with_cancel(
@@ -528,6 +542,7 @@ impl SubAgentPool {
                                 session_store,
                                 cancel_token,
                                 lineage_token,
+                                scheduler_cancel,
                                 db_pool,
                                 subagent_pool,
                             ).await;
@@ -566,6 +581,22 @@ impl SubAgentPool {
 
     pub fn task_store(&self) -> Arc<TokioMutex<TaskStore>> {
         self.task_store.clone()
+    }
+
+    /// Install the daemon-owned delegation boundary after scheduler
+    /// construction. Standalone pools leave this unset and retain their
+    /// explicit compatibility behavior.
+    pub fn configure_durable_delegation(
+        &self,
+        submission: Arc<crate::scheduler::JobSubmissionService>,
+        agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    ) {
+        if let Ok(mut slot) = self.durable_submission.try_lock() {
+            *slot = Some(submission);
+        }
+        if let Ok(mut slot) = self.durable_agent_runs.try_lock() {
+            *slot = Some(agent_runs);
+        }
     }
 
     /// Cancel one root lineage without affecting unrelated roots.
@@ -646,6 +677,8 @@ impl Clone for SubAgentPool {
             max_total_child_tool_calls: self.max_total_child_tool_calls,
             admission: Arc::clone(&self.admission),
             lineage_tokens: Arc::clone(&self.lineage_tokens),
+            durable_submission: Arc::clone(&self.durable_submission),
+            durable_agent_runs: Arc::clone(&self.durable_agent_runs),
         }
     }
 }
@@ -713,6 +746,16 @@ impl SubAgentSpawner {
         &self,
         request: SubAgentRequest,
     ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
+        self.enqueue_request_with_mode(request, CancellationToken::new(), false)
+            .await
+    }
+
+    async fn enqueue_request_with_mode(
+        &self,
+        request: SubAgentRequest,
+        scheduler_cancel: CancellationToken,
+        scheduled: bool,
+    ) -> Result<oneshot::Receiver<SubAgentResult>, String> {
         if self.pool.config.subagent.as_ref().and_then(|s| s.enabled) == Some(false) {
             return Err("subagent delegation is disabled".to_string());
         }
@@ -760,8 +803,10 @@ impl SubAgentSpawner {
         let worker_request = WorkerRequest {
             request,
             response_tx,
-            lease,
+            lease: Some(lease),
             lineage_token,
+            scheduler_cancel,
+            scheduled,
         };
 
         if let Err(error) = self.pool.request_tx.send(worker_request).await {
@@ -791,8 +836,33 @@ impl SubAgentSpawner {
     /// callers use this form so their durable attempt and admission permit
     /// remain active until the subagent actually finishes.
     pub async fn send_and_wait(&self, request: SubAgentRequest) -> Result<SubAgentResult, String> {
+        self.send_and_wait_with_mode(request, CancellationToken::new(), false)
+            .await
+    }
+
+    /// Scheduler-owned execution path. Semantic descendant limits remain
+    /// enforced by the pool, while machine-capacity admission is owned by
+    /// the scheduler and therefore does not acquire the pool semaphore.
+    pub async fn send_and_wait_scheduled(
+        &self,
+        request: SubAgentRequest,
+        scheduler_cancel: CancellationToken,
+    ) -> Result<SubAgentResult, String> {
+        self.send_and_wait_with_mode(request, scheduler_cancel, true)
+            .await
+    }
+
+    async fn send_and_wait_with_mode(
+        &self,
+        request: SubAgentRequest,
+        scheduler_cancel: CancellationToken,
+        scheduled: bool,
+    ) -> Result<SubAgentResult, String> {
         let task_id = request.task_id;
-        let response = self.enqueue_request(request).await?.await;
+        let response = self
+            .enqueue_request_with_mode(request, scheduler_cancel, scheduled)
+            .await?
+            .await;
         let result = response.map_err(|e| format!("worker response error: {e}"))?;
         Self::handle_response(
             task_id,
@@ -814,6 +884,7 @@ async fn run_subagent_task_with_cancel(
     session_store: Arc<SessionStore>,
     cancel_token: CancellationToken,
     lineage_token: CancellationToken,
+    scheduler_cancel: CancellationToken,
     pool: Option<SqlitePool>,
     subagent_pool: Arc<SubAgentPool>,
 ) -> SubAgentResult {
@@ -842,6 +913,13 @@ async fn run_subagent_task_with_cancel(
 
     let result = tokio::select! {
         biased;
+        _ = scheduler_cancel.cancelled() => {
+            GlobalEventBus::publish(AppEvent::SubagentFailed {
+                session_id: session_id.clone(), task_id, agent: request.agent.clone(),
+                error: "Task cancelled by scheduler".to_string(),
+            });
+            SubAgentResult::failure(task_id, "Task cancelled".to_string())
+        }
         _ = cancel_token.cancelled() => {
             let msg = "Task cancelled during shutdown".to_string();
             GlobalEventBus::publish(AppEvent::SubagentFailed {
@@ -1006,24 +1084,35 @@ async fn execute_agent_task(
         && !request.denied_tools.iter().any(|tool| tool == "task")
         && config.subagent.as_ref().and_then(|s| s.enabled) != Some(false);
     if can_delegate {
+        let durable_submission = subagent_pool.durable_submission.lock().await.clone();
+        let durable_agent_runs = subagent_pool.durable_agent_runs.lock().await.clone();
         let mut inherited_denied = request.denied_tools.clone();
         if parent_is_read_only {
             inherited_denied.extend(read_only_blocked_tools());
             inherited_denied.sort();
             inherited_denied.dedup();
         }
-        tool_registry.register(
-            crate::tool::task::TaskTool::new(
-                subagent_pool.task_store(),
-                Some(subagent_pool.spawner()),
-                Some(request.parent_id.clone().unwrap_or_default()),
-                inherited_denied,
-            )
-            .with_depth(request.depth)
-            .with_parent_model(Some(profile.resolved_model.clone()))
-            .with_workspace_root(request.workspace_root.clone())
-            .with_parent_allowed_paths(request.allowed_paths.clone()),
-        );
+        let task_tool = crate::tool::task::TaskTool::new(
+            subagent_pool.task_store(),
+            Some(subagent_pool.spawner()),
+            Some(request.parent_id.clone().unwrap_or_default()),
+            inherited_denied,
+        )
+        .with_depth(request.depth)
+        .with_parent_model(Some(profile.resolved_model.clone()))
+        .with_workspace_root(request.workspace_root.clone())
+        .with_parent_allowed_paths(request.allowed_paths.clone());
+        let task_tool = match (
+            durable_submission,
+            durable_agent_runs,
+            request.workspace_root.clone(),
+        ) {
+            (Some(submission), Some(agent_runs), Some(root)) => task_tool
+                .with_submission(submission, root)
+                .with_agent_run_store(agent_runs),
+            _ => task_tool,
+        };
+        tool_registry.register(task_tool);
     }
 
     let mut agent_rules = crate::permission::PermissionRuleset::default();

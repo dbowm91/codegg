@@ -1,5 +1,6 @@
 #![deny(unsafe_code)]
 
+pub mod agent_run;
 pub mod bus;
 pub mod context;
 pub mod error;

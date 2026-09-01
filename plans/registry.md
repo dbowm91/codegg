@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M001 ready | M001 is dependency-ready; M002-M006 are dependency-gated in roadmap order. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-roadmap.md` | M001 active | M001 implementation and evidence are in progress; M002-M006 remain dependency-gated in roadmap order. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -45,7 +45,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Agent runs, async delegation, and worktree concurrency | M001 — durable AgentTask/AgentRun ownership and scheduler convergence | `plans/implementation/agent-run-worktree-concurrency/001-durable-agent-run-foundation.md` | Domain identity, runtime assets, scheduler ownership, nested-delegation seams, and agent-runtime correctness foundations are closed. |
+| Agent runs, async delegation, and worktree concurrency | M001 — durable AgentTask/AgentRun ownership and scheduler convergence | `plans/implementation/agent-run-worktree-concurrency/001-durable-agent-run-foundation.md` | Active implementation; closure evidence is being gathered. |
 
 ## Closure work and dependencies
 

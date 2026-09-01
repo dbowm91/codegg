@@ -160,6 +160,21 @@ records the executor name on the attempt before marking it running.
 
 ## Configuration Surface
 
+### Durable delegated-agent execution
+
+`JobPayload::SubagentRun` carries typed `AgentTaskId`/`AgentRunId` values and
+the stable delegation key. `SubagentJobExecutor` attaches the scheduler
+attempt, transitions the run through `Preparing` and `Running`, invokes the
+existing child runtime, and records one bounded terminal outcome. The
+`AgentRunStore` is also wired into scheduler cancellation and startup
+generation recovery, including queued cancellation before an attempt exists.
+
+The scheduler remains the only daemon machine-capacity authority. A scheduled
+child can still be rejected by explicit semantic delegation policy, but it is
+not rejected merely because the compatibility pool's local semaphore is full.
+`JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
+the run record is the attributable delegated-agent ownership layer.
+
 The on-disk schema lives in `crates/codegg-config/src/schema.rs`:
 
 ```toml

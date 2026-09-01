@@ -130,6 +130,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 36 {
         migrate_and_record(pool, 36).await?;
     }
+    if current_version < 37 {
+        migrate_and_record(pool, 37).await?;
+    }
 
     Ok(())
 }
@@ -178,6 +181,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             34 => migrate_v34(pool).await?,
             35 => migrate_v35(pool).await?,
             36 => migrate_v36(pool).await?,
+            37 => migrate_v37(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1769,6 +1773,76 @@ async fn migrate_v36(pool: &SqlitePool) -> Result<(), StorageError> {
         "ALTER TABLE job ADD COLUMN timeout_ms INTEGER".to_string(),
     )
     .await
+}
+
+/// Durable delegated-agent ownership. These tables intentionally remain
+/// separate from the legacy numeric `task` table: old rows do not contain
+/// enough provenance to be safely promoted to AgentTask/AgentRun records.
+async fn migrate_v37(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_task (
+            task_id TEXT PRIMARY KEY,
+            root_task_id TEXT NOT NULL,
+            parent_task_id TEXT,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            project_id TEXT NOT NULL,
+            repository_id TEXT,
+            workspace_id TEXT NOT NULL,
+            requested_agent TEXT NOT NULL,
+            delegation_key TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run (
+            run_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL UNIQUE,
+            root_run_id TEXT NOT NULL,
+            parent_run_id TEXT,
+            workspace_id TEXT NOT NULL,
+            worktree_id TEXT,
+            node_id TEXT,
+            job_id TEXT,
+            attempt_id TEXT,
+            agent_name TEXT NOT NULL,
+            agent_digest TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            authority_digest TEXT NOT NULL,
+            budget_json TEXT NOT NULL,
+            status TEXT NOT NULL,
+            terminal TEXT,
+            result_ref TEXT,
+            failure_class TEXT,
+            failure_message TEXT,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES agent_task(task_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_task_session ON agent_task(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_task_root ON agent_task(root_task_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_task_parent ON agent_task(parent_task_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_task_workspace_status ON agent_task(workspace_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_root ON agent_run(root_run_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_job ON agent_run(job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_attempt ON agent_run(attempt_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run(status, updated_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Session Projections Milestone 2: durable projection stream,

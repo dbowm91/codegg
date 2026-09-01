@@ -954,6 +954,21 @@ pub enum JobPayload {
         allowed_paths: Vec<String>,
         max_tool_calls: Option<u32>,
     },
+    /// Scheduler payload carrying canonical durable agent ownership. The
+    /// legacy `Subagent` variant remains readable for standalone callers and
+    /// historical jobs; daemon TaskTool submissions use this envelope so the
+    /// executor never has to derive identity from a job id.
+    SubagentRun {
+        prompt: String,
+        agent: String,
+        parent_id: Option<String>,
+        denied_tools: Vec<String>,
+        allowed_paths: Vec<String>,
+        max_tool_calls: Option<u32>,
+        task_id: crate::identity::AgentTaskId,
+        run_id: crate::identity::AgentRunId,
+        delegation_key: String,
+    },
     Test {
         command: String,
         argv: Vec<String>,

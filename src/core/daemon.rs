@@ -281,9 +281,10 @@ impl CoreDaemon {
                 deps.daemon_generation.clone(),
             );
             // Register the default executor set synchronously.
-            if let Err(error) = scheduler_arc
-                .register_default_executors_sync(deps.legacy_agent.subagent_pool.clone())
-            {
+            if let Err(error) = scheduler_arc.register_default_executors_sync_with_agent_runs(
+                deps.legacy_agent.subagent_pool.clone(),
+                Some(deps.agent_run_store.clone()),
+            ) {
                 tracing::error!(
                     ?error,
                     "USER ACTION REQUIRED: scheduler degraded - default executor registration \
@@ -310,6 +311,12 @@ impl CoreDaemon {
         };
         deps.scheduler = Some(scheduler.clone());
         deps.scheduler_config = scheduler_config.clone();
+        if let Err(error) = scheduler.configure_agent_run_store_sync(deps.agent_run_store.clone()) {
+            tracing::error!(
+                ?error,
+                "failed to wire durable agent-run store into scheduler"
+            );
+        }
         let submission = crate::scheduler::JobSubmissionService::new(
             deps.job_store.clone(),
             scheduler.clone(),
@@ -317,6 +324,9 @@ impl CoreDaemon {
             deps.daemon_generation.clone(),
         );
         deps.submission = Some(submission.clone());
+        if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
+            pool.configure_durable_delegation(submission.clone(), deps.agent_run_store.clone());
+        }
 
         // The Tool Program executor needs the daemon-owned submission facade
         // for nested child jobs. Install it only after the scheduler exists,
@@ -2525,6 +2535,9 @@ impl CoreDaemon {
                     plugin_service,
                     execution,
                     submission: self.deps.submission.clone(),
+                    agent_run_store: self.deps.agent_run_store.clone(),
+                    project_id: codegg_core::identity::ProjectId::parse(&runtime.project_id).ok(),
+                    repository_id: None,
                     asset_snapshot,
                     asset_pin,
                 };

@@ -126,6 +126,11 @@ pub struct TurnRunInput {
     pub execution: Arc<codegg_core::workspace::ExecutionContext>,
     /// Daemon-owned heavy-job submission boundary.
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    /// Durable ownership store shared by daemon TaskTool instances and the
+    /// scheduler's subagent executor.
+    pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    pub project_id: Option<codegg_core::identity::ProjectId>,
+    pub repository_id: Option<codegg_core::identity::RepositoryId>,
     /// Immutable runtime-asset snapshot captured before this turn starts.
     /// Active turns retain this `Arc` even when the daemon publishes a later
     /// generation for the same workspace.
@@ -192,6 +197,9 @@ impl TurnRuntime for DefaultTurnRuntime {
             plugin_service,
             execution,
             submission,
+            agent_run_store,
+            project_id,
+            repository_id,
             asset_snapshot,
             asset_pin,
         } = input;
@@ -239,6 +247,10 @@ impl TurnRuntime for DefaultTurnRuntime {
             Arc::clone(&execution),
             crate::tool::factory::SessionToolContext {
                 submission: submission.clone(),
+                agent_run_store: Some(agent_run_store.clone()),
+                project_id,
+                repository_id,
+                turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
                 runtime_assets: crate::tool::factory::RuntimeAssetContext {
                     snapshot: asset_snapshot.clone(),

@@ -109,9 +109,20 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 36` (`storage/mod.rs:39`) is exported and
-referenced from `MigrationMarker.storage_layout_version` for the
-migration tooling that imports legacy project databases.
+`STORAGE_LAYOUT_VERSION = 37` (`storage/mod.rs:39`) is exported and
+referenced from `MigrationMarker.storage_layout_version` for the migration
+tooling that imports legacy project databases. Migration 37 adds canonical
+`agent_task` and `agent_run` tables with typed string IDs, session/root/parent/
+workspace/status indexes, unique delegation identity, scheduler job/attempt
+links, bounded terminal references, and versioned budget JSON. The legacy
+`task` table remains readable as compatibility history; it is not backfilled
+with unverifiable durable-run provenance.
+
+The durable run records intentionally retain summaries, digests, references,
+and failure classifications rather than full prompts, hidden reasoning,
+credentials, permission bodies, or unbounded tool output. Scheduler recovery
+reconciles terminal/non-replayable delegated jobs to `Interrupted`,
+`Cancelled`, or the already-recorded terminal run outcome.
 
 ## Key Types & APIs
 

@@ -11,6 +11,9 @@ use tokio::sync::Mutex;
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
+use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
+use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId, RepositoryId};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubAgentTask {
@@ -377,6 +380,10 @@ pub struct TaskTool {
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     workspace_root: Option<std::path::PathBuf>,
     parent_allowed_paths: Vec<String>,
+    agent_runs: Option<Arc<dyn AgentRunStore>>,
+    project_id: Option<ProjectId>,
+    repository_id: Option<RepositoryId>,
+    parent_turn_id: Option<String>,
 }
 
 impl TaskTool {
@@ -396,6 +403,10 @@ impl TaskTool {
             submission: None,
             workspace_root: None,
             parent_allowed_paths: Vec::new(),
+            agent_runs: None,
+            project_id: None,
+            repository_id: None,
+            parent_turn_id: None,
         }
     }
 
@@ -414,6 +425,10 @@ impl TaskTool {
             submission: None,
             workspace_root: None,
             parent_allowed_paths: Vec::new(),
+            agent_runs: None,
+            project_id: None,
+            repository_id: None,
+            parent_turn_id: None,
         }
     }
 
@@ -434,6 +449,28 @@ impl TaskTool {
     ) -> Self {
         self.submission = Some(submission);
         self.workspace_root = Some(workspace_root);
+        self
+    }
+
+    pub fn with_agent_run_store(mut self, store: Arc<dyn AgentRunStore>) -> Self {
+        self.agent_runs = Some(store);
+        self
+    }
+
+    pub fn with_agent_run_store_opt(mut self, store: Option<Arc<dyn AgentRunStore>>) -> Self {
+        self.agent_runs = store;
+        self
+    }
+
+    pub fn with_project_context(
+        mut self,
+        project_id: Option<ProjectId>,
+        repository_id: Option<RepositoryId>,
+        turn_id: Option<String>,
+    ) -> Self {
+        self.project_id = project_id;
+        self.repository_id = repository_id;
+        self.parent_turn_id = turn_id;
         self
     }
 
@@ -505,8 +542,7 @@ impl Tool for TaskTool {
                     "description": "List of directories the subagent is allowed to access (action=spawn)"
                 },
                 "task_id": {
-                    "type": "integer",
-                    "description": "Task ID to retrieve (action=get)"
+                    "description": "Durable AgentTaskId or legacy numeric task ID to retrieve (action=get)"
                 }
             },
             "required": ["action"]
@@ -525,6 +561,40 @@ impl Tool for TaskTool {
         let action = input["action"].as_str().unwrap_or("spawn");
 
         if action == "get" {
+            if let (Some(raw_id), Some(agent_runs)) =
+                (input["task_id"].as_str(), self.agent_runs.clone())
+            {
+                let task_id = AgentTaskId::parse(raw_id)
+                    .map_err(|e| ToolError::Execution(format!("invalid durable task_id: {e}")))?;
+                let task = agent_runs
+                    .get_task(&task_id)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                let Some(task) = task else {
+                    return Ok(format!("Task {} not found", task_id));
+                };
+                if self
+                    .parent_session_id
+                    .as_deref()
+                    .is_some_and(|session| task.originating_session_id != session)
+                {
+                    return Ok(format!("Task {} not found", task_id));
+                }
+                let run = agent_runs
+                    .get_run_for_task(&task_id)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                return Ok(match run {
+                    Some(run) => format!(
+                        "Task: {}\nRun: {}\nStatus: {}\nResult: {}",
+                        task.task_id,
+                        run.run_id,
+                        run.status.as_str(),
+                        run.result_ref.unwrap_or_default()
+                    ),
+                    None => format!("Task: {}\nStatus: {}", task.task_id, task.status.as_str()),
+                });
+            }
             let task_id = input["task_id"]
                 .as_u64()
                 .ok_or_else(|| ToolError::Execution("missing 'task_id' parameter".to_string()))?;
@@ -582,9 +652,84 @@ impl Tool for TaskTool {
                     .workspace_id_for_root(&workspace_root)
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
-                let submitted = submission
+                let durable = if let Some(agent_runs) = self.agent_runs.clone() {
+                    let delegation_key = delegation_key(
+                        self.parent_session_id.as_deref(),
+                        self.parent_turn_id.as_deref(),
+                        &agent,
+                        &prompt,
+                        &allowed_paths,
+                    );
+                    let project_id = self.project_id.clone().unwrap_or_default();
+                    let provider = self
+                        .parent_model
+                        .as_deref()
+                        .and_then(|model| model.split('/').next())
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let authority_digest = authority_digest(&denied_tools, &allowed_paths);
+                    let created = agent_runs
+                        .create_or_get(
+                            NewAgentTask {
+                                task_id: AgentTaskId::new(),
+                                parent_task_id: None,
+                                originating_session_id: self
+                                    .parent_session_id
+                                    .clone()
+                                    .unwrap_or_default(),
+                                originating_turn_id: self.parent_turn_id.clone(),
+                                project_id,
+                                repository_id: self.repository_id.clone(),
+                                workspace_id: workspace_id.clone(),
+                                requested_agent: agent.clone(),
+                                delegation_key: delegation_key.clone(),
+                                description: description.clone(),
+                            },
+                            NewAgentRun {
+                                run_id: AgentRunId::new(),
+                                parent_run_id: None,
+                                workspace_id: workspace_id.clone(),
+                                agent_name: agent.clone(),
+                                agent_digest: None,
+                                provider,
+                                model: self.parent_model.clone().unwrap_or_default(),
+                                authority_digest,
+                                budget: AgentRunBudget::default(),
+                            },
+                        )
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    if created.run.job_id.is_some() || created.run.status.is_terminal() {
+                        return Ok(format!(
+                            "Task status\nTask: {}\nRun: {}\nStatus: {}",
+                            created.task.task_id,
+                            created.run.run_id,
+                            created.run.status.as_str()
+                        ));
+                    }
+                    agent_runs
+                        .transition_task(
+                            &created.task.task_id,
+                            codegg_core::agent_run::AgentTaskStatus::Queued,
+                        )
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    agent_runs
+                        .transition(
+                            &created.run.run_id,
+                            codegg_core::agent_run::AgentRunStatus::Queued,
+                        )
+                        .await
+                        .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    Some((created.task.task_id, created.run.run_id, delegation_key))
+                } else {
+                    None
+                };
+                let submitted = match submission
                     .submit(
-                        None,
+                        durable.as_ref().and_then(|(_, _, key)| {
+                            crate::scheduler::SubmissionKey::new(key.clone()).ok()
+                        }),
                         codegg_core::jobs::NewJob {
                             workspace_id,
                             session_id: self.parent_session_id.clone(),
@@ -592,17 +737,37 @@ impl Tool for TaskTool {
                             kind: codegg_core::jobs::JobKind::Subagent,
                             source: codegg_core::jobs::JobSource::AgentDelegated,
                             priority: codegg_core::jobs::JobPriority::Interactive,
-                            payload: codegg_core::jobs::JobPayload::Subagent {
-                                prompt,
-                                agent,
-                                parent_id: self.parent_session_id.clone(),
-                                denied_tools: denied_tools.clone(),
-                                allowed_paths: if allowed_paths.is_empty() {
-                                    vec![workspace_root.to_string_lossy().into_owned()]
-                                } else {
-                                    allowed_paths.clone()
-                                },
-                                max_tool_calls: None,
+                            payload: if let Some((task_id, run_id, delegation_key)) =
+                                durable.clone()
+                            {
+                                codegg_core::jobs::JobPayload::SubagentRun {
+                                    prompt,
+                                    agent,
+                                    parent_id: self.parent_session_id.clone(),
+                                    denied_tools: denied_tools.clone(),
+                                    allowed_paths: if allowed_paths.is_empty() {
+                                        vec![workspace_root.to_string_lossy().into_owned()]
+                                    } else {
+                                        allowed_paths.clone()
+                                    },
+                                    max_tool_calls: None,
+                                    task_id,
+                                    run_id,
+                                    delegation_key,
+                                }
+                            } else {
+                                codegg_core::jobs::JobPayload::Subagent {
+                                    prompt,
+                                    agent,
+                                    parent_id: self.parent_session_id.clone(),
+                                    denied_tools: denied_tools.clone(),
+                                    allowed_paths: if allowed_paths.is_empty() {
+                                        vec![workspace_root.to_string_lossy().into_owned()]
+                                    } else {
+                                        allowed_paths.clone()
+                                    },
+                                    max_tool_calls: None,
+                                }
                             },
                             resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                                 codegg_core::jobs::JobKind::Subagent,
@@ -625,7 +790,36 @@ impl Tool for TaskTool {
                         },
                     )
                     .await
-                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                {
+                    Ok(submitted) => submitted,
+                    Err(error) => {
+                        if let Some((_, run_id, _)) = durable.as_ref() {
+                            if let Some(agent_runs) = self.agent_runs.clone() {
+                                let _ = agent_runs
+                                    .finish(
+                                        run_id,
+                                        codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                                        None,
+                                        Some("submission".into()),
+                                        Some(error.to_string()),
+                                    )
+                                    .await;
+                            }
+                        }
+                        return Err(ToolError::Execution(error.to_string()));
+                    }
+                };
+                let durable_ids = durable
+                    .as_ref()
+                    .map(|(task_id, run_id, _)| (task_id.clone(), run_id.clone()));
+                if let Some((_, run_id, _)) = durable {
+                    if let Some(agent_runs) = self.agent_runs.clone() {
+                        agent_runs
+                            .attach_job(&run_id, submitted.job_id.clone())
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    }
+                }
                 let task_id = submitted
                     .job_id
                     .as_str()
@@ -652,6 +846,12 @@ impl Tool for TaskTool {
                         Vec::new(),
                     )
                     .await;
+                if let Some((durable_task_id, durable_run_id)) = durable_ids {
+                    return Ok(format!(
+                        "Task queued\nTask: {}\nRun: {}\nStatus: queued\nCompatibility task: #{}\nScheduler job: {}",
+                        durable_task_id, durable_run_id, task_id, submitted.job_id
+                    ));
+                }
                 return Ok(format!(
                     "Task #{} queued as scheduler job {}",
                     task_id, submitted.job_id
@@ -722,4 +922,35 @@ impl Tool for TaskTool {
             }
         }
     }
+}
+
+fn delegation_key(
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+    agent: &str,
+    prompt: &str,
+    allowed_paths: &[String],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(session_id.unwrap_or_default().as_bytes());
+    hasher.update([0]);
+    hasher.update(turn_id.unwrap_or_default().as_bytes());
+    hasher.update([0]);
+    hasher.update(agent.as_bytes());
+    hasher.update([0]);
+    hasher.update(prompt.as_bytes());
+    for path in allowed_paths {
+        hasher.update([0]);
+        hasher.update(path.as_bytes());
+    }
+    format!("agent-delegation-{:x}", hasher.finalize())
+}
+
+fn authority_digest(denied_tools: &[String], allowed_paths: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for value in denied_tools.iter().chain(allowed_paths.iter()) {
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    format!("{:x}", hasher.finalize())
 }

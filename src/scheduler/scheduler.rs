@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use codegg_core::agent_run::{AgentRunStore, AgentRunTerminalOutcome};
 use codegg_core::jobs::{
     AttemptCompletion, AttemptId, AttemptState, CancelReason, DaemonGeneration, FailureClass,
     JobErrorRecord, JobId, JobRecord, JobState, JobStore, JobStoreError,
@@ -174,6 +175,10 @@ pub struct JobScheduler {
     /// Optional channel for emitting events. `None` when no runtime consumer
     /// is installed, including standalone/test mode.
     event_tx: Arc<AsyncMutex<Option<mpsc::Sender<SchedulerEvent>>>>,
+    /// Durable delegated-run ownership. The scheduler updates this store
+    /// for queued cancellation and generation recovery so a run cannot
+    /// remain live after its authoritative job has become terminal.
+    agent_runs: Arc<AsyncMutex<Option<Arc<dyn AgentRunStore>>>>,
 }
 
 impl JobScheduler {
@@ -222,7 +227,27 @@ impl JobScheduler {
             config: Arc::new(config),
             daemon_generation,
             event_tx,
+            agent_runs: Arc::new(AsyncMutex::new(None)),
         })
+    }
+
+    /// Install the daemon-owned delegated-run store after construction.
+    /// Construction remains usable by focused scheduler tests that do not
+    /// build the agent runtime.
+    pub async fn configure_agent_run_store(&self, store: Arc<dyn AgentRunStore>) {
+        *self.agent_runs.lock().await = Some(store);
+    }
+
+    pub fn configure_agent_run_store_sync(
+        &self,
+        store: Arc<dyn AgentRunStore>,
+    ) -> Result<(), JobSchedulerError> {
+        let mut guard = self
+            .agent_runs
+            .try_lock()
+            .map_err(|_| JobSchedulerError::Internal("agent-run store is busy".into()))?;
+        *guard = Some(store);
+        Ok(())
     }
 
     pub fn config(&self) -> &ResolvedSchedulerConfig {
@@ -325,6 +350,14 @@ impl JobScheduler {
         &self,
         subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
+        self.register_default_executors_sync_with_agent_runs(subagent_pool, None)
+    }
+
+    pub fn register_default_executors_sync_with_agent_runs(
+        &self,
+        subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
+        agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
+    ) -> Result<(), crate::scheduler::executor::ExecutorRegistryError> {
         use crate::scheduler::executors::{
             ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
         };
@@ -335,7 +368,11 @@ impl JobScheduler {
         // the latter two in the old construction path.
         registry.register(Arc::new(ManagedArgvExecutor::new("managed_argv")))?;
         if let Some(pool) = subagent_pool {
-            registry.register(Arc::new(SubagentJobExecutor::new(pool)))?;
+            let executor = match agent_runs {
+                Some(store) => SubagentJobExecutor::new_with_agent_runs(pool, store),
+                None => SubagentJobExecutor::new(pool),
+            };
+            registry.register(Arc::new(executor))?;
         }
         let kinds = registry.kinds();
         let execs: Vec<Arc<dyn JobExecutor>> =
@@ -1378,7 +1415,28 @@ impl JobScheduler {
         reason: &str,
     ) -> Result<codegg_core::jobs::CancelResult, JobSchedulerError> {
         let cancel = CancelReason::new("scheduler", reason);
+        let job_before_cancel = self.store.get_job(job_id).await?;
         let result = self.store.request_cancel(job_id, cancel).await?;
+        if matches!(result.state, codegg_core::jobs::CancelOutcome::Cancelled) {
+            if let (
+                Some(JobRecord {
+                    payload: codegg_core::jobs::JobPayload::SubagentRun { run_id, .. },
+                    ..
+                }),
+                Some(agent_runs),
+            ) = (job_before_cancel, self.agent_runs.lock().await.clone())
+            {
+                let _ = agent_runs
+                    .finish(
+                        &run_id,
+                        AgentRunTerminalOutcome::Cancelled,
+                        None,
+                        Some("cancelled_before_admission".into()),
+                        Some(reason.to_string()),
+                    )
+                    .await;
+            }
+        }
         // Remove from in-memory queue if present.
         let mut q = self.queue.lock().await;
         let _ = q.remove(job_id, QueueRemovalReason::Cancelled);
@@ -1423,10 +1481,47 @@ impl JobScheduler {
         // does not match.
         let new_gen = self.daemon_generation.clone();
         let report = self.store.recover_generation(&new_gen, policy).await?;
+        self.reconcile_agent_runs_after_recovery().await?;
         // Wake the scheduler so the requeued work is considered
         // during the next reconcile pass.
         self.wake(crate::scheduler::events::WokeReason::Reconciled);
         Ok(report)
+    }
+
+    async fn reconcile_agent_runs_after_recovery(&self) -> Result<(), JobSchedulerError> {
+        let Some(agent_runs) = self.agent_runs.lock().await.clone() else {
+            return Ok(());
+        };
+        let jobs = self
+            .store
+            .list_job_records(codegg_core::jobs::store::JobStoreQuery {
+                kinds: vec![codegg_core::jobs::JobKind::Subagent],
+                ..Default::default()
+            })
+            .await?;
+        for job in jobs {
+            let codegg_core::jobs::JobPayload::SubagentRun { run_id, .. } = job.payload else {
+                continue;
+            };
+            let outcome = match job.state {
+                JobState::Cancelled => Some(AgentRunTerminalOutcome::Cancelled),
+                JobState::Interrupted => Some(AgentRunTerminalOutcome::Interrupted),
+                JobState::Failed | JobState::TimedOut => Some(AgentRunTerminalOutcome::Interrupted),
+                _ => None,
+            };
+            if let Some(outcome) = outcome {
+                let _ = agent_runs
+                    .finish(
+                        &run_id,
+                        outcome,
+                        None,
+                        Some("scheduler_recovery".into()),
+                        Some(format!("job recovered as {}", job.state.as_str())),
+                    )
+                    .await;
+            }
+        }
+        Ok(())
     }
 }
 

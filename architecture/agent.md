@@ -220,6 +220,28 @@ pub const EMERGENCY_DEFAULT_MODEL: &str = "openai/gpt-4o";
 pub const EMERGENCY_DEFAULT_WORKHORSE_MODEL: &str = "openai/gpt-4o-mini";
 ```
 
+### Durable delegated runs
+
+Daemon-owned `task spawn` calls create an `AgentTaskRecord` and an
+`AgentRunRecord` in `codegg_core::agent_run` before submitting a
+`JobPayload::SubagentRun`. The typed task/run IDs are the durable ownership
+identities; the scheduler's `JobId`/`AttemptId` remain the queue and attempt
+authority, and the numeric `TaskStore` ID is only a compatibility alias.
+
+The run store persists bounded provenance (session/turn, project/repository/
+workspace, agent/model, authority digest, budget, lineage, job/attempt links)
+and validates lifecycle transitions. Duplicate delegation keys resolve the
+original task/run. Completion, cancellation, submission failure, and startup
+recovery use first-terminal-wins semantics; scheduler-owned cancellation and
+generation recovery reconcile the durable run rather than relying only on a
+live `CancellationToken`.
+
+`SubAgentPool` remains the child-runtime adapter and retains semantic
+delegation limits such as depth, fan-out, and tool budgets. Scheduler-owned
+requests do not acquire the pool's machine-capacity semaphore, so resource
+contention queues at the global scheduler. Standalone compatibility paths may
+continue to use the pool directly and do not claim daemon guarantees.
+
 ### Model Aliases (`src/agent/mod.rs:397`)
 
 ```rust

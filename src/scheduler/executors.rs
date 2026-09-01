@@ -378,11 +378,25 @@ impl JobExecutor for ManagedArgvExecutor {
 /// subagent execution.
 pub struct SubagentJobExecutor {
     pool: Arc<crate::agent::worker::SubAgentPool>,
+    agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
 }
 
 impl SubagentJobExecutor {
     pub fn new(pool: Arc<crate::agent::worker::SubAgentPool>) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            agent_runs: None,
+        }
+    }
+
+    pub fn new_with_agent_runs(
+        pool: Arc<crate::agent::worker::SubAgentPool>,
+        agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    ) -> Self {
+        Self {
+            pool,
+            agent_runs: Some(agent_runs),
+        }
     }
 }
 
@@ -398,7 +412,7 @@ impl JobExecutor for SubagentJobExecutor {
 
     fn validate(&self, job: &JobRecord) -> Result<(), ExecutorValidationError> {
         match &job.payload {
-            JobPayload::Subagent { .. } => Ok(()),
+            JobPayload::Subagent { .. } | JobPayload::SubagentRun { .. } => Ok(()),
             _ => Err(ExecutorValidationError::UnsupportedKind {
                 executor: self.kind().as_str().into(),
                 kind: job.kind.as_str().to_string(),
@@ -412,7 +426,7 @@ impl JobExecutor for SubagentJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (prompt, agent, parent_id, denied_tools, allowed_paths, max_tool_calls) =
+        let (prompt, agent, parent_id, denied_tools, allowed_paths, max_tool_calls, run_id) =
             match &ctx.job.payload {
                 JobPayload::Subagent {
                     prompt,
@@ -428,6 +442,25 @@ impl JobExecutor for SubagentJobExecutor {
                     denied_tools.clone(),
                     allowed_paths.clone(),
                     *max_tool_calls,
+                    None,
+                ),
+                JobPayload::SubagentRun {
+                    prompt,
+                    agent,
+                    parent_id,
+                    denied_tools,
+                    allowed_paths,
+                    max_tool_calls,
+                    run_id,
+                    ..
+                } => (
+                    prompt.clone(),
+                    agent.clone(),
+                    parent_id.clone(),
+                    denied_tools.clone(),
+                    allowed_paths.clone(),
+                    *max_tool_calls,
+                    Some(run_id.clone()),
                 ),
                 _ => {
                     return failure_completion(
@@ -461,27 +494,110 @@ impl JobExecutor for SubagentJobExecutor {
             workspace_root,
         };
 
-        let result = self.pool.spawner().send_and_wait(request).await;
+        let run_id_for_lifecycle = run_id.clone();
+        if let (Some(store), Some(run_id)) = (&self.agent_runs, run_id.as_ref()) {
+            if let Err(error) = store.attach_attempt(run_id, ctx.attempt_id.clone()).await {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("agent run attempt linkage failed: {error}"),
+                );
+            }
+            if let Err(error) = store
+                .transition(run_id, codegg_core::agent_run::AgentRunStatus::Preparing)
+                .await
+            {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("agent run preparation failed: {error}"),
+                );
+            }
+            if let Err(error) = store
+                .transition(run_id, codegg_core::agent_run::AgentRunStatus::Running)
+                .await
+            {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    format!("agent run start failed: {error}"),
+                );
+            }
+        }
+
+        let result = if run_id_for_lifecycle.is_some() {
+            self.pool
+                .spawner()
+                .send_and_wait_scheduled(request, ctx.cancellation.clone())
+                .await
+        } else {
+            self.pool.spawner().send_and_wait(request).await
+        };
         match result {
-            Ok(result) => ExecutorCompletion {
-                status: if result.success {
+            Ok(result) => {
+                let status = if result.success {
                     ExecutorStatus::Completed
+                } else if ctx.cancellation.is_cancelled() {
+                    ExecutorStatus::Cancelled
                 } else {
                     ExecutorStatus::Failed
-                },
-                summary: result.result,
-                run_id: None,
-                metrics: ExecutorMetrics {
-                    cpu_time_ms: None,
-                    peak_memory_mb: None,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                },
-            },
-            Err(e) => failure_completion(
-                started,
-                ExecutorStatus::Failed,
-                format!("subagent pool error: {e}"),
-            ),
+                };
+                if let (Some(store), Some(run_id)) =
+                    (&self.agent_runs, run_id_for_lifecycle.as_ref())
+                {
+                    let outcome = match status {
+                        ExecutorStatus::Completed => {
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Completed
+                        }
+                        ExecutorStatus::Cancelled => {
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
+                        }
+                        _ => codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
+                    };
+                    let _ = store
+                        .finish(
+                            run_id,
+                            outcome,
+                            Some(result.result.clone()),
+                            (status != ExecutorStatus::Completed).then(|| "executor".into()),
+                            (status != ExecutorStatus::Completed).then(|| result.result.clone()),
+                        )
+                        .await;
+                }
+                ExecutorCompletion {
+                    status,
+                    summary: result.result,
+                    run_id: None,
+                    metrics: ExecutorMetrics {
+                        cpu_time_ms: None,
+                        peak_memory_mb: None,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    },
+                }
+            }
+            Err(e) => {
+                if let (Some(store), Some(run_id)) =
+                    (&self.agent_runs, run_id_for_lifecycle.as_ref())
+                {
+                    let outcome = if ctx.cancellation.is_cancelled() {
+                        codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
+                    } else {
+                        codegg_core::agent_run::AgentRunTerminalOutcome::Failed
+                    };
+                    let _ = store
+                        .finish(run_id, outcome, None, Some("pool".into()), Some(e.clone()))
+                        .await;
+                }
+                failure_completion(
+                    started,
+                    if ctx.cancellation.is_cancelled() {
+                        ExecutorStatus::Cancelled
+                    } else {
+                        ExecutorStatus::Failed
+                    },
+                    format!("subagent pool error: {e}"),
+                )
+            }
         }
     }
 }

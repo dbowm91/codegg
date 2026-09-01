@@ -24,6 +24,10 @@ pub struct RuntimeAssetContext {
 #[derive(Default)]
 pub struct SessionToolContext {
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub agent_run_store: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
+    pub project_id: Option<codegg_core::identity::ProjectId>,
+    pub repository_id: Option<codegg_core::identity::RepositoryId>,
+    pub turn_id: Option<String>,
     pub runtime_assets: RuntimeAssetContext,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
@@ -59,6 +63,10 @@ pub fn build_session_tool_registry(
 ) -> (ToolRegistry, Arc<dyn ContextArtifactStore>) {
     let SessionToolContext {
         submission,
+        agent_run_store,
+        project_id,
+        repository_id,
+        turn_id,
         runtime_assets: asset_context,
         notification_service,
     } = session_context;
@@ -128,7 +136,10 @@ pub fn build_session_tool_registry(
         )
         .with_parent_model(parent_model);
         let task_tool = if let Some(submission) = submission {
-            task_tool.with_submission(submission, execution.workspace_root.clone())
+            task_tool
+                .with_submission(submission, execution.workspace_root.clone())
+                .with_agent_run_store_opt(agent_run_store.clone())
+                .with_project_context(project_id.clone(), repository_id.clone(), turn_id)
         } else {
             task_tool
         };

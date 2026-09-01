@@ -39,6 +39,8 @@ pub struct CoreRuntimeDeps {
     pub pool: Option<sqlx::SqlitePool>,
     pub memory_store: Option<Arc<crate::memory::MemoryStore>>,
     pub legacy_agent: LegacyAgentRuntimeDeps,
+    /// Canonical durable ownership store for delegated agent tasks/runs.
+    pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
@@ -92,6 +94,7 @@ impl Clone for CoreRuntimeDeps {
             pool: self.pool.clone(),
             memory_store: self.memory_store.clone(),
             legacy_agent: self.legacy_agent.clone(),
+            agent_run_store: Arc::clone(&self.agent_run_store),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
@@ -118,10 +121,13 @@ impl CoreRuntimeDeps {
         let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
         let schedule_store: Arc<dyn ScheduleStore> =
             Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
+        let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
         Self {
             pool,
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
+            agent_run_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -146,10 +152,13 @@ impl CoreRuntimeDeps {
         let job_store: Arc<dyn JobStore> = Arc::new(InMemoryJobStore::new());
         let schedule_store: Arc<dyn ScheduleStore> =
             Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
+        let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
         Self {
             pool,
             memory_store,
             legacy_agent,
+            agent_run_store,
             turn_runtime,
             lsp_service: None,
             workspace_services: None,
@@ -179,10 +188,14 @@ impl CoreRuntimeDeps {
             Arc::clone(&job_store),
         ));
         let connection_manager = default_connection_manager(&pool);
+        let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> = Arc::new(
+            codegg_core::agent_run::SqliteAgentRunStore::new(pool.clone()),
+        );
         Self {
             pool: Some(pool),
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
+            agent_run_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
