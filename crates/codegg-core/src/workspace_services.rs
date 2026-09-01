@@ -187,7 +187,7 @@ impl WorkspaceLockTable {
     /// with the same canonical root always receive the same
     /// `Arc<AsyncMutex<()>>` so their critical sections are serialized.
     pub async fn acquire_repository(&self, repo_root: &Path) -> WorkspaceRepositoryGuard {
-        let canonical = match std::fs::canonicalize(repo_root) {
+        let canonical = match tokio::fs::canonicalize(repo_root).await {
             Ok(p) => p,
             Err(_) => repo_root.to_path_buf(),
         };
@@ -208,12 +208,10 @@ impl WorkspaceLockTable {
         self.inner.len()
     }
 
-    /// Drop the entry for a repository root. Called after the workspace
-    /// service is evicted so locks do not accumulate indefinitely.
-    pub fn forget_repository(&self, repo_root: &Path) -> bool {
-        let canonical =
-            std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
-        self.inner.remove(&canonical).is_some()
+    /// Drop the entry for a canonical repository root. Called after the
+    /// workspace service is evicted so locks do not accumulate indefinitely.
+    pub fn forget_repository(&self, canonical_repo_root: &Path) -> bool {
+        self.inner.remove(canonical_repo_root).is_some()
     }
 }
 
@@ -305,7 +303,7 @@ impl WorkspaceServices {
             display_name: self.workspace.display_name.clone(),
             activated_at: self.activated_at,
             last_used_at: Utc::now(),
-            active_leases: self.active_leases.load(Ordering::Relaxed),
+            active_leases: self.active_leases.load(Ordering::Acquire),
             config_revision: self.config_snapshot.revision,
         }
     }
@@ -550,8 +548,8 @@ impl WorkspaceServiceRegistry {
         let mut to_evict: Vec<WorkspaceId> = Vec::new();
         for entry in self.active.iter() {
             let services = entry.value();
-            let last_used = services.last_used_at.load(Ordering::Relaxed);
-            let leases = services.active_leases.load(Ordering::Relaxed);
+            let last_used = services.last_used_at.load(Ordering::Acquire);
+            let leases = services.active_leases.load(Ordering::Acquire);
             report.evaluated += 1;
             if leases == 0 && last_used <= threshold_secs {
                 to_evict.push(entry.key().clone());
@@ -573,7 +571,7 @@ impl WorkspaceServiceRegistry {
         let mut oldest: Option<(WorkspaceId, DateTime<Utc>)> = None;
         for entry in self.active.iter() {
             let services = entry.value();
-            let leases = services.active_leases.load(Ordering::Relaxed);
+            let leases = services.active_leases.load(Ordering::Acquire);
             if leases > 0 {
                 continue;
             }
@@ -602,7 +600,7 @@ impl WorkspaceServiceRegistry {
             let any_active = self
                 .active
                 .iter()
-                .any(|e| e.value().active_leases.load(Ordering::Relaxed) > 0);
+                .any(|e| e.value().active_leases.load(Ordering::Acquire) > 0);
             if !any_active {
                 break;
             }
@@ -621,7 +619,7 @@ impl WorkspaceServiceRegistry {
             let leases_now = self
                 .active
                 .get(&id)
-                .map(|s| s.active_leases.load(Ordering::Relaxed))
+                .map(|s| s.active_leases.load(Ordering::Acquire))
                 .unwrap_or(0);
             if leases_now == 0 {
                 report.drained.push(id.clone());
@@ -640,7 +638,7 @@ impl WorkspaceServiceRegistry {
             // still hold a guard. Forgetting under an outstanding guard
             // would let a later acquire on the same repo construct a
             // fresh lock and break mutual exclusion.
-            if services.active_leases.load(Ordering::Relaxed) == 0 {
+            if services.active_leases.load(Ordering::Acquire) == 0 {
                 for entry in services.locks.inner.iter() {
                     services.locks.forget_repository(entry.key());
                 }

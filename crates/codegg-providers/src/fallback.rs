@@ -52,25 +52,17 @@ impl Provider for FallbackProvider {
         let mut last_error = None;
 
         for (i, provider) in self.providers.iter().enumerate() {
-            // Check if circuit breaker allows calling this provider
-            if let Some(cb) = self.circuit_breakers.get(i) {
-                if !cb.is_available().await {
-                    tracing::warn!(
-                        "fallback: skipping provider {} ({}) - circuit breaker is open",
-                        provider.name(),
-                        provider.id()
-                    );
-                    last_error = Some(ProviderError::CircuitOpen(provider.name().to_string()));
-                    continue;
-                }
-            }
+            // Admission and half-open probe ownership must happen in one
+            // circuit-breaker operation; a separate is_available() check
+            // races with concurrent callers during HalfOpen.
+            let result = if let Some(cb) = self.circuit_breakers.get(i) {
+                cb.call(provider.stream(request)).await
+            } else {
+                provider.stream(request).await
+            };
 
-            match provider.stream(request).await {
+            match result {
                 Ok(stream) => {
-                    // Record success in circuit breaker
-                    if let Some(cb) = self.circuit_breakers.get(i) {
-                        cb.record_success().await;
-                    }
                     if i > 0 {
                         tracing::info!(
                             "fallback: recovered on provider {} ({}) after {} failed attempts",
@@ -82,11 +74,15 @@ impl Provider for FallbackProvider {
                     return Ok(stream);
                 }
                 Err(e) => {
-                    // Record failure in circuit breaker
-                    if let Some(cb) = self.circuit_breakers.get(i) {
-                        cb.record_failure().await;
+                    if matches!(e, ProviderError::CircuitOpen(_)) {
+                        tracing::warn!(
+                            "fallback: skipping provider {} ({}) - circuit breaker is open",
+                            provider.name(),
+                            provider.id()
+                        );
+                        last_error = Some(e);
+                        continue;
                     }
-
                     let code = status_code(&e);
                     let is_retryable = code
                         .map(|c| self.status_codes.contains(&c))

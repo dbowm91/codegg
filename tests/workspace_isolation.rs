@@ -89,12 +89,14 @@ async fn execution_context_isolation_between_workspaces() {
     // Relative paths resolve under the correct workspace root.
     let resolved_a = ctx_a
         .resolve_relative_cwd(Some(std::path::Path::new("src")))
+        .await
         .unwrap();
     assert!(resolved_a.starts_with(&rec_a.canonical_root));
     assert!(resolved_a.ends_with("src"));
 
     let resolved_b = ctx_b
         .resolve_relative_cwd(Some(std::path::Path::new("src")))
+        .await
         .unwrap();
     assert!(resolved_b.starts_with(&rec_b.canonical_root));
     assert!(resolved_b.ends_with("src"));
@@ -106,7 +108,7 @@ async fn execution_context_isolation_between_workspaces() {
     // A relative escape via `..` is rejected.
     let escape = std::path::Path::new("../other_workspace");
     assert!(matches!(
-        ctx_a.resolve_relative_cwd(Some(escape)),
+        ctx_a.resolve_relative_cwd(Some(escape)).await,
         Err(PathPolicyError::OutsideWorkspace(_, _))
     ));
 }

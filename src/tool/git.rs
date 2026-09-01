@@ -623,18 +623,18 @@ impl GitTool {
             // ---- Phase E: git config ----
             "config_get" => {
                 let k = key.ok_or_else(|| branch_param("key"))?;
-                let local = scope_unwrap_local(scope);
+                let local = scope_unwrap_local(scope)?;
                 crate::git_network_ops::config_get(&exec, workdir, k, local).await
             }
             "config_set" => {
                 let k = key.ok_or_else(|| branch_param("key"))?;
                 let v = value.ok_or_else(|| branch_param("value"))?;
-                let local = scope_unwrap_local(scope);
+                let local = scope_unwrap_local(scope)?;
                 crate::git_network_ops::config_set(&exec, workdir, k, v, local).await
             }
             "config_unset" => {
                 let k = key.ok_or_else(|| branch_param("key"))?;
-                let local = scope_unwrap_local(scope);
+                let local = scope_unwrap_local(scope)?;
                 crate::git_network_ops::config_unset(&exec, workdir, k, local).await
             }
 
@@ -837,16 +837,12 @@ fn branch_param(label: &str) -> ToolError {
 /// Anything other than `local` is rejected because Phase E intentionally
 /// disallows global config writes (those belong in `~/.gitconfig`
 /// outside the repo boundary).
-fn scope_unwrap_local(scope: Option<&str>) -> bool {
+fn scope_unwrap_local(scope: Option<&str>) -> Result<bool, ToolError> {
     match scope {
-        None | Some("local") => true,
-        _ => {
-            tracing::warn!(
-                "scope={scope:?} requested but Phase E only allows local scope; \
-                 defaulting to local"
-            );
-            true
-        }
+        None | Some("local") => Ok(true),
+        Some(other) => Err(ToolError::Execution(format!(
+            "unsupported config scope '{other}'; only 'local' is allowed"
+        ))),
     }
 }
 
@@ -1012,6 +1008,14 @@ mod schema_tests {
 
     fn params() -> Value {
         GitTool::new().parameters()
+    }
+
+    #[test]
+    fn unsupported_config_scopes_fail_closed() {
+        assert!(scope_unwrap_local(None).unwrap());
+        assert!(scope_unwrap_local(Some("local")).unwrap());
+        assert!(scope_unwrap_local(Some("global")).is_err());
+        assert!(scope_unwrap_local(Some("worktree")).is_err());
     }
 
     #[test]

@@ -951,16 +951,67 @@ impl JobStore for InMemoryJobStore {
         parent_job_id: &JobId,
         reason: CancelReason,
     ) -> Result<u32, JobStoreError> {
-        let descendants = self.find_descendants(parent_job_id).await?;
+        // Keep the lineage walk and all cancellations under the same lock so
+        // no child can be created or transition between the snapshot and the
+        // updates.
+        let mut guard = self.inner.lock().await;
+        let mut queue = vec![parent_job_id.clone()];
+        let mut visited = HashSet::from([parent_job_id.clone()]);
+        let mut descendants = Vec::new();
+        while let Some(current) = queue.pop() {
+            let mut children = guard
+                .jobs
+                .values()
+                .filter(|job| job.parent_job_id.as_ref().is_some_and(|p| p == &current))
+                .map(|job| (job.job_id.clone(), job.created_at))
+                .collect::<Vec<_>>();
+            children.sort_by(|left, right| {
+                left.1
+                    .cmp(&right.1)
+                    .then_with(|| left.0.as_str().cmp(right.0.as_str()))
+            });
+            for (child_id, _) in children.into_iter().rev() {
+                if visited.insert(child_id.clone()) {
+                    queue.push(child_id.clone());
+                    descendants.push(child_id);
+                }
+            }
+        }
+
+        let now = Utc::now();
         let mut cancelled = 0u32;
-        for desc in descendants {
-            if let Ok(result) = self.request_cancel(&desc.job_id, reason.clone()).await {
-                if matches!(
-                    result.state,
-                    CancelOutcome::Cancelled | CancelOutcome::Requested
-                ) {
+        for descendant_id in descendants {
+            let Some(job) = guard.jobs.get(&descendant_id).cloned() else {
+                continue;
+            };
+            match job.state {
+                JobState::Scheduled | JobState::Queued | JobState::Blocked => {
+                    guard.jobs.insert(
+                        descendant_id.clone(),
+                        JobRecord {
+                            state: JobState::Cancelled,
+                            cancel_requested_at: Some(now),
+                            cancel_reason: Some(reason.reason.clone()),
+                            terminal_at: Some(now),
+                            updated_at: now,
+                            ..job
+                        },
+                    );
                     cancelled += 1;
                 }
+                JobState::Running => {
+                    guard.jobs.insert(
+                        descendant_id.clone(),
+                        JobRecord {
+                            cancel_requested_at: Some(now),
+                            cancel_reason: Some(reason.reason.clone()),
+                            updated_at: now,
+                            ..job
+                        },
+                    );
+                    cancelled += 1;
+                }
+                _ => {}
             }
         }
         Ok(cancelled)
@@ -1428,9 +1479,14 @@ impl JobStore for SqliteJobStore {
         .await
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         if result.rows_affected() == 0 {
+            drop(tx);
+            let current = self
+                .get_job(id)
+                .await?
+                .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))?;
             return Err(JobStoreError::InvalidTransition {
                 job: id.to_string(),
-                from: existing.state,
+                from: current.state,
                 to: JobState::Queued,
             });
         }
@@ -1812,11 +1868,11 @@ impl JobStore for SqliteJobStore {
                 })
             }
             JobState::Running => {
-                sqlx::query(
+                let result = sqlx::query(
                     r#"
                     UPDATE job SET cancel_requested_at = ?, cancel_reason = ?,
                                    time_updated = ?
-                    WHERE id = ?
+                    WHERE id = ? AND state = 'running'
                     "#,
                 )
                 .bind(now.timestamp_millis())
@@ -1826,6 +1882,9 @@ impl JobStore for SqliteJobStore {
                 .execute(&self.pool)
                 .await
                 .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+                if result.rows_affected() == 0 {
+                    return Err(JobStoreError::Conflict(id.to_string()));
+                }
                 Ok(CancelResult {
                     job_id: id.clone(),
                     state: CancelOutcome::Requested,
@@ -2037,7 +2096,8 @@ impl JobStore for SqliteJobStore {
                     sqlx::query(
                         "UPDATE job SET state = 'interrupted', current_attempt_id = NULL,
                                         time_updated = ?
-                         WHERE id = ?",
+                         WHERE id = ? AND state NOT IN ('completed', 'failed', 'cancelled',
+                                                        'timed_out', 'expired')",
                     )
                     .bind(now.timestamp_millis())
                     .bind(job_id)
@@ -2049,9 +2109,10 @@ impl JobStore for SqliteJobStore {
                     validate_state_transition(JobState::Interrupted, JobState::Queued).is_ok()
                 );
                 sqlx::query(
-                    "UPDATE job SET state = 'queued', cancel_requested_at = NULL,
+                    "UPDATE job SET state = 'queued', current_attempt_id = NULL,
+                                    cancel_requested_at = NULL,
                                     cancel_reason = NULL, time_updated = ?
-                     WHERE id = ?",
+                     WHERE id = ? AND state = 'interrupted'",
                 )
                 .bind(now.timestamp_millis())
                 .bind(job_id)
@@ -2195,19 +2256,50 @@ impl JobStore for SqliteJobStore {
         parent_job_id: &JobId,
         reason: CancelReason,
     ) -> Result<u32, JobStoreError> {
-        let descendants = self.find_descendants(parent_job_id).await?;
-        let mut cancelled = 0u32;
-        for desc in descendants {
-            if let Ok(result) = self.request_cancel(&desc.job_id, reason.clone()).await {
-                if matches!(
-                    result.state,
-                    CancelOutcome::Cancelled | CancelOutcome::Requested
-                ) {
-                    cancelled += 1;
-                }
-            }
-        }
-        Ok(cancelled)
+        // The recursive CTE and update run in one transaction. This avoids a
+        // snapshot-then-loop race and keeps high-fanout cancellation to one
+        // database operation.
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        let now = Utc::now();
+        let result = sqlx::query(
+            r#"
+            WITH RECURSIVE descendants(id, path) AS (
+                SELECT id, ',' || id || ','
+                FROM job
+                WHERE parent_job_id = ?
+                UNION ALL
+                SELECT child.id, descendants.path || child.id || ','
+                FROM job child
+                JOIN descendants ON child.parent_job_id = descendants.id
+                WHERE instr(descendants.path, ',' || child.id || ',') = 0
+            )
+            UPDATE job
+            SET state = CASE WHEN state = 'running' THEN state ELSE 'cancelled' END,
+                cancel_requested_at = ?,
+                cancel_reason = ?,
+                time_updated = ?,
+                time_terminal = CASE WHEN state = 'running' THEN time_terminal ELSE ? END
+            WHERE id IN (SELECT id FROM descendants)
+              AND state IN ('scheduled', 'queued', 'blocked', 'running')
+            "#,
+        )
+        .bind(parent_job_id.as_str())
+        .bind(now.timestamp_millis())
+        .bind(&reason.reason)
+        .bind(now.timestamp_millis())
+        .bind(now.timestamp_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        tx.commit()
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        u32::try_from(result.rows_affected())
+            .map_err(|_| JobStoreError::InvalidPayload("too many cancelled descendants".into()))
     }
 }
 

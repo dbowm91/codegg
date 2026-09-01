@@ -25,11 +25,20 @@ impl FocusManager {
     }
 
     pub fn push(&mut self, component: Box<dyn Component>) {
+        if self
+            .stack
+            .iter()
+            .any(|existing| existing.dialog_type() == component.dialog_type())
+        {
+            return;
+        }
         self.stack.push_back(component);
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn Component>> {
-        self.stack.pop_back()
+        let removed = self.stack.pop_back();
+        self.focus_index = self.focus_index.min(self.stack.len().saturating_sub(1));
+        removed
     }
 
     pub fn pop_dialog(&mut self, dialog_type: DialogType) -> Option<Box<dyn Component>> {
@@ -38,10 +47,12 @@ impl FocusManager {
             .iter()
             .position(|c| c.dialog_type() == dialog_type);
         if let Some(idx) = pos {
-            if idx <= self.focus_index && self.focus_index > 0 {
+            if idx < self.focus_index {
                 self.focus_index -= 1;
             }
-            return self.stack.remove(idx);
+            let removed = self.stack.remove(idx);
+            self.focus_index = self.focus_index.min(self.stack.len().saturating_sub(1));
+            return removed;
         }
         None
     }
@@ -238,5 +249,40 @@ mod tests {
         assert!(!replaced);
         assert_eq!(focus.len(), 1);
         assert_eq!(focus.active_dialog_type(), DialogType::Help);
+    }
+
+    #[test]
+    fn pop_dialog_clamps_focus_when_removing_focused_entry() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+        focus.push(stub(DialogType::Theme));
+        focus.push(stub(DialogType::Model));
+        focus.focus_index = 1;
+
+        focus.pop_dialog(DialogType::Theme);
+
+        assert_eq!(focus.focus_index, 1);
+        assert_eq!(focus.active_dialog_type(), DialogType::Model);
+    }
+
+    #[test]
+    fn push_ignores_duplicate_dialog_type() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+        focus.push(stub(DialogType::Help));
+
+        assert_eq!(focus.len(), 1);
+    }
+
+    #[test]
+    fn pop_clamps_focus_index() {
+        let mut focus = FocusManager::new();
+        focus.push(stub(DialogType::Help));
+        focus.push(stub(DialogType::Theme));
+        focus.focus_index = 1;
+
+        focus.pop();
+
+        assert_eq!(focus.focus_index, 0);
     }
 }

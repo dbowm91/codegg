@@ -77,6 +77,7 @@ impl CircuitBreaker {
         *self.inner.state.read().await
     }
 
+    #[deprecated(note = "use call() so admission and half-open probe ownership are atomic")]
     pub async fn is_available(&self) -> bool {
         let mut state = self.inner.state.write().await;
         match *state {
@@ -287,6 +288,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    #[allow(deprecated)]
     async fn half_open_timeout_recovers_via_open() {
         let breaker = CircuitBreaker::new("test-timeout", 1, 1, 1);
         {

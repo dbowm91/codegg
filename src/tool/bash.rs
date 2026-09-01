@@ -70,11 +70,6 @@ fn bash_environment_policy() -> crate::managed_process::EnvironmentPolicy {
     for name in preserved {
         policy = policy.allow_inherited_var(OsString::from(name));
     }
-    for (name, _) in std::env::vars() {
-        if name.starts_with("CARGO_PROFILE_") || name.starts_with("npm_config_") {
-            policy = policy.allow_inherited_var(OsString::from(name));
-        }
-    }
     policy
 }
 
@@ -179,7 +174,10 @@ static BLOCKED_PATTERNS: &[(&str, &str)] = &[
     ("command substitution $(...)", r"\$\("),
     ("braced command substitution ${...}", r"\$\{"),
     ("backtick substitution", r"`"),
-    ("variable expansion $VAR", r"\$[A-Za-z_][A-Za-z0-9_]*"),
+    (
+        "variable expansion $VAR or special parameter",
+        r"\$([A-Za-z_][A-Za-z0-9_]*|[0-9!@#?*$-])",
+    ),
     ("pipe to shell |/.*sh", r"\|/.*sh"),
     ("pipe to shell |/.*bash", r"\|/.*bash"),
     ("redirect to /dev", r"> /dev/"),
@@ -1461,12 +1459,21 @@ impl BashTool {
         }
 
         let normalized = parts.join(" ");
+        let mut command_start = 0;
+        while command_start < parts.len()
+            && ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&parts[command_start])
+        {
+            command_start += 1;
+        }
+        let normalized_without_prefix = parts[command_start..].join(" ");
 
         // Check blocked commands first (entire command string)
         let blocked = &self.blocked_commands;
         if !blocked.is_empty() {
             for blocked_cmd in blocked {
-                if normalized.starts_with(blocked_cmd) {
+                if normalized.starts_with(blocked_cmd)
+                    || normalized_without_prefix.starts_with(blocked_cmd)
+                {
                     return Err(ToolError::Permission(format!(
                         "command matches blocked list: {}",
                         blocked_cmd
@@ -2288,6 +2295,25 @@ mod tests {
         // We treat all $VAR expansions as a security concern for now
         // (could be a leak of secrets, etc.)
         assert_blocked("ls $HOME", "$VAR");
+    }
+
+    #[test]
+    fn special_shell_parameters_are_blocked() {
+        for parameter in ["$@", "$*", "$#", "$?", "$-", "$!", "$0", "$9"] {
+            assert_blocked(&format!("echo {parameter}"), "variable expansion");
+        }
+    }
+
+    #[test]
+    fn blocked_commands_strip_execution_prefixes() {
+        let tool = BashTool::new();
+        for command in ["env rm -rf /", "nohup env rm -rf /", "sudo rm -rf /"] {
+            let parts: Vec<&str> = command.split_whitespace().collect();
+            assert!(
+                tool.check_command_security(command, &parts).is_err(),
+                "blocked command prefix should be rejected: {command}"
+            );
+        }
     }
 
     // ── Phase 04 routing metadata tests ────────────────────────────────

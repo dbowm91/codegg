@@ -1,3 +1,5 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::Deserialize;
 
 use super::types::{PythonRiskAssessment, PythonRiskLevel, PythonRiskScanner};
@@ -117,6 +119,26 @@ def main():
             name = dotted_name(node.func)
             if name:
                 resolved = resolve_name(name)
+                # Resolve common dynamic attribute lookups so they receive
+                # the same destructive-operation treatment as direct calls.
+                if (isinstance(node.func, ast.Call)
+                        and dotted_name(node.func.func) == "getattr"
+                        and len(node.func.args) >= 2
+                        and isinstance(node.func.args[1], ast.Constant)
+                        and isinstance(node.func.args[1].value, str)):
+                    target = dotted_name(node.func.args[0])
+                    if target == "__import__" and node.func.args[0].args:
+                        imported = node.func.args[0].args[0]
+                        if isinstance(imported, ast.Constant) and isinstance(imported.value, str):
+                            target = imported.value
+                    resolved = resolve_name(f"{target}.{node.func.args[1].value}")
+                elif (isinstance(node.func, ast.Attribute)
+                      and isinstance(node.func.value, ast.Call)
+                      and dotted_name(node.func.value.func) == "__import__"
+                      and node.func.value.args
+                      and isinstance(node.func.value.args[0], ast.Constant)
+                      and isinstance(node.func.value.args[0].value, str)):
+                    resolved = f"{node.func.value.args[0].value}.{node.func.attr}"
                 calls.append(resolved)
             # Detect open() with write-mode arguments
             raw_name = dotted_name(node.func)
@@ -306,11 +328,10 @@ fn build_risk_from_ast(code: &str, ast: &AstScanResult) -> PythonRiskAssessment 
 
     let has_file_io = ast.file_read || ast.file_write;
 
-    // For parse errors, fall back to string scanning for risk classification
-    // but mark as AST-scanned
+    // For parse errors, fall back to string scanning and explicitly mark the
+    // lower-confidence result as fallback-scanned.
     if ast.parse_error {
         let mut fallback = build_risk_from_string(code);
-        fallback.scanner = PythonRiskScanner::Ast;
         fallback.reasons.push("parse error in source".to_string());
         return fallback;
     }
@@ -400,20 +421,17 @@ fn build_risk_from_string(code: &str) -> PythonRiskAssessment {
     }
 
     // --- File I/O detection ---
-    let has_file_io = code.contains("open(")
-        || code.contains(".write(")
-        || code.contains(".read(")
-        || code.contains("os.remove")
-        || code.contains("os.unlink");
-
-    // Distinguish read vs write file operations
-    let has_file_read = code.contains(".read(")
-        || code.contains("open(") && (code.contains("'r'") || code.contains("\"r\""));
-    let has_file_write = code.contains(".write(")
-        || code.contains("open(") && (code.contains("'w'") || code.contains("\"w\""))
-        || code.contains("open(") && (code.contains("'a'") || code.contains("\"a\""))
-        || code.contains("os.remove")
-        || code.contains("os.unlink");
+    // These expressions intentionally stay conservative, but require a call
+    // shape and keep open() mode checks on the same line. This avoids treating
+    // names such as os.removeprefix or unrelated string literals as writes.
+    let has_open_call = FALLBACK_OPEN_CALL.is_match(code);
+    let has_file_read = FALLBACK_READ_CALL.is_match(code) || FALLBACK_OPEN_READ_MODE.is_match(code);
+    let has_destructive_ops = FALLBACK_DESTRUCTIVE_CALL.is_match(code)
+        || FALLBACK_INDIRECT_DESTRUCTIVE_CALL.is_match(code);
+    let has_file_write = FALLBACK_WRITE_CALL.is_match(code)
+        || FALLBACK_OPEN_WRITE_MODE.is_match(code)
+        || has_destructive_ops;
+    let has_file_io = has_open_call || has_file_read || has_file_write;
 
     if has_file_io {
         reasons.push("file I/O operations detected".to_string());
@@ -439,15 +457,6 @@ fn build_risk_from_string(code: &str) -> PythonRiskAssessment {
     if has_network {
         reasons.push("network access detected".to_string());
     }
-
-    // --- Destructive operations detection ---
-    let has_destructive_ops = code.contains("shutil.rmtree")
-        || code.contains("os.unlink")
-        || code.contains("os.rmdir")
-        || code.contains("os.remove")
-        || code.contains("chmod")
-        || code.contains("chown")
-        || code.contains("Path.unlink");
 
     if has_destructive_ops {
         reasons.push("destructive file operations detected".to_string());
@@ -491,6 +500,30 @@ fn build_risk_from_string(code: &str) -> PythonRiskAssessment {
         scanner: PythonRiskScanner::Fallback,
     }
 }
+
+static FALLBACK_OPEN_CALL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?m)\bopen\s*\(").unwrap());
+static FALLBACK_OPEN_READ_MODE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)\bopen\s*\([^,\r\n]*,[^\r\n]*(?:'r[b+t]*'|"r[b+t]*")"#).unwrap()
+});
+static FALLBACK_OPEN_WRITE_MODE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?m)\bopen\s*\([^,\r\n]*,[^\r\n]*(?:'[wax][b+t]*'|"[wax][b+t]*")"#).unwrap()
+});
+static FALLBACK_READ_CALL: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)\.\s*(?:read|readlines|read_text)\s*\(").unwrap());
+static FALLBACK_WRITE_CALL: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?m)\.\s*(?:write|writelines|write_text)\s*\(").unwrap());
+static FALLBACK_DESTRUCTIVE_CALL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?m)(?:\bshutil\s*\.\s*rmtree|\bos\s*\.\s*(?:remove|unlink|rmdir)|\bPath\s*\.\s*(?:unlink|rmdir)|\b(?:chmod|chown))\s*\(",
+    )
+    .unwrap()
+});
+static FALLBACK_INDIRECT_DESTRUCTIVE_CALL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?m)(?:\bgetattr\s*\([^\r\n]*(?:remove|unlink|rmdir|rmtree|chmod|chown)|__import__\s*\(\s*['"]os['"]\s*\)\s*\.\s*(?:remove|unlink|rmdir)\s*\()"#,
+    )
+    .unwrap()
+});
 
 #[cfg(test)]
 mod tests {
@@ -638,8 +671,8 @@ mod tests {
     fn ast_syntax_error_produces_assessment() {
         // Syntax errors should still produce a risk assessment
         let result = analyze_python_risk("def foo(");
-        // The AST scanner detects parse error and falls back to string scanning
-        assert_eq!(result.scanner, PythonRiskScanner::Ast);
+        // Parse errors use the lower-confidence fallback scanner.
+        assert_eq!(result.scanner, PythonRiskScanner::Fallback);
     }
 
     #[test]
@@ -775,6 +808,35 @@ mod tests {
     #[test]
     fn ast_syntax_error_fallback() {
         let result = analyze_python_risk("def foo(");
+        assert_eq!(result.scanner, PythonRiskScanner::Fallback);
+    }
+
+    #[test]
+    fn fallback_does_not_match_non_destructive_remove_names() {
+        let risk =
+            build_risk_from_string("value = os.removeprefix('x')\ntext = 'chmod_attributes'");
+        assert!(!risk.has_destructive_ops);
+    }
+
+    #[test]
+    fn fallback_requires_open_mode_on_same_line() {
+        let risk = build_risk_from_string("mode = 'w'\nf = open('x', mode)");
+        assert!(risk.has_file_io);
+        assert!(!risk.has_file_write);
+    }
+
+    #[test]
+    fn fallback_detects_indirect_destructive_calls() {
+        let risk = build_risk_from_string("getattr(os, 'remove')('x')");
+        assert!(risk.has_destructive_ops);
+        assert_eq!(risk.level, PythonRiskLevel::High);
+    }
+
+    #[test]
+    fn ast_detects_indirect_destructive_calls() {
+        let result = analyze_python_risk("getattr(os, 'remove')('x')");
+        assert!(result.has_destructive_ops);
+        assert_eq!(result.level, PythonRiskLevel::High);
         assert_eq!(result.scanner, PythonRiskScanner::Ast);
     }
 }

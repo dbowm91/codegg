@@ -471,7 +471,7 @@ impl WorkspaceRegistry {
         &self,
         root: &Path,
     ) -> Result<Arc<WorkspaceRecord>, WorkspaceError> {
-        let (canonical_root, display_name) = canonicalize_workspace_root(root)?;
+        let (canonical_root, display_name) = canonicalize_workspace_root(root).await?;
 
         if let Some(existing) = self.by_root.get(&canonical_root) {
             let existing_id = existing.clone();
@@ -544,7 +544,7 @@ impl WorkspaceRegistry {
     }
 
     pub async fn resolve_root(&self, root: &Path) -> Option<Arc<WorkspaceRecord>> {
-        let Ok((canonical, _)) = canonicalize_workspace_root(root) else {
+        let Ok((canonical, _)) = canonicalize_workspace_root(root).await else {
             return None;
         };
         if let Some(id) = self.by_root.get(&canonical) {
@@ -608,8 +608,8 @@ impl WorkspaceRegistry {
 /// `realpath`, which is what we want for root identity. A symlink that
 /// resolves into the workspace is still inside the workspace; a symlink
 /// at the root that escapes would have already been resolved.
-fn canonicalize_workspace_root(root: &Path) -> Result<(PathBuf, String), WorkspaceError> {
-    let metadata = std::fs::metadata(root).map_err(|e| {
+async fn canonicalize_workspace_root(root: &Path) -> Result<(PathBuf, String), WorkspaceError> {
+    let metadata = tokio::fs::metadata(root).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             WorkspaceError::NotADirectory(root.to_path_buf())
         } else {
@@ -619,7 +619,8 @@ fn canonicalize_workspace_root(root: &Path) -> Result<(PathBuf, String), Workspa
     if !metadata.is_dir() {
         return Err(WorkspaceError::NotADirectory(root.to_path_buf()));
     }
-    let canonical = std::fs::canonicalize(root)
+    let canonical = tokio::fs::canonicalize(root)
+        .await
         .map_err(|e| WorkspaceError::CanonicalizationFailed(root.to_path_buf(), e.to_string()))?;
     let display_name = canonical
         .file_name()
@@ -704,7 +705,7 @@ impl ExecutionContext {
     /// the workspace root"; a relative path is resolved under the
     /// workspace root; an absolute path must fall under an explicitly
     /// allowed root (workspace plus extras) that is also writable.
-    pub fn resolve_relative_cwd(
+    pub async fn resolve_relative_cwd(
         &self,
         requested: Option<&Path>,
     ) -> Result<PathBuf, PathPolicyError> {
@@ -712,13 +713,13 @@ impl ExecutionContext {
             None => Ok(self.workspace_root.clone()),
             Some(p) if p.as_os_str().is_empty() => Ok(self.workspace_root.clone()),
             Some(p) if p.is_absolute() => {
-                let canonical = self.pick_allowed_root(p, &self.allowed_read_roots)?;
+                let canonical = self.pick_allowed_root(p, &self.allowed_read_roots).await?;
                 if !path_within_any(&canonical, &self.allowed_write_roots) {
                     return Err(PathPolicyError::OutsideAllowedRoots(p.to_path_buf()));
                 }
                 Ok(canonical)
             }
-            Some(p) => resolve_under_root(&self.workspace_root, p),
+            Some(p) => resolve_under_root(&self.workspace_root, p).await,
         }
     }
 
@@ -727,18 +728,20 @@ impl ExecutionContext {
     /// an explicitly allowed read root. Existing files are canonicalized
     /// directly; paths that don't yet exist canonicalize the nearest
     /// existing ancestor and append the missing suffix.
-    pub fn resolve_read_path(&self, requested: &Path) -> Result<PathBuf, PathPolicyError> {
+    pub async fn resolve_read_path(&self, requested: &Path) -> Result<PathBuf, PathPolicyError> {
         self.resolve_path_with_allowed(requested, &self.allowed_read_roots)
+            .await
     }
 
     /// Verify and canonicalize a *write* access target. Same rules as
     /// read, plus the destination must also lie under
     /// `allowed_write_roots`.
-    pub fn resolve_write_path(&self, requested: &Path) -> Result<PathBuf, PathPolicyError> {
+    pub async fn resolve_write_path(&self, requested: &Path) -> Result<PathBuf, PathPolicyError> {
         self.resolve_path_with_allowed(requested, &self.allowed_write_roots)
+            .await
     }
 
-    fn resolve_path_with_allowed(
+    async fn resolve_path_with_allowed(
         &self,
         requested: &Path,
         allowed_roots: &[PathBuf],
@@ -757,7 +760,7 @@ impl ExecutionContext {
         // Resolve twice so a component replaced by a symlink between the
         // nearest-ancestor lookup and the policy check is re-evaluated before
         // the final containment decision.
-        let canonical = canonicalize_existing(&canonicalize_existing(&candidate)?)?;
+        let canonical = canonicalize_existing(&canonicalize_existing(&candidate).await?).await?;
         if path_within_any(&canonical, allowed_roots) {
             Ok(canonical)
         } else if requested.is_absolute() {
@@ -772,12 +775,12 @@ impl ExecutionContext {
         }
     }
 
-    fn pick_allowed_root(
+    async fn pick_allowed_root(
         &self,
         requested: &Path,
         allowed_roots: &[PathBuf],
     ) -> Result<PathBuf, PathPolicyError> {
-        let canonical = canonicalize_existing(requested)?;
+        let canonical = canonicalize_existing(requested).await?;
         if !path_within_any(&canonical, allowed_roots) {
             return Err(PathPolicyError::OutsideAllowedRoots(
                 requested.to_path_buf(),
@@ -792,18 +795,18 @@ impl ExecutionContext {
 /// trailing segments. Returns an `OutsideWorkspace` error when the
 /// nearest existing ancestor is *not* under the workspace root (which
 /// catches attempted escapes that target a not-yet-existing `..`).
-fn canonicalize_existing(path: &Path) -> Result<PathBuf, PathPolicyError> {
+async fn canonicalize_existing(path: &Path) -> Result<PathBuf, PathPolicyError> {
     if path.as_os_str().is_empty() {
         return Err(PathPolicyError::EmptyPath);
     }
-    if let Ok(existing) = std::fs::canonicalize(path) {
+    if let Ok(existing) = tokio::fs::canonicalize(path).await {
         return Ok(existing);
     }
     let mut current: PathBuf = path.to_path_buf();
     let mut suffix_segments: Vec<std::ffi::OsString> = Vec::new();
     loop {
-        if current.exists() {
-            let canon = std::fs::canonicalize(&current).map_err(|e| {
+        if tokio::fs::metadata(&current).await.is_ok() {
+            let canon = tokio::fs::canonicalize(&current).await.map_err(|e| {
                 PathPolicyError::CanonicalizationFailed(path.to_path_buf(), e.to_string())
             })?;
             let mut joined = canon;
@@ -814,7 +817,7 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, PathPolicyError> {
             // it was being reconstructed. Prefer a full canonicalization
             // when it now succeeds so newly-created symlinks cannot bypass
             // the caller's containment check.
-            return Ok(std::fs::canonicalize(&joined).unwrap_or(joined));
+            return Ok(tokio::fs::canonicalize(&joined).await.unwrap_or(joined));
         }
         match current.file_name() {
             Some(name) => {
@@ -831,9 +834,9 @@ fn canonicalize_existing(path: &Path) -> Result<PathBuf, PathPolicyError> {
     }
 }
 
-fn resolve_under_root(root: &Path, requested: &Path) -> Result<PathBuf, PathPolicyError> {
+async fn resolve_under_root(root: &Path, requested: &Path) -> Result<PathBuf, PathPolicyError> {
     let joined = root.join(requested);
-    let canonical = canonicalize_existing(&joined)?;
+    let canonical = canonicalize_existing(&joined).await?;
     if !canonical.starts_with(root) {
         return Err(PathPolicyError::OutsideWorkspace(
             canonical,
@@ -919,18 +922,18 @@ mod tests {
         let ctx = ExecutionContext::new(rec.clone(), Some("s".into()), Default::default());
 
         // None => workspace root
-        let cwd = ctx.resolve_relative_cwd(None).unwrap();
+        let cwd = ctx.resolve_relative_cwd(None).await.unwrap();
         assert_eq!(cwd, rec.canonical_root);
 
         // Relative subdir resolves under workspace root
         let sub_rel = Path::new("sub");
-        let cwd_rel = ctx.resolve_relative_cwd(Some(sub_rel)).unwrap();
+        let cwd_rel = ctx.resolve_relative_cwd(Some(sub_rel)).await.unwrap();
         assert!(cwd_rel.starts_with(&rec.canonical_root));
         assert!(cwd_rel.ends_with("sub"));
 
         // Relative escape via `..` rejected
         let escape = Path::new("../escape");
-        match ctx.resolve_relative_cwd(Some(escape)) {
+        match ctx.resolve_relative_cwd(Some(escape)).await {
             Err(PathPolicyError::OutsideWorkspace(_, _)) => {}
             other => panic!("expected outside-workspace error, got {:?}", other),
         }
@@ -951,13 +954,13 @@ mod tests {
 
         // Inside workspace
         let inside = workspace_dir.path().join("src");
-        assert!(ctx.resolve_read_path(&inside).is_ok());
-        assert!(ctx.resolve_write_path(&inside).is_ok());
+        assert!(ctx.resolve_read_path(&inside).await.is_ok());
+        assert!(ctx.resolve_write_path(&inside).await.is_ok());
 
         // Relative escape via `..`
         let escape = Path::new("../escaped");
         assert!(matches!(
-            ctx.resolve_read_path(escape),
+            ctx.resolve_read_path(escape).await,
             Err(PathPolicyError::OutsideWorkspace(_, _))
         ));
 
@@ -965,15 +968,15 @@ mod tests {
         let outside = elsewhere.path();
         let canonical_outside = std::fs::canonicalize(outside).unwrap();
         assert!(matches!(
-            ctx.resolve_read_path(&canonical_outside),
+            ctx.resolve_read_path(&canonical_outside).await,
             Err(PathPolicyError::OutsideAllowedRoots(_))
         ));
     }
 
-    #[test]
-    fn path_resolution_rejects_empty_paths() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn path_resolution_rejects_empty_paths() {
         assert_eq!(
-            canonicalize_existing(Path::new("")).unwrap_err(),
+            canonicalize_existing(Path::new("")).await.unwrap_err(),
             PathPolicyError::EmptyPath,
         );
     }

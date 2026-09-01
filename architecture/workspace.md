@@ -45,15 +45,15 @@ every daemon-owned execution path.
 `ExecutionContext` exposes three helpers that should be the only way tools
 and subsystems materialize a path:
 
-- `resolve_relative_cwd(requested)` — picks a working directory. `None` and
+- `resolve_relative_cwd(requested).await` — picks a working directory. `None` and
   empty strings resolve to the workspace root; relative paths join the
   workspace root and canonicalize; absolute paths must lie under an
   explicitly allowed root.
-- `resolve_read_path(requested)` — verifies and canonicalizes a read
+- `resolve_read_path(requested).await` — verifies and canonicalizes a read
   target. Existing paths canonicalize directly; paths that don't yet
   exist canonicalize the nearest existing ancestor and append the missing
   suffix. Relative paths must resolve under the workspace root.
-- `resolve_write_path(requested)` — same rules as read, plus the
+- `resolve_write_path(requested).await` — same rules as read, plus the
   destination must lie under `allowed_write_roots`.
 
 `PathPolicyError` distinguishes `OutsideWorkspace`, `OutsideAllowedRoots`,
