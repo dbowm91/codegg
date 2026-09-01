@@ -170,7 +170,10 @@ records the executor name on the attempt before marking it running.
 ### Durable delegated-agent execution
 
 `JobPayload::SubagentRun` carries typed `AgentTaskId`/`AgentRunId` values and
-the stable delegation key. `SubagentJobExecutor` attaches the scheduler
+the stable call-derived delegation key. The TaskTool broker path forwards the
+accepted model tool-call identity into structured execution, while durable
+task storage keeps a bounded request fingerprint for incompatible-retry
+rejection. `SubagentJobExecutor` attaches the scheduler
 attempt, transitions the run through `Preparing` and `Running`, invokes the
 existing child runtime, and records one bounded terminal outcome. The
 `AgentRunStore` is also wired into scheduler cancellation and startup

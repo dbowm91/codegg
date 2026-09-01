@@ -135,6 +135,14 @@ parent, so scheduler/worker hops cannot reset descendant depth. Nested TaskTool
 instances are built from the current run and store-derived task context; a
 parent's parent is never used as the nested owner.
 
+TaskTool structured execution preserves the accepted model tool-call identity
+from `ToolExecutionContext.invocation_key`. Explicit input idempotency keys
+override it; direct legacy calls receive a fresh bounded compatibility key.
+Delegation, group, and mailbox acceptance therefore distinguish identical
+intentional calls while retrying one accepted call idempotently. Durable task
+rows retain a bounded request fingerprint so reusing one call identity for a
+different spawn request fails closed.
+
 ## Key Types & APIs
 
 ### Agent (`src/agent/mod.rs:100`)
@@ -256,8 +264,9 @@ authority, and the numeric `TaskStore` ID is only a compatibility alias.
 
 The run store persists bounded provenance (session/turn, project/repository/
 workspace, agent/model, authority digest, budget, lineage, job/attempt links)
-and validates lifecycle transitions. Duplicate delegation keys resolve the
-original task/run. Completion, cancellation, submission failure, and startup
+and validates lifecycle transitions. Duplicate call-derived delegation keys
+resolve the original task/run only when the bounded request fingerprint also
+matches. Completion, cancellation, submission failure, and startup
 recovery use first-terminal-wins semantics; scheduler-owned cancellation and
 generation recovery reconcile the durable run rather than relying only on a
 live `CancellationToken`.
@@ -285,8 +294,11 @@ contention queues at the global scheduler. Standalone compatibility paths may
 continue to use the pool directly and do not claim daemon guarantees.
 
 The session projection adds bounded summaries for the durable run tree, owned
-worktrees, and run groups. It is derived from the authoritative stores and is
-safe to replay after reconnect or daemon restart; it is never a second
+worktrees, and run groups. Run depth is copied from `AgentRunRecord` by the
+single projection adapter; callers never infer it from parent presence or
+presentation nesting. Group summaries expose only the bounded turn/run owner
+discriminator and optional session/turn identity. It is derived from the
+authoritative stores and is safe to replay after reconnect or daemon restart; it is never a second
 execution or control authority. The summary includes typed run/task identity,
 status/control state, branch/base/result commit, validation, and
 attention-required state while leaving prompts, mailboxes, transcripts,

@@ -891,7 +891,10 @@ impl AgentLoop {
                                     attempt_id: None,
                                     permission_mode: exec_ctx.permission_mode.clone(),
                                     timeout_ms: exec_ctx.timeout_ms,
-                                    submission_key: None,
+                                    // Preserve the accepted model tool-call
+                                    // identity through the broker into
+                                    // structured tools such as TaskTool.
+                                    submission_key: exec_ctx.invocation_key.clone(),
                                     authority: crate::tool::broker::BrokerAuthority::from_grant(
                                         grant,
                                     ),

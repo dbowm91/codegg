@@ -225,11 +225,18 @@ channel, and waits for a bounded writer receipt (500 ms). `Initializing
 `AgentRunSummary`, `WorktreeSummaryProjection`, and
 `AgentRunGroupSummaryProjection` are bounded, additive frontend summaries of
 the authoritative `AgentRunStore`, `WorktreeService`, and group service. They
-carry typed opaque IDs, lifecycle/control state, branch/base/result commit,
-validation and attention summaries; prompts, mailboxes, transcripts, hidden
-reasoning, credentials, and full artifacts are not projected. The daemon
-builds reconnect/resync snapshots from those stores, while scheduler and group
-transitions publish the same summaries as projection events.
+carry typed opaque IDs, lifecycle/control state, authoritative durable depth,
+branch/base/result commit, validation and attention summaries; prompts,
+mailboxes, transcripts, hidden reasoning, credentials, and full artifacts are
+not projected. The daemon builds reconnect/resync snapshots from those stores,
+while scheduler and group transitions publish the same summaries as projection
+events.
+
+Run-group summaries include an additive owner discriminator (`turn` or `run`)
+and, for turn-owned groups, bounded originating session/turn identifiers.
+Older snapshots deserialize with the fields absent. These fields describe
+ownership only; they do not grant control authority, which remains enforced by
+the durable group/control services.
 
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events

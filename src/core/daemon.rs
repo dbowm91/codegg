@@ -472,7 +472,6 @@ impl CoreDaemon {
                 worktree.as_ref(),
                 result.as_ref(),
                 group_id.as_deref(),
-                run.parent_run_id.as_ref().map_or(0, |_| 1),
             ));
             if let Some(worktree) = worktree.as_ref() {
                 snapshot

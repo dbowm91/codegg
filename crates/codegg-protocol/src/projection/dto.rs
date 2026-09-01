@@ -583,6 +583,13 @@ impl WorktreeSummaryProjection {
 pub struct AgentRunGroupSummaryProjection {
     pub group_id: String,
     pub owner_run_id: String,
+    /// Additive owner discriminator. Empty means an older snapshot omitted it.
+    #[serde(default)]
+    pub owner_kind: String,
+    #[serde(default)]
+    pub owner_session_id: Option<String>,
+    #[serde(default)]
+    pub owner_turn_id: Option<String>,
     pub status: String,
     pub join_policy: String,
     pub member_run_ids: Vec<String>,
@@ -601,6 +608,15 @@ impl AgentRunGroupSummaryProjection {
         self.group_id = truncate_str(&self.group_id, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.owner_run_id =
             truncate_str(&self.owner_run_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.owner_kind = truncate_str(&self.owner_kind, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.owner_session_id = self
+            .owner_session_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.owner_turn_id = self
+            .owner_turn_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
         self.status = truncate_str(&self.status, MAX_PROJECTION_STRING_BYTES).into_owned();
         self.join_policy =
             truncate_str(&self.join_policy, MAX_PROJECTION_STRING_BYTES).into_owned();

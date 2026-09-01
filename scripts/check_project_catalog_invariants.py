@@ -189,8 +189,8 @@ def check_storage_layout_version() -> bool:
         print("  FAIL: STORAGE_LAYOUT_VERSION not found")
         return False
     version = int(match.group(1))
-    if version != 43:
-        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 43")
+    if version != 44:
+        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 44")
         return False
     return True
 
@@ -215,7 +215,7 @@ def main() -> int:
         ("No unwrap_or_default PathBuf anti-pattern", check_no_unwrap_or_default_pathbuf),
         ("catalog/discovery migrations create tables", check_catalog_migration_tables),
         ("v28 migration adds 5 columns to logical_project", check_catalog_migration_columns),
-        ("STORAGE_LAYOUT_VERSION is 43", check_storage_layout_version),
+        ("STORAGE_LAYOUT_VERSION is 44", check_storage_layout_version),
         ("lib.rs re-exports project_catalog", check_lib_reexport),
     ]
 

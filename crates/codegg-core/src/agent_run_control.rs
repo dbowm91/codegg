@@ -167,6 +167,8 @@ pub enum AgentRunControlStoreError {
     MailboxFull,
     #[error("control rate limit exceeded")]
     RateLimited,
+    #[error("control idempotency key conflicts with an existing operation")]
+    IdempotencyConflict,
     #[error("mailbox message '{0}' not found")]
     MessageNotFound(String),
     #[error("invalid mailbox transition: {from:?} -> {to:?}")]
@@ -270,6 +272,12 @@ impl AgentRunControlStore for InMemoryAgentRunControlStore {
             .get(&(input.run_id.clone(), input.idempotency_key.clone()))
             .and_then(|id| state.messages.get(id))
         {
+            if existing.kind != input.kind
+                || existing.payload != input.payload
+                || existing.sender_run_id != input.sender_run_id
+            {
+                return Err(AgentRunControlStoreError::IdempotencyConflict);
+            }
             return Ok(existing.clone());
         }
         let pending = state
@@ -523,7 +531,14 @@ impl AgentRunControlStore for SqliteAgentRunControlStore {
         let _guard = self.write_lock.lock().await;
         if let Some(row) = sqlx::query(&format!("SELECT {MESSAGE_COLUMNS} FROM agent_run_mailbox WHERE run_id = ? AND idempotency_key = ?"))
             .bind(input.run_id.as_str()).bind(&input.idempotency_key).fetch_optional(&self.pool).await.map_err(storage_error)? {
-            return message_from_row(&row);
+            let existing = message_from_row(&row)?;
+            if existing.kind != input.kind
+                || existing.payload != input.payload
+                || existing.sender_run_id != input.sender_run_id
+            {
+                return Err(AgentRunControlStoreError::IdempotencyConflict);
+            }
+            return Ok(existing);
         }
         let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_run_mailbox WHERE run_id = ? AND state IN ('queued','delivered')")
             .bind(input.run_id.as_str()).fetch_one(&self.pool).await.map_err(storage_error)?;
@@ -768,11 +783,16 @@ mod tests {
         let store = InMemoryAgentRunControlStore::new();
         let run = AgentRunId::new();
         let first = store.enqueue(control(&run, "one", "a")).await.unwrap();
+        let retry = store.enqueue(control(&run, "one", "a")).await.unwrap();
+        assert_eq!(first, retry);
         let duplicate = store
             .enqueue(control(&run, "one", "different"))
             .await
-            .unwrap();
-        assert_eq!(first, duplicate);
+            .unwrap_err();
+        assert!(matches!(
+            duplicate,
+            AgentRunControlStoreError::IdempotencyConflict
+        ));
         let second = store.enqueue(control(&run, "two", "b")).await.unwrap();
         assert_eq!((first.sequence, second.sequence), (1, 2));
         assert_eq!(store.pending(&run).await.unwrap().len(), 2);

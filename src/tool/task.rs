@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use crate::agent::run_control::{ControlActor, ControlOutcome, RunControlService};
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::error::ToolError;
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
@@ -619,6 +619,15 @@ impl TaskTool {
     pub fn depth(&self) -> usize {
         self.depth
     }
+
+    async fn execute_with_context(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
+        let call_identity = resolve_call_identity(&input, ctx);
+        self.execute_impl(input, ctx, call_identity).await
+    }
 }
 
 impl Default for TaskTool {
@@ -726,6 +735,26 @@ impl Tool for TaskTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_with_context(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute_with_context(input, ctx.as_ref()).await?;
+        Ok(StructuredToolResult::legacy(self.name(), output))
+    }
+}
+
+impl TaskTool {
+    async fn execute_impl(
+        &self,
+        input: serde_json::Value,
+        ctx: Option<&ToolExecutionContext>,
+        call_identity: String,
+    ) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
 
         if matches!(
@@ -778,13 +807,14 @@ impl Tool for TaskTool {
                     }
                     let mut accepted = Vec::with_capacity(requests.len());
                     let mut rejected = Vec::new();
-                    for request in requests {
+                    for (index, request) in requests.iter().enumerate() {
                         let mut child = request.clone();
                         let object = child.as_object_mut().ok_or_else(|| {
                             ToolError::Execution("each spawn_many request must be an object".into())
                         })?;
                         object.insert("action".into(), serde_json::Value::String("spawn".into()));
-                        match self.execute(child).await {
+                        let member_identity = format!("{call_identity}/member/{index}");
+                        match Box::pin(self.execute_impl(child, ctx, member_identity)).await {
                             Ok(output) => {
                                 if let Some(run_id) = output.lines().find_map(|line| {
                                     line.strip_prefix("Run: ")
@@ -838,7 +868,6 @@ impl Tool for TaskTool {
                     .as_str()
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| {
-                        let canonical = serde_json::to_string(&input).unwrap_or_default();
                         let owner_key = match &self.orchestration_owner {
                             Some(AgentOrchestrationOwner::Turn {
                                 session_id,
@@ -847,11 +876,7 @@ impl Tool for TaskTool {
                             Some(AgentOrchestrationOwner::Run { run_id }) => run_id.to_string(),
                             None => owner_run_id.to_string(),
                         };
-                        format!(
-                            "group:{}:{:x}",
-                            owner_key,
-                            Sha256::digest(canonical.as_bytes())
-                        )
+                        format!("group:{call_identity}:{action}:{owner_key}")
                     });
                 let root_run_id = if matches!(&group_owner, AgentRunGroupOwner::Run { .. }) {
                     self.agent_runs
@@ -957,7 +982,9 @@ impl Tool for TaskTool {
                     let key = input["idempotency_key"]
                         .as_str()
                         .map(String::from)
-                        .unwrap_or_else(|| format!("{}:{}", action, raw_run_id));
+                        .unwrap_or_else(|| {
+                            format!("control:{call_identity}:{action}:{raw_run_id}")
+                        });
                     control.send(&actor, run_id, kind, payload, key).await
                 }
                 _ => unreachable!(),
@@ -1059,13 +1086,8 @@ impl Tool for TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 let durable = if let Some(agent_runs) = self.agent_runs.clone() {
-                    let delegation_key = delegation_key(
-                        self.parent_session_id.as_deref(),
-                        self.parent_turn_id.as_deref(),
-                        &agent,
-                        &prompt,
-                        &allowed_paths,
-                    );
+                    let delegation_key =
+                        delegation_key(&call_identity, &agent, &prompt, &allowed_paths);
                     let project_id = self.project_id.clone().unwrap_or_default();
                     let provider = self
                         .parent_model
@@ -1082,6 +1104,13 @@ impl Tool for TaskTool {
                         _ => None,
                     };
                     let parent_run_id = parent_run.as_ref().map(|run| run.run_id.clone());
+                    let request_fingerprint = spawn_request_fingerprint(
+                        &agent,
+                        &description,
+                        &prompt,
+                        &allowed_paths,
+                        parent_run_id.as_ref(),
+                    );
                     let depth = next_durable_depth(
                         parent_run.as_ref().map(|run| run.depth),
                         self.max_depth,
@@ -1112,6 +1141,7 @@ impl Tool for TaskTool {
                                 workspace_id: workspace_id.clone(),
                                 requested_agent: agent.clone(),
                                 delegation_key: delegation_key.clone(),
+                                request_fingerprint,
                                 description: description.clone(),
                             },
                             NewAgentRun {
@@ -1386,7 +1416,7 @@ impl Tool for TaskTool {
 }
 
 #[cfg(test)]
-mod tests {
+mod identity_tests {
     use super::next_durable_depth;
 
     #[test]
@@ -1451,16 +1481,15 @@ fn format_group_summary(
 }
 
 fn delegation_key(
-    session_id: Option<&str>,
-    turn_id: Option<&str>,
+    call_identity: &str,
     agent: &str,
     prompt: &str,
     allowed_paths: &[String],
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(session_id.unwrap_or_default().as_bytes());
+    hasher.update(b"agent-delegation-v2");
     hasher.update([0]);
-    hasher.update(turn_id.unwrap_or_default().as_bytes());
+    hasher.update(call_identity.as_bytes());
     hasher.update([0]);
     hasher.update(agent.as_bytes());
     hasher.update([0]);
@@ -1472,6 +1501,49 @@ fn delegation_key(
     format!("agent-delegation-{:x}", hasher.finalize())
 }
 
+fn spawn_request_fingerprint(
+    agent: &str,
+    description: &str,
+    prompt: &str,
+    allowed_paths: &[String],
+    parent_run_id: Option<&AgentRunId>,
+) -> String {
+    let mut normalized_paths = allowed_paths.to_vec();
+    normalized_paths.sort();
+    let mut hasher = Sha256::new();
+    hasher.update(b"spawn-request-v1");
+    for value in [agent, description, prompt] {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    if let Some(parent_run_id) = parent_run_id {
+        hasher.update(parent_run_id.to_string().as_bytes());
+    }
+    for path in normalized_paths {
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path.as_bytes());
+    }
+    format!("spawn-request-{:x}", hasher.finalize())
+}
+
+fn resolve_call_identity(input: &serde_json::Value, ctx: Option<&ToolExecutionContext>) -> String {
+    let candidate = input["idempotency_key"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            ctx.and_then(|ctx| ctx.invocation_key.as_deref())
+                .filter(|value| !value.is_empty())
+        });
+    let value = candidate
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("legacy-{}", uuid::Uuid::new_v4()));
+    if value.len() <= 256 {
+        value
+    } else {
+        format!("identity-digest-{:x}", Sha256::digest(value.as_bytes()))
+    }
+}
+
 fn authority_digest(denied_tools: &[String], allowed_paths: &[String]) -> String {
     let mut hasher = Sha256::new();
     for value in denied_tools.iter().chain(allowed_paths.iter()) {
@@ -1479,4 +1551,44 @@ fn authority_digest(denied_tools: &[String], allowed_paths: &[String]) -> String
         hasher.update([0]);
     }
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_identity_prefers_explicit_key_then_context_then_fresh_legacy_key() {
+        let mut context = ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        context.invocation_key = Some("provider-call-1".into());
+        let input = serde_json::json!({
+            "action": "message",
+            "idempotency_key": "explicit-key"
+        });
+        assert_eq!(
+            resolve_call_identity(&input, Some(&context)),
+            "explicit-key"
+        );
+
+        let without_explicit = serde_json::json!({"action": "message"});
+        assert_eq!(
+            resolve_call_identity(&without_explicit, Some(&context)),
+            "provider-call-1"
+        );
+        let first = resolve_call_identity(&without_explicit, None);
+        let second = resolve_call_identity(&without_explicit, None);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn identical_spawn_payloads_are_distinguished_by_call_identity() {
+        let paths = vec!["src".into()];
+        let first = delegation_key("call-a", "general", "same prompt", &paths);
+        let second = delegation_key("call-b", "general", "same prompt", &paths);
+        assert_ne!(first, second);
+        assert_eq!(
+            spawn_request_fingerprint("general", "same description", "same prompt", &paths, None,),
+            spawn_request_fingerprint("general", "same description", "same prompt", &paths, None,)
+        );
+    }
 }

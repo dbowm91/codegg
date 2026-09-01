@@ -1036,6 +1036,7 @@ mod tests {
                     workspace_id: WorkspaceId::new_unchecked("group-test-workspace"),
                     requested_agent: "general".into(),
                     delegation_key: key.into(),
+                    request_fingerprint: key.into(),
                     description: key.into(),
                 },
                 NewAgentRun {
@@ -1092,6 +1093,7 @@ mod tests {
                     workspace_id: WorkspaceId::new_unchecked("group-test-workspace"),
                     requested_agent: "general".into(),
                     delegation_key: key.into(),
+                    request_fingerprint: key.into(),
                     description: key.into(),
                 },
                 NewAgentRun {

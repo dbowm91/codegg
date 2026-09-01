@@ -161,6 +161,10 @@ pub struct AgentTaskRecord {
     pub workspace_id: WorkspaceId,
     pub requested_agent: String,
     pub delegation_key: String,
+    /// Bounded fingerprint of the immutable accepted spawn request. It is
+    /// compared on idempotent replay so one call identity cannot accept a
+    /// different child objective.
+    pub request_fingerprint: String,
     pub description: String,
     pub status: AgentTaskStatus,
     pub created_at: i64,
@@ -244,6 +248,7 @@ pub struct NewAgentTask {
     pub workspace_id: WorkspaceId,
     pub requested_agent: String,
     pub delegation_key: String,
+    pub request_fingerprint: String,
     pub description: String,
 }
 
@@ -528,6 +533,7 @@ fn build_records(
         workspace_id: task.workspace_id.clone(),
         requested_agent: bound(task.requested_agent, 128),
         delegation_key: bound(task.delegation_key, 512),
+        request_fingerprint: bound(task.request_fingerprint, 128),
         description: bound(task.description, 1024),
         status: AgentTaskStatus::Created,
         created_at: now,
@@ -632,6 +638,9 @@ impl AgentRunStore for InMemoryAgentRunStore {
                 .ok_or_else(|| AgentRunStoreError::RunNotFound(id.to_string()))?;
             if task_record.workspace_id != task.workspace_id
                 || task_record.originating_session_id != task.originating_session_id
+                || (!task_record.request_fingerprint.is_empty()
+                    && !task.request_fingerprint.is_empty()
+                    && task_record.request_fingerprint != task.request_fingerprint)
             {
                 return Err(AgentRunStoreError::DelegationConflict(
                     task_record.task_id.to_string(),
@@ -981,7 +990,7 @@ async fn load_task(
     pool: &SqlitePool,
     id: &AgentTaskId,
 ) -> Result<Option<AgentTaskRecord>, AgentRunStoreError> {
-    let row = sqlx::query("SELECT task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, description, status, created_at, updated_at FROM agent_task WHERE task_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
+    let row = sqlx::query("SELECT task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, request_fingerprint, description, status, created_at, updated_at FROM agent_task WHERE task_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
     row.map(|r| {
         Ok(AgentTaskRecord {
             task_id: parse_task(r.get("task_id"))?,
@@ -1002,6 +1011,7 @@ async fn load_task(
             workspace_id: WorkspaceId::new_unchecked(r.get::<String, _>("workspace_id")),
             requested_agent: r.get("requested_agent"),
             delegation_key: r.get("delegation_key"),
+            request_fingerprint: r.get("request_fingerprint"),
             description: r.get("description"),
             status: AgentTaskStatus::from_str(r.get::<String, _>("status").as_str()),
             created_at: r.get("created_at"),
@@ -1105,6 +1115,9 @@ impl AgentRunStore for SqliteAgentRunStore {
                 .ok_or_else(|| AgentRunStoreError::RunNotFound(run_id.to_string()))?;
             if task_record.workspace_id != task.workspace_id
                 || task_record.originating_session_id != task.originating_session_id
+                || (!task_record.request_fingerprint.is_empty()
+                    && !task.request_fingerprint.is_empty()
+                    && task_record.request_fingerprint != task.request_fingerprint)
             {
                 return Err(AgentRunStoreError::DelegationConflict(existing.to_string()));
             }
@@ -1185,8 +1198,8 @@ impl AgentRunStore for SqliteAgentRunStore {
         }
         let budget = serde_json::to_string(&run_record.budget)
             .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
-        let task_insert = sqlx::query("INSERT INTO agent_task (task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(task_record.task_id.as_str()).bind(task_record.root_task_id.as_str()).bind(task_record.parent_task_id.as_ref().map(AgentTaskId::as_str)).bind(&task_record.originating_session_id).bind(task_record.originating_turn_id.as_deref()).bind(task_record.project_id.as_str()).bind(task_record.repository_id.as_ref().map(RepositoryId::as_str)).bind(task_record.workspace_id.as_str()).bind(&task_record.requested_agent).bind(&task_record.delegation_key).bind(&task_record.description).bind(task_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await;
+        let task_insert = sqlx::query("INSERT INTO agent_task (task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, request_fingerprint, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(task_record.task_id.as_str()).bind(task_record.root_task_id.as_str()).bind(task_record.parent_task_id.as_ref().map(AgentTaskId::as_str)).bind(&task_record.originating_session_id).bind(task_record.originating_turn_id.as_deref()).bind(task_record.project_id.as_str()).bind(task_record.repository_id.as_ref().map(RepositoryId::as_str)).bind(task_record.workspace_id.as_str()).bind(&task_record.requested_agent).bind(&task_record.delegation_key).bind(&task_record.request_fingerprint).bind(&task_record.description).bind(task_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await;
         if let Err(error) = task_insert {
             tx.rollback().await.map_err(storage_error)?;
             if error.to_string().contains("agent_task.delegation_key") {
@@ -1464,6 +1477,7 @@ mod tests {
             workspace_id: WorkspaceId::new_unchecked("workspace"),
             requested_agent: "general".into(),
             delegation_key: key.into(),
+            request_fingerprint: key.into(),
             description: "bounded task".into(),
         }
     }
@@ -1628,6 +1642,12 @@ mod tests {
         assert!(first.created);
         assert!(!second.created);
         assert_eq!(first.run.run_id, second.run.run_id);
+        let mut incompatible = task("sqlite-key", None);
+        incompatible.request_fingerprint = "different-request".into();
+        assert!(matches!(
+            store.create_or_get(incompatible, run(None)).await,
+            Err(AgentRunStoreError::DelegationConflict(_))
+        ));
         store
             .transition(&first.run.run_id, AgentRunStatus::Queued)
             .await
@@ -1675,5 +1695,25 @@ mod tests {
             store.get_result(&first.run.run_id).await.unwrap(),
             Some(structured)
         );
+    }
+
+    #[tokio::test]
+    async fn call_identity_replay_conflicts_on_a_different_spawn_request() {
+        let store = InMemoryAgentRunStore::new();
+        let first = store
+            .create_or_get(task("identity", None), run(None))
+            .await
+            .unwrap();
+        let mut incompatible = task("identity", None);
+        incompatible.request_fingerprint = "different-request".into();
+        assert!(matches!(
+            store.create_or_get(incompatible, run(None)).await,
+            Err(AgentRunStoreError::DelegationConflict(_))
+        ));
+        assert!(store
+            .create_or_get(task("identity", None), run(None))
+            .await
+            .is_ok());
+        assert_eq!(first.task.request_fingerprint, "identity");
     }
 }

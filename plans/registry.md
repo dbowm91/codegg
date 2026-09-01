@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` | M008 ready | M007 closure accepted; M008 owns call identity, authoritative projection depth, and strict final subsystem closure. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` | M008 active | M007 closure accepted; M008 implementation and independent closure review in progress. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -45,11 +45,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Agent runs, async delegation, and worktree concurrency | M008 — call identity, authoritative projection, and strict corrective closure | `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md` | M007 closure record is accepted; durable owner, lineage, depth, fan-out, worktree, and authorization prerequisites are established. |
+| Agent runs, async delegation, and worktree concurrency | M008 — call identity, authoritative projection, and strict corrective closure | `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md` | Implementation is active after M007 closure; closure evidence is pending. |
 
 ## Closure work and dependencies
 
-Agent-run/worktree M001–M006 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. The M006 strict subsystem disposition is superseded by `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` after the post-closure production-path audit. M007 is now closed by `plans/closure/agent-run-worktree-concurrency/007-status.md`; M008 is ready for its independent corrective closure pass.
+Agent-run/worktree M001–M006 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. The M006 strict subsystem disposition is superseded by `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` after the post-closure production-path audit. M007 is closed by `plans/closure/agent-run-worktree-concurrency/007-status.md`; M008 implementation is active and its independent corrective closure pass is pending.
 
 Historical closed control points remain:
 
@@ -65,8 +65,8 @@ Verification remains deliberately light: the corrective workstream must use focu
 ## Blocked work
 
 No registered agent-run/worktree corrective plan remains blocked after M007
-closure. M008 is ready and remains the active subsystem milestone. No
-unrelated previously closed subsystem is reopened.
+closure. M008 is the active subsystem milestone. No unrelated previously
+closed subsystem is reopened.
 
 ## Agent-runtime correctness execution order
 

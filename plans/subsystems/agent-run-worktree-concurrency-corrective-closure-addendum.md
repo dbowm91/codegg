@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Corrective Closure Addendum
 
-Status: active — M007 closed; M008 ready
+Status: active — M007 closed; M008 active
 
 Repository baseline reviewed: `b87d1d5b65aca96c700deb27e579374b3d158545`
 

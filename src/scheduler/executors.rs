@@ -456,7 +456,6 @@ impl SubagentJobExecutor {
             worktree.as_ref(),
             result.as_ref(),
             None,
-            run.parent_run_id.as_ref().map_or(0, |_| 1),
         );
         crate::bus::global::GlobalEventBus::publish(
             crate::bus::events::AppEvent::AgentRunUpdated {

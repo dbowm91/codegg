@@ -12,6 +12,10 @@ use codegg_protocol::projection::dto::{
 
 use super::super::agent_run::{AgentRunRecord, AgentRunStatus, AgentTaskRecord};
 use super::super::agent_run_group::AgentRunGroupSummary;
+#[cfg(test)]
+use super::super::agent_run_group::{
+    AgentRunGroupOwner, AgentRunGroupRecord, RunGroupStatus, RunJoinPolicy,
+};
 use crate::run_result::AgentRunResult;
 use crate::worktree_service::{WorktreeHealth, WorktreeRecord};
 
@@ -23,7 +27,6 @@ pub fn agent_run_summary(
     worktree: Option<&WorktreeRecord>,
     result: Option<&AgentRunResult>,
     group_id: Option<&str>,
-    _depth: u32,
 ) -> AgentRunSummary {
     let validation_summary = result.and_then(|result| {
         if result.validation.is_empty() {
@@ -122,9 +125,19 @@ pub fn run_group_summary(
     summary: &AgentRunGroupSummary,
     updated_at: i64,
 ) -> AgentRunGroupSummaryProjection {
+    let (owner_kind, owner_session_id, owner_turn_id) = match &summary.group.owner {
+        super::super::agent_run_group::AgentRunGroupOwner::Turn {
+            session_id,
+            turn_id,
+        } => ("turn", Some(session_id.clone()), Some(turn_id.clone())),
+        super::super::agent_run_group::AgentRunGroupOwner::Run { .. } => ("run", None, None),
+    };
     let mut projection = AgentRunGroupSummaryProjection {
         group_id: summary.group.group_id.to_string(),
         owner_run_id: summary.group.owner_run_id.to_string(),
+        owner_kind: owner_kind.into(),
+        owner_session_id,
+        owner_turn_id,
         status: summary.group.status.as_str().into(),
         join_policy: summary.group.join_policy.as_str().into(),
         member_run_ids: summary
@@ -159,7 +172,9 @@ pub fn run_upsert_event(
 mod tests {
     use super::super::super::agent_run::{AgentRunBudget, AgentRunTerminal};
     use super::*;
-    use crate::identity::{AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorktreeId};
+    use crate::identity::{
+        AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId, WorktreeId,
+    };
     use crate::workspace::WorkspaceId;
 
     #[test]
@@ -178,6 +193,7 @@ mod tests {
             workspace_id: WorkspaceId::new(),
             requested_agent: "worker".into(),
             delegation_key: "key".into(),
+            request_fingerprint: "key".into(),
             description: "sensitive prompt omitted".into(),
             status: super::super::super::agent_run::AgentTaskStatus::Failed,
             created_at: 1,
@@ -229,11 +245,48 @@ mod tests {
             created_at: 1,
             updated_at: 3,
         };
-        let summary = agent_run_summary(&task, &run, Some(&worktree), None, None, 1);
+        let summary = agent_run_summary(&task, &run, Some(&worktree), None, None);
         assert!(summary.attention_required);
+        assert_eq!(summary.depth, 1);
         assert_eq!(summary.result_commit, None);
         let encoded = serde_json::to_string(&summary).unwrap();
         assert!(!encoded.contains("sensitive prompt"));
         assert!(!encoded.contains("/repo/.codegg"));
+    }
+
+    #[test]
+    fn group_projection_preserves_turn_owner_without_disclosing_inputs() {
+        let owner_run_id = AgentRunId::new();
+        let group = AgentRunGroupRecord {
+            group_id: AgentRunGroupId::new(),
+            root_run_id: owner_run_id.clone(),
+            owner_run_id: owner_run_id.clone(),
+            owner: AgentRunGroupOwner::Turn {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+            },
+            member_run_ids: vec![owner_run_id.clone()],
+            join_policy: RunJoinPolicy::All,
+            cancel_remaining_on_satisfaction: false,
+            status: RunGroupStatus::Pending,
+            created_at: 1,
+            completed_at: None,
+            winner_run_id: None,
+            idempotency_key: "call".into(),
+        };
+        let projection = run_group_summary(
+            &AgentRunGroupSummary {
+                group,
+                members: vec![],
+                successful: 0,
+                failed: 0,
+                active: 1,
+                timed_out: false,
+            },
+            2,
+        );
+        assert_eq!(projection.owner_kind, "turn");
+        assert_eq!(projection.owner_session_id.as_deref(), Some("session"));
+        assert_eq!(projection.owner_turn_id.as_deref(), Some("turn"));
     }
 }

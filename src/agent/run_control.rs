@@ -500,6 +500,7 @@ mod tests {
                     workspace_id: WorkspaceId::new_unchecked("control-test-workspace"),
                     requested_agent: "general".into(),
                     delegation_key: format!("control-test-{run_id}"),
+                    request_fingerprint: format!("control-test-{run_id}"),
                     description: "control test".into(),
                 },
                 NewAgentRun {
@@ -704,6 +705,7 @@ mod tests {
                     workspace_id: parent.workspace_id.clone(),
                     requested_agent: "general".into(),
                     delegation_key: "control-child".into(),
+                    request_fingerprint: "control-child".into(),
                     description: "child".into(),
                 },
                 NewAgentRun {

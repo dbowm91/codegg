@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency M008 — Call Identity, Authoritative Projection, and Strict Corrective Closure
 
-Status: ready
+Status: active
 
 Repository baseline for planning: `b87d1d5b65aca96c700deb27e579374b3d158545`
 

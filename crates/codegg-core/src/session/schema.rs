@@ -151,6 +151,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 43 {
         migrate_and_record(pool, 43).await?;
     }
+    if current_version < 44 {
+        migrate_and_record(pool, 44).await?;
+    }
 
     Ok(())
 }
@@ -206,6 +209,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             41 => migrate_v41(pool).await?,
             42 => migrate_v42(pool).await?,
             43 => migrate_v43(pool).await?,
+            44 => migrate_v44(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2056,6 +2060,17 @@ async fn migrate_v43(pool: &SqlitePool) -> Result<(), StorageError> {
         add_column_ignore_duplicate(pool, statement.to_string()).await?;
     }
     Ok(())
+}
+
+/// M008: retain a bounded immutable request fingerprint beside the canonical
+/// call/delegation identity so incompatible idempotent replays fail closed.
+async fn migrate_v44(pool: &SqlitePool) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        pool,
+        "ALTER TABLE agent_task ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
+            .to_string(),
+    )
+    .await
 }
 
 /// Session Projections Milestone 2: durable projection stream,
