@@ -311,9 +311,11 @@ Mailbox control, worktree leases, child commit authority, group joins, and final
 
 Class: capability/infrastructure
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/agent-run-worktree-concurrency/002-run-mailbox-journal-and-async-control.md`
+
+Closure: `plans/closure/agent-run-worktree-concurrency/002-status.md`
 
 Objective:
 
@@ -507,7 +509,7 @@ This roadmap closes only when:
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/agent-run-worktree-concurrency/001-durable-agent-run-foundation.md` | `plans/closure/agent-run-worktree-concurrency/001-status.md` | — |
-| M002 | ready | `plans/implementation/agent-run-worktree-concurrency/002-run-mailbox-journal-and-async-control.md` | — | — |
+| M002 | closed | `plans/implementation/agent-run-worktree-concurrency/002-run-mailbox-journal-and-async-control.md` | `plans/closure/agent-run-worktree-concurrency/002-status.md` | — |
 | M003 | ready | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | — | — |
 | M004 | blocked | `plans/implementation/agent-run-worktree-concurrency/004-isolated-mutation-and-structured-results.md` | — | M002, M003 |
 | M005 | blocked | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | — | M002, M004 |
