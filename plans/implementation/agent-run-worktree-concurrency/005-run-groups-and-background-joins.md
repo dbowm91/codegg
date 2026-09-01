@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Milestone 005 — Run Groups and Background Joins
 
-Status: blocked
+Status: implemented
 
 Repository baseline: `b08d33b7e52bde1bde1ddcddeeee3c7c157a4103`
 

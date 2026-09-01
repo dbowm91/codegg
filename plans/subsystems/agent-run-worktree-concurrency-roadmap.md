@@ -378,7 +378,7 @@ Exit conditions:
 
 Class: capability
 
-Status: ready
+Status: closed
 
 Plan: `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md`
 
@@ -398,7 +398,7 @@ Exit conditions:
 
 Class: capability/polish/invariant
 
-Status: blocked on M001-M005
+Status: ready
 
 Plan: `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md`
 
@@ -516,5 +516,5 @@ This roadmap closes only when:
 | M002 | closed | `plans/implementation/agent-run-worktree-concurrency/002-run-mailbox-journal-and-async-control.md` | `plans/closure/agent-run-worktree-concurrency/002-status.md` | — |
 | M003 | closed | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | `plans/closure/agent-run-worktree-concurrency/003-status.md` | — |
 | M004 | closed | `plans/implementation/agent-run-worktree-concurrency/004-isolated-mutation-and-structured-results.md` | `plans/closure/agent-run-worktree-concurrency/004-status.md` | — |
-| M005 | ready | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | — | — |
-| M006 | blocked | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | — | M001-M005 |
+| M005 | closed | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | `plans/closure/agent-run-worktree-concurrency/005-status.md` | — |
+| M006 | ready | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | — | — |
