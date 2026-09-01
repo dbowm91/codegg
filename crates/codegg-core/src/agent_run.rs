@@ -1005,23 +1005,59 @@ impl AgentRunStore for SqliteAgentRunStore {
                 created: false,
             });
         }
+        let mut parent_root_task = None;
         if let Some(parent) = task.parent_task_id.as_ref() {
-            let exists = sqlx::query("SELECT 1 FROM agent_task WHERE task_id = ?")
-                .bind(parent.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(storage_error)?
-                .is_some();
-            if !exists {
+            let parent_row = sqlx::query(
+                "SELECT workspace_id, session_id, root_task_id FROM agent_task WHERE task_id = ?",
+            )
+            .bind(parent.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .ok_or_else(|| {
+                AgentRunStoreError::InvalidRelation("parent task does not exist".into())
+            })?;
+            if parent_row.get::<String, _>("workspace_id") != task.workspace_id.as_str()
+                || parent_row.get::<String, _>("session_id") != task.originating_session_id
+            {
                 return Err(AgentRunStoreError::InvalidRelation(
-                    "parent task does not exist".into(),
+                    "parent task is outside the session/workspace scope".into(),
                 ));
             }
+            parent_root_task = Some(parse_task(parent_row.get("root_task_id"))?);
+        }
+        let mut parent_root_run = None;
+        if let Some(parent) = run.parent_run_id.as_ref() {
+            let parent_row = sqlx::query(
+                "SELECT task_id, workspace_id, root_run_id FROM agent_run WHERE run_id = ?",
+            )
+            .bind(parent.as_str())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(storage_error)?
+            .ok_or_else(|| {
+                AgentRunStoreError::InvalidRelation("parent run does not exist".into())
+            })?;
+            if parent_row.get::<String, _>("workspace_id") != run.workspace_id.as_str()
+                || task.parent_task_id.as_ref().map(AgentTaskId::as_str)
+                    != Some(parent_row.get::<String, _>("task_id").as_str())
+            {
+                return Err(AgentRunStoreError::InvalidRelation(
+                    "parent run/task relation is outside the declared scope".into(),
+                ));
+            }
+            parent_root_run = Some(parse_run(parent_row.get("root_run_id"))?);
         }
         let task_input = task.clone();
         let run_input = run.clone();
         let now = Utc::now().timestamp_millis();
-        let (task_record, run_record) = build_records(task, run, now);
+        let (mut task_record, mut run_record) = build_records(task, run, now);
+        if let Some(root_task_id) = parent_root_task {
+            task_record.root_task_id = root_task_id;
+        }
+        if let Some(root_run_id) = parent_root_run {
+            run_record.root_run_id = root_run_id;
+        }
         let budget = serde_json::to_string(&run_record.budget)
             .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
         let task_insert = sqlx::query("INSERT INTO agent_task (task_id, root_task_id, parent_task_id, session_id, turn_id, project_id, repository_id, workspace_id, requested_agent, delegation_key, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")

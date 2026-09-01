@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Milestone 002 — Run Mailbox, Journal, and Async Control
 
-Status: blocked
+Status: ready
 
 Repository baseline: `b08d33b7e52bde1bde1ddcddeeee3c7c157a4103`
 
