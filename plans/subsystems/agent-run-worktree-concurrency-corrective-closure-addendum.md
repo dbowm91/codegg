@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Corrective Closure Addendum
 
-Status: active — M007 implemented; closure pending; M008 blocked on M007 closure
+Status: active — M007 closed; M008 ready
 
 Repository baseline reviewed: `b87d1d5b65aca96c700deb27e579374b3d158545`
 
@@ -208,7 +208,7 @@ Plan:
 
 - `plans/implementation/agent-run-worktree-concurrency/007-durable-lineage-context-and-fanout-corrective-pass.md`
 
-Status: implemented; closure evidence pending.
+Status: closed; see `plans/closure/agent-run-worktree-concurrency/007-status.md`.
 
 Hard dependencies:
 
@@ -233,7 +233,7 @@ Plan:
 
 - `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md`
 
-Status: blocked on M007 strict closure.
+Status: ready.
 
 Exit conditions:
 

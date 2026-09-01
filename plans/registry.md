@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` | M007 implemented; closure pending | Post-M006 production-path audit superseded strict subsystem closure; M008 remains blocked until the M007 closure record is accepted. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` | M008 ready | M007 closure accepted; M008 owns call identity, authoritative projection depth, and strict final subsystem closure. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -45,10 +45,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
+| Agent runs, async delegation, and worktree concurrency | M008 — call identity, authoritative projection, and strict corrective closure | `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md` | M007 closure record is accepted; durable owner, lineage, depth, fan-out, worktree, and authorization prerequisites are established. |
 
 ## Closure work and dependencies
 
-Agent-run/worktree M001–M006 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. The M006 strict subsystem disposition is superseded by `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` after the post-closure production-path audit. M007 implementation is landed and its closure evidence is being recorded; M008 becomes ready only after M007 closure is accepted.
+Agent-run/worktree M001–M006 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. The M006 strict subsystem disposition is superseded by `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` after the post-closure production-path audit. M007 is now closed by `plans/closure/agent-run-worktree-concurrency/007-status.md`; M008 is ready for its independent corrective closure pass.
 
 Historical closed control points remain:
 
@@ -63,13 +64,9 @@ Verification remains deliberately light: the corrective workstream must use focu
 
 ## Blocked work
 
-The later agent-run/worktree corrective milestone is dependency-gated:
-
-| Milestone | Plan | Blocker |
-|---|---|---|
-| M008 — call identity, authoritative projection, and strict corrective closure | `plans/implementation/agent-run-worktree-concurrency/008-call-identity-projection-and-strict-closure.md` | M007 closure must establish correct root/run ownership, durable depth, nested context, fan-out, and control authorization first. |
-
-These are planning dependencies, not external blockers. No unrelated previously closed subsystem is reopened.
+No registered agent-run/worktree corrective plan remains blocked after M007
+closure. M008 is ready and remains the active subsystem milestone. No
+unrelated previously closed subsystem is reopened.
 
 ## Agent-runtime correctness execution order
 
@@ -116,6 +113,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Agent runs, async delegation, and worktree concurrency | M004 — isolated mutation and structured results | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/004-status.md`; implementation commit `37b9cc9c`; core isolation/result machinery remains accepted while nested production wiring is re-verified. |
 | Agent runs, async delegation, and worktree concurrency | M005 — run groups and background joins | closed historical evidence; capability disposition superseded | `plans/closure/agent-run-worktree-concurrency/005-status.md`; group service/store landed, but root/nested owner reachability is now owned by M007. |
 | Agent runs, async delegation, and worktree concurrency | M006 — projection compatibility and closure | historical closed record; strict subsystem disposition superseded | `plans/closure/agent-run-worktree-concurrency/006-status.md`; post-closure audit found owner/lineage/idempotency/projection defects, now owned by M007/M008. |
+| Agent runs, async delegation, and worktree concurrency | M007 — durable lineage, owner context, fan-out, and authorization corrective pass | closed | `plans/closure/agent-run-worktree-concurrency/007-status.md`; implementation `4863765a`; M008 is promoted to ready. |
 | Agent runtime, model adaptation, and ACP | M017 — corrective integration evidence and closure | closed | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
