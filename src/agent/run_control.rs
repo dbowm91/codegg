@@ -66,6 +66,7 @@ pub struct RunControlService {
     controls: Arc<dyn AgentRunControlStore>,
     live: Mutex<HashMap<AgentRunId, LiveRunHandle>>,
     scheduler: Mutex<Option<Arc<crate::scheduler::JobScheduler>>>,
+    groups: Mutex<Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>>,
 }
 
 impl RunControlService {
@@ -75,6 +76,7 @@ impl RunControlService {
             controls: Arc::new(InMemoryAgentRunControlStore::new()),
             live: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
+            groups: Mutex::new(None),
         })
     }
 
@@ -84,6 +86,7 @@ impl RunControlService {
             controls: Arc::new(SqliteAgentRunControlStore::new(pool)),
             live: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
+            groups: Mutex::new(None),
         })
     }
 
@@ -96,6 +99,7 @@ impl RunControlService {
             controls,
             live: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
+            groups: Mutex::new(None),
         })
     }
 
@@ -110,6 +114,22 @@ impl RunControlService {
     pub fn set_scheduler_sync(&self, scheduler: Arc<crate::scheduler::JobScheduler>) {
         if let Ok(mut slot) = self.scheduler.try_lock() {
             *slot = Some(scheduler);
+        }
+    }
+
+    pub async fn set_group_service(
+        &self,
+        service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
+    ) {
+        *self.groups.lock().await = Some(service);
+    }
+
+    pub fn set_group_service_sync(
+        &self,
+        service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
+    ) {
+        if let Ok(mut slot) = self.groups.try_lock() {
+            *slot = Some(service);
         }
     }
 
@@ -348,6 +368,36 @@ impl RunControlService {
                     bounded(summary, MAX_NOTIFICATION_BYTES)
                 );
                 let _ = handle.follow_up_tx.try_send(notice);
+            }
+        }
+        if let Some(groups) = self.groups.lock().await.clone() {
+            match groups.member_changed(&run_id).await {
+                Ok(summaries) => {
+                    for summary in summaries {
+                        if summary.group.status.is_terminal() {
+                            if let Some(handle) = self
+                                .live
+                                .lock()
+                                .await
+                                .get(&summary.group.owner_run_id)
+                                .cloned()
+                            {
+                                let notice = format!(
+                                    "Run group {} finished with status {}: {}/{} successful, {} failed.",
+                                    summary.group.group_id,
+                                    summary.group.status.as_str(),
+                                    summary.successful,
+                                    summary.members.len(),
+                                    summary.failed,
+                                );
+                                let _ = handle.follow_up_tx.try_send(notice);
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(run_id = %run_id, %error, "failed to recompute run groups");
+                }
             }
         }
         Ok(())

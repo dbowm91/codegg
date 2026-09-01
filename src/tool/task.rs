@@ -14,7 +14,11 @@ use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
-use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId, RepositoryId};
+use codegg_core::agent_run_group::{
+    AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup, RunJoinPolicy,
+    MAX_GROUP_MEMBERS,
+};
+use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -388,6 +392,7 @@ pub struct TaskTool {
     parent_turn_id: Option<String>,
     run_control: Option<Arc<RunControlService>>,
     parent_run_id: Option<AgentRunId>,
+    run_groups: Option<Arc<AgentRunGroupService>>,
 }
 
 fn format_control_outcome(outcome: ControlOutcome) -> String {
@@ -445,6 +450,7 @@ impl TaskTool {
             parent_turn_id: None,
             run_control: None,
             parent_run_id: None,
+            run_groups: None,
         }
     }
 
@@ -469,6 +475,7 @@ impl TaskTool {
             parent_turn_id: None,
             run_control: None,
             parent_run_id: None,
+            run_groups: None,
         }
     }
 
@@ -509,6 +516,11 @@ impl TaskTool {
 
     pub fn with_parent_run_id(mut self, run_id: Option<AgentRunId>) -> Self {
         self.parent_run_id = run_id;
+        self
+    }
+
+    pub fn with_run_group_service(mut self, service: Option<Arc<AgentRunGroupService>>) -> Self {
+        self.run_groups = service;
         self
     }
 
@@ -562,7 +574,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -571,8 +583,8 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: spawn, status (get alias), message, interrupt, wait, or cancel",
-                    "enum": ["spawn", "status", "get", "message", "interrupt", "wait", "cancel"]
+                    "description": "Action: spawn, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group",
+                    "enum": ["spawn", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group"]
                 },
                 "description": {
                     "type": "string",
@@ -609,6 +621,31 @@ impl Tool for TaskTool {
                 "timeout_ms": {
                     "type": "integer",
                     "description": "Bounded wait timeout in milliseconds"
+                },
+                "requests": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "description": "Bounded child requests for action=spawn_many. Each item has description, prompt, optional agent, and optional allowed_paths.",
+                    "items": { "type": "object" }
+                },
+                "member_run_ids": {
+                    "type": "array",
+                    "maxItems": 16,
+                    "items": { "type": "string" },
+                    "description": "Accepted direct child AgentRunIds for action=create_group or spawn_many"
+                },
+                "group_id": {
+                    "type": "string",
+                    "description": "Durable AgentRunGroupId for group actions"
+                },
+                "join_policy": {
+                    "type": "string",
+                    "enum": ["all", "any_successful", "first_completed", "detached"],
+                    "description": "Deterministic group join policy"
+                },
+                "cancel_remaining_on_satisfaction": {
+                    "type": "boolean",
+                    "description": "For any_successful or first_completed, persist whether active siblings are cancelled after satisfaction"
                 }
             },
             "required": ["action"]
@@ -625,6 +662,159 @@ impl Tool for TaskTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
+
+        if matches!(
+            action,
+            "spawn_many" | "create_group" | "status_group" | "wait_group" | "cancel_group"
+        ) {
+            let Some(groups) = self.run_groups.clone() else {
+                return Err(ToolError::Execution(
+                    "durable run groups are unavailable".into(),
+                ));
+            };
+            let Some(owner_run_id) = self.parent_run_id.clone() else {
+                return Err(ToolError::Execution(
+                    "group actions require a durable parent run".into(),
+                ));
+            };
+            let actor = GroupActor {
+                run_id: Some(owner_run_id.clone()),
+                session_id: self.parent_session_id.clone(),
+            };
+            if matches!(action, "spawn_many" | "create_group") {
+                let (accepted, rejected) = if action == "spawn_many" {
+                    let requests = input["requests"].as_array().ok_or_else(|| {
+                        ToolError::Execution("spawn_many requires a requests array".into())
+                    })?;
+                    if requests.is_empty() || requests.len() > MAX_GROUP_MEMBERS {
+                        return Err(ToolError::Execution(format!(
+                            "spawn_many requires 1 to {MAX_GROUP_MEMBERS} requests"
+                        )));
+                    }
+                    let mut accepted = Vec::with_capacity(requests.len());
+                    let mut rejected = Vec::new();
+                    for request in requests {
+                        let mut child = request.clone();
+                        let object = child.as_object_mut().ok_or_else(|| {
+                            ToolError::Execution("each spawn_many request must be an object".into())
+                        })?;
+                        object.insert("action".into(), serde_json::Value::String("spawn".into()));
+                        match self.execute(child).await {
+                            Ok(output) => {
+                                if let Some(run_id) = output.lines().find_map(|line| {
+                                    line.strip_prefix("Run: ")
+                                        .and_then(|value| AgentRunId::parse(value.trim()).ok())
+                                }) {
+                                    accepted.push(run_id);
+                                } else {
+                                    rejected.push(
+                                        "child did not return a durable run handle".to_string(),
+                                    );
+                                }
+                            }
+                            Err(error) => rejected.push(error.to_string()),
+                        }
+                    }
+                    (accepted, rejected)
+                } else {
+                    let values = input["member_run_ids"].as_array().ok_or_else(|| {
+                        ToolError::Execution("create_group requires a member_run_ids array".into())
+                    })?;
+                    if values.is_empty() || values.len() > MAX_GROUP_MEMBERS {
+                        return Err(ToolError::Execution(format!(
+                            "create_group requires 1 to {MAX_GROUP_MEMBERS} member_run_ids"
+                        )));
+                    }
+                    let mut accepted = Vec::with_capacity(values.len());
+                    for value in values {
+                        let raw = value.as_str().ok_or_else(|| {
+                            ToolError::Execution("member_run_ids must contain strings".into())
+                        })?;
+                        accepted.push(AgentRunId::parse(raw).map_err(|error| {
+                            ToolError::Execution(format!("invalid member run_id: {error}"))
+                        })?);
+                    }
+                    (accepted, Vec::new())
+                };
+                if accepted.is_empty() {
+                    return Err(ToolError::Execution(format!(
+                        "spawn_many accepted no children: {}",
+                        rejected.join("; ")
+                    )));
+                }
+                let policy = parse_join_policy(input["join_policy"].as_str().unwrap_or("all"))?;
+                let group_id = input["group_id"]
+                    .as_str()
+                    .map(AgentRunGroupId::parse)
+                    .transpose()
+                    .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?
+                    .unwrap_or_else(AgentRunGroupId::new);
+                let key = input["idempotency_key"]
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| {
+                        let canonical = serde_json::to_string(&input).unwrap_or_default();
+                        format!(
+                            "group:{}:{:x}",
+                            owner_run_id,
+                            Sha256::digest(canonical.as_bytes())
+                        )
+                    });
+                let root_run_id = self
+                    .agent_runs
+                    .as_ref()
+                    .ok_or_else(|| {
+                        ToolError::Execution("spawn_many requires a durable run store".into())
+                    })?
+                    .get_run(&owner_run_id)
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?
+                    .ok_or_else(|| ToolError::Execution("parent run no longer exists".into()))?
+                    .root_run_id;
+                let summary = groups
+                    .create(NewAgentRunGroup {
+                        group_id,
+                        root_run_id,
+                        owner_run_id: owner_run_id.clone(),
+                        member_run_ids: accepted,
+                        join_policy: policy,
+                        cancel_remaining_on_satisfaction: input["cancel_remaining_on_satisfaction"]
+                            .as_bool()
+                            .unwrap_or(false),
+                        idempotency_key: key,
+                    })
+                    .await
+                    .map_err(|error| ToolError::Execution(error.to_string()))?;
+                return Ok(format_group_summary(
+                    &summary,
+                    !rejected.is_empty(),
+                    &rejected,
+                ));
+            }
+            let raw_group_id = input["group_id"]
+                .as_str()
+                .ok_or_else(|| ToolError::Execution("group action requires a group_id".into()))?;
+            let group_id = AgentRunGroupId::parse(raw_group_id)
+                .map_err(|e| ToolError::Execution(format!("invalid group_id: {e}")))?;
+            let result = match action {
+                "status_group" => groups.status(&actor, group_id).await,
+                "wait_group" => {
+                    let timeout = input["timeout_ms"].as_u64().unwrap_or(1000).min(30_000);
+                    groups
+                        .wait(&actor, group_id, std::time::Duration::from_millis(timeout))
+                        .await
+                }
+                "cancel_group" => groups.cancel(&actor, group_id).await,
+                _ => unreachable!(),
+            };
+            return match result {
+                Ok(summary) => Ok(format_group_summary(&summary, false, &[])),
+                Err(codegg_core::agent_run_group::AgentRunGroupError::WaitTimedOut(summary)) => {
+                    Ok(format_group_summary(&summary, true, &[]))
+                }
+                Err(error) => Err(ToolError::Execution(error.to_string())),
+            };
+        }
 
         if matches!(
             action,
@@ -1072,6 +1262,59 @@ impl Tool for TaskTool {
             }
         }
     }
+}
+
+fn parse_join_policy(value: &str) -> Result<RunJoinPolicy, ToolError> {
+    match value {
+        "all" => Ok(RunJoinPolicy::All),
+        "any_successful" => Ok(RunJoinPolicy::AnySuccessful),
+        "first_completed" => Ok(RunJoinPolicy::FirstCompleted),
+        "detached" => Ok(RunJoinPolicy::Detached),
+        other => Err(ToolError::Execution(format!(
+            "unknown join_policy '{other}'"
+        ))),
+    }
+}
+
+fn format_group_summary(
+    summary: &AgentRunGroupSummary,
+    timed_out: bool,
+    rejected: &[String],
+) -> String {
+    let mut lines = vec![
+        format!("Group: {}", summary.group.group_id),
+        format!("Status: {}", summary.group.status.as_str()),
+        format!("Policy: {}", summary.group.join_policy.as_str()),
+        format!(
+            "Members: {} (successful {}, failed {}, active {})",
+            summary.members.len(),
+            summary.successful,
+            summary.failed,
+            summary.active
+        ),
+    ];
+    if timed_out {
+        lines.push("Timed out: true (group remains active)".into());
+    }
+    if let Some(winner) = &summary.group.winner_run_id {
+        lines.push(format!("Winner: {winner}"));
+    }
+    for member in &summary.members {
+        lines.push(format!(
+            "- {}: {}{}",
+            member.run_id,
+            member.status.as_str(),
+            member
+                .result_ref
+                .as_deref()
+                .map(|value| format!(", result {value}"))
+                .unwrap_or_default()
+        ));
+    }
+    if !rejected.is_empty() {
+        lines.push(format!("Rejected children: {}", rejected.len()));
+    }
+    lines.join("\n")
 }
 
 fn delegation_key(

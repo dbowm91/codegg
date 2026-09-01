@@ -130,6 +130,7 @@ pub struct TurnRunInput {
     /// scheduler's subagent executor.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
     pub run_control: Arc<crate::agent::run_control::RunControlService>,
+    pub run_group_service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
     pub project_id: Option<codegg_core::identity::ProjectId>,
     pub repository_id: Option<codegg_core::identity::RepositoryId>,
     /// Immutable runtime-asset snapshot captured before this turn starts.
@@ -200,6 +201,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             submission,
             agent_run_store,
             run_control,
+            run_group_service,
             project_id,
             repository_id,
             asset_snapshot,
@@ -251,6 +253,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 submission: submission.clone(),
                 agent_run_store: Some(agent_run_store.clone()),
                 run_control: Some(run_control.clone()),
+                run_group_service: Some(run_group_service.clone()),
                 project_id,
                 repository_id,
                 turn_id: Some(turn_id.clone()),

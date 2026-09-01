@@ -416,6 +416,14 @@ comprehensive runtime test suite:
 
 ### Startup recovery
 
+Run groups are coordination records over scheduler-owned jobs/runs. Each
+member is queued and resource-admitted independently, so a group never
+reserves a complete width of scheduler capacity and cannot deadlock other
+work. Group status is recomputed from durable member state after restart;
+terminal members are never respawned. Eligible long-running tools may return
+their existing durable job ID as a background handle. Ordinary direct and
+parallel tool calls remain turn-local.
+
 `JobScheduler::recover_at_startup` is called once at daemon startup.
 It delegates to `JobStore::recover_generation`, which marks stale
 attempts as `Interrupted` and requeues eligible jobs based on the

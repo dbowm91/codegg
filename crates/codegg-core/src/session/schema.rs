@@ -142,6 +142,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 40 {
         migrate_and_record(pool, 40).await?;
     }
+    if current_version < 41 {
+        migrate_and_record(pool, 41).await?;
+    }
 
     Ok(())
 }
@@ -194,6 +197,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             38 => migrate_v38(pool).await?,
             39 => migrate_v39(pool).await?,
             40 => migrate_v40(pool).await?,
+            41 => migrate_v41(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1976,6 +1980,46 @@ async fn migrate_v40(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
         "CREATE INDEX IF NOT EXISTS idx_agent_run_result_updated ON agent_run_result(updated_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M005: durable bounded run-group membership and join state.
+async fn migrate_v41(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_group (
+            group_id TEXT PRIMARY KEY,
+            root_run_id TEXT NOT NULL,
+            owner_run_id TEXT NOT NULL,
+            join_policy TEXT NOT NULL CHECK (join_policy IN ('all','any_successful','first_completed','detached')),
+            cancel_remaining INTEGER NOT NULL DEFAULT 0 CHECK (cancel_remaining IN (0,1)),
+            status TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','cancelled')),
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            winner_run_id TEXT,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            notification_claimed INTEGER NOT NULL DEFAULT 0 CHECK (notification_claimed IN (0,1))
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_group_member (
+            group_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < 16),
+            run_id TEXT NOT NULL,
+            PRIMARY KEY (group_id, ordinal),
+            UNIQUE (group_id, run_id),
+            FOREIGN KEY (group_id) REFERENCES agent_run_group(group_id) ON DELETE CASCADE,
+            FOREIGN KEY (run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_group_owner ON agent_run_group(owner_run_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_group_member_run ON agent_run_group_member(run_id)",
     ] {
         sqlx::query(statement)
             .execute(pool)

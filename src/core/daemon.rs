@@ -2577,6 +2577,7 @@ impl CoreDaemon {
                     submission: self.deps.submission.clone(),
                     agent_run_store: self.deps.agent_run_store.clone(),
                     run_control: self.deps.run_control.clone(),
+                    run_group_service: self.deps.run_group_service.clone(),
                     project_id: codegg_core::identity::ProjectId::parse(&runtime.project_id).ok(),
                     repository_id: None,
                     asset_snapshot,

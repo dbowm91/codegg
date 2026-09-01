@@ -246,6 +246,11 @@ typed_identity!(
     "agent_run_id"
 );
 typed_identity!(
+    /// Stable identity for a bounded group of related agent runs.
+    AgentRunGroupId,
+    "agent_run_group_id"
+);
+typed_identity!(
     /// Stable identity for a task within an agent execution.
     AgentTaskId,
     "agent_task_id"

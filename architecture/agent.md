@@ -371,6 +371,20 @@ Uses `BTreeMap` for deterministic iteration order.
 
 ## Invariants & Gotchas
 
+### Bounded run groups
+
+`codegg_core::agent_run_group::AgentRunGroupService` coordinates at most 16
+already-accepted direct child runs. Members are admitted independently by the
+single scheduler; a group is not a workflow engine or a second resource
+authority. `all` collects every terminal member, `any_successful` completes on
+the first successful member, `first_completed` uses member order as the
+deterministic tie-break, and `detached` returns after durable acceptance while
+the group remains observable until all members finish. Cancellation is an
+explicit persisted option for the `any_successful` and `first_completed`
+policies. `spawn_many`, `status_group`, `wait_group`, and `cancel_group` are
+bounded additions to the existing task tool; single `spawn` remains the
+normal path.
+
 - **Singleton daemon**: Exactly one daemon per OS user. `AgentLoop` runs
   inside the daemon; it does not hold the daemon lock itself.
 - **Workspace root is immutable**: `workspace_root` is captured at

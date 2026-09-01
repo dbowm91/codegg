@@ -59,6 +59,8 @@ pub struct CoreRuntimeDeps {
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
     /// Durable mailbox/journal bridge for delegated-run controls.
     pub run_control: Arc<crate::agent::run_control::RunControlService>,
+    /// Durable bounded run-group coordination over the canonical run store.
+    pub run_group_service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
@@ -116,6 +118,7 @@ impl Clone for CoreRuntimeDeps {
             legacy_agent: self.legacy_agent.clone(),
             agent_run_store: Arc::clone(&self.agent_run_store),
             run_control: Arc::clone(&self.run_control),
+            run_group_service: Arc::clone(&self.run_group_service),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
@@ -147,12 +150,16 @@ impl CoreRuntimeDeps {
             Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
         let run_control =
             crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
+        let run_group_service =
+            codegg_core::agent_run_group::AgentRunGroupService::in_memory(agent_run_store.clone());
+        run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool,
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             agent_run_store,
             run_control,
+            run_group_service,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -185,12 +192,16 @@ impl CoreRuntimeDeps {
             Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
         let run_control =
             crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
+        let run_group_service =
+            codegg_core::agent_run_group::AgentRunGroupService::in_memory(agent_run_store.clone());
+        run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool,
             memory_store,
             legacy_agent,
             agent_run_store,
             run_control,
+            run_group_service,
             turn_runtime,
             lsp_service: None,
             workspace_services: None,
@@ -231,12 +242,18 @@ impl CoreRuntimeDeps {
             agent_run_store.clone(),
             pool.clone(),
         );
+        let run_group_service = codegg_core::agent_run_group::AgentRunGroupService::with_pool(
+            agent_run_store.clone(),
+            pool.clone(),
+        );
+        run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool: Some(pool.clone()),
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             agent_run_store: agent_run_store.clone(),
             run_control,
+            run_group_service,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,

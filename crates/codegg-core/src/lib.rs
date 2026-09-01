@@ -2,6 +2,7 @@
 
 pub mod agent_run;
 pub mod agent_run_control;
+pub mod agent_run_group;
 pub mod bus;
 pub mod context;
 pub mod error;

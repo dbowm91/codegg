@@ -488,3 +488,14 @@ cargo test --test tool_program_scenario             # scenario tests
 - `architecture/tool_broker.md` — Tool Broker pipeline
 - `architecture/tool_program_language.md` — Restricted-Python language spec
 - `architecture/tool.md` — Tool trait and registry
+## Run groups and background execution
+
+Tool Programs remain the deterministic programmatic tool-loop authority: they
+compile restricted Python to verified IR and use their own bounded result and
+notification records. A run group is different coordination over independent
+agent runs and must not be used to replace the Tool Program interpreter.
+Tool Program background mode returns the durable scheduler job/program handle
+and notifies the owning session on terminal completion; it does not create an
+agent-run group or an unowned task. Use ordinary direct/parallel tools for
+short turn-local work, Tool Programs for bounded deterministic tool loops, and
+run groups only for independent delegated agent lifetimes.
