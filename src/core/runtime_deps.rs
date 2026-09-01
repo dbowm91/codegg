@@ -41,6 +41,8 @@ pub struct CoreRuntimeDeps {
     pub legacy_agent: LegacyAgentRuntimeDeps,
     /// Canonical durable ownership store for delegated agent tasks/runs.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    /// Durable mailbox/journal bridge for delegated-run controls.
+    pub run_control: Arc<crate::agent::run_control::RunControlService>,
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
@@ -95,6 +97,7 @@ impl Clone for CoreRuntimeDeps {
             memory_store: self.memory_store.clone(),
             legacy_agent: self.legacy_agent.clone(),
             agent_run_store: Arc::clone(&self.agent_run_store),
+            run_control: Arc::clone(&self.run_control),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
@@ -123,11 +126,14 @@ impl CoreRuntimeDeps {
             Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
         let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> =
             Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run_control =
+            crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
         Self {
             pool,
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             agent_run_store,
+            run_control,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -154,11 +160,14 @@ impl CoreRuntimeDeps {
             Arc::new(InMemoryScheduleStore::new(Arc::clone(&job_store)));
         let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> =
             Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run_control =
+            crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
         Self {
             pool,
             memory_store,
             legacy_agent,
             agent_run_store,
+            run_control,
             turn_runtime,
             lsp_service: None,
             workspace_services: None,
@@ -191,11 +200,16 @@ impl CoreRuntimeDeps {
         let agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore> = Arc::new(
             codegg_core::agent_run::SqliteAgentRunStore::new(pool.clone()),
         );
+        let run_control = crate::agent::run_control::RunControlService::with_pool(
+            agent_run_store.clone(),
+            pool.clone(),
+        );
         Self {
             pool: Some(pool),
             memory_store,
             legacy_agent: LegacyAgentRuntimeDeps { subagent_pool },
             agent_run_store,
+            run_control,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -251,6 +265,14 @@ impl CoreRuntimeDeps {
         submission: Arc<crate::scheduler::JobSubmissionService>,
     ) -> Self {
         self.submission = Some(submission);
+        self
+    }
+
+    pub fn with_run_control(
+        mut self,
+        run_control: Arc<crate::agent::run_control::RunControlService>,
+    ) -> Self {
+        self.run_control = run_control;
         self
     }
 

@@ -297,7 +297,7 @@ Counts below were re-verified against the current tree (see source column).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (52, STORAGE_LAYOUT_VERSION = 36)                          │
+│ Tables (54, STORAGE_LAYOUT_VERSION = 38)                          │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │

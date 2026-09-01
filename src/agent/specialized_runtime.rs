@@ -106,9 +106,11 @@ pub async fn coordinate_research(
             .await;
         let request = SubAgentRequest {
             task_id,
+            run_id: None,
             prompt: child_prompt(task),
             agent: "general".into(),
             parent_id: Some(session_id.into()),
+            parent_run_id: None,
             denied_tools: vec![
                 "apply_patch".into(),
                 "write_file".into(),

@@ -330,7 +330,7 @@ workspace.
 - [`architecture/workspace.md`](workspace.md) — Phase 2 workspace
   identity, `WorkspaceRegistry`, `ExecutionContext`, and path policy.
 - [`architecture/storage.md`](storage.md) — Storage layout and migration
-  index (now `STORAGE_LAYOUT_VERSION = 36`).
+  index (now `STORAGE_LAYOUT_VERSION = 38`).
 - [`architecture/run_store.md`](run_store.md) — `RunStore` and
   `RunManifest` semantics used by the bundle.
 - [`architecture/protocol.md`](protocol.md) — Phase 3 protocol variants

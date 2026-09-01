@@ -129,6 +129,7 @@ pub struct TurnRunInput {
     /// Durable ownership store shared by daemon TaskTool instances and the
     /// scheduler's subagent executor.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    pub run_control: Arc<crate::agent::run_control::RunControlService>,
     pub project_id: Option<codegg_core::identity::ProjectId>,
     pub repository_id: Option<codegg_core::identity::RepositoryId>,
     /// Immutable runtime-asset snapshot captured before this turn starts.
@@ -198,6 +199,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             execution,
             submission,
             agent_run_store,
+            run_control,
             project_id,
             repository_id,
             asset_snapshot,
@@ -248,6 +250,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             crate::tool::factory::SessionToolContext {
                 submission: submission.clone(),
                 agent_run_store: Some(agent_run_store.clone()),
+                run_control: Some(run_control.clone()),
                 project_id,
                 repository_id,
                 turn_id: Some(turn_id.clone()),

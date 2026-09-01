@@ -133,6 +133,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 37 {
         migrate_and_record(pool, 37).await?;
     }
+    if current_version < 38 {
+        migrate_and_record(pool, 38).await?;
+    }
 
     Ok(())
 }
@@ -182,6 +185,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             35 => migrate_v35(pool).await?,
             36 => migrate_v36(pool).await?,
             37 => migrate_v37(pool).await?,
+            38 => migrate_v38(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -1836,6 +1840,56 @@ async fn migrate_v37(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_job ON agent_run(job_id)",
         "CREATE INDEX IF NOT EXISTS idx_agent_run_attempt ON agent_run(attempt_id)",
         "CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run(status, updated_at)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M002: ordered delegated-run control mailbox and bounded stable journal.
+async fn migrate_v38(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_mailbox (
+            message_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            sender_run_id TEXT,
+            kind TEXT NOT NULL CHECK(kind IN ('message','interrupt','cancel')),
+            payload TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('queued','delivered','acknowledged','superseded')),
+            idempotency_key TEXT NOT NULL,
+            causation_id TEXT,
+            created_at INTEGER NOT NULL,
+            delivered_at INTEGER,
+            acknowledged_at INTEGER,
+            FOREIGN KEY(run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE,
+            UNIQUE(run_id, sequence),
+            UNIQUE(run_id, idempotency_key),
+            CHECK(length(payload) <= 8192)
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_run_journal (
+            event_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            causation_id TEXT,
+            correlation_id TEXT,
+            metadata_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY(run_id) REFERENCES agent_run(run_id) ON DELETE CASCADE,
+            UNIQUE(run_id, sequence),
+            CHECK(length(metadata_json) <= 4096)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_mailbox_pending ON agent_run_mailbox(run_id, state, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_mailbox_created ON agent_run_mailbox(run_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_run_journal_recent ON agent_run_journal(run_id, sequence)",
     ] {
         sqlx::query(statement)
             .execute(pool)

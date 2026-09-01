@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+use crate::agent::run_control::{ControlActor, ControlOutcome, RunControlService};
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
+use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::identity::{AgentRunId, AgentTaskId, ProjectId, RepositoryId};
 use sha2::{Digest, Sha256};
 
@@ -384,6 +386,40 @@ pub struct TaskTool {
     project_id: Option<ProjectId>,
     repository_id: Option<RepositoryId>,
     parent_turn_id: Option<String>,
+    run_control: Option<Arc<RunControlService>>,
+    parent_run_id: Option<AgentRunId>,
+}
+
+fn format_control_outcome(outcome: ControlOutcome) -> String {
+    match outcome {
+        ControlOutcome::Queued(message) => format!(
+            "Control queued\nRun: {}\nKind: {}\nSequence: {}\nState: {}",
+            message.run_id,
+            message.kind.as_str(),
+            message.sequence,
+            match message.state {
+                codegg_core::agent_run_control::MailboxState::Queued => "queued",
+                codegg_core::agent_run_control::MailboxState::Delivered => "delivered",
+                codegg_core::agent_run_control::MailboxState::Acknowledged => "acknowledged",
+                codegg_core::agent_run_control::MailboxState::Superseded => "superseded",
+            }
+        ),
+        ControlOutcome::Terminal(status) => format!("Run is terminal: {}", status.as_str()),
+        ControlOutcome::Status(run) => format!(
+            "Run: {}\nStatus: {}\nTask: {}\nResult: {}",
+            run.run_id,
+            run.status.as_str(),
+            run.task_id,
+            run.result_ref.unwrap_or_default()
+        ),
+        ControlOutcome::Wait { run, timed_out } => format!(
+            "Run: {}\nStatus: {}\nTimed out: {}\nResult: {}",
+            run.run_id,
+            run.status.as_str(),
+            timed_out,
+            run.result_ref.unwrap_or_default()
+        ),
+    }
 }
 
 impl TaskTool {
@@ -407,6 +443,8 @@ impl TaskTool {
             project_id: None,
             repository_id: None,
             parent_turn_id: None,
+            run_control: None,
+            parent_run_id: None,
         }
     }
 
@@ -429,6 +467,8 @@ impl TaskTool {
             project_id: None,
             repository_id: None,
             parent_turn_id: None,
+            run_control: None,
+            parent_run_id: None,
         }
     }
 
@@ -459,6 +499,16 @@ impl TaskTool {
 
     pub fn with_agent_run_store_opt(mut self, store: Option<Arc<dyn AgentRunStore>>) -> Self {
         self.agent_runs = store;
+        self
+    }
+
+    pub fn with_run_control_opt(mut self, service: Option<Arc<RunControlService>>) -> Self {
+        self.run_control = service;
+        self
+    }
+
+    pub fn with_parent_run_id(mut self, run_id: Option<AgentRunId>) -> Self {
+        self.parent_run_id = run_id;
         self
     }
 
@@ -521,8 +571,8 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action to perform: 'spawn' (default) to spawn a subagent, 'get' to retrieve task results",
-                    "enum": ["spawn", "get"]
+                    "description": "Action: spawn, status (get alias), message, interrupt, wait, or cancel",
+                    "enum": ["spawn", "status", "get", "message", "interrupt", "wait", "cancel"]
                 },
                 "description": {
                     "type": "string",
@@ -542,7 +592,23 @@ impl Tool for TaskTool {
                     "description": "List of directories the subagent is allowed to access (action=spawn)"
                 },
                 "task_id": {
-                    "description": "Durable AgentTaskId or legacy numeric task ID to retrieve (action=get)"
+                    "description": "Durable AgentTaskId or legacy numeric task ID"
+                },
+                "run_id": {
+                    "type": "string",
+                    "description": "Durable AgentRunId for control/status/wait"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Bounded control message (action=message)"
+                },
+                "idempotency_key": {
+                    "type": "string",
+                    "description": "Stable retry key for a control operation"
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Bounded wait timeout in milliseconds"
                 }
             },
             "required": ["action"]
@@ -559,6 +625,51 @@ impl Tool for TaskTool {
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
+
+        if matches!(
+            action,
+            "status" | "message" | "interrupt" | "wait" | "cancel"
+        ) {
+            let Some(control) = self.run_control.clone() else {
+                return Err(ToolError::Execution(
+                    "durable run control is unavailable".into(),
+                ));
+            };
+            let raw_run_id = input["run_id"]
+                .as_str()
+                .ok_or_else(|| ToolError::Execution("missing 'run_id' parameter".into()))?;
+            let run_id = AgentRunId::parse(raw_run_id)
+                .map_err(|e| ToolError::Execution(format!("invalid run_id: {e}")))?;
+            let actor = ControlActor {
+                session_id: self.parent_session_id.clone(),
+                run_id: self.parent_run_id.clone(),
+            };
+            let outcome = match action {
+                "status" => control.status(&actor, run_id).await,
+                "wait" => {
+                    let timeout = input["timeout_ms"].as_u64().unwrap_or(1000).min(30_000);
+                    control
+                        .wait(&actor, run_id, std::time::Duration::from_millis(timeout))
+                        .await
+                }
+                "message" | "interrupt" | "cancel" => {
+                    let kind = match action {
+                        "message" => AgentRunControlKind::Message,
+                        "interrupt" => AgentRunControlKind::Interrupt,
+                        _ => AgentRunControlKind::Cancel,
+                    };
+                    let payload = input["message"].as_str().unwrap_or_default().to_string();
+                    let key = input["idempotency_key"]
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("{}:{}", action, raw_run_id));
+                    control.send(&actor, run_id, kind, payload, key).await
+                }
+                _ => unreachable!(),
+            }
+            .map_err(|e| ToolError::Execution(e.to_string()))?;
+            return Ok(format_control_outcome(outcome));
+        }
 
         if action == "get" {
             if let (Some(raw_id), Some(agent_runs)) =
@@ -672,7 +783,18 @@ impl Tool for TaskTool {
                         .create_or_get(
                             NewAgentTask {
                                 task_id: AgentTaskId::new(),
-                                parent_task_id: None,
+                                parent_task_id: if let Some(parent_run_id) =
+                                    self.parent_run_id.as_ref()
+                                {
+                                    agent_runs
+                                        .get_run(parent_run_id)
+                                        .await
+                                        .ok()
+                                        .flatten()
+                                        .map(|run| run.task_id)
+                                } else {
+                                    None
+                                },
                                 originating_session_id: self
                                     .parent_session_id
                                     .clone()
@@ -687,7 +809,7 @@ impl Tool for TaskTool {
                             },
                             NewAgentRun {
                                 run_id: AgentRunId::new(),
-                                parent_run_id: None,
+                                parent_run_id: self.parent_run_id.clone(),
                                 workspace_id: workspace_id.clone(),
                                 agent_name: agent.clone(),
                                 agent_digest: None,
@@ -699,6 +821,20 @@ impl Tool for TaskTool {
                         )
                         .await
                         .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    if created.created {
+                        if let Some(control) = self.run_control.as_ref() {
+                            control
+                                .append(
+                                    created.run.run_id.clone(),
+                                    codegg_core::agent_run_control::AgentRunJournalEventKind::RunCreated,
+                                    None,
+                                    None,
+                                    [("task_id".into(), created.task.task_id.to_string())],
+                                )
+                                .await
+                                .map_err(|e| ToolError::Execution(e.to_string()))?;
+                        }
+                    }
                     if created.run.job_id.is_some() || created.run.status.is_terminal() {
                         return Ok(format!(
                             "Task status\nTask: {}\nRun: {}\nStatus: {}",
@@ -714,6 +850,18 @@ impl Tool for TaskTool {
                         )
                         .await
                         .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    if let Some(control) = self.run_control.as_ref() {
+                        control
+                            .append(
+                                created.run.run_id.clone(),
+                                codegg_core::agent_run_control::AgentRunJournalEventKind::RunQueued,
+                                None,
+                                None,
+                                [],
+                            )
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?;
+                    }
                     agent_runs
                         .transition(
                             &created.run.run_id,
@@ -875,10 +1023,12 @@ impl Tool for TaskTool {
             if let Some(ref spawner) = self.spawner {
                 let req = SubAgentRequest {
                     task_id,
+                    run_id: None,
                     description: description.clone(),
                     prompt,
                     agent,
                     parent_id: self.parent_session_id.clone(),
+                    parent_run_id: self.parent_run_id.clone(),
                     denied_tools,
                     allowed_paths,
                     depth: self.depth + 1,

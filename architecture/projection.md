@@ -18,6 +18,12 @@ filesystem, or provider calls. All frontends (local TUI, remote TUI,
 observer clients, ACP adapters) consume the same logical session
 model rather than re-implementing event interpretation per frontend.
 
+Delegated-run mailbox and journal records are authoritative execution state,
+not projection events. A projection or notification may summarize a child
+completion for an active owning session, but reconnecting clients recover
+from the durable run/control state. Projection consumers must not replay a
+journal event as a provider turn or tool invocation.
+
 ## Where It Lives
 
 | Path | Role |

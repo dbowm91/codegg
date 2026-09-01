@@ -265,6 +265,11 @@ typed_identity!(
     AuditEventId,
     "audit_event_id"
 );
+typed_identity!(
+    /// Stable identity for an ordered control message delivered to an agent run.
+    AgentRunMessageId,
+    "agent_run_message_id"
+);
 
 /// Project/repository relation. The repository is optional at the enclosing
 /// [`ProjectBinding`] level while a project is being created or resolved.

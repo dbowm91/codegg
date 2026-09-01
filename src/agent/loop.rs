@@ -441,7 +441,7 @@ pub struct AgentLoop {
     pub(super) context_tracker: ContextTracker,
     pub(super) progress_recovery: RecoveryController,
     pub(super) recovery_parallel_limit: Option<usize>,
-    pub(super) steering: AtomicBool,
+    pub(super) steering: Arc<AtomicBool>,
     pub(super) follow_up_tx: mpsc::Sender<String>,
     pub(super) follow_up_rx: mpsc::Receiver<String>,
     pub(super) config: Config,
@@ -502,6 +502,8 @@ pub struct AgentLoop {
     /// Optional notification service for background tool program completions.
     pub(super) notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    pub(super) run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
+    pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
 }
 
 impl AgentLoop {
@@ -706,7 +708,7 @@ impl AgentLoop {
             context_tracker,
             progress_recovery: RecoveryController::default(),
             recovery_parallel_limit: None,
-            steering: AtomicBool::new(false),
+            steering: Arc::new(AtomicBool::new(false)),
             follow_up_tx,
             follow_up_rx,
             config,
@@ -758,6 +760,8 @@ impl AgentLoop {
             runtime_asset_pin: None,
             tool_broker,
             notification_service: None,
+            run_control: None,
+            run_id: None,
         }
     }
 
@@ -958,6 +962,11 @@ impl AgentLoop {
         self.steering.store(true, Ordering::SeqCst);
     }
 
+    /// Stable live-control handle used by the daemon run mailbox bridge.
+    pub fn interrupt_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.steering)
+    }
+
     /// Returns a sender for queueing follow-up prompts.
     ///
     /// Follow-up contract:
@@ -1029,6 +1038,15 @@ impl AgentLoop {
 
     pub fn set_cancel_receiver(&mut self, rx: tokio::sync::watch::Receiver<bool>) {
         self.cancel_rx = Some(rx);
+    }
+
+    pub fn set_run_control(
+        &mut self,
+        service: Arc<crate::agent::run_control::RunControlService>,
+        run_id: codegg_core::identity::AgentRunId,
+    ) {
+        self.run_control = Some(service);
+        self.run_id = Some(run_id);
     }
 
     pub fn set_steer_receiver(&mut self, rx: mpsc::Receiver<String>) {
@@ -1401,6 +1419,21 @@ impl AgentLoop {
         }
 
         None
+    }
+
+    async fn record_run_boundary(&self, boundary: &str) {
+        let (Some(control), Some(run_id)) = (&self.run_control, &self.run_id) else {
+            return;
+        };
+        let _ = control
+            .append(
+                run_id.clone(),
+                codegg_core::agent_run_control::AgentRunJournalEventKind::SafeBoundary,
+                None,
+                None,
+                [("boundary".into(), boundary.into())],
+            )
+            .await;
     }
 
     fn apply_agent_config(&self, request: &mut ChatRequest) {
@@ -2291,6 +2324,11 @@ impl AgentLoop {
                     tracing::info!("Turn steer received: {}", text);
                 }
             }
+
+            // Controls are consumed before the provider request is built.
+            // This is a stable boundary: no in-flight provider transcript is
+            // mutated by the mailbox bridge.
+            self.record_run_boundary("before_provider_turn").await;
 
             if let Some(agent) = self.agents.get(&self.state.current_agent) {
                 if let Some(steps) = agent.steps {
@@ -3310,9 +3348,11 @@ impl AgentLoop {
         // a JobSubmissionService (explicit --standalone / test harness).
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            run_id: None,
             prompt,
             agent,
             parent_id: Some(session_id),
+            parent_run_id: None,
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
             description: "Auto-triggered security review".to_string(),

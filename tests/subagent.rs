@@ -223,9 +223,11 @@ mod tests {
         // Send subagent request - create task first so subsequent operations work
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Hello from parent".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent-session-123".to_string()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Test task".to_string(),
@@ -342,9 +344,11 @@ mod tests {
 
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Test".to_string(),
             agent: "nonexistent-agent".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Test".to_string(),
@@ -408,9 +412,11 @@ mod tests {
 
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Test".to_string(),
@@ -478,9 +484,11 @@ mod tests {
         // Depth equal to max_depth (3) should fail
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: None,
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Test".to_string(),
@@ -514,9 +522,11 @@ mod tests {
         // Depth greater than max_depth should also fail
         let request2 = SubAgentRequest {
             task_id: 2,
+            run_id: None,
             prompt: "Test".to_string(),
             agent: "test-agent".to_string(),
             parent_id: None,
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Test".to_string(),
@@ -567,9 +577,11 @@ mod tests {
         let spawner = subagent_pool.spawner();
         let request = SubAgentRequest {
             task_id: 41,
+            run_id: None,
             prompt: "same work".into(),
             agent: "test-agent".into(),
             parent_id: Some("parent".into()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "same description".into(),
@@ -679,9 +691,11 @@ mod tests {
         // Send request with denied tools
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Test with denied tools".to_string(),
             agent: "test-agent".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec!["bash".to_string(), "write".to_string()],
             allowed_paths: vec![],
             description: "Test".to_string(),
@@ -882,9 +896,11 @@ mod tests {
         for i in 0..3 {
             let request = SubAgentRequest {
                 task_id: i as u64,
+                run_id: None,
                 prompt: format!("Task {}", i),
                 agent: "test-agent".to_string(),
                 parent_id: None,
+                parent_run_id: None,
                 denied_tools: vec![],
                 allowed_paths: vec![],
                 description: format!("Task {}", i),
@@ -968,9 +984,11 @@ mod tests {
     fn test_subagent_request_builder() {
         let request = SubAgentRequest {
             task_id: 123,
+            run_id: None,
             prompt: "Test prompt".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent-session".to_string()),
+            parent_run_id: None,
             denied_tools: vec!["bash".to_string()],
             allowed_paths: vec![],
             description: "Test task".to_string(),
@@ -1006,9 +1024,11 @@ mod tests {
     fn test_subagent_request_with_different_depths() {
         let request_depth_0 = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "depth 0".to_string(),
             agent: "test".to_string(),
             parent_id: None,
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "test".to_string(),
@@ -1020,9 +1040,11 @@ mod tests {
 
         let request_depth_2 = SubAgentRequest {
             task_id: 2,
+            run_id: None,
             prompt: "depth 2".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "test".to_string(),
@@ -1048,9 +1070,11 @@ mod tests {
     fn test_subagent_request_clone() {
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "Test prompt".to_string(),
             agent: "test".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec!["bash".to_string(), "write".to_string()],
             allowed_paths: vec![],
             description: "Test description".to_string(),
@@ -1102,9 +1126,11 @@ mod tests {
         let spawner = subagent_pool.spawner();
         let request = SubAgentRequest {
             task_id: 1,
+            run_id: None,
             prompt: "test".to_string(),
             agent: "nonexistent".to_string(),
             parent_id: None,
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "test".to_string(),
@@ -1163,9 +1189,11 @@ mod tests {
             async move {
                 let req = SubAgentRequest {
                     task_id: 1,
+                    run_id: None,
                     prompt: "task 1".to_string(),
                     agent: "nonexistent".to_string(),
                     parent_id: None,
+                    parent_run_id: None,
                     denied_tools: vec![],
                     allowed_paths: vec![],
                     description: "task 1".to_string(),
@@ -1185,9 +1213,11 @@ mod tests {
             async move {
                 let req = SubAgentRequest {
                     task_id: 2,
+                    run_id: None,
                     prompt: "task 2".to_string(),
                     agent: "nonexistent".to_string(),
                     parent_id: None,
+                    parent_run_id: None,
                     denied_tools: vec![],
                     allowed_paths: vec![],
                     description: "task 2".to_string(),
@@ -1317,9 +1347,11 @@ mod tests {
         // Create and send a task
         let request = SubAgentRequest {
             task_id: 999,
+            run_id: None,
             prompt: "Block me".to_string(),
             agent: "blocking-agent".to_string(),
             parent_id: Some("parent".to_string()),
+            parent_run_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],
             description: "Blocking task".to_string(),

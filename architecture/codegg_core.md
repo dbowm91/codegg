@@ -140,7 +140,7 @@ verified, and content-addressed.
 ### Storage (Phase 3)
 
 `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog.
-`init_legacy_project_store(root)` retains backward compat. `STORAGE_LAYOUT_VERSION = 36`.
+`init_legacy_project_store(root)` retains backward compat. `STORAGE_LAYOUT_VERSION = 38`.
 `DaemonPaths` is the single source of truth for catalog and asset paths.
 
 ## Configuration Surface

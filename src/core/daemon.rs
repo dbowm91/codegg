@@ -281,10 +281,13 @@ impl CoreDaemon {
                 deps.daemon_generation.clone(),
             );
             // Register the default executor set synchronously.
-            if let Err(error) = scheduler_arc.register_default_executors_sync_with_agent_runs(
-                deps.legacy_agent.subagent_pool.clone(),
-                Some(deps.agent_run_store.clone()),
-            ) {
+            if let Err(error) = scheduler_arc
+                .register_default_executors_sync_with_agent_runs_and_control(
+                    deps.legacy_agent.subagent_pool.clone(),
+                    Some(deps.agent_run_store.clone()),
+                    Some(deps.run_control.clone()),
+                )
+            {
                 tracing::error!(
                     ?error,
                     "USER ACTION REQUIRED: scheduler degraded - default executor registration \
@@ -310,6 +313,10 @@ impl CoreDaemon {
             )
         };
         deps.scheduler = Some(scheduler.clone());
+        let run_control = deps.run_control.clone();
+        // The scheduler is allowed to cancel the owned job after the durable
+        // mailbox intent has been committed.
+        run_control.set_scheduler_sync(scheduler.clone());
         deps.scheduler_config = scheduler_config.clone();
         if let Err(error) = scheduler.configure_agent_run_store_sync(deps.agent_run_store.clone()) {
             tracing::error!(
@@ -325,7 +332,11 @@ impl CoreDaemon {
         );
         deps.submission = Some(submission.clone());
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
-            pool.configure_durable_delegation(submission.clone(), deps.agent_run_store.clone());
+            pool.configure_durable_delegation(
+                submission.clone(),
+                deps.agent_run_store.clone(),
+                deps.run_control.clone(),
+            );
         }
 
         // The Tool Program executor needs the daemon-owned submission facade
@@ -2536,6 +2547,7 @@ impl CoreDaemon {
                     execution,
                     submission: self.deps.submission.clone(),
                     agent_run_store: self.deps.agent_run_store.clone(),
+                    run_control: self.deps.run_control.clone(),
                     project_id: codegg_core::identity::ProjectId::parse(&runtime.project_id).ok(),
                     repository_id: None,
                     asset_snapshot,

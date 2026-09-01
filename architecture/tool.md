@@ -16,6 +16,14 @@ abstraction.
   `ToolBackendConfig`
 - On-demand tool discovery via `ToolCatalog` and `tool_search`
 
+The `task` tool is the compatibility surface for durable delegated runs. In
+addition to `spawn`, it accepts `status` (`get` is retained), `message`,
+`interrupt`, `wait`, and `cancel`. These operations address a typed durable
+run ID, enforce owner/ancestor lineage, and use bounded payloads. `wait` is a
+bounded long-poll; a timeout reports that the run is still active and does
+not consume scheduler capacity indefinitely. Run control is distinct from
+the file-backed team inbox and is never general project chat.
+
 ## Where It Lives
 
 ```

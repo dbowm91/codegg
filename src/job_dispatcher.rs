@@ -70,9 +70,11 @@ impl JobDispatcher for SubAgentJobDispatcher {
 
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            run_id: None,
             prompt,
             agent,
             parent_id,
+            parent_run_id: None,
             denied_tools,
             allowed_paths,
             description: format!("Durable job {}", job.job_id),

@@ -109,7 +109,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 37` (`storage/mod.rs:39`) is exported and
+`STORAGE_LAYOUT_VERSION = 38` (`storage/mod.rs:39`) is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases. Migration 37 adds canonical
 `agent_task` and `agent_run` tables with typed string IDs, session/root/parent/

@@ -109,6 +109,24 @@ on publish. Failures retain the previous valid snapshot.
 `TurnRunInput::asset_snapshot` pins the published `Arc` for the whole
 turn. Refresh swaps affect subsequent turns only.
 
+### Durable run control
+
+`codegg_core::agent_run_control` owns the ordered, bounded mailbox and the
+stable-boundary journal. `src/agent/run_control.rs` is the daemon bridge: it
+authorizes a session or ancestor run, persists a control, then feeds a live
+run's existing follow-up, steering, and cancellation channels. Live channels
+are an optimization; queued/delivered records are replayed when a run
+reattaches after disconnect or restart.
+
+The `task` tool exposes `spawn`, `status` (`get` remains the legacy alias),
+`message`, `interrupt`, `wait`, and `cancel`. `message` is ordinary bounded
+model input. `interrupt` sets the loop steering flag and delivers at the next
+safe boundary; it does not claim to preempt a side effect already executing.
+`wait` is capped at 30 seconds and timeout means `still running`, never run
+failure. The journal records lifecycle, control, safe-boundary, completion,
+and recovery milestones only; token streams, hidden reasoning, credentials,
+and complete tool output remain outside it.
+
 ## Key Types & APIs
 
 ### Agent (`src/agent/mod.rs:100`)

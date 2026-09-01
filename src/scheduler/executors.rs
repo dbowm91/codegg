@@ -379,6 +379,7 @@ impl JobExecutor for ManagedArgvExecutor {
 pub struct SubagentJobExecutor {
     pool: Arc<crate::agent::worker::SubAgentPool>,
     agent_runs: Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>,
+    run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
 }
 
 impl SubagentJobExecutor {
@@ -386,6 +387,7 @@ impl SubagentJobExecutor {
         Self {
             pool,
             agent_runs: None,
+            run_control: None,
         }
     }
 
@@ -396,6 +398,19 @@ impl SubagentJobExecutor {
         Self {
             pool,
             agent_runs: Some(agent_runs),
+            run_control: None,
+        }
+    }
+
+    pub fn new_with_agent_runs_and_control(
+        pool: Arc<crate::agent::worker::SubAgentPool>,
+        agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+        run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
+    ) -> Self {
+        Self {
+            pool,
+            agent_runs: Some(agent_runs),
+            run_control,
         }
     }
 }
@@ -482,9 +497,11 @@ impl JobExecutor for SubagentJobExecutor {
 
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
+            run_id: run_id.clone(),
             prompt,
             agent,
             parent_id,
+            parent_run_id: None,
             denied_tools,
             allowed_paths,
             description: format!("Scheduler job {}", ctx.job.job_id.as_str()),
@@ -512,6 +529,17 @@ impl JobExecutor for SubagentJobExecutor {
                     ExecutorStatus::Failed,
                     format!("agent run preparation failed: {error}"),
                 );
+            }
+            if let Some(control) = &self.run_control {
+                let _ = control
+                    .append(
+                        run_id.clone(),
+                        codegg_core::agent_run_control::AgentRunJournalEventKind::RunStarted,
+                        None,
+                        None,
+                        [("attempt_id".into(), ctx.attempt_id.to_string())],
+                    )
+                    .await;
             }
             if let Err(error) = store
                 .transition(run_id, codegg_core::agent_run::AgentRunStatus::Running)
@@ -563,6 +591,14 @@ impl JobExecutor for SubagentJobExecutor {
                             (status != ExecutorStatus::Completed).then(|| result.result.clone()),
                         )
                         .await;
+                    if let Some(control) = &self.run_control {
+                        let _ = control.record_terminal(run_id.clone(), match outcome {
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Completed => codegg_core::agent_run::AgentRunStatus::Completed,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Failed => codegg_core::agent_run::AgentRunStatus::Failed,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Interrupted => codegg_core::agent_run::AgentRunStatus::Interrupted,
+                            codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled => codegg_core::agent_run::AgentRunStatus::Cancelled,
+                        }, &result.result).await;
+                    }
                 }
                 ExecutorCompletion {
                     status,
@@ -587,6 +623,16 @@ impl JobExecutor for SubagentJobExecutor {
                     let _ = store
                         .finish(run_id, outcome, None, Some("pool".into()), Some(e.clone()))
                         .await;
+                    if let Some(control) = &self.run_control {
+                        let status = if outcome
+                            == codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
+                        {
+                            codegg_core::agent_run::AgentRunStatus::Cancelled
+                        } else {
+                            codegg_core::agent_run::AgentRunStatus::Failed
+                        };
+                        let _ = control.record_terminal(run_id.clone(), status, &e).await;
+                    }
                 }
                 failure_completion(
                     started,

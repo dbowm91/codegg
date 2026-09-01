@@ -81,9 +81,12 @@ impl SubAgentReport {
 #[derive(Debug, Clone)]
 pub struct SubAgentRequest {
     pub task_id: u64,
+    /// Durable identity of the run being executed, when scheduler-owned.
+    pub run_id: Option<codegg_core::identity::AgentRunId>,
     pub prompt: String,
     pub agent: String,
     pub parent_id: Option<String>,
+    pub parent_run_id: Option<codegg_core::identity::AgentRunId>,
     pub denied_tools: Vec<String>,
     pub allowed_paths: Vec<String>,
     pub description: String,
@@ -281,6 +284,7 @@ pub struct SubAgentPool {
     lineage_tokens: Arc<TokioMutex<HashMap<String, CancellationToken>>>,
     durable_submission: Arc<TokioMutex<Option<Arc<crate::scheduler::JobSubmissionService>>>>,
     durable_agent_runs: Arc<TokioMutex<Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>>>,
+    durable_run_control: Arc<TokioMutex<Option<Arc<crate::agent::run_control::RunControlService>>>>,
 }
 
 impl SubAgentPool {
@@ -345,6 +349,7 @@ impl SubAgentPool {
             lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
             durable_submission: Arc::new(TokioMutex::new(None)),
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
+            durable_run_control: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -414,6 +419,7 @@ impl SubAgentPool {
             lineage_tokens: Arc::new(TokioMutex::new(HashMap::new())),
             durable_submission: Arc::new(TokioMutex::new(None)),
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
+            durable_run_control: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -590,12 +596,16 @@ impl SubAgentPool {
         &self,
         submission: Arc<crate::scheduler::JobSubmissionService>,
         agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+        run_control: Arc<crate::agent::run_control::RunControlService>,
     ) {
         if let Ok(mut slot) = self.durable_submission.try_lock() {
             *slot = Some(submission);
         }
         if let Ok(mut slot) = self.durable_agent_runs.try_lock() {
             *slot = Some(agent_runs);
+        }
+        if let Ok(mut slot) = self.durable_run_control.try_lock() {
+            *slot = Some(run_control);
         }
     }
 
@@ -679,6 +689,7 @@ impl Clone for SubAgentPool {
             lineage_tokens: Arc::clone(&self.lineage_tokens),
             durable_submission: Arc::clone(&self.durable_submission),
             durable_agent_runs: Arc::clone(&self.durable_agent_runs),
+            durable_run_control: Arc::clone(&self.durable_run_control),
         }
     }
 }
@@ -1086,6 +1097,7 @@ async fn execute_agent_task(
     if can_delegate {
         let durable_submission = subagent_pool.durable_submission.lock().await.clone();
         let durable_agent_runs = subagent_pool.durable_agent_runs.lock().await.clone();
+        let durable_run_control = subagent_pool.durable_run_control.lock().await.clone();
         let mut inherited_denied = request.denied_tools.clone();
         if parent_is_read_only {
             inherited_denied.extend(read_only_blocked_tools());
@@ -1099,6 +1111,7 @@ async fn execute_agent_task(
             inherited_denied,
         )
         .with_depth(request.depth)
+        .with_parent_run_id(request.parent_run_id.clone())
         .with_parent_model(Some(profile.resolved_model.clone()))
         .with_workspace_root(request.workspace_root.clone())
         .with_parent_allowed_paths(request.allowed_paths.clone());
@@ -1110,6 +1123,10 @@ async fn execute_agent_task(
             (Some(submission), Some(agent_runs), Some(root)) => task_tool
                 .with_submission(submission, root)
                 .with_agent_run_store(agent_runs),
+            _ => task_tool,
+        };
+        let task_tool = match durable_run_control {
+            Some(control) => task_tool.with_run_control_opt(Some(control)),
             _ => task_tool,
         };
         tool_registry.register(task_tool);
@@ -1203,6 +1220,36 @@ async fn execute_agent_task(
     );
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
 
+    // The durable control service feeds these existing loop channels.  The
+    // registration happens only after the loop owns the receivers, so a
+    // persisted control can never race provider transcript mutation.
+    let live_registration = if let Some(run_id) = request.run_id.clone() {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
+        agent_loop.set_cancel_receiver(cancel_rx);
+        agent_loop.set_steer_receiver(steer_rx);
+        let control = subagent_pool.durable_run_control.lock().await.clone();
+        if let Some(control) = control {
+            agent_loop.set_run_control(control.clone(), run_id.clone());
+            control
+                .register_live(
+                    run_id.clone(),
+                    crate::agent::run_control::LiveRunHandle {
+                        follow_up_tx: agent_loop.follow_up_sender(),
+                        steer_tx,
+                        cancel_tx,
+                        interrupt_flag: agent_loop.interrupt_flag(),
+                    },
+                )
+                .await;
+            Some((control, run_id))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if agent_name == "plan" {
         agent_loop.enter_plan_mode(Some(request.description.clone()));
     }
@@ -1272,7 +1319,11 @@ async fn execute_agent_task(
         reasoning_effort: None,
     };
 
-    let events = agent_loop.run(request).await?;
+    let events = agent_loop.run(request).await;
+    if let Some((control, run_id)) = live_registration {
+        control.unregister_live(&run_id).await;
+    }
+    let events = events?;
 
     let mut output = String::new();
     for event in &events {
@@ -1347,6 +1398,8 @@ mod admission_tests {
             prompt: "test".into(),
             agent: "build".into(),
             parent_id: Some("root-a".into()),
+            parent_run_id: None,
+            run_id: None,
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),
             description: format!("task-{task_id}"),
