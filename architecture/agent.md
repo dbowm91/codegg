@@ -113,7 +113,8 @@ turn. Refresh swaps affect subsequent turns only.
 
 `codegg_core::agent_run_control` owns the ordered, bounded mailbox and the
 stable-boundary journal. `src/agent/run_control.rs` is the daemon bridge: it
-authorizes a session or ancestor run, persists a control, then feeds a live
+authorizes the exact originating turn for a top-level run or the direct parent
+run for a child, persists a control, then feeds a live
 run's existing follow-up, steering, and cancellation channels. Live channels
 are an optimization; queued/delivered records are replayed when a run
 reattaches after disconnect or restart.
@@ -126,6 +127,13 @@ safe boundary; it does not claim to preempt a side effect already executing.
 failure. The journal records lifecycle, control, safe-boundary, completion,
 and recovery milestones only; token streams, hidden reasoning, credentials,
 and complete tool output remain outside it.
+
+Durable orchestration ownership is explicit: a root turn owns its accepted
+top-level fan-out, while a delegated run owns only its direct descendants.
+`AgentRunRecord.depth` is persisted and validated transactionally against the
+parent, so scheduler/worker hops cannot reset descendant depth. Nested TaskTool
+instances are built from the current run and store-derived task context; a
+parent's parent is never used as the nested owner.
 
 ## Key Types & APIs
 

@@ -31,6 +31,7 @@ pub struct LiveRunHandle {
 #[derive(Debug, Clone, Default)]
 pub struct ControlActor {
     pub session_id: Option<String>,
+    pub turn_id: Option<String>,
     pub run_id: Option<AgentRunId>,
 }
 
@@ -161,34 +162,24 @@ impl RunControlService {
             .await
             .map_err(|e| RunControlError::RunStore(e.to_string()))?
             .ok_or_else(|| RunControlError::RunNotFound(target.to_string()))?;
-        if actor
-            .session_id
-            .as_deref()
-            .is_some_and(|session| session == task.originating_session_id)
+        if let (Some(session_id), Some(turn_id)) =
+            (actor.session_id.as_deref(), actor.turn_id.as_deref())
         {
-            return Ok(target_run);
-        }
-        let Some(mut ancestor) = actor.run_id.clone() else {
-            return Err(RunControlError::Unauthorized);
-        };
-        loop {
-            if ancestor == *target {
-                return Err(RunControlError::Unauthorized);
-            }
-            let current = self
-                .runs
-                .get_run(&ancestor)
-                .await
-                .map_err(|e| RunControlError::RunStore(e.to_string()))?
-                .ok_or(RunControlError::Unauthorized)?;
-            if current.parent_run_id.as_ref() == Some(target) {
+            if task.originating_session_id == session_id
+                && task.originating_turn_id.as_deref() == Some(turn_id)
+                && target_run.parent_run_id.is_none()
+            {
                 return Ok(target_run);
             }
-            let Some(parent) = current.parent_run_id else {
-                return Err(RunControlError::Unauthorized);
-            };
-            ancestor = parent;
         }
+        if let Some(actor_run_id) = actor.run_id.as_ref() {
+            if target_run.parent_run_id.as_ref() == Some(actor_run_id)
+                && target_run.run_id != *actor_run_id
+            {
+                return Ok(target_run);
+            }
+        }
+        Err(RunControlError::Unauthorized)
     }
 
     pub async fn send(
@@ -503,7 +494,7 @@ mod tests {
                     task_id,
                     parent_task_id: None,
                     originating_session_id: session.into(),
-                    originating_turn_id: None,
+                    originating_turn_id: Some("owner-turn".into()),
                     project_id: ProjectId::new(),
                     repository_id: None,
                     workspace_id: WorkspaceId::new_unchecked("control-test-workspace"),
@@ -514,6 +505,7 @@ mod tests {
                 NewAgentRun {
                     run_id,
                     parent_run_id: None,
+                    depth: 1,
                     workspace_id: WorkspaceId::new_unchecked("control-test-workspace"),
                     agent_name: "general".into(),
                     agent_digest: None,
@@ -568,6 +560,7 @@ mod tests {
             .send(
                 &ControlActor {
                     session_id: Some("owner-session".into()),
+                    turn_id: Some("owner-turn".into()),
                     run_id: None,
                 },
                 run.run_id.clone(),
@@ -585,6 +578,7 @@ mod tests {
             .send(
                 &ControlActor {
                     session_id: Some("owner-session".into()),
+                    turn_id: Some("owner-turn".into()),
                     run_id: None,
                 },
                 run.run_id.clone(),
@@ -605,6 +599,7 @@ mod tests {
                 .send(
                     &ControlActor {
                         session_id: Some("other".into()),
+                        turn_id: Some("other-turn".into()),
                         run_id: None
                     },
                     run.run_id.clone(),
@@ -620,6 +615,7 @@ mod tests {
             .send(
                 &ControlActor {
                     session_id: Some("owner-session".into()),
+                    turn_id: Some("owner-turn".into()),
                     run_id: None,
                 },
                 run.run_id.clone(),
@@ -658,6 +654,7 @@ mod tests {
         let service = RunControlService::in_memory(runs.clone());
         let actor = ControlActor {
             session_id: Some("owner-session".into()),
+            turn_id: Some("owner-turn".into()),
             run_id: None,
         };
         let outcome = service
@@ -690,6 +687,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authorization_is_direct_owner_scoped() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let parent = running_run(&runs, "owner-session").await;
+        let parent_task = runs.get_task(&parent.task_id).await.unwrap().unwrap();
+        let child = runs
+            .create_or_get(
+                NewAgentTask {
+                    task_id: AgentTaskId::new(),
+                    parent_task_id: Some(parent.task_id.clone()),
+                    originating_session_id: "owner-session".into(),
+                    originating_turn_id: Some("owner-turn".into()),
+                    project_id: parent_task.project_id.clone(),
+                    repository_id: None,
+                    workspace_id: parent.workspace_id.clone(),
+                    requested_agent: "general".into(),
+                    delegation_key: "control-child".into(),
+                    description: "child".into(),
+                },
+                NewAgentRun {
+                    run_id: AgentRunId::new(),
+                    parent_run_id: Some(parent.run_id.clone()),
+                    depth: 2,
+                    workspace_id: parent.workspace_id.clone(),
+                    agent_name: "general".into(),
+                    agent_digest: None,
+                    provider: "test".into(),
+                    model: "test".into(),
+                    authority_digest: "authority".into(),
+                    budget: AgentRunBudget::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let service = RunControlService::in_memory(runs.clone());
+        let parent_actor = ControlActor {
+            session_id: None,
+            turn_id: None,
+            run_id: Some(parent.run_id.clone()),
+        };
+        assert!(service
+            .authorize(&parent_actor, &child.run.run_id)
+            .await
+            .is_ok());
+        assert!(matches!(
+            service.authorize(&parent_actor, &parent.run_id).await,
+            Err(RunControlError::Unauthorized)
+        ));
+        let child_actor = ControlActor {
+            session_id: None,
+            turn_id: None,
+            run_id: Some(child.run.run_id.clone()),
+        };
+        assert!(matches!(
+            service.authorize(&child_actor, &parent.run_id).await,
+            Err(RunControlError::Unauthorized)
+        ));
+        assert!(matches!(
+            service
+                .authorize(
+                    &ControlActor {
+                        session_id: Some("owner-session".into()),
+                        turn_id: None,
+                        run_id: None,
+                    },
+                    &parent.run_id,
+                )
+                .await,
+            Err(RunControlError::Unauthorized)
+        ));
+    }
+
+    #[tokio::test]
     async fn sqlite_control_state_is_available_after_service_recreation() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -706,6 +776,7 @@ mod tests {
             .send(
                 &ControlActor {
                     session_id: Some("sqlite-owner".into()),
+                    turn_id: Some("owner-turn".into()),
                     run_id: None,
                 },
                 run.run_id.clone(),
@@ -736,6 +807,7 @@ mod tests {
                 .journal(
                     &ControlActor {
                         session_id: Some("sqlite-owner".into()),
+                        turn_id: Some("owner-turn".into()),
                         run_id: None,
                     },
                     run.run_id,

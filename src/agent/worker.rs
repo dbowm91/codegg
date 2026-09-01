@@ -293,6 +293,8 @@ pub struct SubAgentPool {
     durable_submission: Arc<TokioMutex<Option<Arc<crate::scheduler::JobSubmissionService>>>>,
     durable_agent_runs: Arc<TokioMutex<Option<Arc<dyn codegg_core::agent_run::AgentRunStore>>>>,
     durable_run_control: Arc<TokioMutex<Option<Arc<crate::agent::run_control::RunControlService>>>>,
+    durable_run_groups:
+        Arc<TokioMutex<Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>>>,
 }
 
 impl SubAgentPool {
@@ -358,6 +360,7 @@ impl SubAgentPool {
             durable_submission: Arc::new(TokioMutex::new(None)),
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
             durable_run_control: Arc::new(TokioMutex::new(None)),
+            durable_run_groups: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -428,6 +431,7 @@ impl SubAgentPool {
             durable_submission: Arc::new(TokioMutex::new(None)),
             durable_agent_runs: Arc::new(TokioMutex::new(None)),
             durable_run_control: Arc::new(TokioMutex::new(None)),
+            durable_run_groups: Arc::new(TokioMutex::new(None)),
         };
 
         let pool_clone = pool_inst.clone();
@@ -634,6 +638,7 @@ impl SubAgentPool {
         submission: Arc<crate::scheduler::JobSubmissionService>,
         agent_runs: Arc<dyn codegg_core::agent_run::AgentRunStore>,
         run_control: Arc<crate::agent::run_control::RunControlService>,
+        run_groups: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
     ) {
         if let Ok(mut slot) = self.durable_submission.try_lock() {
             *slot = Some(submission);
@@ -643,6 +648,9 @@ impl SubAgentPool {
         }
         if let Ok(mut slot) = self.durable_run_control.try_lock() {
             *slot = Some(run_control);
+        }
+        if let Ok(mut slot) = self.durable_run_groups.try_lock() {
+            *slot = Some(run_groups);
         }
     }
 
@@ -727,6 +735,7 @@ impl Clone for SubAgentPool {
             durable_submission: Arc::clone(&self.durable_submission),
             durable_agent_runs: Arc::clone(&self.durable_agent_runs),
             durable_run_control: Arc::clone(&self.durable_run_control),
+            durable_run_groups: Arc::clone(&self.durable_run_groups),
         }
     }
 }
@@ -1160,23 +1169,71 @@ async fn execute_agent_task(
         let durable_submission = subagent_pool.durable_submission.lock().await.clone();
         let durable_agent_runs = subagent_pool.durable_agent_runs.lock().await.clone();
         let durable_run_control = subagent_pool.durable_run_control.lock().await.clone();
+        let durable_run_groups = subagent_pool.durable_run_groups.lock().await.clone();
         let mut inherited_denied = request.denied_tools.clone();
         if parent_is_read_only {
             inherited_denied.extend(read_only_blocked_tools());
             inherited_denied.sort();
             inherited_denied.dedup();
         }
-        let task_tool = crate::tool::task::TaskTool::new(
+        let durable_context = match (&durable_agent_runs, &request.run_id) {
+            (Some(store), Some(run_id)) => {
+                let run = store
+                    .get_run(run_id)
+                    .await
+                    .map_err(|error| format!("durable subagent run lookup failed: {error}"))?
+                    .ok_or_else(|| "durable subagent run is missing".to_string())?;
+                let task = store
+                    .get_task(&run.task_id)
+                    .await
+                    .map_err(|error| format!("durable subagent task lookup failed: {error}"))?
+                    .ok_or_else(|| "durable subagent task is missing".to_string())?;
+                Some((run, task))
+            }
+            (None, Some(_)) => {
+                return Err("durable subagent run has no run store".into());
+            }
+            _ => None,
+        };
+        let mut task_tool = crate::tool::task::TaskTool::new(
             subagent_pool.task_store(),
             Some(subagent_pool.spawner()),
             Some(request.parent_id.clone().unwrap_or_default()),
             inherited_denied,
         )
         .with_depth(request.depth)
-        .with_parent_run_id(request.parent_run_id.clone())
         .with_parent_model(Some(profile.resolved_model.clone()))
         .with_workspace_root(request.workspace_root.clone())
         .with_parent_allowed_paths(request.allowed_paths.clone());
+        if let Some(run_id) = request.run_id.clone() {
+            task_tool = task_tool.with_run_owner(run_id);
+        } else if let Some(turn_id) = durable_context
+            .as_ref()
+            .and_then(|(_, task)| task.originating_turn_id.clone())
+        {
+            task_tool = task_tool.with_turn_owner(
+                durable_context
+                    .as_ref()
+                    .map(|(_, task)| task.originating_session_id.clone())
+                    .unwrap_or_default(),
+                turn_id,
+            );
+        }
+        if let Some((run, task)) = durable_context {
+            task_tool = task_tool
+                .with_project_context(
+                    Some(task.project_id),
+                    task.repository_id,
+                    task.originating_turn_id,
+                )
+                .with_max_depth(
+                    run.budget
+                        .max_depth
+                        .unwrap_or(subagent_pool.max_depth as u32),
+                );
+        } else {
+            task_tool = task_tool.with_max_depth(subagent_pool.max_depth as u32);
+        }
         let task_tool = match (
             durable_submission,
             durable_agent_runs,
@@ -1190,6 +1247,10 @@ async fn execute_agent_task(
         let task_tool = match durable_run_control {
             Some(control) => task_tool.with_run_control_opt(Some(control)),
             _ => task_tool,
+        };
+        let task_tool = match durable_run_groups {
+            Some(groups) => task_tool.with_run_group_service(Some(groups)),
+            None => task_tool,
         };
         tool_registry.register(task_tool);
     }

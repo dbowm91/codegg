@@ -21,6 +21,15 @@ pub const MAX_GROUP_MEMBERS: usize = 16;
 pub const MAX_GROUP_SUMMARY_MEMBERS: usize = MAX_GROUP_MEMBERS;
 pub const MAX_GROUP_WAIT_MS: u64 = 30_000;
 
+/// The durable scope that owns a run group. A turn owns the top-level fan-out
+/// it accepted; a run owns only its direct descendants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum AgentRunGroupOwner {
+    Turn { session_id: String, turn_id: String },
+    Run { run_id: AgentRunId },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunJoinPolicy {
@@ -97,6 +106,7 @@ pub struct AgentRunGroupRecord {
     pub group_id: AgentRunGroupId,
     pub root_run_id: AgentRunId,
     pub owner_run_id: AgentRunId,
+    pub owner: AgentRunGroupOwner,
     pub member_run_ids: Vec<AgentRunId>,
     pub join_policy: RunJoinPolicy,
     pub cancel_remaining_on_satisfaction: bool,
@@ -132,6 +142,7 @@ pub struct NewAgentRunGroup {
     pub group_id: AgentRunGroupId,
     pub root_run_id: AgentRunId,
     pub owner_run_id: AgentRunId,
+    pub owner: AgentRunGroupOwner,
     pub member_run_ids: Vec<AgentRunId>,
     pub join_policy: RunJoinPolicy,
     pub cancel_remaining_on_satisfaction: bool,
@@ -246,6 +257,7 @@ impl AgentRunGroupStore for InMemoryAgentRunGroupStore {
                 .ok_or_else(|| AgentRunGroupError::NotFound(id.to_string()))?;
             if existing.root_run_id != input.root_run_id
                 || existing.owner_run_id != input.owner_run_id
+                || existing.owner != input.owner
                 || existing.member_run_ids != input.member_run_ids
                 || existing.join_policy != input.join_policy
                 || existing.cancel_remaining_on_satisfaction
@@ -260,6 +272,7 @@ impl AgentRunGroupStore for InMemoryAgentRunGroupStore {
             group_id: input.group_id,
             root_run_id: input.root_run_id,
             owner_run_id: input.owner_run_id,
+            owner: input.owner,
             member_run_ids: input.member_run_ids,
             join_policy: input.join_policy,
             cancel_remaining_on_satisfaction: input.cancel_remaining_on_satisfaction,
@@ -358,7 +371,7 @@ async fn load_sqlite_group(
     group_id: &AgentRunGroupId,
 ) -> Result<Option<AgentRunGroupRecord>, AgentRunGroupError> {
     let row = sqlx::query(
-        "SELECT group_id, root_run_id, owner_run_id, join_policy, cancel_remaining, status, created_at, completed_at, winner_run_id, idempotency_key FROM agent_run_group WHERE group_id = ?",
+        "SELECT group_id, root_run_id, owner_run_id, owner_kind, owner_session_id, owner_turn_id, join_policy, cancel_remaining, status, created_at, completed_at, winner_run_id, idempotency_key FROM agent_run_group WHERE group_id = ?",
     )
     .bind(group_id.as_str())
     .fetch_optional(pool)
@@ -379,6 +392,15 @@ async fn load_sqlite_group(
         group_id: parse_group(row.get("group_id"))?,
         root_run_id: parse_run(row.get("root_run_id"))?,
         owner_run_id: parse_run(row.get("owner_run_id"))?,
+        owner: match row.get::<String, _>("owner_kind").as_str() {
+            "turn" => AgentRunGroupOwner::Turn {
+                session_id: row.get("owner_session_id"),
+                turn_id: row.get("owner_turn_id"),
+            },
+            _ => AgentRunGroupOwner::Run {
+                run_id: parse_run(row.get("owner_run_id"))?,
+            },
+        },
         member_run_ids: members,
         join_policy: RunJoinPolicy::parse(row.get::<String, _>("join_policy").as_str())?,
         cancel_remaining_on_satisfaction: row.get::<i64, _>("cancel_remaining") != 0,
@@ -413,6 +435,7 @@ impl AgentRunGroupStore for SqliteAgentRunGroupStore {
                 .ok_or_else(|| AgentRunGroupError::NotFound(id.to_string()))?;
             if record.root_run_id != input.root_run_id
                 || record.owner_run_id != input.owner_run_id
+                || record.owner != input.owner
                 || record.member_run_ids != input.member_run_ids
                 || record.join_policy != input.join_policy
                 || record.cancel_remaining_on_satisfaction != input.cancel_remaining_on_satisfaction
@@ -427,10 +450,20 @@ impl AgentRunGroupStore for SqliteAgentRunGroupStore {
             .begin()
             .await
             .map_err(|e| AgentRunGroupError::Store(e.to_string()))?;
-        let inserted = sqlx::query("INSERT OR IGNORE INTO agent_run_group (group_id, root_run_id, owner_run_id, join_policy, cancel_remaining, status, created_at, idempotency_key) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)")
+        let (owner_kind, owner_session_id, owner_turn_id) = match &input.owner {
+            AgentRunGroupOwner::Turn {
+                session_id,
+                turn_id,
+            } => ("turn", Some(session_id.as_str()), Some(turn_id.as_str())),
+            AgentRunGroupOwner::Run { .. } => ("run", None, None),
+        };
+        let inserted = sqlx::query("INSERT OR IGNORE INTO agent_run_group (group_id, root_run_id, owner_run_id, owner_kind, owner_session_id, owner_turn_id, join_policy, cancel_remaining, status, created_at, idempotency_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)")
             .bind(input.group_id.as_str())
             .bind(input.root_run_id.as_str())
             .bind(input.owner_run_id.as_str())
+            .bind(owner_kind)
+            .bind(owner_session_id)
+            .bind(owner_turn_id)
             .bind(input.join_policy.as_str())
             .bind(i64::from(input.cancel_remaining_on_satisfaction))
             .bind(now)
@@ -457,6 +490,7 @@ impl AgentRunGroupStore for SqliteAgentRunGroupStore {
                 .ok_or_else(|| AgentRunGroupError::NotFound(id.to_string()))?;
             if record.root_run_id != input.root_run_id
                 || record.owner_run_id != input.owner_run_id
+                || record.owner != input.owner
                 || record.member_run_ids != input.member_run_ids
                 || record.join_policy != input.join_policy
                 || record.cancel_remaining_on_satisfaction != input.cancel_remaining_on_satisfaction
@@ -565,6 +599,7 @@ impl AgentRunGroupStore for SqliteAgentRunGroupStore {
 pub struct GroupActor {
     pub run_id: Option<AgentRunId>,
     pub session_id: Option<String>,
+    pub turn_id: Option<String>,
 }
 
 pub struct AgentRunGroupService {
@@ -611,17 +646,24 @@ impl AgentRunGroupService {
         input: NewAgentRunGroup,
     ) -> Result<AgentRunGroupSummary, AgentRunGroupError> {
         validate_new(&input)?;
-        let owner = self
-            .runs
-            .get_run(&input.owner_run_id)
-            .await
-            .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
-            .ok_or_else(|| {
-                AgentRunGroupError::UnauthorizedMember(input.owner_run_id.to_string())
-            })?;
-        if owner.root_run_id != input.root_run_id {
-            return Err(AgentRunGroupError::Unauthorized);
-        }
+        let owner = match &input.owner {
+            AgentRunGroupOwner::Run { run_id } => {
+                if input.owner_run_id != *run_id {
+                    return Err(AgentRunGroupError::Unauthorized);
+                }
+                let owner = self
+                    .runs
+                    .get_run(run_id)
+                    .await
+                    .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
+                    .ok_or_else(|| AgentRunGroupError::UnauthorizedMember(run_id.to_string()))?;
+                if owner.root_run_id != input.root_run_id || owner.status.is_terminal() {
+                    return Err(AgentRunGroupError::Unauthorized);
+                }
+                Some(owner)
+            }
+            AgentRunGroupOwner::Turn { .. } => None,
+        };
         let mut seen = HashSet::new();
         for member_id in &input.member_run_ids {
             if !seen.insert(member_id) {
@@ -633,12 +675,42 @@ impl AgentRunGroupService {
                 .await
                 .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
                 .ok_or_else(|| AgentRunGroupError::UnauthorizedMember(member_id.to_string()))?;
-            if member.root_run_id != input.root_run_id
-                || member.parent_run_id.as_ref() != Some(&input.owner_run_id)
-            {
-                return Err(AgentRunGroupError::UnauthorizedMember(
-                    member_id.to_string(),
-                ));
+            match (&input.owner, &owner) {
+                (AgentRunGroupOwner::Run { run_id }, Some(owner)) => {
+                    if member.root_run_id != input.root_run_id
+                        || member.parent_run_id.as_ref() != Some(run_id)
+                        || member.depth != owner.depth.saturating_add(1)
+                    {
+                        return Err(AgentRunGroupError::UnauthorizedMember(
+                            member_id.to_string(),
+                        ));
+                    }
+                }
+                (
+                    AgentRunGroupOwner::Turn {
+                        session_id,
+                        turn_id,
+                    },
+                    None,
+                ) => {
+                    let task = self
+                        .runs
+                        .get_task(&member.task_id)
+                        .await
+                        .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
+                        .ok_or_else(|| {
+                            AgentRunGroupError::UnauthorizedMember(member_id.to_string())
+                        })?;
+                    if task.originating_session_id != *session_id
+                        || task.originating_turn_id.as_deref() != Some(turn_id.as_str())
+                        || member.parent_run_id.is_some()
+                    {
+                        return Err(AgentRunGroupError::UnauthorizedMember(
+                            member_id.to_string(),
+                        ));
+                    }
+                }
+                _ => return Err(AgentRunGroupError::Unauthorized),
             }
         }
         let group = self.groups.create_or_get(input).await?;
@@ -918,25 +990,19 @@ impl AgentRunGroupService {
             .get(group_id)
             .await?
             .ok_or_else(|| AgentRunGroupError::NotFound(group_id.to_string()))?;
-        if actor.run_id.as_ref() == Some(&group.owner_run_id) {
-            return Ok(group);
-        }
-        if let Some(session_id) = actor.session_id.as_deref() {
-            let owner = self
-                .runs
-                .get_run(&group.owner_run_id)
-                .await
-                .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
-                .ok_or(AgentRunGroupError::Unauthorized)?;
-            let task = self
-                .runs
-                .get_task(&owner.task_id)
-                .await
-                .map_err(|e| AgentRunGroupError::Store(e.to_string()))?
-                .ok_or(AgentRunGroupError::Unauthorized)?;
-            if task.originating_session_id == session_id {
-                return Ok(group);
+        let authorized = match &group.owner {
+            AgentRunGroupOwner::Run { run_id } => actor.run_id.as_ref() == Some(run_id),
+            AgentRunGroupOwner::Turn {
+                session_id,
+                turn_id,
+            } => {
+                actor.run_id.is_none()
+                    && actor.session_id.as_deref() == Some(session_id.as_str())
+                    && actor.turn_id.as_deref() == Some(turn_id.as_str())
             }
+        };
+        if authorized {
+            return Ok(group);
         }
         Err(AgentRunGroupError::Unauthorized)
     }
@@ -944,7 +1010,9 @@ impl AgentRunGroupService {
 
 #[cfg(test)]
 mod tests {
-    use super::super::agent_run::{AgentRunBudget, AgentTaskStatus, NewAgentRun, NewAgentTask};
+    use super::super::agent_run::{
+        AgentRunBudget, AgentTaskStatus, InMemoryAgentRunStore, NewAgentRun, NewAgentTask,
+    };
     use super::*;
     use crate::identity::{AgentTaskId, ProjectId};
     use crate::workspace::WorkspaceId;
@@ -973,6 +1041,7 @@ mod tests {
                 NewAgentRun {
                     run_id,
                     parent_run_id: parent.map(|(run, _)| run.clone()),
+                    depth: parent.map(|_| 2).unwrap_or(1),
                     workspace_id: WorkspaceId::new_unchecked("group-test-workspace"),
                     agent_name: "general".into(),
                     agent_digest: None,
@@ -1008,6 +1077,56 @@ mod tests {
         run_id: AgentRunId,
     }
 
+    async fn make_turn_run(runs: &Arc<dyn AgentRunStore>, key: &str) -> AgentRunRecordForTest {
+        let task_id = AgentTaskId::new();
+        let run_id = AgentRunId::new();
+        let submission = runs
+            .create_or_get(
+                NewAgentTask {
+                    task_id: task_id.clone(),
+                    parent_task_id: None,
+                    originating_session_id: "turn-group-session".into(),
+                    originating_turn_id: Some("turn-1".into()),
+                    project_id: ProjectId::new(),
+                    repository_id: None,
+                    workspace_id: WorkspaceId::new_unchecked("group-test-workspace"),
+                    requested_agent: "general".into(),
+                    delegation_key: key.into(),
+                    description: key.into(),
+                },
+                NewAgentRun {
+                    run_id,
+                    parent_run_id: None,
+                    depth: 1,
+                    workspace_id: WorkspaceId::new_unchecked("group-test-workspace"),
+                    agent_name: "general".into(),
+                    agent_digest: None,
+                    provider: "test".into(),
+                    model: "test".into(),
+                    authority_digest: "test".into(),
+                    budget: AgentRunBudget::default(),
+                },
+            )
+            .await
+            .unwrap();
+        runs.transition_task(&task_id, AgentTaskStatus::Queued)
+            .await
+            .unwrap();
+        runs.transition(&submission.run.run_id, AgentRunStatus::Queued)
+            .await
+            .unwrap();
+        runs.transition(&submission.run.run_id, AgentRunStatus::Preparing)
+            .await
+            .unwrap();
+        runs.transition(&submission.run.run_id, AgentRunStatus::Running)
+            .await
+            .unwrap();
+        AgentRunRecordForTest {
+            task_id,
+            run_id: submission.run.run_id,
+        }
+    }
+
     async fn group(
         policy: RunJoinPolicy,
         cancel_remaining: bool,
@@ -1028,6 +1147,9 @@ mod tests {
                 group_id: AgentRunGroupId::new(),
                 root_run_id: owner.run_id.clone(),
                 owner_run_id: owner.run_id.clone(),
+                owner: AgentRunGroupOwner::Run {
+                    run_id: owner.run_id.clone(),
+                },
                 member_run_ids: vec![first.run_id.clone(), second.run_id.clone()],
                 join_policy: policy,
                 cancel_remaining_on_satisfaction: cancel_remaining,
@@ -1184,6 +1306,9 @@ mod tests {
                 group_id: AgentRunGroupId::new(),
                 root_run_id: owner.run_id.clone(),
                 owner_run_id: owner.run_id.clone(),
+                owner: AgentRunGroupOwner::Run {
+                    run_id: owner.run_id.clone(),
+                },
                 member_run_ids: vec![member.run_id.clone()],
                 join_policy: RunJoinPolicy::Detached,
                 cancel_remaining_on_satisfaction: false,
@@ -1209,6 +1334,7 @@ mod tests {
                 &GroupActor {
                     run_id: Some(owner.run_id),
                     session_id: None,
+                    turn_id: None,
                 },
                 created.group.group_id,
             )
@@ -1216,5 +1342,57 @@ mod tests {
             .unwrap();
         assert_eq!(summary.group.status, RunGroupStatus::Completed);
         assert_eq!(summary.members.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn turn_owned_group_accepts_only_the_turns_top_level_runs() {
+        let runs: Arc<dyn AgentRunStore> = Arc::new(InMemoryAgentRunStore::new());
+        let first = make_turn_run(&runs, "turn-child-1").await;
+        let second = make_turn_run(&runs, "turn-child-2").await;
+        let service = AgentRunGroupService::in_memory(runs);
+        let summary = service
+            .create(NewAgentRunGroup {
+                group_id: AgentRunGroupId::new(),
+                root_run_id: first.run_id.clone(),
+                owner_run_id: first.run_id.clone(),
+                owner: AgentRunGroupOwner::Turn {
+                    session_id: "turn-group-session".into(),
+                    turn_id: "turn-1".into(),
+                },
+                member_run_ids: vec![first.run_id.clone(), second.run_id.clone()],
+                join_policy: RunJoinPolicy::All,
+                cancel_remaining_on_satisfaction: false,
+                idempotency_key: "turn-owned-group".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            summary.group.owner,
+            AgentRunGroupOwner::Turn { .. }
+        ));
+        assert!(service
+            .status(
+                &GroupActor {
+                    run_id: None,
+                    session_id: Some("turn-group-session".into()),
+                    turn_id: Some("turn-1".into()),
+                },
+                summary.group.group_id.clone(),
+            )
+            .await
+            .is_ok());
+        assert!(matches!(
+            service
+                .status(
+                    &GroupActor {
+                        run_id: None,
+                        session_id: Some("turn-group-session".into()),
+                        turn_id: Some("turn-2".into()),
+                    },
+                    summary.group.group_id,
+                )
+                .await,
+            Err(AgentRunGroupError::Unauthorized)
+        ));
     }
 }

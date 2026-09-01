@@ -350,6 +350,7 @@ impl CoreDaemon {
                 submission.clone(),
                 deps.agent_run_store.clone(),
                 deps.run_control.clone(),
+                deps.run_group_service.clone(),
             );
         }
 

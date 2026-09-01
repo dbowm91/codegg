@@ -680,7 +680,9 @@ impl JobExecutor for SubagentJobExecutor {
                     repository_id,
                     workspace_id: task.workspace_id,
                     node_id: None,
-                    repository_root,
+                    repository_root: repository_root.clone(),
+                    base_commit: None,
+                    base_path: Some(repository_root.clone()),
                     owner_run_id: run_id.clone(),
                 };
                 let (record, lease) = match worktree_service.create(&request).await {
@@ -743,17 +745,71 @@ impl JobExecutor for SubagentJobExecutor {
             self.publish_run_projection(run_id).await;
         }
 
+        let durable_context = if let Some(run_id) = run_id.as_ref() {
+            let Some(store) = self.agent_runs.as_ref() else {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "durable subagent run has no run store".into(),
+                );
+            };
+            let run = match store.get_run(run_id).await {
+                Ok(Some(run)) => run,
+                Ok(None) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "durable subagent run is missing".into(),
+                    )
+                }
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("durable subagent run lookup failed: {error}"),
+                    )
+                }
+            };
+            let task = match store.get_task(&run.task_id).await {
+                Ok(Some(task)) => task,
+                Ok(None) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        "durable subagent task is missing".into(),
+                    )
+                }
+                Err(error) => {
+                    return failure_completion(
+                        started,
+                        ExecutorStatus::Failed,
+                        format!("durable subagent task lookup failed: {error}"),
+                    )
+                }
+            };
+            Some(codegg_core::agent_run::DelegatedAgentExecutionContext::from_records(&task, &run))
+        } else {
+            None
+        };
         let request = crate::agent::worker::SubAgentRequest {
             task_id,
             run_id: run_id.clone(),
             prompt,
             agent,
-            parent_id,
-            parent_run_id: None,
+            parent_id: durable_context
+                .as_ref()
+                .map(|context| context.session_id.clone())
+                .or(parent_id),
+            parent_run_id: durable_context
+                .as_ref()
+                .and_then(|context| context.parent_run_id.clone()),
             denied_tools,
             allowed_paths,
             description: format!("Scheduler job {}", ctx.job.job_id.as_str()),
-            depth: 1,
+            depth: durable_context
+                .as_ref()
+                .map(|context| context.depth as usize)
+                .unwrap_or(1),
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: None,
             workspace_root,

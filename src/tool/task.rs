@@ -15,8 +15,8 @@ use crate::tool::{Tool, ToolCategory};
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
-    AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup, RunJoinPolicy,
-    MAX_GROUP_MEMBERS,
+    AgentRunGroupOwner, AgentRunGroupService, AgentRunGroupSummary, GroupActor, NewAgentRunGroup,
+    RunJoinPolicy, MAX_GROUP_MEMBERS,
 };
 use codegg_core::identity::{AgentRunGroupId, AgentRunId, AgentTaskId, ProjectId, RepositoryId};
 use sha2::{Digest, Sha256};
@@ -393,6 +393,27 @@ pub struct TaskTool {
     run_control: Option<Arc<RunControlService>>,
     parent_run_id: Option<AgentRunId>,
     run_groups: Option<Arc<AgentRunGroupService>>,
+    orchestration_owner: Option<AgentOrchestrationOwner>,
+    max_depth: u32,
+}
+
+/// Explicit owner of orchestration operations. A root turn owns its direct
+/// fan-out; a durable run owns only its direct descendants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentOrchestrationOwner {
+    Turn { session_id: String, turn_id: String },
+    Run { run_id: AgentRunId },
+}
+
+fn next_durable_depth(parent_depth: Option<u32>, max_depth: u32) -> Result<u32, String> {
+    let depth = parent_depth.map_or(1, |depth| depth.saturating_add(1));
+    if depth > max_depth {
+        return Err(format!(
+            "subagent max depth {} exceeded (requested depth: {})",
+            max_depth, depth
+        ));
+    }
+    Ok(depth)
 }
 
 fn format_control_outcome(outcome: ControlOutcome) -> String {
@@ -467,6 +488,8 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            orchestration_owner: None,
+            max_depth: 3,
         }
     }
 
@@ -492,6 +515,8 @@ impl TaskTool {
             run_control: None,
             parent_run_id: None,
             run_groups: None,
+            orchestration_owner: None,
+            max_depth: 3,
         }
     }
 
@@ -531,7 +556,31 @@ impl TaskTool {
     }
 
     pub fn with_parent_run_id(mut self, run_id: Option<AgentRunId>) -> Self {
+        self.orchestration_owner = run_id
+            .clone()
+            .map(|run_id| AgentOrchestrationOwner::Run { run_id });
         self.parent_run_id = run_id;
+        self
+    }
+
+    pub fn with_turn_owner(mut self, session_id: String, turn_id: String) -> Self {
+        self.orchestration_owner = Some(AgentOrchestrationOwner::Turn {
+            session_id,
+            turn_id,
+        });
+        self
+    }
+
+    pub fn with_run_owner(mut self, run_id: AgentRunId) -> Self {
+        self.orchestration_owner = Some(AgentOrchestrationOwner::Run {
+            run_id: run_id.clone(),
+        });
+        self.parent_run_id = Some(run_id);
+        self
+    }
+
+    pub fn with_max_depth(mut self, max_depth: u32) -> Self {
+        self.max_depth = max_depth.max(1);
         self
     }
 
@@ -688,14 +737,34 @@ impl Tool for TaskTool {
                     "durable run groups are unavailable".into(),
                 ));
             };
-            let Some(owner_run_id) = self.parent_run_id.clone() else {
-                return Err(ToolError::Execution(
-                    "group actions require a durable parent run".into(),
-                ));
-            };
-            let actor = GroupActor {
-                run_id: Some(owner_run_id.clone()),
-                session_id: self.parent_session_id.clone(),
+            let owner = self.orchestration_owner.clone().ok_or_else(|| {
+                ToolError::Execution("group actions require an orchestration owner".into())
+            })?;
+            let (owner_run_id, actor, group_owner) = match owner {
+                AgentOrchestrationOwner::Run { run_id } => (
+                    run_id.clone(),
+                    GroupActor {
+                        run_id: Some(run_id.clone()),
+                        session_id: None,
+                        turn_id: None,
+                    },
+                    AgentRunGroupOwner::Run { run_id },
+                ),
+                AgentOrchestrationOwner::Turn {
+                    session_id,
+                    turn_id,
+                } => (
+                    AgentRunId::new(),
+                    GroupActor {
+                        run_id: None,
+                        session_id: Some(session_id.clone()),
+                        turn_id: Some(turn_id.clone()),
+                    },
+                    AgentRunGroupOwner::Turn {
+                        session_id,
+                        turn_id,
+                    },
+                ),
             };
             if matches!(action, "spawn_many" | "create_group") {
                 let (accepted, rejected) = if action == "spawn_many" {
@@ -770,28 +839,42 @@ impl Tool for TaskTool {
                     .map(ToOwned::to_owned)
                     .unwrap_or_else(|| {
                         let canonical = serde_json::to_string(&input).unwrap_or_default();
+                        let owner_key = match &self.orchestration_owner {
+                            Some(AgentOrchestrationOwner::Turn {
+                                session_id,
+                                turn_id,
+                            }) => format!("turn:{session_id}:{turn_id}"),
+                            Some(AgentOrchestrationOwner::Run { run_id }) => run_id.to_string(),
+                            None => owner_run_id.to_string(),
+                        };
                         format!(
                             "group:{}:{:x}",
-                            owner_run_id,
+                            owner_key,
                             Sha256::digest(canonical.as_bytes())
                         )
                     });
-                let root_run_id = self
-                    .agent_runs
-                    .as_ref()
-                    .ok_or_else(|| {
-                        ToolError::Execution("spawn_many requires a durable run store".into())
+                let root_run_id = if matches!(&group_owner, AgentRunGroupOwner::Run { .. }) {
+                    self.agent_runs
+                        .as_ref()
+                        .ok_or_else(|| {
+                            ToolError::Execution("group requires a durable run store".into())
+                        })?
+                        .get_run(&owner_run_id)
+                        .await
+                        .map_err(|error| ToolError::Execution(error.to_string()))?
+                        .ok_or_else(|| ToolError::Execution("owner run no longer exists".into()))?
+                        .root_run_id
+                } else {
+                    accepted.first().cloned().ok_or_else(|| {
+                        ToolError::Execution("group has no accepted members".into())
                     })?
-                    .get_run(&owner_run_id)
-                    .await
-                    .map_err(|error| ToolError::Execution(error.to_string()))?
-                    .ok_or_else(|| ToolError::Execution("parent run no longer exists".into()))?
-                    .root_run_id;
+                };
                 let summary = groups
                     .create(NewAgentRunGroup {
                         group_id,
                         root_run_id,
-                        owner_run_id: owner_run_id.clone(),
+                        owner_run_id: accepted.first().cloned().unwrap_or(owner_run_id.clone()),
+                        owner: group_owner,
                         member_run_ids: accepted,
                         join_policy: policy,
                         cancel_remaining_on_satisfaction: input["cancel_remaining_on_satisfaction"]
@@ -854,6 +937,7 @@ impl Tool for TaskTool {
             let actor = ControlActor {
                 session_id: self.parent_session_id.clone(),
                 run_id: self.parent_run_id.clone(),
+                turn_id: self.parent_turn_id.clone(),
             };
             let outcome = match action {
                 "status" => control.status(&actor, run_id).await,
@@ -990,12 +1074,24 @@ impl Tool for TaskTool {
                         .unwrap_or("unknown")
                         .to_string();
                     let authority_digest = authority_digest(&denied_tools, &allowed_paths);
+                    let parent_run = match &self.orchestration_owner {
+                        Some(AgentOrchestrationOwner::Run { run_id }) => agent_runs
+                            .get_run(run_id)
+                            .await
+                            .map_err(|e| ToolError::Execution(e.to_string()))?,
+                        _ => None,
+                    };
+                    let parent_run_id = parent_run.as_ref().map(|run| run.run_id.clone());
+                    let depth = next_durable_depth(
+                        parent_run.as_ref().map(|run| run.depth),
+                        self.max_depth,
+                    )
+                    .map_err(ToolError::Execution)?;
                     let created = agent_runs
                         .create_or_get(
                             NewAgentTask {
                                 task_id: AgentTaskId::new(),
-                                parent_task_id: if let Some(parent_run_id) =
-                                    self.parent_run_id.as_ref()
+                                parent_task_id: if let Some(parent_run_id) = parent_run_id.as_ref()
                                 {
                                     agent_runs
                                         .get_run(parent_run_id)
@@ -1020,14 +1116,18 @@ impl Tool for TaskTool {
                             },
                             NewAgentRun {
                                 run_id: AgentRunId::new(),
-                                parent_run_id: self.parent_run_id.clone(),
+                                parent_run_id,
                                 workspace_id: workspace_id.clone(),
                                 agent_name: agent.clone(),
                                 agent_digest: None,
                                 provider,
                                 model: self.parent_model.clone().unwrap_or_default(),
                                 authority_digest,
-                                budget: AgentRunBudget::default(),
+                                budget: AgentRunBudget {
+                                    max_depth: Some(self.max_depth),
+                                    ..Default::default()
+                                },
+                                depth,
                             },
                         )
                         .await
@@ -1092,7 +1192,7 @@ impl Tool for TaskTool {
                         codegg_core::jobs::NewJob {
                             workspace_id,
                             session_id: self.parent_session_id.clone(),
-                            turn_id: None,
+                            turn_id: self.parent_turn_id.clone(),
                             kind: codegg_core::jobs::JobKind::Subagent,
                             source: codegg_core::jobs::JobSource::AgentDelegated,
                             priority: codegg_core::jobs::JobPriority::Interactive,
@@ -1282,6 +1382,18 @@ impl Tool for TaskTool {
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_durable_depth;
+
+    #[test]
+    fn durable_depth_enforces_last_allowed_level() {
+        assert_eq!(next_durable_depth(None, 1), Ok(1));
+        assert_eq!(next_durable_depth(Some(1), 2), Ok(2));
+        assert!(next_durable_depth(Some(2), 2).is_err());
     }
 }
 

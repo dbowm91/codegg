@@ -110,6 +110,12 @@ still at that base, then uses the typed Git mutation executor. Conflict
 outcomes are returned as structured recoverable results; successful child
 completion alone never changes the parent.
 
+Nested allocation keeps the durable `RepositoryId` and resolves linked
+worktrees back to the repository's common root for lifecycle identity. The
+effective base is read from the owning checkout (or an explicitly supplied
+base commit), so a grandchild continues from its parent's current checkout
+without sharing its write path.
+
 Durable delegated-run projections expose only bounded worktree identity, owner
 run, branch, base commit, lifecycle/health, dirty/conflicted state, and the
 retained-for-attention flag. The projection is derived from `WorktreeService`

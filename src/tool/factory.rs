@@ -139,7 +139,15 @@ pub fn build_session_tool_registry(
             Some(session_id.to_string()),
             Vec::new(),
         )
-        .with_parent_model(parent_model);
+        .with_parent_model(parent_model)
+        .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())
+        .with_max_depth(
+            config
+                .subagent
+                .as_ref()
+                .and_then(|s| s.max_depth)
+                .unwrap_or(3) as u32,
+        );
         let task_tool = if let Some(submission) = submission {
             task_tool
                 .with_submission(submission, execution.workspace_root.clone())

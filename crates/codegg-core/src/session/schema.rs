@@ -145,6 +145,12 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 41 {
         migrate_and_record(pool, 41).await?;
     }
+    if current_version < 42 {
+        migrate_and_record(pool, 42).await?;
+    }
+    if current_version < 43 {
+        migrate_and_record(pool, 43).await?;
+    }
 
     Ok(())
 }
@@ -198,6 +204,8 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             39 => migrate_v39(pool).await?,
             40 => migrate_v40(pool).await?,
             41 => migrate_v41(pool).await?,
+            42 => migrate_v42(pool).await?,
+            43 => migrate_v43(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2025,6 +2033,27 @@ async fn migrate_v41(pool: &SqlitePool) -> Result<(), StorageError> {
             .execute(pool)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// M007: make delegated execution depth durable and authoritative.
+async fn migrate_v42(pool: &SqlitePool) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        pool,
+        "ALTER TABLE agent_run ADD COLUMN depth INTEGER NOT NULL DEFAULT 1 CHECK (depth >= 1 AND depth <= 64)".to_string(),
+    )
+    .await
+}
+
+/// M007: persist whether a group is owned by a root turn or a durable run.
+async fn migrate_v43(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        "ALTER TABLE agent_run_group ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'run'",
+        "ALTER TABLE agent_run_group ADD COLUMN owner_session_id TEXT",
+        "ALTER TABLE agent_run_group ADD COLUMN owner_turn_id TEXT",
+    ] {
+        add_column_ignore_duplicate(pool, statement.to_string()).await?;
     }
     Ok(())
 }

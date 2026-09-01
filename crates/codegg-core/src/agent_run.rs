@@ -173,6 +173,8 @@ pub struct AgentRunRecord {
     pub task_id: AgentTaskId,
     pub root_run_id: AgentRunId,
     pub parent_run_id: Option<AgentRunId>,
+    /// Durable delegation depth. Top-level delegated runs are depth 1.
+    pub depth: u32,
     pub workspace_id: WorkspaceId,
     pub worktree_id: Option<WorktreeId>,
     pub node_id: Option<NodeId>,
@@ -196,6 +198,41 @@ pub struct AgentRunRecord {
     pub updated_at: i64,
 }
 
+/// Store-derived context handed from durable acceptance to a worker. It
+/// contains stable identities and bounded authority inputs, never prompts or
+/// credentials. Reconstructing this from the task/run records prevents a
+/// scheduler payload from becoming a second provenance authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DelegatedAgentExecutionContext {
+    pub current_run_id: AgentRunId,
+    pub root_run_id: AgentRunId,
+    pub parent_run_id: Option<AgentRunId>,
+    pub depth: u32,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub project_id: ProjectId,
+    pub repository_id: Option<RepositoryId>,
+    pub workspace_id: WorkspaceId,
+    pub worktree_id: Option<WorktreeId>,
+}
+
+impl DelegatedAgentExecutionContext {
+    pub fn from_records(task: &AgentTaskRecord, run: &AgentRunRecord) -> Self {
+        Self {
+            current_run_id: run.run_id.clone(),
+            root_run_id: run.root_run_id.clone(),
+            parent_run_id: run.parent_run_id.clone(),
+            depth: run.depth,
+            session_id: task.originating_session_id.clone(),
+            turn_id: task.originating_turn_id.clone(),
+            project_id: task.project_id.clone(),
+            repository_id: task.repository_id.clone(),
+            workspace_id: task.workspace_id.clone(),
+            worktree_id: run.worktree_id.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NewAgentTask {
     pub task_id: AgentTaskId,
@@ -214,6 +251,8 @@ pub struct NewAgentTask {
 pub struct NewAgentRun {
     pub run_id: AgentRunId,
     pub parent_run_id: Option<AgentRunId>,
+    /// Requested depth, validated against the durable parent relation.
+    pub depth: u32,
     pub workspace_id: WorkspaceId,
     pub agent_name: String,
     pub agent_digest: Option<String>,
@@ -499,6 +538,7 @@ fn build_records(
         task_id: task_record.task_id.clone(),
         root_run_id,
         parent_run_id: run.parent_run_id,
+        depth: run.depth,
         workspace_id: run.workspace_id,
         worktree_id: None,
         node_id: None,
@@ -626,6 +666,16 @@ impl AgentRunStore for InMemoryAgentRunStore {
                     "parent run/task relation is outside the declared scope".into(),
                 ));
             }
+            if run.depth != parent.depth.saturating_add(1) {
+                return Err(AgentRunStoreError::InvalidRelation(format!(
+                    "run depth {} does not follow parent depth {}",
+                    run.depth, parent.depth
+                )));
+            }
+        } else if run.depth != 1 {
+            return Err(AgentRunStoreError::InvalidRelation(
+                "top-level delegated runs must have depth 1".into(),
+            ));
         }
         let now = Utc::now().timestamp_millis();
         let (mut task_record, mut run_record) = build_records(task, run, now);
@@ -965,7 +1015,7 @@ async fn load_run(
     pool: &SqlitePool,
     id: &AgentRunId,
 ) -> Result<Option<AgentRunRecord>, AgentRunStoreError> {
-    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, workspace_id, worktree_id, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
+    let row = sqlx::query("SELECT run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, worktree_id, node_id, job_id, attempt_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, terminal, result_ref, failure_class, failure_message, cancellation_requested, created_at, started_at, finished_at, updated_at FROM agent_run WHERE run_id = ?").bind(id.as_str()).fetch_optional(pool).await.map_err(storage_error)?;
     row.map(|r| {
         Ok(AgentRunRecord {
             run_id: parse_run(r.get("run_id"))?,
@@ -975,6 +1025,7 @@ async fn load_run(
                 .get::<Option<String>, _>("parent_run_id")
                 .map(parse_run)
                 .transpose()?,
+            depth: r.get::<i64, _>("depth") as u32,
             workspace_id: WorkspaceId::new_unchecked(r.get::<String, _>("workspace_id")),
             worktree_id: r
                 .get::<Option<String>, _>("worktree_id")
@@ -1085,9 +1136,10 @@ impl AgentRunStore for SqliteAgentRunStore {
             parent_root_task = Some(parse_task(parent_row.get("root_task_id"))?);
         }
         let mut parent_root_run = None;
+        let mut parent_depth = None;
         if let Some(parent) = run.parent_run_id.as_ref() {
             let parent_row = sqlx::query(
-                "SELECT task_id, workspace_id, root_run_id FROM agent_run WHERE run_id = ?",
+                "SELECT task_id, workspace_id, root_run_id, depth FROM agent_run WHERE run_id = ?",
             )
             .bind(parent.as_str())
             .fetch_optional(&mut *tx)
@@ -1105,6 +1157,7 @@ impl AgentRunStore for SqliteAgentRunStore {
                 ));
             }
             parent_root_run = Some(parse_run(parent_row.get("root_run_id"))?);
+            parent_depth = Some(parent_row.get::<i64, _>("depth") as u32);
         }
         let task_input = task.clone();
         let run_input = run.clone();
@@ -1115,6 +1168,20 @@ impl AgentRunStore for SqliteAgentRunStore {
         }
         if let Some(root_run_id) = parent_root_run {
             run_record.root_run_id = root_run_id;
+        }
+        match parent_depth {
+            Some(parent_depth) if run_record.depth != parent_depth.saturating_add(1) => {
+                return Err(AgentRunStoreError::InvalidRelation(format!(
+                    "run depth {} does not follow parent depth {}",
+                    run_record.depth, parent_depth
+                )));
+            }
+            None if run_record.depth != 1 => {
+                return Err(AgentRunStoreError::InvalidRelation(
+                    "top-level delegated runs must have depth 1".into(),
+                ));
+            }
+            _ => {}
         }
         let budget = serde_json::to_string(&run_record.budget)
             .map_err(|e| AgentRunStoreError::Serialization(e.to_string()))?;
@@ -1127,8 +1194,8 @@ impl AgentRunStore for SqliteAgentRunStore {
             }
             return Err(storage_error(error));
         }
-        sqlx::query("INSERT INTO agent_run (run_id, task_id, root_run_id, parent_run_id, workspace_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, cancellation_requested, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)")
-            .bind(run_record.run_id.as_str()).bind(run_record.task_id.as_str()).bind(run_record.root_run_id.as_str()).bind(run_record.parent_run_id.as_ref().map(AgentRunId::as_str)).bind(run_record.workspace_id.as_str()).bind(&run_record.agent_name).bind(run_record.agent_digest.as_deref()).bind(&run_record.provider).bind(&run_record.model).bind(&run_record.authority_digest).bind(budget).bind(run_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await.map_err(storage_error)?;
+        sqlx::query("INSERT INTO agent_run (run_id, task_id, root_run_id, parent_run_id, depth, workspace_id, agent_name, agent_digest, provider, model, authority_digest, budget_json, status, cancellation_requested, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)")
+            .bind(run_record.run_id.as_str()).bind(run_record.task_id.as_str()).bind(run_record.root_run_id.as_str()).bind(run_record.parent_run_id.as_ref().map(AgentRunId::as_str)).bind(run_record.depth as i64).bind(run_record.workspace_id.as_str()).bind(&run_record.agent_name).bind(run_record.agent_digest.as_deref()).bind(&run_record.provider).bind(&run_record.model).bind(&run_record.authority_digest).bind(budget).bind(run_record.status.as_str()).bind(now).bind(now).execute(&mut *tx).await.map_err(storage_error)?;
         tx.commit().await.map_err(storage_error)?;
         Ok(AgentRunSubmission {
             task: task_record,
@@ -1404,6 +1471,7 @@ mod tests {
         NewAgentRun {
             run_id: AgentRunId::new(),
             parent_run_id: parent,
+            depth: 1,
             workspace_id: WorkspaceId::new_unchecked("workspace"),
             agent_name: "general".into(),
             agent_digest: Some("digest".into()),
@@ -1474,6 +1542,35 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, AgentRunStoreError::InvalidRelation(_)));
+    }
+
+    #[tokio::test]
+    async fn durable_depth_is_monotonic_and_root_is_inherited() {
+        let store = InMemoryAgentRunStore::new();
+        let parent = store
+            .create_or_get(task("depth-parent", None), run(None))
+            .await
+            .unwrap();
+        let mut invalid = run(Some(parent.run.run_id.clone()));
+        invalid.depth = 1;
+        assert!(matches!(
+            store
+                .create_or_get(
+                    task("depth-invalid", Some(parent.task.task_id.clone())),
+                    invalid
+                )
+                .await,
+            Err(AgentRunStoreError::InvalidRelation(_))
+        ));
+
+        let mut child = run(Some(parent.run.run_id.clone()));
+        child.depth = 2;
+        let child = store
+            .create_or_get(task("depth-child", Some(parent.task.task_id)), child)
+            .await
+            .unwrap();
+        assert_eq!(child.run.depth, 2);
+        assert_eq!(child.run.root_run_id, parent.run.root_run_id);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency M007 — Durable Lineage, Owner Context, Fan-Out, and Authorization Corrective Pass
 
-Status: ready
+Status: implemented
 
 Repository baseline: `b87d1d5b65aca96c700deb27e579374b3d158545`
 

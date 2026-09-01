@@ -184,6 +184,12 @@ it does not perform a second machine-capacity admission.
 `JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
 the run record is the attributable delegated-agent ownership layer.
 
+For `SubagentRun`, the executor reloads the durable task and run before
+constructing `SubAgentRequest`. The request receives the persisted current
+run's parent and depth, and the originating session context; it does not copy
+or invent lineage from scheduler display fields. Descendant acceptance derives
+`depth + 1` in the durable run store and rejects mismatches before queueing.
+
 For M004, the subagent executor resolves whether the requested child retains
 mutation capability before constructing its request. Durable mutating runs
 must acquire a managed worktree lease during `Preparing`; if the worktree

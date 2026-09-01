@@ -23,7 +23,7 @@ pub fn agent_run_summary(
     worktree: Option<&WorktreeRecord>,
     result: Option<&AgentRunResult>,
     group_id: Option<&str>,
-    depth: u32,
+    _depth: u32,
 ) -> AgentRunSummary {
     let validation_summary = result.and_then(|result| {
         if result.validation.is_empty() {
@@ -63,7 +63,7 @@ pub fn agent_run_summary(
         parent_run_id: run.parent_run_id.as_ref().map(ToString::to_string),
         agent: run.agent_name.clone(),
         status: run.status.as_str().into(),
-        depth,
+        depth: run.depth,
         worktree_id: run.worktree_id.as_ref().map(ToString::to_string),
         branch: worktree.and_then(|worktree| worktree.branch.clone()),
         base_commit: worktree
@@ -188,6 +188,7 @@ mod tests {
             task_id,
             root_run_id: AgentRunId::new(),
             parent_run_id: None,
+            depth: 1,
             workspace_id: task.workspace_id.clone(),
             worktree_id: Some(worktree_id.clone()),
             node_id: None,

@@ -151,6 +151,11 @@ pub struct CreateWorktreeRequest {
     pub workspace_id: WorkspaceId,
     pub node_id: Option<NodeId>,
     pub repository_root: PathBuf,
+    /// Optional explicit base. When omitted, the current HEAD of the
+    /// supplied worktree is used, which is the nested-run continuation rule.
+    pub base_commit: Option<String>,
+    /// Optional checkout whose effective HEAD should seed the new worktree.
+    pub base_path: Option<PathBuf>,
     pub owner_run_id: AgentRunId,
 }
 
@@ -791,10 +796,15 @@ impl WorktreeService {
         request: &CreateWorktreeRequest,
     ) -> Result<WorktreeRecord, WorktreeServiceError> {
         let root = canonical_repo_root(&request.repository_root)?;
-        let status = egggit::status_v2::rich_repo_status(&root)
+        let base_path = request
+            .base_path
+            .as_deref()
+            .unwrap_or(&request.repository_root);
+        let base_path = canonical_or_self(base_path);
+        let status = egggit::status_v2::rich_repo_status(&base_path)
             .await
             .map_err(|e| WorktreeServiceError::Git(e.to_string()))?;
-        let base_commit = status.head.ok_or_else(|| {
+        let base_commit = request.base_commit.clone().or(status.head).ok_or_else(|| {
             WorktreeServiceError::Git("repository has no commit to use as a base".into())
         })?;
         ObjectId::new(&base_commit).map_err(|e| {
@@ -842,6 +852,7 @@ impl WorktreeService {
             workspace_id: request.workspace_id.clone(),
             node_id: request.node_id.clone(),
             repository_root: root,
+
             path,
             branch: Some(branch),
             base_commit,
@@ -1272,11 +1283,42 @@ fn canonical_repo_root(path: &Path) -> Result<PathBuf, WorktreeServiceError> {
             path.display()
         )));
     }
-    crate::worktree::find_git_root(path)
+    let root = crate::worktree::find_git_root(path)
         .and_then(|root| root.canonicalize().ok())
         .ok_or_else(|| {
             WorktreeServiceError::InvalidInput(format!("not a Git repository: {}", path.display()))
-        })
+        })?;
+    // Linked worktrees have a `.git` file pointing below the canonical
+    // repository's common `.git` directory. Keep repository identity and
+    // worktree allocation anchored at that common root.
+    let git_entry = root.join(".git");
+    if git_entry.is_file() {
+        let contents = std::fs::read_to_string(&git_entry)
+            .map_err(|e| WorktreeServiceError::Git(e.to_string()))?;
+        if let Some(raw) = contents.strip_prefix("gitdir:") {
+            let git_dir = PathBuf::from(raw.trim());
+            let git_dir = if git_dir.is_absolute() {
+                git_dir
+            } else {
+                root.join(git_dir)
+            };
+            if let Some(worktrees) = git_dir.parent() {
+                if worktrees
+                    .file_name()
+                    .is_some_and(|name| name == "worktrees")
+                {
+                    if let Some(common_git) = worktrees.parent() {
+                        if common_git.file_name().is_some_and(|name| name == ".git") {
+                            if let Some(repository_root) = common_git.parent() {
+                                return Ok(repository_root.to_path_buf());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(root)
 }
 
 fn canonical_or_self(path: &Path) -> PathBuf {
@@ -1390,6 +1432,8 @@ mod tests {
                 workspace_id: workspace,
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
+                base_commit: None,
+                base_path: None,
                 owner_run_id: run.clone(),
             })
             .await
@@ -1465,6 +1509,8 @@ mod tests {
                 workspace_id: workspace,
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
+                base_commit: None,
+                base_path: None,
                 owner_run_id: run.clone(),
             })
             .await
@@ -1528,6 +1574,8 @@ mod tests {
             workspace_id: workspace.clone(),
             node_id: None,
             repository_root: repo.path().to_path_buf(),
+            base_commit: None,
+            base_path: None,
             owner_run_id,
         };
         let request_a = request(run_a);
@@ -1538,6 +1586,50 @@ mod tests {
         assert_ne!(first.0.worktree_id, second.0.worktree_id);
         assert_ne!(first.0.path, second.0.path);
         assert_ne!(first.0.branch, second.0.branch);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn nested_worktree_uses_common_repository_root_and_parent_head() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let managed = TempDir::new().unwrap();
+        let (project, repository, workspace, parent_run) = ids();
+        let child_run = AgentRunId::new();
+        let service = WorktreeService::memory(
+            managed.path().to_path_buf(),
+            Arc::new(WorkspaceLockTable::new()),
+        );
+        let (parent, _) = service
+            .create(&CreateWorktreeRequest {
+                project_id: project.clone(),
+                repository_id: repository.clone(),
+                workspace_id: workspace.clone(),
+                node_id: None,
+                repository_root: repo.path().to_path_buf(),
+                base_commit: None,
+                base_path: None,
+                owner_run_id: parent_run,
+            })
+            .await
+            .unwrap();
+        let (child, _) = service
+            .create(&CreateWorktreeRequest {
+                project_id: project,
+                repository_id: repository,
+                workspace_id: workspace,
+                node_id: None,
+                repository_root: parent.path.clone(),
+                base_commit: None,
+                base_path: Some(parent.path.clone()),
+                owner_run_id: child_run,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(child.repository_root, parent.repository_root);
+        assert_eq!(child.base_commit, parent.base_commit);
+        assert_ne!(child.path, parent.path);
+        assert!(crate::worktree::is_git_worktree(&child.path));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1564,6 +1656,8 @@ mod tests {
                 workspace_id: workspace,
                 node_id: None,
                 repository_root: repo.path().to_path_buf(),
+                base_commit: None,
+                base_path: None,
                 owner_run_id: run.clone(),
             })
             .await

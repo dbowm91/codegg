@@ -98,10 +98,13 @@ hard-deny set (e.g. `GIT_ASKPASS`) is always stripped.
 ### Managed worktrees
 
 The M003 `WorktreeService` owns only CodeGG-managed local worktree
-lifecycles. It resolves the repository root and base HEAD with structured
+lifecycles. It resolves the canonical common repository root and base HEAD with structured
 read APIs, acquires the shared repository/worktree mutation lock, and invokes
 the hardened `codegg-core::worktree` add/remove helpers through
-`spawn_blocking`. It does not clone repositories, perform network Git
+`spawn_blocking`. For linked/nested worktrees, the identity root and the
+checkout used to read the effective base are separate inputs. This preserves
+the logical repository identity while allowing a child to continue from its
+owner's current HEAD. It does not clone repositories, perform network Git
 operations, or replace `GitMutationExecutor` for ordinary Git mutations.
 
 Its deterministic branch/path names are validated by `BranchName` and
