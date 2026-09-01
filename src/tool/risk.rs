@@ -298,9 +298,7 @@ fn summarize_bash_output(lines: &[&str], line_count: usize) -> Option<String> {
     }
 
     // Detect git status output
-    let has_git_branch = lines.iter().any(|l| l.contains("On branch"));
-    if has_git_branch {
-        let branch_line = lines.iter().find(|l| l.contains("On branch")).unwrap();
+    if let Some(branch_line) = lines.iter().find(|l| l.contains("On branch")) {
         let changes = lines
             .iter()
             .filter(|l| {

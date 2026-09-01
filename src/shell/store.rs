@@ -31,8 +31,10 @@ impl BoundedOutput {
     }
 
     pub fn append(&mut self, data: &[u8]) {
-        self.total_bytes += data.len();
-        self.total_lines += data.iter().filter(|&&b| b == b'\n').count();
+        self.total_bytes = self.total_bytes.saturating_add(data.len());
+        self.total_lines = self
+            .total_lines
+            .saturating_add(data.iter().filter(|&&b| b == b'\n').count());
 
         let space_in_head = HEAD_CAP.saturating_sub(self.head.len());
         if space_in_head > 0 {
@@ -49,7 +51,7 @@ impl BoundedOutput {
             let overflow = self.tail.len().saturating_sub(TAIL_CAP);
             if overflow > 0 {
                 self.tail.drain(..overflow);
-                self.omitted_bytes += overflow;
+                self.omitted_bytes = self.omitted_bytes.saturating_add(overflow);
             }
         }
     }
@@ -325,6 +327,20 @@ mod tests {
         assert_eq!(bo.tail.len(), TAIL_CAP);
         assert_eq!(bo.omitted_bytes, b"overflow-past-tail-cap".len());
         assert_eq!(bo.total_bytes, 512 * 1024 + b"overflow-past-tail-cap".len());
+    }
+
+    #[test]
+    fn bounded_output_counters_saturate() {
+        let mut bo = BoundedOutput::new();
+        bo.total_bytes = usize::MAX;
+        bo.total_lines = usize::MAX;
+        bo.omitted_bytes = usize::MAX;
+
+        bo.append(b"line\n");
+
+        assert_eq!(bo.total_bytes, usize::MAX);
+        assert_eq!(bo.total_lines, usize::MAX);
+        assert_eq!(bo.omitted_bytes, usize::MAX);
     }
 
     #[test]

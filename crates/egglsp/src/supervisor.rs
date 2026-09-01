@@ -109,7 +109,7 @@ impl StderrRingBuffer {
     pub fn push(&mut self, line: String) {
         let line_bytes = line.len();
         self.lines.push_back(line);
-        self.total_bytes += line_bytes;
+        self.total_bytes = self.total_bytes.saturating_add(line_bytes);
         // Evict oldest lines if over bounds.
         while self.lines.len() > MAX_LINES || self.total_bytes > MAX_BYTES {
             if let Some(oldest) = self.lines.front() {
@@ -215,6 +215,16 @@ mod tests {
         let buf = StderrRingBuffer::new();
         assert!(buf.is_empty());
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn stderr_ring_buffer_byte_counter_saturates() {
+        let mut buf = StderrRingBuffer::new();
+        buf.total_bytes = usize::MAX;
+
+        buf.push("line".to_string());
+
+        assert!(buf.is_empty());
     }
 
     #[test]
