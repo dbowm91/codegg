@@ -186,6 +186,79 @@ pub fn projection_events_from_core(
             };
             Some((session_id.clone(), None, event))
         }
+        CoreEvent::AgentRunUpserted { session_id, run } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunUpserted { run: run.clone() },
+        )),
+        CoreEvent::AgentRunProgress {
+            session_id,
+            run_id,
+            status,
+            progress,
+        } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunProgress {
+                run_id: run_id.clone(),
+                status: status.clone(),
+                progress: progress.clone(),
+                at: envelope.timestamp_ms,
+            },
+        )),
+        CoreEvent::AgentRunTerminal {
+            session_id,
+            run_id,
+            status,
+            terminal_summary,
+            result_commit,
+            validation_summary,
+            attention_required,
+        } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunTerminal {
+                run_id: run_id.clone(),
+                status: status.clone(),
+                terminal_summary: terminal_summary.clone(),
+                result_commit: result_commit.clone(),
+                validation_summary: validation_summary.clone(),
+                attention_required: *attention_required,
+                completed_at: envelope.timestamp_ms,
+            },
+        )),
+        CoreEvent::AgentRunControlUpdated {
+            session_id,
+            run_id,
+            control_status,
+            cancellation_requested,
+        } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunControlUpdated {
+                run_id: run_id.clone(),
+                control_status: control_status.clone(),
+                cancellation_requested: *cancellation_requested,
+                at: envelope.timestamp_ms,
+            },
+        )),
+        CoreEvent::WorktreeUpserted {
+            session_id,
+            worktree,
+        } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::WorktreeUpserted {
+                worktree: worktree.clone(),
+            },
+        )),
+        CoreEvent::AgentRunGroupUpserted { session_id, group } => Some((
+            session_id.clone(),
+            None,
+            ProjectionEvent::AgentRunGroupUpserted {
+                group: group.clone(),
+            },
+        )),
         CoreEvent::FileChanged { path, action } => {
             let change = match action.as_str() {
                 "created" => codegg_protocol::projection::dto::FileChangeProjection::Created {

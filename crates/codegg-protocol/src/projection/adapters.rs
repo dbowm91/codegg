@@ -106,6 +106,9 @@ pub fn snapshot_from_snapshot_session(
         runs: Vec::new().into(),
         jobs: Vec::new().into(),
         tool_programs: Vec::new().into(),
+        agent_runs: Vec::new().into(),
+        worktrees: Vec::new().into(),
+        run_groups: Vec::new().into(),
         diagnostics: Vec::new().into(),
     };
 
@@ -488,6 +491,74 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 error: truncate_str(error, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 failed_at: env.timestamp_ms,
             });
+        }
+        CoreEvent::AgentRunUpserted { run, .. } => {
+            let mut run = run.clone();
+            run.normalise();
+            events.push(ProjectionEvent::AgentRunUpserted { run });
+        }
+        CoreEvent::AgentRunProgress {
+            run_id,
+            status,
+            progress,
+            ..
+        } => {
+            events.push(ProjectionEvent::AgentRunProgress {
+                run_id: truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                status: status
+                    .as_deref()
+                    .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned()),
+                progress: truncate_str(progress, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned(),
+                at: env.timestamp_ms,
+            });
+        }
+        CoreEvent::AgentRunTerminal {
+            run_id,
+            status,
+            terminal_summary,
+            result_commit,
+            validation_summary,
+            attention_required,
+            ..
+        } => {
+            events.push(ProjectionEvent::AgentRunTerminal {
+                run_id: truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                status: truncate_str(status, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                terminal_summary: truncate_str(terminal_summary, MAX_PROJECTION_RUN_SUMMARY_BYTES)
+                    .into_owned(),
+                result_commit: result_commit
+                    .as_deref()
+                    .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned()),
+                validation_summary: validation_summary.as_deref().map(|value| {
+                    truncate_str(value, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned()
+                }),
+                attention_required: *attention_required,
+                completed_at: env.timestamp_ms,
+            });
+        }
+        CoreEvent::AgentRunControlUpdated {
+            run_id,
+            control_status,
+            cancellation_requested,
+            ..
+        } => {
+            events.push(ProjectionEvent::AgentRunControlUpdated {
+                run_id: truncate_str(run_id, MAX_PROJECTION_STRING_BYTES).into_owned(),
+                control_status: truncate_str(control_status, MAX_PROJECTION_STRING_BYTES)
+                    .into_owned(),
+                cancellation_requested: *cancellation_requested,
+                at: env.timestamp_ms,
+            });
+        }
+        CoreEvent::WorktreeUpserted { worktree, .. } => {
+            let mut worktree = worktree.clone();
+            worktree.normalise();
+            events.push(ProjectionEvent::WorktreeUpserted { worktree });
+        }
+        CoreEvent::AgentRunGroupUpserted { group, .. } => {
+            let mut group = group.clone();
+            group.normalise();
+            events.push(ProjectionEvent::AgentRunGroupUpserted { group });
         }
         CoreEvent::FileChanged { path, action } => {
             let change = match action.as_str() {

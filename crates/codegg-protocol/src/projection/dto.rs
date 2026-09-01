@@ -465,6 +465,158 @@ pub enum AgentTreeStatus {
     Failed,
 }
 
+/// Bounded, frontend-neutral summary of a durable delegated agent run.
+///
+/// This is derived from the authoritative run, worktree, result, and group
+/// stores. It contains no prompt, transcript, mailbox body, hidden
+/// reasoning, credentials, or raw logs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunSummary {
+    pub run_id: String,
+    pub task_id: String,
+    pub parent_run_id: Option<String>,
+    pub agent: String,
+    pub status: String,
+    pub depth: u32,
+    pub worktree_id: Option<String>,
+    pub branch: Option<String>,
+    pub base_commit: Option<String>,
+    pub result_commit: Option<String>,
+    pub validation_summary: Option<String>,
+    pub group_id: Option<String>,
+    pub attention_required: bool,
+    pub terminal_summary: Option<String>,
+    pub control_status: String,
+    pub progress: Option<String>,
+    pub failure_class: Option<String>,
+    pub updated_at: i64,
+}
+
+pub type AgentRunSummaryProjection = AgentRunSummary;
+
+impl AgentRunSummary {
+    pub fn normalise(&mut self) {
+        self.run_id = truncate_str(&self.run_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.task_id = truncate_str(&self.task_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.parent_run_id = self
+            .parent_run_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.agent = truncate_str(&self.agent, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.status = truncate_str(&self.status, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.branch = self
+            .branch
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.base_commit = self
+            .base_commit
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.result_commit = self
+            .result_commit
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.validation_summary = self
+            .validation_summary
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
+        self.group_id = self
+            .group_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.terminal_summary = self
+            .terminal_summary
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
+        self.control_status =
+            truncate_str(&self.control_status, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.progress = self
+            .progress
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
+        self.failure_class = self
+            .failure_class
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+    }
+}
+
+/// Bounded summary of a daemon-owned managed worktree associated with a run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorktreeSummaryProjection {
+    pub worktree_id: String,
+    pub owner_run_id: Option<String>,
+    pub branch: Option<String>,
+    pub base_commit: Option<String>,
+    pub state: String,
+    pub health: String,
+    pub dirty: bool,
+    pub conflicted: bool,
+    pub retained_for_attention: bool,
+    pub updated_at: i64,
+}
+
+impl WorktreeSummaryProjection {
+    pub fn normalise(&mut self) {
+        self.worktree_id =
+            truncate_str(&self.worktree_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.owner_run_id = self
+            .owner_run_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.branch = self
+            .branch
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.base_commit = self
+            .base_commit
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.state = truncate_str(&self.state, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.health = truncate_str(&self.health, MAX_PROJECTION_STRING_BYTES).into_owned();
+    }
+}
+
+/// Bounded summary of a durable run group. Member IDs are opaque references;
+/// consumers use the run summaries for member detail.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRunGroupSummaryProjection {
+    pub group_id: String,
+    pub owner_run_id: String,
+    pub status: String,
+    pub join_policy: String,
+    pub member_run_ids: Vec<String>,
+    pub successful: usize,
+    pub failed: usize,
+    pub active: usize,
+    pub winner_run_id: Option<String>,
+    pub cancel_remaining_on_satisfaction: bool,
+    pub updated_at: i64,
+}
+
+pub type RunGroupSummaryProjection = AgentRunGroupSummaryProjection;
+
+impl AgentRunGroupSummaryProjection {
+    pub fn normalise(&mut self) {
+        self.group_id = truncate_str(&self.group_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.owner_run_id =
+            truncate_str(&self.owner_run_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.status = truncate_str(&self.status, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.join_policy =
+            truncate_str(&self.join_policy, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.member_run_ids = self
+            .member_run_ids
+            .drain(..)
+            .take(crate::projection::limits::MAX_PROJECTION_AGENT_RUNS)
+            .map(|s| truncate_str(&s, MAX_PROJECTION_STRING_BYTES).into_owned())
+            .collect();
+        self.winner_run_id = self
+            .winner_run_id
+            .as_deref()
+            .map(|s| truncate_str(s, MAX_PROJECTION_STRING_BYTES).into_owned());
+    }
+}
+
 /// Bounded projection of a run (test, command, script).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RunProjection {

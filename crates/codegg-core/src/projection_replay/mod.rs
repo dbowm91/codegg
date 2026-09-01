@@ -18,6 +18,7 @@
 //! * [`metrics`] — bounded observability counters.
 //! * [`handle`] — daemon-level Arc-wrapped publication helper.
 
+pub mod agent_runs;
 pub mod artifact_registry;
 pub mod artifacts;
 pub mod context;
@@ -33,6 +34,7 @@ pub mod service;
 pub mod store;
 pub mod subscription;
 
+pub use agent_runs::{agent_run_summary, run_group_summary, run_upsert_event, worktree_summary};
 pub use artifact_registry::{
     ArtifactRegistryError, HandleEntry, HandleId, ProjectionArtifactRegistry,
     RunStoreProjectionArtifactRegistry,

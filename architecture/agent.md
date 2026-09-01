@@ -276,6 +276,19 @@ requests do not acquire the pool's machine-capacity semaphore, so resource
 contention queues at the global scheduler. Standalone compatibility paths may
 continue to use the pool directly and do not claim daemon guarantees.
 
+The session projection adds bounded summaries for the durable run tree, owned
+worktrees, and run groups. It is derived from the authoritative stores and is
+safe to replay after reconnect or daemon restart; it is never a second
+execution or control authority. The summary includes typed run/task identity,
+status/control state, branch/base/result commit, validation, and
+attention-required state while leaving prompts, mailboxes, transcripts,
+reasoning, and full artifacts behind their existing durable handles.
+
+The legacy numeric `TaskStore` alias, `Subagent*` events, and `task get` remain
+read/control compatibility surfaces for older clients and standalone mode.
+New daemon clients should prefer typed run IDs, `wait`/group joins, and push
+notifications.
+
 ### Model Aliases (`src/agent/mod.rs:397`)
 
 ```rust

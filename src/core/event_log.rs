@@ -46,6 +46,11 @@ fn should_persist(event: &CoreEvent) -> bool {
             | CoreEvent::SubagentStarted { .. }
             | CoreEvent::SubagentCompleted { .. }
             | CoreEvent::SubagentFailed { .. }
+            | CoreEvent::AgentRunUpserted { .. }
+            | CoreEvent::AgentRunTerminal { .. }
+            | CoreEvent::AgentRunControlUpdated { .. }
+            | CoreEvent::WorktreeUpserted { .. }
+            | CoreEvent::AgentRunGroupUpserted { .. }
             | CoreEvent::SessionUpdated { .. }
             | CoreEvent::AssetRefreshCompleted { .. }
             | CoreEvent::Error { .. }

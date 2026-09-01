@@ -110,6 +110,13 @@ still at that base, then uses the typed Git mutation executor. Conflict
 outcomes are returned as structured recoverable results; successful child
 completion alone never changes the parent.
 
+Durable delegated-run projections expose only bounded worktree identity, owner
+run, branch, base commit, lifecycle/health, dirty/conflicted state, and the
+retained-for-attention flag. The projection is derived from `WorktreeService`
+and can be replayed after reconnect or restart; it does not grant ownership or
+perform cleanup. Full paths and Git details remain behind the existing
+authorized worktree inspection APIs.
+
 ### Utility functions
 
 - `find_git_root(start)` — walks up the directory tree looking for `.git`

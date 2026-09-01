@@ -428,6 +428,22 @@ fn format_control_outcome(outcome: ControlOutcome) -> String {
 }
 
 impl TaskTool {
+    fn publish_group_projection(&self, summary: &AgentRunGroupSummary) {
+        let Some(session_id) = self.parent_session_id.clone() else {
+            return;
+        };
+        let updated_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or_default();
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::AgentRunGroupUpdated {
+                session_id,
+                group: codegg_core::projection_replay::run_group_summary(summary, updated_at),
+            },
+        );
+    }
+
     pub fn new(
         store: Arc<Mutex<TaskStore>>,
         spawner: Option<SubAgentSpawner>,
@@ -574,7 +590,7 @@ impl Tool for TaskTool {
     }
 
     fn description(&self) -> &str {
-        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
+        "Spawn a subagent to handle a task independently. Use spawn_many for a bounded group of independent children, then wait_group/status_group/cancel_group; prefer wait or push notifications over polling get/status. Mutating durable runs receive a managed isolated worktree before model execution; read-only runs inherit the parent workspace. Child completion never merges into the parent automatically—inspect the structured result and request explicit typed integration."
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -785,6 +801,7 @@ impl Tool for TaskTool {
                     })
                     .await
                     .map_err(|error| ToolError::Execution(error.to_string()))?;
+                self.publish_group_projection(&summary);
                 return Ok(format_group_summary(
                     &summary,
                     !rejected.is_empty(),
@@ -808,8 +825,12 @@ impl Tool for TaskTool {
                 _ => unreachable!(),
             };
             return match result {
-                Ok(summary) => Ok(format_group_summary(&summary, false, &[])),
+                Ok(summary) => {
+                    self.publish_group_projection(&summary);
+                    Ok(format_group_summary(&summary, false, &[]))
+                }
                 Err(codegg_core::agent_run_group::AgentRunGroupError::WaitTimedOut(summary)) => {
+                    self.publish_group_projection(&summary);
                     Ok(format_group_summary(&summary, true, &[]))
                 }
                 Err(error) => Err(ToolError::Execution(error.to_string())),

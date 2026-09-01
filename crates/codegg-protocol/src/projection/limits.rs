@@ -66,6 +66,19 @@ pub const MAX_PROJECTION_NOTIFICATION_BOUND: usize = 16;
 /// session.
 pub const MAX_PROJECTION_SUBAGENTS: usize = 16;
 
+/// Maximum number of durable delegated runs retained in one session
+/// projection. Detached/background runs remain inspectable without making
+/// the projection an unbounded history store.
+pub const MAX_PROJECTION_AGENT_RUNS: usize = 64;
+
+/// Maximum number of durable worktree summaries retained in one session
+/// projection.
+pub const MAX_PROJECTION_WORKTREES: usize = 32;
+
+/// Maximum number of durable run-group summaries retained in one session
+/// projection.
+pub const MAX_PROJECTION_RUN_GROUPS: usize = 32;
+
 /// Maximum number of diagnostic / projection error records retained
 /// per snapshot.
 pub const MAX_PROJECTION_DIAGNOSTICS: usize = 32;

@@ -359,6 +359,12 @@ executor and returns a structured success or conflict outcome; failed or dirty
 worktrees remain available for inspection under the worktree service's cleanup
 policy.
 
+The session projection carries only bounded worktree/run facts needed for
+inspection: typed ownership IDs, branch, base/result commit, health,
+dirty/conflicted state, validation summary, and retention attention. It does
+not expose credentials, full diffs, or authority to integrate; integration
+remains an explicit parent-side typed Git operation.
+
 ### Test counts (verified today)
 
 | Module / file | #[test] + #[tokio::test] |

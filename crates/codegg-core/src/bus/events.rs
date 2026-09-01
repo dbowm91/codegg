@@ -256,6 +256,41 @@ pub enum AppEvent {
         agent: String,
         error: String,
     },
+    /// Derived durable-run projection update. The run store remains the
+    /// authority; this event only carries a bounded frontend summary.
+    AgentRunUpdated {
+        session_id: String,
+        run: codegg_protocol::projection::dto::AgentRunSummary,
+    },
+    AgentRunProgress {
+        session_id: String,
+        run_id: String,
+        status: Option<String>,
+        progress: String,
+    },
+    AgentRunTerminal {
+        session_id: String,
+        run_id: String,
+        status: String,
+        terminal_summary: String,
+        result_commit: Option<String>,
+        validation_summary: Option<String>,
+        attention_required: bool,
+    },
+    AgentRunControlUpdated {
+        session_id: String,
+        run_id: String,
+        control_status: String,
+        cancellation_requested: bool,
+    },
+    WorktreeUpdated {
+        session_id: String,
+        worktree: codegg_protocol::projection::dto::WorktreeSummaryProjection,
+    },
+    AgentRunGroupUpdated {
+        session_id: String,
+        group: codegg_protocol::projection::dto::AgentRunGroupSummaryProjection,
+    },
     /// A supervised test run started.
     TestRunStarted {
         session_id: String,
@@ -329,6 +364,12 @@ impl AppEvent {
             AppEvent::SubagentProgress { .. } => "subagent:progress",
             AppEvent::SubagentCompleted { .. } => "subagent:completed",
             AppEvent::SubagentFailed { .. } => "subagent:failed",
+            AppEvent::AgentRunUpdated { .. } => "agent_run:updated",
+            AppEvent::AgentRunProgress { .. } => "agent_run:progress",
+            AppEvent::AgentRunTerminal { .. } => "agent_run:terminal",
+            AppEvent::AgentRunControlUpdated { .. } => "agent_run:control_updated",
+            AppEvent::WorktreeUpdated { .. } => "worktree:updated",
+            AppEvent::AgentRunGroupUpdated { .. } => "agent_run_group:updated",
             AppEvent::TestRunStarted { .. } => "test_run:started",
             AppEvent::TestRunProgress { .. } => "test_run:progress",
             AppEvent::TestRunCompleted { .. } => "test_run:completed",

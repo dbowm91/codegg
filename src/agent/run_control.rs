@@ -253,6 +253,16 @@ impl RunControlService {
             )
             .await?;
         }
+        if let Ok(Some(task)) = self.runs.get_task(&run.task_id).await {
+            crate::bus::global::GlobalEventBus::publish(
+                crate::bus::events::AppEvent::AgentRunControlUpdated {
+                    session_id: task.originating_session_id,
+                    run_id: target.to_string(),
+                    control_status: kind.as_str().into(),
+                    cancellation_requested: kind == AgentRunControlKind::Cancel,
+                },
+            );
+        }
         self.dispatch_pending(&target, false).await?;
         Ok(ControlOutcome::Queued(message))
     }

@@ -1225,6 +1225,42 @@ pub enum CoreEvent {
         agent: String,
         error: String,
     },
+    /// Durable delegated-run projection update. This additive event is
+    /// derived from the run/worktree/group stores; it is not an execution
+    /// command or a second authority.
+    AgentRunUpserted {
+        session_id: String,
+        run: crate::projection::dto::AgentRunSummary,
+    },
+    AgentRunProgress {
+        session_id: String,
+        run_id: String,
+        status: Option<String>,
+        progress: String,
+    },
+    AgentRunTerminal {
+        session_id: String,
+        run_id: String,
+        status: String,
+        terminal_summary: String,
+        result_commit: Option<String>,
+        validation_summary: Option<String>,
+        attention_required: bool,
+    },
+    AgentRunControlUpdated {
+        session_id: String,
+        run_id: String,
+        control_status: String,
+        cancellation_requested: bool,
+    },
+    WorktreeUpserted {
+        session_id: String,
+        worktree: crate::projection::dto::WorktreeSummaryProjection,
+    },
+    AgentRunGroupUpserted {
+        session_id: String,
+        group: crate::projection::dto::AgentRunGroupSummaryProjection,
+    },
     /// A supervised test run started.
     TestRunStarted {
         session_id: String,

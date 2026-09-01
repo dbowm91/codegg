@@ -36,8 +36,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::projection::dto::{
-    AgentTreeStatus, PermissionStatus, ToolOutputProjection, ToolProgramSummary, ToolProjection,
-    ToolStatus, TurnStatus,
+    AgentRunSummary, AgentTreeStatus, PermissionStatus, ToolOutputProjection, ToolProgramSummary,
+    ToolProjection, ToolStatus, TurnStatus,
 };
 use crate::projection::event::{ProjectionEnvelope, ProjectionEvent};
 use crate::projection::limits::{
@@ -835,6 +835,142 @@ impl ProjectionReducer {
                     )
                 }
             }
+            ProjectionEvent::AgentRunUpserted { run } => {
+                snapshot.upsert_agent_run(run.clone());
+                snapshot.primary_session.active_subagents = snapshot
+                    .agent_runs
+                    .iter()
+                    .filter(|run| {
+                        matches!(
+                            run.status.as_str(),
+                            "created"
+                                | "queued"
+                                | "preparing"
+                                | "running"
+                                | "waiting"
+                                | "cancelling"
+                        )
+                    })
+                    .count();
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::AgentRunProgress {
+                run_id,
+                status,
+                progress,
+                at,
+            } => {
+                if let Some(run) = snapshot
+                    .agent_runs
+                    .iter_mut()
+                    .find(|run| run.run_id == *run_id)
+                {
+                    if let Some(status) = status {
+                        run.status = truncate_str(status, MAX_PROJECTION_STRING_BYTES).into_owned();
+                    }
+                    run.progress =
+                        Some(truncate_str(progress, MAX_PROJECTION_STRING_BYTES).into_owned());
+                    run.updated_at = *at;
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_agent_run_progress",
+                        "AgentRunProgress referenced an unknown durable run",
+                    )
+                }
+            }
+            ProjectionEvent::AgentRunTerminal {
+                run_id,
+                status,
+                terminal_summary,
+                result_commit,
+                validation_summary,
+                attention_required,
+                completed_at,
+            } => {
+                let existing = snapshot
+                    .agent_runs
+                    .iter()
+                    .find(|run| run.run_id == *run_id)
+                    .cloned();
+                let mut run = existing.unwrap_or_else(|| AgentRunSummary {
+                    run_id: run_id.clone(),
+                    status: "created".into(),
+                    ..AgentRunSummary::default()
+                });
+                run.status = truncate_str(status, MAX_PROJECTION_STRING_BYTES).into_owned();
+                run.terminal_summary = Some(
+                    truncate_str(
+                        terminal_summary,
+                        crate::projection::limits::MAX_PROJECTION_RUN_SUMMARY_BYTES,
+                    )
+                    .into_owned(),
+                );
+                run.result_commit = result_commit
+                    .as_deref()
+                    .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+                run.validation_summary = validation_summary.as_deref().map(|value| {
+                    truncate_str(
+                        value,
+                        crate::projection::limits::MAX_PROJECTION_RUN_SUMMARY_BYTES,
+                    )
+                    .into_owned()
+                });
+                run.attention_required = *attention_required;
+                run.updated_at = *completed_at;
+                snapshot.upsert_agent_run(run);
+                snapshot.primary_session.active_subagents = snapshot
+                    .agent_runs
+                    .iter()
+                    .filter(|run| {
+                        matches!(
+                            run.status.as_str(),
+                            "created"
+                                | "queued"
+                                | "preparing"
+                                | "running"
+                                | "waiting"
+                                | "cancelling"
+                        )
+                    })
+                    .count();
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::AgentRunControlUpdated {
+                run_id,
+                control_status,
+                cancellation_requested,
+                at,
+            } => {
+                if let Some(run) = snapshot
+                    .agent_runs
+                    .iter_mut()
+                    .find(|run| run.run_id == *run_id)
+                {
+                    run.control_status =
+                        truncate_str(control_status, MAX_PROJECTION_STRING_BYTES).into_owned();
+                    run.attention_required |= *cancellation_requested;
+                    run.updated_at = *at;
+                    ApplyOutcome::Applied
+                } else {
+                    self.record_diagnostic(
+                        snapshot,
+                        input,
+                        "unknown_agent_run_control",
+                        "AgentRunControlUpdated referenced an unknown durable run",
+                    )
+                }
+            }
+            ProjectionEvent::WorktreeUpserted { worktree } => {
+                snapshot.upsert_worktree(worktree.clone());
+                ApplyOutcome::Applied
+            }
+            ProjectionEvent::AgentRunGroupUpserted { group } => {
+                snapshot.upsert_run_group(group.clone());
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::FileChanged { change, at } => {
                 let mut change = change.clone();
                 change.normalise();
@@ -1314,6 +1450,7 @@ impl ProjectionState for SessionProjectionSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::projection::dto::{AgentRunGroupSummaryProjection, WorktreeSummaryProjection};
     use crate::projection::dto::{
         MessageProjection, MessageRole, PermissionProjection, ToolArgumentProjection,
         TurnProjection, VisibilityClass,
@@ -1556,5 +1693,118 @@ mod tests {
             snap.active_turn.as_ref().unwrap().status,
             TurnStatus::AwaitingPermission
         );
+    }
+
+    #[test]
+    fn durable_run_projection_replays_and_old_snapshots_default_new_fields() {
+        let run = AgentRunSummary {
+            run_id: "run-1".into(),
+            task_id: "task-1".into(),
+            parent_run_id: Some("parent-1".into()),
+            agent: "worker".into(),
+            status: "running".into(),
+            depth: 1,
+            worktree_id: Some("wt-1".into()),
+            branch: Some("codegg/agent/run-1".into()),
+            base_commit: Some("abc123".into()),
+            group_id: Some("group-1".into()),
+            control_status: "none".into(),
+            updated_at: 1,
+            ..AgentRunSummary::default()
+        };
+        let worktree = WorktreeSummaryProjection {
+            worktree_id: "wt-1".into(),
+            owner_run_id: Some("run-1".into()),
+            branch: Some("codegg/agent/run-1".into()),
+            base_commit: Some("abc123".into()),
+            state: "leased".into(),
+            health: "healthy".into(),
+            updated_at: 1,
+            ..WorktreeSummaryProjection::default()
+        };
+        let group = AgentRunGroupSummaryProjection {
+            group_id: "group-1".into(),
+            owner_run_id: "parent-1".into(),
+            status: "active".into(),
+            join_policy: "all".into(),
+            member_run_ids: vec!["run-1".into()],
+            active: 1,
+            updated_at: 1,
+            ..AgentRunGroupSummaryProjection::default()
+        };
+        let events = vec![
+            ProjectionEvent::AgentRunUpserted { run },
+            ProjectionEvent::WorktreeUpserted { worktree },
+            ProjectionEvent::AgentRunGroupUpserted { group },
+            ProjectionEvent::AgentRunProgress {
+                run_id: "run-1".into(),
+                status: Some("running".into()),
+                progress: "editing isolated worktree".into(),
+                at: 4,
+            },
+            ProjectionEvent::AgentRunTerminal {
+                run_id: "run-1".into(),
+                status: "completed".into(),
+                terminal_summary: "validated".into(),
+                result_commit: Some("def456".into()),
+                validation_summary: Some("tests passed".into()),
+                attention_required: false,
+                completed_at: 5,
+            },
+            ProjectionEvent::AgentRunControlUpdated {
+                run_id: "run-1".into(),
+                control_status: "acknowledged".into(),
+                cancellation_requested: false,
+                at: 6,
+            },
+        ];
+
+        let reducer = ProjectionReducer::default();
+        let mut left = SessionProjectionSnapshot::empty("s", "p", "w");
+        let mut right = SessionProjectionSnapshot::empty("s", "p", "w");
+        for (seq, event) in events.iter().cloned().enumerate() {
+            let seq = (seq + 1) as u64;
+            assert_eq!(
+                reducer.apply(
+                    &mut left,
+                    ReducerEventInput::session(seq, seq as i64, "s", None, event.clone())
+                ),
+                ApplyOutcome::Applied
+            );
+            assert_eq!(
+                reducer.apply(
+                    &mut right,
+                    ReducerEventInput::session(seq, seq as i64, "s", None, event)
+                ),
+                ApplyOutcome::Applied
+            );
+        }
+        assert_eq!(left, right);
+        assert_eq!(left.agent_runs[0].result_commit.as_deref(), Some("def456"));
+        assert_eq!(
+            left.agent_runs[0].terminal_summary.as_deref(),
+            Some("validated")
+        );
+        assert_eq!(
+            left.worktrees[0].branch.as_deref(),
+            Some("codegg/agent/run-1")
+        );
+        assert_eq!(left.run_groups[0].join_policy, "all");
+        assert_eq!(left.primary_session.active_subagents, 0);
+
+        let mut old_value = serde_json::to_value(&left).expect("serialize projection");
+        let object = old_value.as_object_mut().expect("snapshot object");
+        object.remove("agent_runs");
+        object.remove("worktrees");
+        object.remove("run_groups");
+        let old_snapshot: SessionProjectionSnapshot =
+            serde_json::from_value(old_value).expect("old snapshot remains readable");
+        assert!(old_snapshot.agent_runs.is_empty());
+        assert!(old_snapshot.worktrees.is_empty());
+        assert!(old_snapshot.run_groups.is_empty());
+
+        let serialized = serde_json::to_string(&left).expect("serialize durable projection");
+        assert!(!serialized.contains("prompt"));
+        assert!(!serialized.contains("reasoning"));
     }
 }

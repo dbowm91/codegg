@@ -431,6 +431,61 @@ impl SubagentJobExecutor {
             worktree_service: Some(worktree_service),
         }
     }
+
+    /// Publish a bounded, store-derived projection after an authoritative
+    /// run transition. The event is observational only; all identity,
+    /// status, worktree, and result fields come from their canonical stores.
+    async fn publish_run_projection(&self, run_id: &codegg_core::identity::AgentRunId) {
+        let Some(store) = self.agent_runs.as_ref() else {
+            return;
+        };
+        let Ok(Some(run)) = store.get_run(run_id).await else {
+            return;
+        };
+        let Ok(Some(task)) = store.get_task(&run.task_id).await else {
+            return;
+        };
+        let worktree = match (&self.worktree_service, &run.worktree_id) {
+            (Some(service), Some(worktree_id)) => service.get(worktree_id).await.ok(),
+            _ => None,
+        };
+        let result = store.get_result(run_id).await.ok().flatten();
+        let summary = codegg_core::projection_replay::agent_run_summary(
+            &task,
+            &run,
+            worktree.as_ref(),
+            result.as_ref(),
+            None,
+            run.parent_run_id.as_ref().map_or(0, |_| 1),
+        );
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::AgentRunUpdated {
+                session_id: task.originating_session_id.clone(),
+                run: summary.clone(),
+            },
+        );
+        if let Some(worktree) = worktree.as_ref() {
+            crate::bus::global::GlobalEventBus::publish(
+                crate::bus::events::AppEvent::WorktreeUpdated {
+                    session_id: task.originating_session_id.clone(),
+                    worktree: codegg_core::projection_replay::worktree_summary(worktree),
+                },
+            );
+        }
+        if run.status.is_terminal() {
+            crate::bus::global::GlobalEventBus::publish(
+                crate::bus::events::AppEvent::AgentRunTerminal {
+                    session_id: task.originating_session_id,
+                    run_id: summary.run_id,
+                    status: summary.status,
+                    terminal_summary: summary.terminal_summary.unwrap_or_default(),
+                    result_commit: summary.result_commit,
+                    validation_summary: summary.validation_summary,
+                    attention_required: summary.attention_required,
+                },
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -685,6 +740,7 @@ impl JobExecutor for SubagentJobExecutor {
                     format!("agent run start failed: {error}"),
                 );
             }
+            self.publish_run_projection(run_id).await;
         }
 
         let request = crate::agent::worker::SubAgentRequest {
@@ -776,6 +832,9 @@ impl JobExecutor for SubagentJobExecutor {
                         }, &result.result).await;
                     }
                 }
+                if let Some(run_id) = run_id_for_lifecycle.as_ref() {
+                    self.publish_run_projection(run_id).await;
+                }
                 ExecutorCompletion {
                     status,
                     summary: result.result,
@@ -834,6 +893,7 @@ impl JobExecutor for SubagentJobExecutor {
                         };
                         let _ = control.record_terminal(run_id.clone(), status, &e).await;
                     }
+                    self.publish_run_projection(run_id).await;
                 }
                 failure_completion(
                     started,

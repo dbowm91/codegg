@@ -739,6 +739,25 @@ impl AgentRunGroupService {
         self.recompute_group(group).await
     }
 
+    /// Return groups that reference a run as owner or member. This is a
+    /// read-only snapshot seam for projections and restart reconciliation;
+    /// it does not admit work or alter group state.
+    pub async fn groups_for_run(
+        &self,
+        run_id: &AgentRunId,
+    ) -> Result<Vec<AgentRunGroupRecord>, AgentRunGroupError> {
+        let mut groups = self.groups.list_by_owner(run_id).await?;
+        for group in self.groups.list_by_member(run_id).await? {
+            if !groups
+                .iter()
+                .any(|existing| existing.group_id == group.group_id)
+            {
+                groups.push(group);
+            }
+        }
+        Ok(groups)
+    }
+
     async fn recompute_group(
         &self,
         mut group: AgentRunGroupRecord,

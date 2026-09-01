@@ -74,6 +74,9 @@ pub fn idle_snapshot() -> SessionProjectionSnapshot {
         runs: Vec::new().into(),
         jobs: Vec::new().into(),
         tool_programs: Vec::new().into(),
+        agent_runs: Vec::new().into(),
+        worktrees: Vec::new().into(),
+        run_groups: Vec::new().into(),
         diagnostics: Vec::new().into(),
     }
 }

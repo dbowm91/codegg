@@ -415,6 +415,134 @@ impl CoreDaemon {
         }
     }
 
+    /// Build the durable portion of a session projection from authoritative
+    /// stores. This is used for initial connect and resync, so a reconnect
+    /// does not depend on transient legacy subagent events. The method is
+    /// read-only with respect to run/worktree authority.
+    async fn projection_snapshot_for_session(
+        &self,
+        session_id: &str,
+        project_id: &str,
+        workspace_id: &str,
+    ) -> codegg_protocol::projection::snapshot::SessionProjectionSnapshot {
+        let mut snapshot = codegg_protocol::projection::snapshot::SessionProjectionSnapshot::empty(
+            session_id,
+            project_id,
+            workspace_id,
+        );
+        let runs = self
+            .deps
+            .agent_run_store
+            .list_by_session(session_id)
+            .await
+            .unwrap_or_default();
+        for run in &runs {
+            let Some(task) = self
+                .deps
+                .agent_run_store
+                .get_task(&run.task_id)
+                .await
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            let worktree = match &run.worktree_id {
+                Some(worktree_id) => self.worktree_service.get(worktree_id).await.ok(),
+                None => None,
+            };
+            let result = self
+                .deps
+                .agent_run_store
+                .get_result(&run.run_id)
+                .await
+                .ok()
+                .flatten();
+            let groups = self
+                .deps
+                .run_group_service
+                .groups_for_run(&run.run_id)
+                .await
+                .unwrap_or_default();
+            let group_id = groups.first().map(|group| group.group_id.to_string());
+            snapshot.upsert_agent_run(codegg_core::projection_replay::agent_run_summary(
+                &task,
+                run,
+                worktree.as_ref(),
+                result.as_ref(),
+                group_id.as_deref(),
+                run.parent_run_id.as_ref().map_or(0, |_| 1),
+            ));
+            if let Some(worktree) = worktree.as_ref() {
+                snapshot
+                    .upsert_worktree(codegg_core::projection_replay::worktree_summary(worktree));
+            }
+            for group in groups {
+                let members = group
+                    .member_run_ids
+                    .iter()
+                    .filter_map(|member_id| runs.iter().find(|run| &run.run_id == member_id))
+                    .map(
+                        |member| codegg_core::agent_run_group::AgentRunGroupMemberSummary {
+                            ordinal: 0,
+                            run_id: member.run_id.clone(),
+                            status: member.status,
+                            result_ref: member.result_ref.clone(),
+                            failure_class: member.failure_class.clone(),
+                            failure_message: member.failure_message.clone(),
+                        },
+                    )
+                    .collect::<Vec<_>>();
+                let group_summary = codegg_core::agent_run_group::AgentRunGroupSummary {
+                    successful: members
+                        .iter()
+                        .filter(|member| {
+                            member.status == codegg_core::agent_run::AgentRunStatus::Completed
+                        })
+                        .count(),
+                    failed: members
+                        .iter()
+                        .filter(|member| {
+                            matches!(
+                                member.status,
+                                codegg_core::agent_run::AgentRunStatus::Failed
+                                    | codegg_core::agent_run::AgentRunStatus::Interrupted
+                                    | codegg_core::agent_run::AgentRunStatus::Cancelled
+                            )
+                        })
+                        .count(),
+                    active: members
+                        .iter()
+                        .filter(|member| !member.status.is_terminal())
+                        .count(),
+                    timed_out: false,
+                    group,
+                    members,
+                };
+                snapshot.upsert_run_group(codegg_core::projection_replay::run_group_summary(
+                    &group_summary,
+                    run.updated_at,
+                ));
+            }
+        }
+        if let Ok(worktrees) = self
+            .worktree_service
+            .list(codegg_core::worktree_service::WorktreeQuery {
+                workspace_id: Some(codegg_core::workspace::WorkspaceId::new_unchecked(
+                    workspace_id,
+                )),
+                ..Default::default()
+            })
+            .await
+        {
+            for worktree in worktrees {
+                snapshot
+                    .upsert_worktree(codegg_core::projection_replay::worktree_summary(&worktree));
+            }
+        }
+        snapshot
+    }
+
     fn asset_context_for_project(
         context: &ProjectContext,
         session_id: Option<&str>,
@@ -5684,15 +5812,17 @@ impl CoreDaemon {
                                 });
                             }
                         };
-                        let snapshot = codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
-                            snapshot: Box::new(
-                                codegg_protocol::projection::snapshot::SessionProjectionSnapshot::empty(
-                                    &request.scope_id,
-                                    &descriptor.project_id,
-                                    descriptor.workspace_id.as_deref().unwrap_or(""),
+                        let snapshot =
+                            codegg_protocol::projection::replay::ProjectionSnapshotBundle::One {
+                                snapshot: Box::new(
+                                    self.projection_snapshot_for_session(
+                                        &request.scope_id,
+                                        &descriptor.project_id,
+                                        descriptor.workspace_id.as_deref().unwrap_or(""),
+                                    )
+                                    .await,
                                 ),
-                            ),
-                        };
+                            };
                         let cursor = codegg_protocol::projection::replay::ProjectionCursor {
                             stream_id: descriptor.stream_id.clone(),
                             event_seq: descriptor.high_water_seq,

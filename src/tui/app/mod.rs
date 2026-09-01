@@ -3421,6 +3421,27 @@ impl App {
             if active_programs > 0 {
                 activity.push(format!("programs:{active_programs}"));
             }
+            let active_agent_runs = snapshot
+                .agent_runs
+                .iter()
+                .filter(|run| {
+                    !matches!(
+                        run.status.as_str(),
+                        "completed" | "failed" | "interrupted" | "cancelled"
+                    )
+                })
+                .count();
+            if active_agent_runs > 0 {
+                activity.push(format!("agent-runs:{active_agent_runs}"));
+            }
+            let attention_runs = snapshot
+                .agent_runs
+                .iter()
+                .filter(|run| run.attention_required)
+                .count();
+            if attention_runs > 0 {
+                activity.push(format!("attention:{attention_runs}"));
+            }
         }
 
         let pending_diffs = self
@@ -3515,7 +3536,7 @@ impl App {
 
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
-            use super::components::sidebar::SidebarToolProgram;
+            use super::components::sidebar::{SidebarAgentRun, SidebarToolProgram};
             self.sidebar.set_tool_programs(
                 snapshot
                     .tool_programs
@@ -3529,8 +3550,24 @@ impl App {
                     })
                     .collect(),
             );
+            self.sidebar.set_agent_runs(
+                snapshot
+                    .agent_runs
+                    .iter()
+                    .map(|run| SidebarAgentRun {
+                        run_id: run.run_id.clone(),
+                        agent: run.agent.clone(),
+                        status: run.status.clone(),
+                        worktree: run.worktree_id.clone(),
+                        branch: run.branch.clone(),
+                        result_commit: run.result_commit.clone(),
+                        attention_required: run.attention_required,
+                    })
+                    .collect(),
+            );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
+            self.sidebar.set_agent_runs(Vec::new());
         }
 
         frame.render_widget(&self.sidebar, area);

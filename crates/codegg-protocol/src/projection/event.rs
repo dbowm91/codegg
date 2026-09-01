@@ -16,10 +16,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
-    AgentTreeNodeProjection, ArtifactHandleProjection, FileChangeProjection, JobProjection,
-    MessageProjection, PermissionProjection, PermissionStatus, QuestionProjection, RunProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, AgentTreeNodeProjection,
+    ArtifactHandleProjection, FileChangeProjection, JobProjection, MessageProjection,
+    PermissionProjection, PermissionStatus, QuestionProjection, RunProjection,
     SessionSummaryProjection, ToolArgumentProjection, ToolOutputProjection, ToolProjection,
-    ToolStatus, TurnProjection, VisibilityClass,
+    ToolStatus, TurnProjection, VisibilityClass, WorktreeSummaryProjection,
 };
 
 /// Type tag prefix used when projection events are embedded in a
@@ -200,6 +201,40 @@ pub enum ProjectionEvent {
         error: String,
         failed_at: i64,
     },
+    /// Authoritative durable run summary projected for frontend inspection.
+    AgentRunUpserted { run: AgentRunSummary },
+    /// Bounded progress for a durable run. The reducer updates only the
+    /// derived summary and never delivers control or changes execution.
+    AgentRunProgress {
+        run_id: String,
+        status: Option<String>,
+        progress: String,
+        at: i64,
+    },
+    /// Terminal durable run result summary. Detailed results remain behind
+    /// the existing result/artifact handles.
+    AgentRunTerminal {
+        run_id: String,
+        status: String,
+        terminal_summary: String,
+        result_commit: Option<String>,
+        validation_summary: Option<String>,
+        attention_required: bool,
+        completed_at: i64,
+    },
+    /// Durable control/cancellation state for a run.
+    AgentRunControlUpdated {
+        run_id: String,
+        control_status: String,
+        cancellation_requested: bool,
+        at: i64,
+    },
+    /// Current bounded state of a managed worktree.
+    WorktreeUpserted { worktree: WorktreeSummaryProjection },
+    /// Current bounded state of a durable run group.
+    AgentRunGroupUpserted {
+        group: AgentRunGroupSummaryProjection,
+    },
     /// A file change occurred (workspace-aware, summary only).
     FileChanged {
         change: FileChangeProjection,
@@ -344,6 +379,12 @@ impl ProjectionEvent {
             ProjectionEvent::SubagentProgress { .. } => false,
             ProjectionEvent::SubagentCompleted { .. } => false,
             ProjectionEvent::SubagentFailed { .. } => false,
+            ProjectionEvent::AgentRunUpserted { .. } => false,
+            ProjectionEvent::AgentRunProgress { .. } => false,
+            ProjectionEvent::AgentRunTerminal { .. } => false,
+            ProjectionEvent::AgentRunControlUpdated { .. } => false,
+            ProjectionEvent::WorktreeUpserted { .. } => false,
+            ProjectionEvent::AgentRunGroupUpserted { .. } => false,
             ProjectionEvent::FileChanged { .. } => false,
             ProjectionEvent::RunStarted { .. } => false,
             ProjectionEvent::RunProgress { .. } => false,
@@ -381,6 +422,12 @@ impl ProjectionEvent {
             ProjectionEvent::Unknown { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::SubagentProgress { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::SubagentFailed { .. } => VisibilityClass::ClientLocal,
+            ProjectionEvent::AgentRunUpserted { .. } => VisibilityClass::Public,
+            ProjectionEvent::AgentRunProgress { .. } => VisibilityClass::Public,
+            ProjectionEvent::AgentRunTerminal { .. } => VisibilityClass::Public,
+            ProjectionEvent::AgentRunControlUpdated { .. } => VisibilityClass::Public,
+            ProjectionEvent::WorktreeUpserted { .. } => VisibilityClass::Public,
+            ProjectionEvent::AgentRunGroupUpserted { .. } => VisibilityClass::Public,
             ProjectionEvent::JobUpserted { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::JobRemoved { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::ToolProgramSubmitted { .. } => VisibilityClass::ClientLocal,

@@ -20,6 +20,7 @@ pub enum SidebarSection {
     Todos,
     FileChanges,
     ToolPrograms,
+    AgentRuns,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,6 +50,18 @@ pub struct SidebarToolProgram {
     pub summary: Option<String>,
 }
 
+/// Compact durable delegated-run entry for the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarAgentRun {
+    pub run_id: String,
+    pub agent: String,
+    pub status: String,
+    pub worktree: Option<String>,
+    pub branch: Option<String>,
+    pub result_commit: Option<String>,
+    pub attention_required: bool,
+}
+
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
@@ -71,12 +84,14 @@ pub struct SidebarWidget {
     pub plan: Option<AgentPlan>,
     /// Active and recently completed background tool programs.
     pub tool_programs: Vec<SidebarToolProgram>,
+    pub agent_runs: Vec<SidebarAgentRun>,
     scroll_offset: usize,
     goal_collapsed: bool,
     plan_collapsed: bool,
     todos_collapsed: bool,
     file_changes_collapsed: bool,
     tool_programs_collapsed: bool,
+    agent_runs_collapsed: bool,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
@@ -104,12 +119,14 @@ impl SidebarWidget {
             goal: None,
             plan: None,
             tool_programs: Vec::new(),
+            agent_runs: Vec::new(),
             scroll_offset: 0,
             goal_collapsed: false,
             plan_collapsed: false,
             todos_collapsed: false,
             file_changes_collapsed: false,
             tool_programs_collapsed: false,
+            agent_runs_collapsed: false,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -171,6 +188,10 @@ impl SidebarWidget {
         self.tool_programs = programs;
     }
 
+    pub fn set_agent_runs(&mut self, runs: Vec<SidebarAgentRun>) {
+        self.agent_runs = runs;
+    }
+
     pub fn toggle_focused(&mut self) {}
 
     pub fn focus_next(&mut self) {}
@@ -203,6 +224,9 @@ impl SidebarWidget {
             }
             SidebarSection::ToolPrograms => {
                 self.tool_programs_collapsed = !self.tool_programs_collapsed;
+            }
+            SidebarSection::AgentRuns => {
+                self.agent_runs_collapsed = !self.agent_runs_collapsed;
             }
         }
         true
@@ -349,6 +373,16 @@ impl SidebarWidget {
             targets.push(HoveredElement::Section(SidebarSection::ToolPrograms));
             if !self.tool_programs_collapsed {
                 for _ in 0..self.tool_programs.len() {
+                    targets.push(HoveredElement::None);
+                }
+            }
+        }
+
+        if !self.agent_runs.is_empty() {
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::AgentRuns));
+            if !self.agent_runs_collapsed {
+                for _ in &self.agent_runs {
                     targets.push(HoveredElement::None);
                 }
             }
@@ -651,6 +685,47 @@ impl SidebarWidget {
             }
         }
 
+        if !self.agent_runs.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(self.collapsible_header(
+                &format!(" Agent Runs ({}) ", self.agent_runs.len()),
+                self.agent_runs_collapsed,
+            ));
+            if !self.agent_runs_collapsed {
+                for run in &self.agent_runs {
+                    let (icon, style) = if run.attention_required {
+                        ("!", Style::default().fg(self.theme.error))
+                    } else {
+                        match run.status.as_str() {
+                            "completed" => ("✓", Style::default().fg(self.theme.success)),
+                            "failed" | "cancelled" | "interrupted" => {
+                                ("✗", Style::default().fg(self.theme.error))
+                            }
+                            "running" | "waiting" => ("●", Style::default().fg(self.theme.warning)),
+                            _ => ("○", Style::default().fg(self.theme.muted)),
+                        }
+                    };
+                    let id: String = run.run_id.chars().take(8).collect();
+                    let location = run
+                        .branch
+                        .as_deref()
+                        .or(run.worktree.as_deref())
+                        .map(|value| format!(" {value}"))
+                        .unwrap_or_default();
+                    let commit = run
+                        .result_commit
+                        .as_deref()
+                        .map(|value| format!(" -> {}", value.chars().take(8).collect::<String>()))
+                        .unwrap_or_default();
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {icon} "), style),
+                        Span::styled(id, Style::default().fg(self.theme.muted)),
+                        Span::raw(format!(" {}{}{}", run.agent, location, commit)),
+                    ]));
+                }
+            }
+        }
+
         lines
     }
 
@@ -666,6 +741,7 @@ impl SidebarWidget {
                 SidebarSection::ToolPrograms => {
                     "Click to collapse/expand tool programs".to_string()
                 }
+                SidebarSection::AgentRuns => "Click to collapse/expand agent runs".to_string(),
             },
             HoveredElement::Todo(idx) => self
                 .todos

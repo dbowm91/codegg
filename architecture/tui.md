@@ -253,6 +253,15 @@ pub struct App {
 | `manifest.rs` | Manifest handling |
 | `projection_client.rs` | Projection client state |
 
+### Durable agent-run inspection (M006)
+
+The sidebar consumes the canonical session projection's bounded durable-run,
+worktree, and group summaries. It shows concurrent child status, stable run
+identity, agent, branch/worktree, result commit, and attention state without
+loading transcripts or logs. Reconnect and resync replace the same projection
+state, so the TUI does not maintain a second run tree. Detailed worktree
+inspection and cleanup continue through the existing authorized commands.
+
 ### UiState (`src/tui/app/state/ui.rs:40`)
 
 ```rust

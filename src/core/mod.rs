@@ -277,6 +277,12 @@ pub(crate) fn core_event_metadata(
         | CoreEvent::SubagentProgress { session_id, .. }
         | CoreEvent::SubagentCompleted { session_id, .. }
         | CoreEvent::SubagentFailed { session_id, .. } => (Some(session_id.clone()), None),
+        CoreEvent::AgentRunUpserted { session_id, .. }
+        | CoreEvent::AgentRunProgress { session_id, .. }
+        | CoreEvent::AgentRunTerminal { session_id, .. }
+        | CoreEvent::AgentRunControlUpdated { session_id, .. }
+        | CoreEvent::WorktreeUpserted { session_id, .. }
+        | CoreEvent::AgentRunGroupUpserted { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::PluginUiEffect { envelope } => (envelope.session_id.clone(), None),
         CoreEvent::ToolProgramCompleted { session_id, .. }
         | CoreEvent::ToolProgramFailed { session_id, .. }
@@ -379,6 +385,12 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::SubagentStarted { .. } => "subagent_started",
         CoreEvent::SubagentCompleted { .. } => "subagent_completed",
         CoreEvent::SubagentFailed { .. } => "subagent_failed",
+        CoreEvent::AgentRunUpserted { .. } => "agent_run_upserted",
+        CoreEvent::AgentRunProgress { .. } => "agent_run_progress",
+        CoreEvent::AgentRunTerminal { .. } => "agent_run_terminal",
+        CoreEvent::AgentRunControlUpdated { .. } => "agent_run_control_updated",
+        CoreEvent::WorktreeUpserted { .. } => "worktree_upserted",
+        CoreEvent::AgentRunGroupUpserted { .. } => "agent_run_group_upserted",
         CoreEvent::ToolProgramCompleted { .. } => "tool_program_completed",
         CoreEvent::ToolProgramFailed { .. } => "tool_program_failed",
         CoreEvent::ToolProgramUpdated { .. } => "tool_program_updated",
@@ -521,6 +533,58 @@ pub(crate) fn map_app_event_to_core_event(
             agent,
             error,
         }),
+        crate::bus::events::AppEvent::AgentRunUpdated { session_id, run } => {
+            Some(CoreEvent::AgentRunUpserted { session_id, run })
+        }
+        crate::bus::events::AppEvent::AgentRunProgress {
+            session_id,
+            run_id,
+            status,
+            progress,
+        } => Some(CoreEvent::AgentRunProgress {
+            session_id,
+            run_id,
+            status,
+            progress,
+        }),
+        crate::bus::events::AppEvent::AgentRunTerminal {
+            session_id,
+            run_id,
+            status,
+            terminal_summary,
+            result_commit,
+            validation_summary,
+            attention_required,
+        } => Some(CoreEvent::AgentRunTerminal {
+            session_id,
+            run_id,
+            status,
+            terminal_summary,
+            result_commit,
+            validation_summary,
+            attention_required,
+        }),
+        crate::bus::events::AppEvent::AgentRunControlUpdated {
+            session_id,
+            run_id,
+            control_status,
+            cancellation_requested,
+        } => Some(CoreEvent::AgentRunControlUpdated {
+            session_id,
+            run_id,
+            control_status,
+            cancellation_requested,
+        }),
+        crate::bus::events::AppEvent::WorktreeUpdated {
+            session_id,
+            worktree,
+        } => Some(CoreEvent::WorktreeUpserted {
+            session_id,
+            worktree,
+        }),
+        crate::bus::events::AppEvent::AgentRunGroupUpdated { session_id, group } => {
+            Some(CoreEvent::AgentRunGroupUpserted { session_id, group })
+        }
         crate::bus::events::AppEvent::PluginUiEffect {
             session_id,
             plugin_id,

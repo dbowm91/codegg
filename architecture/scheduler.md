@@ -179,6 +179,8 @@ generation recovery, including queued cancellation before an attempt exists.
 The scheduler remains the only daemon machine-capacity authority. A scheduled
 child can still be rejected by explicit semantic delegation policy, but it is
 not rejected merely because the compatibility pool's local semaphore is full.
+The pool remains only a child-runtime/semantic-admission adapter on this path;
+it does not perform a second machine-capacity admission.
 `JobRecord`/`JobAttempt` remain authoritative for queue state and retry/recovery;
 the run record is the attributable delegated-agent ownership layer.
 
@@ -291,7 +293,7 @@ constructing TestRunner locally.
 | `src/tool/bash.rs` explicit shell route | Shell | ManagedProcessService with sh -c payload | Scheduler submission |
 | `src/tui/commands/test.rs` | Test | daemon protocol + TestRunner | Scheduler submission |
 | server `CoreRequest::JobSubmit` | typed caller kind | daemon submission facade | Scheduler submission |
-| scheduler subagent adapter | Subagent | SubAgentPool | Scheduler admission; waits for worker result |
+| scheduler subagent adapter | Subagent | SubAgentPool | Scheduler admission; pool is runtime/semantic adapter only |
 | `src/job_dispatcher.rs` | Subagent | SubAgentPool | Definition retained; no daemon production wiring |
 | durable `ScheduleStore` | Subagent | scheduler admission | Sole production scheduling owner |
 | typed Git services / native Git read fallback | GitRead/mutation | egggit/Git service | Domain-specific compatibility path; migration remains |

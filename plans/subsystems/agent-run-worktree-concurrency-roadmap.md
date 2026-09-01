@@ -398,7 +398,7 @@ Exit conditions:
 
 Class: capability/polish/invariant
 
-Status: ready
+Status: active
 
 Plan: `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md`
 
@@ -517,4 +517,4 @@ This roadmap closes only when:
 | M003 | closed | `plans/implementation/agent-run-worktree-concurrency/003-durable-worktree-service-and-leases.md` | `plans/closure/agent-run-worktree-concurrency/003-status.md` | — |
 | M004 | closed | `plans/implementation/agent-run-worktree-concurrency/004-isolated-mutation-and-structured-results.md` | `plans/closure/agent-run-worktree-concurrency/004-status.md` | — |
 | M005 | closed | `plans/implementation/agent-run-worktree-concurrency/005-run-groups-and-background-joins.md` | `plans/closure/agent-run-worktree-concurrency/005-status.md` | — |
-| M006 | ready | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | — | — |
+| M006 | active | `plans/implementation/agent-run-worktree-concurrency/006-projection-compatibility-and-closure.md` | — | Closure evidence is being gathered |

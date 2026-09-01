@@ -2,7 +2,8 @@
 
 Status: implemented (M1 — projection contracts and canonical reducer;
 M2 — scoped subscriptions, durable replay, daemon integration;
-M005 — remote transport isolation; M006 — atomic control delivery).
+M005 — remote transport isolation; M006 — atomic control delivery;
+agent-run/worktree M006 — durable run/worktree/group projection and closure).
 
 Long-term references:
 
@@ -32,7 +33,7 @@ journal event as a provider turn or tool invocation.
 | `crates/codegg-protocol/src/projection/caps.rs` | Version/capability negotiation |
 | `crates/codegg-protocol/src/projection/limits.rs` | Payload and collection bounds |
 | `crates/codegg-protocol/src/projection/dto.rs` | Bounded projection DTOs |
-| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (39 variants) |
+| `crates/codegg-protocol/src/projection/event.rs` | `ProjectionEnvelope`, `ProjectionEvent` (45 variants) |
 | `crates/codegg-protocol/src/projection/snapshot.rs` | `SessionProjectionSnapshot` |
 | `crates/codegg-protocol/src/projection/reducer.rs` | Deterministic canonical reducer |
 | `crates/codegg-protocol/src/projection/adapters.rs` | Bridges `CoreResponse`/`CoreEvent` into projection |
@@ -78,6 +79,9 @@ All projection DTOs honour explicit caps declared in
 | `MAX_PROJECTION_TOOL_PROGRAM_CALLS` | 128 |
 | `MAX_PROJECTION_NOTIFICATION_BOUND` | 16 |
 | `MAX_PROJECTION_SUBAGENTS` | 16 |
+| `MAX_PROJECTION_AGENT_RUNS` | 64 |
+| `MAX_PROJECTION_WORKTREES` | 32 |
+| `MAX_PROJECTION_RUN_GROUPS` | 32 |
 | `MAX_PROJECTION_DIAGNOSTICS` | 32 |
 | `MAX_PROJECTION_DIFF_LINES` | 64 |
 | `MAX_PROJECTION_STRING_BYTES` | 4,096 |
@@ -141,6 +145,8 @@ implementations MUST go through these helpers.
 | Permission | `PermissionPending`, `PermissionResolved` |
 | Question | `QuestionPending`, `QuestionResolved` |
 | Subagent | `SubagentStarted`, `SubagentProgress`, `SubagentCompleted`, `SubagentFailed` |
+| Durable agent run | `AgentRunUpserted`, `AgentRunProgress`, `AgentRunTerminal`, `AgentRunControlUpdated` |
+| Worktree/group | `WorktreeUpserted`, `AgentRunGroupUpserted` |
 | File | `FileChanged` |
 | Run | `RunStarted`, `RunProgress`, `RunArtifactCreated`, `RunCompleted`, `RunDenied` |
 | Job | `JobUpserted`, `JobRemoved` |
@@ -213,6 +219,25 @@ Remote projection control responses are critical writer operations.
 The adapter serializes the frame, enqueues on a bounded control
 channel, and waits for a bounded writer receipt (500 ms). `Initializing
 -> Live` completes only after that receipt.
+
+### Durable delegated-run projection (agent-run/worktree M006)
+
+`AgentRunSummary`, `WorktreeSummaryProjection`, and
+`AgentRunGroupSummaryProjection` are bounded, additive frontend summaries of
+the authoritative `AgentRunStore`, `WorktreeService`, and group service. They
+carry typed opaque IDs, lifecycle/control state, branch/base/result commit,
+validation and attention summaries; prompts, mailboxes, transcripts, hidden
+reasoning, credentials, and full artifacts are not projected. The daemon
+builds reconnect/resync snapshots from those stores, while scheduler and group
+transitions publish the same summaries as projection events.
+
+The reducer only upserts derived state. It never sends a message, cancels a
+run, allocates a worktree, or submits a job. Existing numeric subagent events
+and `task get` remain compatibility adapters for the migration window; new
+clients should use typed run IDs, `wait`/group joins, and push notifications.
+Older snapshots deserialize with empty durable-run/worktree/group collections
+because the new fields are serde-defaulted, and older clients ignore the
+additive fields/events through the existing negotiated protocol.
 
 ### Fixtures and Independent Consumers
 

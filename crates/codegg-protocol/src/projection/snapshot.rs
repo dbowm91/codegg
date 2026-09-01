@@ -10,12 +10,14 @@ use std::collections::VecDeque;
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
-    JobProjection, RunProjection, SessionSummaryProjection, ToolProgramSummary,
-    WorkspaceSummaryProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, JobProjection, RunProjection,
+    SessionSummaryProjection, ToolProgramSummary, WorkspaceSummaryProjection,
+    WorktreeSummaryProjection,
 };
 use crate::projection::limits::{
-    MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS, MAX_PROJECTION_RUNS,
-    MAX_PROJECTION_TOOL_PROGRAMS,
+    MAX_PROJECTION_AGENT_RUNS, MAX_PROJECTION_DIAGNOSTICS, MAX_PROJECTION_JOBS,
+    MAX_PROJECTION_RUNS, MAX_PROJECTION_RUN_GROUPS, MAX_PROJECTION_TOOL_PROGRAMS,
+    MAX_PROJECTION_WORKTREES,
 };
 
 /// Bounded projection of one session plus its surrounding context.
@@ -58,6 +60,15 @@ pub struct SessionProjectionSnapshot {
     pub jobs: VecDeque<JobProjection>,
     /// Active and recently completed background tool programs.
     pub tool_programs: VecDeque<ToolProgramSummary>,
+    /// Durable delegated agent runs, including detached/background runs.
+    #[serde(default)]
+    pub agent_runs: VecDeque<AgentRunSummary>,
+    /// Managed worktrees referenced by projected agent runs.
+    #[serde(default)]
+    pub worktrees: VecDeque<WorktreeSummaryProjection>,
+    /// Durable run-group summaries.
+    #[serde(default)]
+    pub run_groups: VecDeque<AgentRunGroupSummaryProjection>,
     /// Bounded diagnostic list emitted by the reducer.
     pub diagnostics: VecDeque<ProjectionDiagnostic>,
 }
@@ -111,6 +122,9 @@ impl SessionProjectionSnapshot {
             runs: VecDeque::new(),
             jobs: VecDeque::new(),
             tool_programs: VecDeque::new(),
+            agent_runs: VecDeque::new(),
+            worktrees: VecDeque::new(),
+            run_groups: VecDeque::new(),
             diagnostics: VecDeque::new(),
         }
     }
@@ -158,6 +172,50 @@ impl SessionProjectionSnapshot {
             self.tool_programs.pop_front();
         }
         self.tool_programs.push_back(program);
+    }
+
+    pub fn upsert_agent_run(&mut self, mut run: AgentRunSummary) {
+        run.normalise();
+        if let Some(slot) = self.agent_runs.iter_mut().find(|r| r.run_id == run.run_id) {
+            *slot = run;
+            return;
+        }
+        if self.agent_runs.len() >= MAX_PROJECTION_AGENT_RUNS {
+            self.agent_runs.pop_front();
+        }
+        self.agent_runs.push_back(run);
+    }
+
+    pub fn upsert_worktree(&mut self, mut worktree: WorktreeSummaryProjection) {
+        worktree.normalise();
+        if let Some(slot) = self
+            .worktrees
+            .iter_mut()
+            .find(|w| w.worktree_id == worktree.worktree_id)
+        {
+            *slot = worktree;
+            return;
+        }
+        if self.worktrees.len() >= MAX_PROJECTION_WORKTREES {
+            self.worktrees.pop_front();
+        }
+        self.worktrees.push_back(worktree);
+    }
+
+    pub fn upsert_run_group(&mut self, mut group: AgentRunGroupSummaryProjection) {
+        group.normalise();
+        if let Some(slot) = self
+            .run_groups
+            .iter_mut()
+            .find(|g| g.group_id == group.group_id)
+        {
+            *slot = group;
+            return;
+        }
+        if self.run_groups.len() >= MAX_PROJECTION_RUN_GROUPS {
+            self.run_groups.pop_front();
+        }
+        self.run_groups.push_back(group);
     }
 }
 

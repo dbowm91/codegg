@@ -24,6 +24,12 @@ bounded long-poll; a timeout reports that the run is still active and does
 not consume scheduler capacity indefinitely. Run control is distinct from
 the file-backed team inbox and is never general project chat.
 
+For concurrent work, `spawn_many` and run-group actions provide bounded fan-out
+and deterministic joins. New callers should prefer typed `AgentRunId` values,
+`wait`/`wait_group`, and push notifications; `status`/`get` remain compatibility
+inspection paths for older clients. Child completion still requires explicit
+parent-side integration when a worktree produced a commit.
+
 ## Where It Lives
 
 ```
