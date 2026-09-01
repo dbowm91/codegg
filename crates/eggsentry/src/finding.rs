@@ -96,7 +96,7 @@ pub struct SecurityFinding {
 }
 
 pub fn make_finding_id(prefix: &str, category: &SecurityCategory, evidence: &str) -> String {
-    let cat_str = serde_json::to_string(category).unwrap_or_default();
+    let cat_str = serde_json::to_string(category).expect("SecurityCategory is serializable");
     let input = format!("{}:{}:{}", prefix, cat_str, evidence);
     let hash = Sha256::digest(input.as_bytes());
     let short: String = hash.iter().take(8).map(|b| format!("{:02x}", b)).collect();
@@ -142,7 +142,7 @@ impl SecurityFinding {
         context: &str,
         line: usize,
     ) -> String {
-        let cat_str = serde_json::to_string(category).unwrap_or_default();
+        let cat_str = serde_json::to_string(category).expect("SecurityCategory is serializable");
         let input = format!("{}:{}:{}:{}", prefix, cat_str, context, line);
         let hash = Sha256::digest(input.as_bytes());
         let short: String = hash.iter().take(8).map(|b| format!("{:02x}", b)).collect();

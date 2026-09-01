@@ -175,7 +175,7 @@ fn finding_for_command(
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(command.as_bytes());
     let short: String = hash.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-    let cat_str = serde_json::to_string(&category).unwrap_or_default();
+    let cat_str = serde_json::to_string(&category).expect("SecurityCategory is serializable");
     SecurityFinding {
         id: format!("command:{}:{}", cat_str.trim_matches('"'), short),
         severity,

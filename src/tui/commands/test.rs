@@ -72,7 +72,8 @@ fn build_test_request(
         other => return Err(format!("unknown scope '{other}'")),
     };
 
-    let workdir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let workdir = std::env::current_dir() // compat-mode slash command uses the process workspace
+        .map_err(|e| format!("cannot determine workspace root: {e}"))?;
 
     Ok(crate::test_runner::TestRunRequest {
         scope: test_scope,

@@ -474,7 +474,17 @@ impl ProjectionClientController {
         let reducer = self.reducer.clone();
         for envelope in &events {
             let input = ReducerEventInput::from(envelope.clone());
-            let _ = reducer.apply(&mut current, input);
+            match reducer.apply(&mut current, input) {
+                ApplyOutcome::Applied | ApplyOutcome::Duplicate | ApplyOutcome::Reconciled => {}
+                ApplyOutcome::ScopeMismatch
+                | ApplyOutcome::ResyncRequired { .. }
+                | ApplyOutcome::Error(_) => {
+                    self.push_diagnostic("replay_reducer_failure", "projection replay rejected");
+                    return ControllerSubscribeOutcome::Failed {
+                        reason: ControllerSubscribeFailure::InvalidRequest,
+                    };
+                }
+            }
         }
         if let Some(bundle) = snapshot {
             match bundle {

@@ -474,7 +474,7 @@ impl ExpansionHandle {
     pub fn as_url(&self) -> String {
         let mut s = format!("cmd://{}/{}", self.command_id.0, self.stream.as_str());
         if let Some(range) = &self.byte_range {
-            write!(s, "#{}-{}", range.start, range.end).expect("formatting to String");
+            let _ = write!(s, "#{}-{}", range.start, range.end);
         }
         s
     }

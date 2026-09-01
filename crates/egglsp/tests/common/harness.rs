@@ -156,14 +156,12 @@ impl FakeLspHarness {
     pub fn fake_server_def() -> egglsp::server::LspServerDef {
         static SERVER_PATH: OnceLock<String> = OnceLock::new();
         let path = SERVER_PATH.get_or_init(Self::fake_server_path);
-        // Leak the path string so the LspServerDef can hold &'static str.
-        let static_path: &'static str = Box::leak(path.clone().into_boxed_str());
         egglsp::server::LspServerDef {
             id: "fake-lsp-test-server",
             languages: &["rust"],
             extensions: &["rs"],
             repo: "test/fake-server",
-            command: static_path,
+            command: path.as_str(),
             args: &[],
             download: None,
         }

@@ -222,7 +222,14 @@ fn ast_scan_python(code: &str) -> AstScanResult {
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(code.as_bytes());
+        if stdin.write_all(code.as_bytes()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return AstScanResult {
+                fallback: true,
+                ..Default::default()
+            };
+        }
     }
 
     let output = match child.wait_with_output() {

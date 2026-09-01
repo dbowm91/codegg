@@ -29,7 +29,7 @@ pub struct DiffTool {
 impl DiffTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: std::env::current_dir().expect("cannot determine workspace root"),
         }
     }
 

@@ -6,54 +6,65 @@ use regex::Regex;
 use std::path::Path;
 use std::sync::LazyLock;
 
-static AWS_KEY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").unwrap());
+static AWS_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"AKIA[0-9A-Z]{16}").expect("valid AWS key regex"));
 
 static GITHUB_TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82,})").unwrap()
+    Regex::new(r"(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{82,})")
+        .expect("valid GitHub token regex")
 });
 
 static SLACK_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"xox[baprs]-[A-Za-z0-9-]{10,}").unwrap());
+    LazyLock::new(|| Regex::new(r"xox[baprs]-[A-Za-z0-9-]{10,}").expect("valid Slack token regex"));
 
 static NPM_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"npm_[A-Za-z0-9]{20,}").unwrap());
+    LazyLock::new(|| Regex::new(r"npm_[A-Za-z0-9]{20,}").expect("valid npm token regex"));
 
 static PYPI_TOKEN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"pypi-[A-Za-z0-9_-]{20,}").unwrap());
+    LazyLock::new(|| Regex::new(r"pypi-[A-Za-z0-9_-]{20,}").expect("valid PyPI token regex"));
 
-static GCP_SERVICE_ACCOUNT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)"type"\s*:\s*"service_account""#).unwrap());
-
-static OPENAI_KEY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"sk-[A-Za-z0-9]{20,}").unwrap());
-
-static PRIVATE_KEY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"-----BEGIN\s+.*PRIVATE\s+KEY-----").unwrap());
-
-static PASSWORD_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)password\s*=\s*"[^"]{4,}""#).unwrap());
-
-static API_KEY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)api[_-]?key\s*=\s*"[^"]{8,}""#).unwrap());
-
-static SECRET_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?i)secret\s*=\s*"[^"]{8,}""#).unwrap());
-
-static UNSAFE_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"unsafe\s*\{").unwrap());
-
-static UNSAFE_FN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"unsafe\s+fn\s+").unwrap());
-
-static DANGER_ACCEPT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"danger_accept_invalid_certs\s*\(\s*true\s*\)").unwrap());
-
-static COMMAND_NEW_SH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"Command::new\s*\(\s*"(sh|bash)"\s*\)"#).unwrap());
-
-static CORS_WILDCARD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"allow_origin\s*\(\s*Any\s*\)|cors\s*=\s*\[\s*"\*"\s*\]"#).unwrap()
+static GCP_SERVICE_ACCOUNT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"type"\s*:\s*"service_account""#).expect("valid GCP service account regex")
 });
 
-static BIND_ALL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"0\.0\.0\.0"#).unwrap());
+static OPENAI_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"sk-[A-Za-z0-9]{20,}").expect("valid OpenAI key regex"));
+
+static PRIVATE_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"-----BEGIN\s+.*PRIVATE\s+KEY-----").expect("valid private key regex")
+});
+
+static PASSWORD_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)password\s*=\s*"[^"]{4,}""#).expect("valid password regex"));
+
+static API_KEY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)api[_-]?key\s*=\s*"[^"]{8,}""#).expect("valid API key regex")
+});
+
+static SECRET_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?i)secret\s*=\s*"[^"]{8,}""#).expect("valid secret regex"));
+
+static UNSAFE_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"unsafe\s*\{").expect("valid unsafe block regex"));
+
+static UNSAFE_FN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"unsafe\s+fn\s+").expect("valid unsafe function regex"));
+
+static DANGER_ACCEPT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"danger_accept_invalid_certs\s*\(\s*true\s*\)").expect("valid invalid certs regex")
+});
+
+static COMMAND_NEW_SH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"Command::new\s*\(\s*"(sh|bash)"\s*\)"#).expect("valid shell command regex")
+});
+
+static CORS_WILDCARD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"allow_origin\s*\(\s*Any\s*\)|cors\s*=\s*\[\s*"\*"\s*\]"#)
+        .expect("valid wildcard CORS regex")
+});
+
+static BIND_ALL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"0\.0\.0\.0"#).expect("valid bind-all regex"));
 
 const DEPENDENCY_FILENAMES: &[&str] = &[
     "Cargo.toml",

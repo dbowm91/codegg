@@ -299,15 +299,18 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::Status { short });
         let op_label = "status".to_string();
 
-        let repo_status = egggit::status::repo_status(repository_root)
-            .await
-            .ok()
-            .map(|s| RepoStatusPayload {
+        let repo_status = match egggit::status::repo_status(repository_root).await {
+            Ok(s) => Some(RepoStatusPayload {
                 branch: s.branch,
                 is_dirty: s.is_dirty,
                 commit_hash: s.commit_hash,
                 stash_count: s.stash_count,
-            });
+            }),
+            Err(error) => {
+                tracing::warn!(%error, "failed to parse structured git status");
+                None
+            }
+        };
 
         let raw = self.run_git_raw(&argv, repository_root).await?;
         let payload = repo_status
@@ -353,10 +356,8 @@ impl GitExecutionService {
         };
 
         let diff_summary = if !is_stat && !is_name_only {
-            egggit::diff::diff_summary(repository_root, base_ref)
-                .await
-                .ok()
-                .map(|s| DiffSummaryPayload {
+            match egggit::diff::diff_summary(repository_root, base_ref).await {
+                Ok(s) => Some(DiffSummaryPayload {
                     files_changed: s.files_changed,
                     insertions: s.insertions,
                     deletions: s.deletions,
@@ -368,7 +369,12 @@ impl GitExecutionService {
                             kind: format!("{:?}", f.kind).to_lowercase(),
                         })
                         .collect(),
-                })
+                }),
+                Err(error) => {
+                    tracing::warn!(%error, "failed to parse structured git diff summary");
+                    None
+                }
+            }
         } else {
             None
         };
@@ -515,18 +521,21 @@ impl GitExecutionService {
         let argv = render_argv(operation);
         let op_label = "changed-files".to_string();
 
-        let changed = egggit::diff::changed_files(repository_root, None)
-            .await
-            .ok()
-            .map(|files| {
+        let changed = match egggit::diff::changed_files(repository_root, None).await {
+            Ok(files) => Some(
                 files
                     .iter()
                     .map(|f| ChangedFilePayload {
                         path: f.path.clone(),
                         kind: format!("{:?}", f.kind).to_lowercase(),
                     })
-                    .collect::<Vec<_>>()
-            });
+                    .collect::<Vec<_>>(),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "failed to parse structured changed files");
+                None
+            }
+        };
 
         let raw = self.run_git_raw(&argv, repository_root).await?;
 
@@ -687,10 +696,8 @@ impl GitExecutionService {
         let argv = render_argv(&GitOperation::WorktreeList);
         let op_label = "worktree".to_string();
 
-        let worktrees = egggit::worktree::list_worktrees(repository_root)
-            .await
-            .ok()
-            .map(|list| {
+        let worktrees = match egggit::worktree::list_worktrees(repository_root).await {
+            Ok(list) => Some(
                 list.iter()
                     .map(|w| WorktreePayload {
                         path: w.path.clone(),
@@ -698,8 +705,13 @@ impl GitExecutionService {
                         is_current: w.is_current,
                         is_detached: w.is_detached,
                     })
-                    .collect::<Vec<_>>()
-            });
+                    .collect::<Vec<_>>(),
+            ),
+            Err(error) => {
+                tracing::warn!(%error, "failed to parse structured worktrees");
+                None
+            }
+        };
 
         let raw = self.run_git_raw(&argv, repository_root).await?;
 

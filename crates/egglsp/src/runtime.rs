@@ -72,6 +72,7 @@ pub struct LspProcessRuntime {
     pub generation: u64,
     pub intent_tx: watch::Sender<LspProcessIntent>,
     pub exit_rx: watch::Receiver<Option<LspProcessExitEvent>>,
+    _exit_tx: watch::Sender<Option<LspProcessExitEvent>>,
     pub kill_tx: mpsc::Sender<()>,
     stderr_buffer: Arc<StdMutex<StderrRingBuffer>>,
 }
@@ -176,17 +177,13 @@ impl LspProcessRuntime {
         let (intent_tx, _intent_rx) = watch::channel(LspProcessIntent::Running);
         let (exit_tx, exit_rx) = watch::channel(None);
         let (kill_tx, _kill_rx) = mpsc::channel(1);
-        // Keep the exit sender alive by leaking into a
-        // never-collected handle; the test relies on the
-        // construction succeeding, not on the runtime
-        // publishing an exit.
-        let _ = Box::leak(Box::new(exit_tx));
         Self {
             server_id: server_id.to_string(),
             root: PathBuf::from("/tmp"),
             generation,
             intent_tx,
             exit_rx,
+            _exit_tx: exit_tx,
             kill_tx,
             stderr_buffer: Arc::new(StdMutex::new(crate::supervisor::StderrRingBuffer::new())),
         }
@@ -214,6 +211,7 @@ pub fn spawn_process_runtime(
 ) -> (LspProcessRuntime, tokio::task::JoinHandle<()>) {
     let (intent_tx, intent_rx) = watch::channel(LspProcessIntent::Running);
     let (exit_tx, exit_rx) = watch::channel::<Option<LspProcessExitEvent>>(None);
+    let runtime_exit_tx = exit_tx.clone();
     let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
     let stderr_buffer = Arc::new(StdMutex::new(StderrRingBuffer::new()));
 
@@ -347,6 +345,7 @@ pub fn spawn_process_runtime(
         generation,
         intent_tx,
         exit_rx,
+        _exit_tx: runtime_exit_tx,
         kill_tx,
         stderr_buffer,
     };

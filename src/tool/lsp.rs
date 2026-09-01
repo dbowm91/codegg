@@ -642,7 +642,7 @@ impl LspTool {
     ) -> Self {
         Self {
             service,
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: std::env::current_dir().expect("cannot determine workspace root"),
             preview_registry: parking_lot::Mutex::new(
                 egglsp::preview_registry::PreviewArtifactRegistry::new(),
             ),

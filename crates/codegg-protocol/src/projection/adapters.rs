@@ -326,11 +326,11 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
                 message: "TurnStarted observed".into(),
             });
         }
-        CoreEvent::TurnTextDelta { delta, .. } => {
+        CoreEvent::TurnTextDelta { turn_id, delta, .. } => {
             events.push(ProjectionEvent::MessageAppended {
                 message: MessageProjection {
                     message_id: format!("core-{}", env.event_seq),
-                    parent_turn_id: env.turn_id.clone().unwrap_or_default(),
+                    parent_turn_id: turn_id.clone(),
                     role: MessageRole::Assistant,
                     text: clip_str(delta, MAX_PROJECTION_STRING_BYTES).to_string(),
                     tool_call_id: None,
@@ -431,14 +431,17 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             });
         }
         CoreEvent::TurnFailed {
-            turn_id, message, ..
+            turn_id: Some(turn_id),
+            message,
+            ..
         } => {
             events.push(ProjectionEvent::TurnFailed {
-                turn_id: turn_id.clone().unwrap_or_default(),
+                turn_id: turn_id.clone(),
                 message: truncate_str(message, MAX_PROJECTION_STRING_BYTES).into_owned(),
                 failed_at: env.timestamp_ms,
             });
         }
+        CoreEvent::TurnFailed { turn_id: None, .. } => {}
         CoreEvent::SubagentStarted {
             task_id,
             agent,

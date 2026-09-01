@@ -548,7 +548,8 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
                         NativeCommand::from_argv(argv.clone())
                             .map(|command| ExecutionBackend::ManagedArgv {
                                 command,
-                                cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                                cwd: std::env::current_dir()
+                                    .expect("cannot determine workspace root"),
                             })
                             .unwrap_or_else(|| ExecutionBackend::Reject {
                                 reason: "git argv is empty".to_string(),
@@ -590,7 +591,7 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
             .and_then(NativeCommand::from_argv)
             .map(|command| ExecutionBackend::ManagedArgv {
                 command,
-                cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                cwd: std::env::current_dir().expect("cannot determine workspace root"),
             })
             .unwrap_or_else(|| ExecutionBackend::Reject {
                 reason: "native command has no typed argv; use explicit shell mode".to_string(),
@@ -601,7 +602,7 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
             .and_then(NativeCommand::from_argv)
             .map(|command| ExecutionBackend::ManagedArgv {
                 command,
-                cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                cwd: std::env::current_dir().expect("cannot determine workspace root"),
             })
             .unwrap_or_else(|| ExecutionBackend::Reject {
                 reason: "native command has no typed argv; use explicit shell mode".to_string(),

@@ -63,7 +63,10 @@ impl SearchProvider for GitHubProvider {
             return Err(SearchError::RateLimited);
         }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read error body: {e}>"));
             return Err(SearchError::Http {
                 status: status.as_u16(),
                 body,

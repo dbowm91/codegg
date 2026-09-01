@@ -495,7 +495,7 @@ impl GitOperation {
     }
 
     /// Return the subcommand name for display purposes.
-    pub fn subcommand_name(&self) -> &'static str {
+    pub fn subcommand_name(&self) -> &str {
         match self {
             Self::Status { .. } => "status",
             Self::Diff { .. } | Self::DiffStaged { .. } => "diff",
@@ -544,10 +544,9 @@ impl GitOperation {
             Self::Clean { .. } => "clean",
             Self::ConfigGet { .. } | Self::ConfigSet { .. } | Self::ConfigUnset { .. } => "config",
             Self::Abort | Self::Continue | Self::Skip => "operation",
-            Self::ManagedGitArgv { argv, .. } => argv
-                .get(1)
-                .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str)
-                .unwrap_or("unknown"),
+            Self::ManagedGitArgv { argv, .. } => {
+                argv.get(1).map(String::as_str).unwrap_or("unknown")
+            }
             Self::RawShellRequired { .. } => "unknown",
         }
     }

@@ -22,7 +22,7 @@ pub struct GlobTool {
 impl GlobTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: std::env::current_dir().expect("cannot determine workspace root"),
             unrestricted: false,
         }
     }
@@ -138,6 +138,7 @@ impl Tool for GlobTool {
             .build();
 
         let canonical_search = canonical_search.clone();
+        let search_path = search_path.to_path_buf();
 
         let (matches, truncated) = tokio::task::spawn_blocking(move || {
             let mut matches = Vec::new();
@@ -152,6 +153,12 @@ impl Tool for GlobTool {
                         continue;
                     }
                     let path = entry.into_path();
+                    if !unrestricted && !path.starts_with(&search_path) {
+                        continue;
+                    }
+                    if !matcher.is_match(&path) {
+                        continue;
+                    }
                     let canonical = match path.canonicalize() {
                         Ok(c) => c,
                         Err(_) => continue,
@@ -161,9 +168,7 @@ impl Tool for GlobTool {
                         continue;
                     }
 
-                    if matcher.is_match(&path) {
-                        matches.push(canonical.display().to_string());
-                    }
+                    matches.push(canonical.display().to_string());
                 }
             }
             (matches, truncated)

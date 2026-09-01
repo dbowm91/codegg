@@ -227,7 +227,9 @@ fn validate_object_schema(
     arguments: &Value,
     schema: &Value,
 ) -> Result<(), TextRepairError> {
-    let object = arguments.as_object().expect("checked above");
+    let object = arguments.as_object().ok_or_else(|| {
+        TextRepairError::SchemaViolation(format!("{name}: arguments not an object"))
+    })?;
     if schema.get("type").and_then(Value::as_str) == Some("object") {
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
             for key in required.iter().filter_map(Value::as_str) {
@@ -302,5 +304,11 @@ mod tests {
             &tools(),
         );
         assert!(matches!(missing, Err(TextRepairError::SchemaViolation(_))));
+    }
+
+    #[test]
+    fn schema_validation_rejects_non_object_arguments_without_panicking() {
+        let result = validate_object_schema("bash", &json!(null), &tools()[0].parameters);
+        assert!(matches!(result, Err(TextRepairError::SchemaViolation(_))));
     }
 }

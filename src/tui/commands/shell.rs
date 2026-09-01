@@ -46,7 +46,7 @@ pub(crate) fn spawn_human_shell(app: &mut app::App, command: String, promote_aft
     use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
 
     let id = app.shell_store.alloc_id();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = std::env::current_dir().expect("cannot determine workspace root");
     let capture_policy = if promote_after {
         ShellCapturePolicy::StoreAndPromote
     } else {

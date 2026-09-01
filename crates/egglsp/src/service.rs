@@ -1520,14 +1520,14 @@ impl LspService {
         let uri = Url::from_file_path(file_path).map_err(|_| {
             LspError::LaunchFailed(format!("invalid file path: {}", file_path.display()))
         })?;
-        let _ = client.close_file(&uri).await;
+        let close_result = client.close_file(&uri).await;
         client.opened_files.lock().await.remove(&uri_str);
         self.document_owners.write().await.remove(&uri_str);
 
         // Remove from the authoritative document registry.
         self.document_registry.close(&owner_key, &uri).await;
 
-        Ok(())
+        close_result
     }
 
     pub async fn save_file(&self, file_path: &Path, text: Option<&str>) -> Result<(), LspError> {

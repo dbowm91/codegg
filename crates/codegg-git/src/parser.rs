@@ -105,11 +105,23 @@ impl<'a> ParseCtx<'a> {
         self.pos < self.full_argv.len()
     }
 
+    fn next_arg_required(&mut self) -> Result<String, ParseError> {
+        self.next_arg()
+            .ok_or_else(|| ParseError::MissingRequiredArgument {
+                argument: "next argument".into(),
+            })
+    }
+
     /// Consume recognized global options before the subcommand.
     fn consume_global_options(&mut self) -> Result<(), ParseError> {
         while self.has_more() {
-            let arg = self.peek_arg().unwrap();
-            match arg {
+            let arg = self
+                .peek_arg()
+                .ok_or_else(|| ParseError::MissingRequiredArgument {
+                    argument: "next argument".into(),
+                })?
+                .to_owned();
+            match arg.as_str() {
                 "-C" => {
                     self.pos += 1;
                     // consume the path argument
@@ -194,7 +206,7 @@ fn to_repo_path(s: &str) -> Result<RepoPath, ParseError> {
 fn collect_paths_after_double_dash(ctx: &mut ParseCtx) -> Result<Vec<RepoPath>, ParseError> {
     let mut paths = Vec::new();
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         paths.push(to_repo_path(&arg)?);
     }
     Ok(paths)
@@ -204,7 +216,7 @@ fn collect_paths_after_double_dash(ctx: &mut ParseCtx) -> Result<Vec<RepoPath>, 
 fn collect_pathspecs_after_double_dash(ctx: &mut ParseCtx) -> Result<Vec<Pathspec>, ParseError> {
     let mut specs = Vec::new();
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         specs.push(to_pathspec(&arg)?);
     }
     Ok(specs)
@@ -238,7 +250,7 @@ fn is_double_dash(s: &str) -> bool {
 fn parse_status(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut short = false;
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--short") || is_long_flag(&arg, "-s") {
             short = true;
         } else if is_long_flag(&arg, "--porcelain")
@@ -270,7 +282,7 @@ fn parse_diff(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<RepoPath> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--staged") || is_long_flag(&arg, "--cached") {
             staged = true;
         } else if is_long_flag(&arg, "--stat") {
@@ -331,7 +343,7 @@ fn parse_log(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<RepoPath> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--oneline") {
             oneline = true;
         } else if is_long_flag(&arg, "-n") || is_long_flag(&arg, "--max-count") {
@@ -381,7 +393,7 @@ fn parse_branch(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     // For detecting -d/-D, -m, -b/-c patterns
     let mut args: Vec<String> = Vec::new();
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         args.push(arg);
     }
 
@@ -483,7 +495,7 @@ fn parse_tag(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
 
     let mut args: Vec<String> = Vec::new();
     while ctx.has_more() {
-        args.push(ctx.next_arg().unwrap());
+        args.push(ctx.next_arg_required()?);
     }
 
     let mut i = 0;
@@ -574,7 +586,7 @@ fn parse_remote(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
         "set-url" => {
             let mut append = false;
             while ctx.has_more() {
-                let arg = ctx.next_arg().unwrap();
+                let arg = ctx.next_arg_required()?;
                 if is_long_flag(&arg, "--add") {
                     append = true;
                 } else if !is_flag(&arg) {
@@ -625,7 +637,7 @@ fn parse_stash(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
         "list" => Ok(GitOperation::StashList),
         "show" => {
             let stash = if ctx.has_more() {
-                let arg = ctx.next_arg().unwrap();
+                let arg = ctx.next_arg_required()?;
                 if is_flag(&arg) {
                     // e.g. -p, --stat etc — ignore for typed model
                     None
@@ -647,7 +659,7 @@ fn parse_stash(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
             let mut paths: Vec<Pathspec> = Vec::new();
 
             while ctx.has_more() {
-                let arg = ctx.next_arg().unwrap();
+                let arg = ctx.next_arg_required()?;
                 if is_long_flag(&arg, "--message") || is_short_flag(&arg, 'm') {
                     message = Some(ctx.next_arg().ok_or_else(|| {
                         ParseError::MissingRequiredArgument {
@@ -678,7 +690,7 @@ fn parse_stash(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
             });
             let mut index = false;
             while ctx.has_more() {
-                let arg = ctx.next_arg().unwrap();
+                let arg = ctx.next_arg_required()?;
                 if is_long_flag(&arg, "--index") || is_short_flag(&arg, 'i') {
                     index = true;
                 }
@@ -696,7 +708,7 @@ fn parse_stash(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
             });
             let mut index = false;
             while ctx.has_more() {
-                let arg = ctx.next_arg().unwrap();
+                let arg = ctx.next_arg_required()?;
                 if is_long_flag(&arg, "--index") || is_short_flag(&arg, 'i') {
                     index = true;
                 }
@@ -752,7 +764,7 @@ fn parse_checkout(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Option<Vec<RepoPath>> = None;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--force") || is_short_flag(&arg, 'f') {
             force = true;
         } else if is_long_flag(&arg, "--detach") {
@@ -773,7 +785,7 @@ fn parse_checkout(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
                 let mut p = vec![to_repo_path(&arg)?];
                 // Collect any more paths
                 while ctx.has_more() {
-                    let next = ctx.next_arg().unwrap();
+                    let next = ctx.next_arg_required()?;
                     if is_flag(&next) {
                         // Flags after paths are unusual but handle gracefully
                         if is_long_flag(&next, "--force") || is_short_flag(&next, 'f') {
@@ -804,7 +816,7 @@ fn parse_switch(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut branch: Option<String> = None;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--force") || is_short_flag(&arg, 'f') {
             force = true;
         } else if is_long_flag(&arg, "--detach") {
@@ -852,7 +864,7 @@ fn parse_restore(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<RepoPath> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--staged")
             || is_long_flag(&arg, "--source")
             || is_long_flag(&arg, "--worktree")
@@ -892,7 +904,7 @@ fn parse_commit(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut allow_empty = false;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--message") || is_short_flag(&arg, 'm') {
             message = ctx
                 .next_arg()
@@ -916,7 +928,7 @@ fn parse_commit(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
 fn parse_add(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<RepoPath> = Vec::new();
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_double_dash(&arg) {
             paths = collect_paths_after_double_dash(ctx)?;
             break;
@@ -933,7 +945,7 @@ fn parse_reset(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<RepoPath> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--soft") {
             mode = Some(ResetMode::Soft);
         } else if is_long_flag(&arg, "--mixed") {
@@ -992,7 +1004,7 @@ fn parse_clean(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut paths: Vec<Pathspec> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_double_dash(&arg) {
             paths = collect_pathspecs_after_double_dash(ctx)?;
             break;
@@ -1036,7 +1048,7 @@ fn parse_merge(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut revisions: Vec<String> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--no-ff") {
             no_ff = true;
         } else if is_long_flag(&arg, "--strategy") || is_long_flag(&arg, "--strategy-option") {
@@ -1076,7 +1088,7 @@ fn parse_merge(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
         } else if is_long_flag(&arg, "--") {
             // consume remaining as revisions
             while ctx.has_more() {
-                let r = ctx.next_arg().unwrap();
+                let r = ctx.next_arg_required()?;
                 revisions.push(r);
             }
             break;
@@ -1109,7 +1121,7 @@ fn parse_rebase(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut upstream: Option<String> = None;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--interactive") || is_short_flag(&arg, 'i') {
             interactive = true;
         } else if is_long_flag(&arg, "--abort") {
@@ -1148,7 +1160,7 @@ fn parse_rebase(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
             // recognized rebase flags
         } else if is_long_flag(&arg, "--") {
             while ctx.has_more() {
-                let r = ctx.next_arg().unwrap();
+                let r = ctx.next_arg_required()?;
                 if upstream.is_none() {
                     upstream = Some(r);
                 }
@@ -1186,7 +1198,7 @@ fn parse_cherry_pick(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut revisions: Vec<String> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--continue") {
             continue_op = true;
         } else if is_long_flag(&arg, "--abort") {
@@ -1249,7 +1261,7 @@ fn parse_revert(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut revisions: Vec<String> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--no-edit") {
             no_edit = true;
         } else if is_long_flag(&arg, "--continue") {
@@ -1309,7 +1321,7 @@ fn parse_fetch(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut refspecs: Vec<String> = Vec::new();
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--all") || is_short_flag(&arg, 'a') {
             all = true;
         } else if is_long_flag(&arg, "--tags")
@@ -1378,7 +1390,7 @@ fn parse_pull(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut branch: Option<String> = None;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--rebase") || is_short_flag(&arg, 'r') {
             rebase = true;
         } else if is_long_flag(&arg, "--ff-only") {
@@ -1474,7 +1486,7 @@ fn parse_push(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut branch: Option<String> = None;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--set-upstream") || is_short_flag(&arg, 'u') {
             set_upstream = true;
         } else if is_long_flag(&arg, "--force")
@@ -1558,7 +1570,7 @@ fn parse_config(ctx: &mut ParseCtx) -> Result<GitOperation, ParseError> {
     let mut get = false;
 
     while ctx.has_more() {
-        let arg = ctx.next_arg().unwrap();
+        let arg = ctx.next_arg_required()?;
         if is_long_flag(&arg, "--global") || is_short_flag(&arg, 'g') {
             global = true;
         } else if is_long_flag(&arg, "--local") {
@@ -3614,5 +3626,15 @@ mod tests {
             }
             _ => panic!("expected ManagedGitArgv"),
         }
+    }
+
+    #[test]
+    fn required_argument_reports_missing_input() {
+        let args = argv(&["git"]);
+        let mut ctx = ParseCtx::new(&args);
+        assert!(matches!(
+            ctx.next_arg_required(),
+            Err(ParseError::MissingRequiredArgument { .. })
+        ));
     }
 }

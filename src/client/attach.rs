@@ -82,12 +82,18 @@ pub async fn run_attach(url: &str, token: Option<&str>) -> Result<(), ClientErro
     if let Ok(capabilities) = serde_json::to_string(&TuiMessage::ProjectionCapabilities {
         capabilities: crate::protocol::projection::caps::ProjectionCapabilities::current(),
     }) {
-        let _ = ws_tx.send(Message::Text(capabilities.into())).await;
+        ws_tx
+            .send(Message::Text(capabilities.into()))
+            .await
+            .map_err(|e| ClientError::WebSocket(format!("attach handshake failed: {e}")))?;
     }
     // Request a resumable raw stream from sequence 0 for compatibility until
     // the app has a stream-scoped cursor to resume.
     if let Ok(resume) = serde_json::to_string(&TuiMessage::Resume { from_event_seq: 0 }) {
-        let _ = ws_tx.send(Message::Text(resume.into())).await;
+        ws_tx
+            .send(Message::Text(resume.into()))
+            .await
+            .map_err(|e| ClientError::WebSocket(format!("attach resume request failed: {e}")))?;
     }
 
     let mut app = tui::App::new_remote(url.to_string());
