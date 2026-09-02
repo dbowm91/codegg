@@ -349,8 +349,9 @@ impl Tool for GoalRequestCompletionTool {
                 let progress_summary =
                     format!("Host verification not met: {}", open_questions.join("; "));
                 let updated_goal = store
-                    .update_progress(
+                    .update_progress_if_revision(
                         &goal.id,
+                        goal.revision,
                         GoalProgressUpdate {
                             current_phase: Some("Completion verification".to_string()),
                             progress_summary: Some(progress_summary),

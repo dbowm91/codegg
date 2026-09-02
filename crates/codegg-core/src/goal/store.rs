@@ -335,6 +335,29 @@ impl GoalStore {
         goal_id: &str,
         update: GoalProgressUpdate,
     ) -> Result<Option<Goal>, StorageError> {
+        self.update_progress_with_revision(goal_id, update, None)
+            .await
+    }
+
+    /// Update progress only if the goal is still active at the revision read
+    /// before verification. A stale verifier cannot write progress onto a
+    /// replacement, paused, or cancelled goal.
+    pub async fn update_progress_if_revision(
+        &self,
+        goal_id: &str,
+        expected_revision: i64,
+        update: GoalProgressUpdate,
+    ) -> Result<Option<Goal>, StorageError> {
+        self.update_progress_with_revision(goal_id, update, Some(expected_revision))
+            .await
+    }
+
+    async fn update_progress_with_revision(
+        &self,
+        goal_id: &str,
+        update: GoalProgressUpdate,
+        expected_revision: Option<i64>,
+    ) -> Result<Option<Goal>, StorageError> {
         let goal = self.get(goal_id).await?;
         let goal = match goal {
             Some(g) => g,
@@ -387,7 +410,7 @@ impl GoalStore {
         let open_questions_json = serde_json::to_string(&open_questions)
             .map_err(|e| StorageError::Database(format!("serialize open_questions: {}", e)))?;
 
-        sqlx::query(
+        let result = sqlx::query(
             r#"UPDATE goal
                SET current_phase = ?1,
                    next_action = ?2,
@@ -395,7 +418,8 @@ impl GoalStore {
                    open_questions = ?4,
                updated_at = ?5,
                revision = revision + 1
-               WHERE id = ?6"#,
+               WHERE id = ?6
+                 AND (?7 IS NULL OR (status = 'active' AND revision = ?7))"#,
         )
         .bind(current_phase)
         .bind(next_action)
@@ -403,8 +427,13 @@ impl GoalStore {
         .bind(&open_questions_json)
         .bind(now)
         .bind(goal_id)
+        .bind(expected_revision)
         .execute(&self.pool)
         .await?;
+
+        if expected_revision.is_some() && result.rows_affected() == 0 {
+            return Ok(None);
+        }
 
         self.get(goal_id).await
     }
