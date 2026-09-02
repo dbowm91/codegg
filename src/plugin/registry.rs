@@ -509,12 +509,20 @@ impl PluginRegistry {
     /// only on actual enabled state, not lock contention.
     pub async fn hooks_for(&self, hook_type: HookType) -> Vec<HookRegistration> {
         let enabled = self.enabled_plugin_ids().await;
+        self.hooks_for_ids(hook_type, &enabled).await
+    }
+
+    pub async fn hooks_for_ids(
+        &self,
+        hook_type: HookType,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<HookRegistration> {
         self.hooks
             .read()
             .await
             .iter()
             .filter(|h| h.hook_type == hook_type)
-            .filter(|h| enabled.contains(&h.plugin_id))
+            .filter(|h| active_plugin_ids.contains(&h.plugin_id))
             .cloned()
             .collect::<Vec<_>>()
     }
@@ -532,13 +540,21 @@ impl PluginRegistry {
 
     /// Look up a command by name (from enabled plugins only).
     pub async fn command(&self, name: &str) -> Option<PluginCommandRegistration> {
-        let normalized = normalize_command_name(name);
         let enabled = self.enabled_plugin_ids().await;
+        self.command_for_ids(name, &enabled).await
+    }
+
+    pub async fn command_for_ids(
+        &self,
+        name: &str,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Option<PluginCommandRegistration> {
+        let normalized = normalize_command_name(name);
         self.commands
             .read()
             .await
             .iter()
-            .filter(|c| enabled.contains(&c.plugin_id))
+            .filter(|c| active_plugin_ids.contains(&c.plugin_id))
             .find(|c| {
                 normalize_command_name(&c.name) == normalized
                     || c.aliases
@@ -551,11 +567,18 @@ impl PluginRegistry {
     /// Get all registered commands (from enabled plugins only).
     pub async fn commands(&self) -> Vec<PluginCommandRegistration> {
         let enabled = self.enabled_plugin_ids().await;
+        self.commands_for_ids(&enabled).await
+    }
+
+    pub async fn commands_for_ids(
+        &self,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<PluginCommandRegistration> {
         self.commands
             .read()
             .await
             .iter()
-            .filter(|c| enabled.contains(&c.plugin_id))
+            .filter(|c| active_plugin_ids.contains(&c.plugin_id))
             .cloned()
             .collect()
     }
@@ -568,11 +591,18 @@ impl PluginRegistry {
     /// Get all panels (from enabled plugins only).
     pub async fn panels(&self) -> Vec<PluginPanelRegistration> {
         let enabled = self.enabled_plugin_ids().await;
+        self.panels_for_ids(&enabled).await
+    }
+
+    pub async fn panels_for_ids(
+        &self,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<PluginPanelRegistration> {
         self.panels
             .read()
             .await
             .iter()
-            .filter(|p| enabled.contains(&p.plugin_id))
+            .filter(|p| active_plugin_ids.contains(&p.plugin_id))
             .cloned()
             .collect()
     }
@@ -580,11 +610,18 @@ impl PluginRegistry {
     /// Get all status widgets (from enabled plugins only).
     pub async fn status_widgets(&self) -> Vec<PluginStatusRegistration> {
         let enabled = self.enabled_plugin_ids().await;
+        self.status_widgets_for_ids(&enabled).await
+    }
+
+    pub async fn status_widgets_for_ids(
+        &self,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<PluginStatusRegistration> {
         self.status_widgets
             .read()
             .await
             .iter()
-            .filter(|s| enabled.contains(&s.plugin_id))
+            .filter(|s| active_plugin_ids.contains(&s.plugin_id))
             .cloned()
             .collect()
     }
@@ -592,11 +629,19 @@ impl PluginRegistry {
     /// Get event subscribers for a specific event type (from enabled plugins only).
     pub async fn event_subscribers(&self, event_type: &str) -> Vec<PluginEventRegistration> {
         let enabled = self.enabled_plugin_ids().await;
+        self.event_subscribers_for_ids(event_type, &enabled).await
+    }
+
+    pub async fn event_subscribers_for_ids(
+        &self,
+        event_type: &str,
+        active_plugin_ids: &std::collections::HashSet<String>,
+    ) -> Vec<PluginEventRegistration> {
         self.event_subscribers
             .read()
             .await
             .iter()
-            .filter(|e| enabled.contains(&e.plugin_id))
+            .filter(|e| active_plugin_ids.contains(&e.plugin_id))
             .filter(|e| e.event_type == event_type || e.event_type == "*")
             .cloned()
             .collect()

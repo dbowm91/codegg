@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::plugin::activation::{
+    PluginActivationError, PluginActivationStore, ResolvedPluginActivationSet,
+};
 use crate::plugin::hooks::{HookContext, HookRegistration, HookResult, HookType};
 use crate::plugin::loader::LoadError;
 use crate::plugin::loader::LoadedPlugin;
@@ -17,11 +20,14 @@ use crate::protocol::plugin::{
     PLUGIN_PROTOCOL_VERSION,
 };
 
+#[derive(Clone)]
 pub struct PluginService {
     registry: Arc<PluginRegistry>,
     hook_timeout: Duration,
     builtin_runtime: Option<Arc<BuiltinRuntime>>,
     policy: Option<Arc<PluginPolicy>>,
+    activation_store: Arc<PluginActivationStore>,
+    pinned_activation: Option<Arc<ResolvedPluginActivationSet>>,
 }
 
 impl PluginService {
@@ -31,7 +37,57 @@ impl PluginService {
             hook_timeout: Duration::from_secs(5),
             builtin_runtime: None,
             policy: None,
+            activation_store: Arc::new(PluginActivationStore::in_memory()),
+            pinned_activation: None,
         }
+    }
+
+    pub fn with_activation_store(mut self, store: Arc<PluginActivationStore>) -> Self {
+        self.activation_store = store;
+        self
+    }
+
+    pub fn activation_store(&self) -> &Arc<PluginActivationStore> {
+        &self.activation_store
+    }
+
+    /// Resolve and pin activation for one workspace. The returned service
+    /// shares the installed registry and runtimes but cannot observe later
+    /// activation changes, which gives in-flight turns immutable behavior.
+    pub async fn for_workspace(
+        &self,
+        workspace_id: impl Into<String>,
+    ) -> Result<Self, PluginActivationError> {
+        let workspace_id = workspace_id.into();
+        let plugins = self.registry.list().await;
+        let activation = self
+            .activation_store
+            .resolve(&plugins, Some(workspace_id.as_str()))
+            .await;
+        for diagnostic in activation.diagnostics() {
+            tracing::warn!(workspace_id = %workspace_id, diagnostic, "plugin activation diagnostic");
+        }
+        let mut service = self.clone();
+        service.pinned_activation = Some(Arc::new(activation));
+        Ok(service)
+    }
+
+    pub async fn activation_for_workspace(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> ResolvedPluginActivationSet {
+        let plugins = self.registry.list().await;
+        self.activation_store.resolve(&plugins, workspace_id).await
+    }
+
+    fn active_plugin_ids(&self) -> Option<std::collections::HashSet<String>> {
+        self.pinned_activation
+            .as_ref()
+            .map(|activation| activation.active_plugin_ids())
+    }
+
+    pub fn pinned_activation(&self) -> Option<&Arc<ResolvedPluginActivationSet>> {
+        self.pinned_activation.as_ref()
     }
 
     pub fn with_hook_timeout(mut self, timeout: Duration) -> Self {
@@ -144,11 +200,11 @@ impl PluginService {
         args: Vec<String>,
         input: serde_json::Value,
     ) -> Result<PluginResponse, PluginError> {
-        let cmd = self
-            .registry
-            .command(command_name)
-            .await
-            .ok_or_else(|| PluginError::CommandNotFound(command_name.to_string()))?;
+        let cmd = match self.active_plugin_ids() {
+            Some(active) => self.registry.command_for_ids(command_name, &active).await,
+            None => self.registry.command(command_name).await,
+        }
+        .ok_or_else(|| PluginError::CommandNotFound(command_name.to_string()))?;
 
         let plugin_id = &cmd.plugin_id;
         let plugin_info = self
@@ -157,7 +213,12 @@ impl PluginService {
             .await
             .ok_or_else(|| PluginError::PluginNotFound(plugin_id.clone()))?;
 
-        if !plugin_info.enabled {
+        let active = self
+            .pinned_activation
+            .as_ref()
+            .map(|activation| activation.is_active(plugin_id))
+            .unwrap_or(plugin_info.enabled);
+        if !active {
             return Err(PluginError::PluginDisabled(plugin_id.clone()));
         }
 
@@ -285,7 +346,10 @@ impl PluginService {
     /// Dispatch a hook through the registry (Phase 5 name, same as existing).
     pub async fn dispatch_hook(&self, ctx: HookContext) -> HookResult {
         let hook_type = ctx.hook_type;
-        let hooks = self.registry.hooks_for(hook_type).await;
+        let hooks = match self.active_plugin_ids() {
+            Some(active) => self.registry.hooks_for_ids(hook_type, &active).await,
+            None => self.registry.hooks_for(hook_type).await,
+        };
 
         if hooks.is_empty() {
             return HookResult::ok(ctx.input);
@@ -538,4 +602,71 @@ pub enum PluginError {
     Registry(#[from] PluginRegistryError),
     #[error("runtime error: {0}")]
     Runtime(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugin::activation::{PluginActivationScope, PluginActivationStore};
+    use crate::plugin::manifest::{PluginCapability, PluginCommandSpec, PluginManifest};
+    use crate::plugin::registry::{PluginInfo, PluginSourceMetadata};
+
+    fn info() -> PluginInfo {
+        PluginInfo {
+            id: "plugin:demo".into(),
+            manifest: PluginManifest {
+                name: "demo".into(),
+                version: "1".into(),
+                capabilities: vec![PluginCapability::Command(PluginCommandSpec {
+                    name: "demo".into(),
+                    aliases: Vec::new(),
+                    description: None,
+                    handler: None,
+                    output: Vec::new(),
+                })],
+                ..Default::default()
+            },
+            enabled: true,
+            trust: PluginTrustClass::TrustedLocal,
+            diagnostics: Vec::new(),
+            source: Some(PluginSourceMetadata::registry_loaded(
+                "/plugins/demo".into(),
+            )),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pinned_services_isolate_workspaces_and_ignore_later_changes() {
+        let registry = Arc::new(PluginRegistry::new());
+        let plugin = info();
+        registry.register(plugin.clone()).await.unwrap();
+        let store = Arc::new(PluginActivationStore::in_memory());
+        store
+            .set(&plugin, PluginActivationScope::Global, false)
+            .await
+            .unwrap();
+        store
+            .set(&plugin, PluginActivationScope::Workspace("a".into()), true)
+            .await
+            .unwrap();
+
+        let service = PluginService::new(registry).with_activation_store(store.clone());
+        let a = service.for_workspace("a").await.unwrap();
+        let b = service.for_workspace("b").await.unwrap();
+        assert!(a.pinned_activation().unwrap().is_active("plugin:demo"));
+        assert!(!b.pinned_activation().unwrap().is_active("plugin:demo"));
+
+        store
+            .set(&plugin, PluginActivationScope::Workspace("a".into()), false)
+            .await
+            .unwrap();
+        assert!(a.pinned_activation().unwrap().is_active("plugin:demo"));
+        assert!(!service
+            .for_workspace("a")
+            .await
+            .unwrap()
+            .pinned_activation()
+            .unwrap()
+            .is_active("plugin:demo"));
+    }
 }

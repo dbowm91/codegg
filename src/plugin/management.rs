@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::plugin::activation::{PluginActivationScope, ResolvedPluginActivationSet};
 use crate::plugin::manifest::{PluginManifest, PluginRuntimeSpec, PluginTrustClass};
 use crate::plugin::marketplace::MarketplacePlugin;
 use crate::plugin::policy::PluginInstallPolicy;
 use crate::plugin::registry::{
-    PluginInfo, PluginRegistry, PluginRegistryError, PluginSourceMetadata,
+    PluginInfo, PluginInstallKind, PluginRegistry, PluginRegistryError, PluginSourceMetadata,
 };
 use crate::plugin::service::{PluginError, PluginService};
 
@@ -22,6 +23,9 @@ pub struct PluginManagementView {
     pub version: String,
     pub api_version: u32,
     pub enabled: bool,
+    pub activation_scope: String,
+    pub activation_source: String,
+    pub activation_diagnostic: Option<String>,
     pub runtime_kind: String,
     pub trust: PluginTrustClass,
     pub source_path: Option<String>,
@@ -72,6 +76,14 @@ impl PluginManagementView {
             version: manifest.version.clone(),
             api_version: manifest.api_version,
             enabled: info.enabled,
+            activation_scope: "global".to_string(),
+            activation_source: if info.enabled {
+                "live state"
+            } else {
+                "live disabled"
+            }
+            .to_string(),
+            activation_diagnostic: None,
             runtime_kind: manifest.runtime_kind().to_string(),
             trust: info.trust,
             source_path: source_path_from_metadata(info.source.as_ref()),
@@ -96,6 +108,14 @@ impl PluginManagementView {
             version: plugin.version.clone(),
             api_version: 1, // marketplace plugins don't carry API version separately
             enabled,
+            activation_scope: "global".to_string(),
+            activation_source: if enabled {
+                "legacy marketplace state"
+            } else {
+                "disabled"
+            }
+            .to_string(),
+            activation_diagnostic: None,
             runtime_kind: "marketplace".to_string(),
             trust: PluginTrustClass::TrustedLocal,
             source_path: Some(format!("{}/{}", "plugins", plugin.id)),
@@ -110,6 +130,20 @@ impl PluginManagementView {
             last_error: None,
         }
     }
+}
+
+fn view_with_activation(
+    info: &PluginInfo,
+    activation: &ResolvedPluginActivationSet,
+) -> PluginManagementView {
+    let mut view = PluginManagementView::from_info(info);
+    if let Some(entry) = activation.get(&info.id) {
+        view.enabled = entry.enabled;
+        view.activation_scope = entry.scope.label();
+        view.activation_source = entry.source.label().to_string();
+        view.activation_diagnostic = entry.diagnostic.clone();
+    }
+    view
 }
 
 fn summarize_permissions(manifest: &PluginManifest) -> String {
@@ -172,6 +206,8 @@ pub enum PluginManagementError {
     Service(String),
     #[error("install error: {0}")]
     Install(String),
+    #[error("activation error: {0}")]
+    Activation(String),
 }
 
 impl From<PluginError> for PluginManagementError {
@@ -215,7 +251,23 @@ impl PluginManager {
     /// List all registered plugins.
     pub async fn list(&self) -> Vec<PluginManagementView> {
         let infos = self.service.registry().list().await;
-        infos.iter().map(PluginManagementView::from_info).collect()
+        let activation = self.service.activation_for_workspace(None).await;
+        infos
+            .iter()
+            .map(|info| view_with_activation(info, &activation))
+            .collect()
+    }
+
+    pub async fn list_for_workspace(&self, workspace_id: &str) -> Vec<PluginManagementView> {
+        let infos = self.service.registry().list().await;
+        let activation = self
+            .service
+            .activation_for_workspace(Some(workspace_id))
+            .await;
+        infos
+            .iter()
+            .map(|info| view_with_activation(info, &activation))
+            .collect()
     }
 
     /// Get detailed info for a single plugin by selector.
@@ -229,7 +281,8 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
-        Ok(PluginManagementView::from_info(&info))
+        let activation = self.service.activation_for_workspace(None).await;
+        Ok(view_with_activation(&info, &activation))
     }
 
     /// Enable a plugin by selector.
@@ -245,14 +298,16 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
-        self.service.registry().set_enabled(&info.id, true).await?;
+        self.set_activation(&info, PluginActivationScope::Global, true)
+            .await?;
         let updated = self
             .service
             .registry()
             .get(&info.id)
             .await
             .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
-        Ok(PluginManagementView::from_info(&updated))
+        let activation = self.service.activation_for_workspace(None).await;
+        Ok(view_with_activation(&updated, &activation))
     }
 
     /// Disable a plugin by selector.
@@ -268,14 +323,117 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
-        self.service.registry().set_enabled(&info.id, false).await?;
+        self.set_activation(&info, PluginActivationScope::Global, false)
+            .await?;
         let updated = self
             .service
             .registry()
             .get(&info.id)
             .await
             .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
-        Ok(PluginManagementView::from_info(&updated))
+        let activation = self.service.activation_for_workspace(None).await;
+        Ok(view_with_activation(&updated, &activation))
+    }
+
+    pub async fn enable_for_workspace(
+        &self,
+        selector: &str,
+        workspace_id: &str,
+    ) -> Result<PluginManagementView, PluginManagementError> {
+        self.set_for_workspace(selector, workspace_id, true).await
+    }
+
+    pub async fn disable_for_workspace(
+        &self,
+        selector: &str,
+        workspace_id: &str,
+    ) -> Result<PluginManagementView, PluginManagementError> {
+        self.set_for_workspace(selector, workspace_id, false).await
+    }
+
+    async fn set_for_workspace(
+        &self,
+        selector: &str,
+        workspace_id: &str,
+        enabled: bool,
+    ) -> Result<PluginManagementView, PluginManagementError> {
+        let info = self
+            .service
+            .registry()
+            .resolve_plugin_selector(selector)
+            .await
+            .map_err(registry_error_to_management)?;
+        self.set_activation(
+            &info,
+            PluginActivationScope::Workspace(workspace_id.to_string()),
+            enabled,
+        )
+        .await?;
+        let updated = self
+            .service
+            .registry()
+            .get(&info.id)
+            .await
+            .ok_or_else(|| PluginManagementError::NotFound(info.id.clone()))?;
+        let activation = self
+            .service
+            .activation_for_workspace(Some(workspace_id))
+            .await;
+        Ok(view_with_activation(&updated, &activation))
+    }
+
+    async fn set_activation(
+        &self,
+        info: &PluginInfo,
+        scope: PluginActivationScope,
+        enabled: bool,
+    ) -> Result<(), PluginManagementError> {
+        let is_builtin = matches!(
+            info.source.as_ref().map(|source| source.installed_by),
+            Some(PluginInstallKind::Builtin)
+        );
+        if is_builtin && !enabled {
+            return Err(PluginManagementError::Activation(format!(
+                "builtin plugin '{}' is required for compatibility and cannot be disabled",
+                info.id
+            )));
+        }
+        if is_builtin {
+            self.service.registry().set_enabled(&info.id, true).await?;
+            return Ok(());
+        }
+
+        // Validate the live registry transition before committing durable
+        // state. If the durable write fails, restore the previous live state.
+        if matches!(scope, PluginActivationScope::Global) {
+            self.service
+                .registry()
+                .set_enabled(&info.id, enabled)
+                .await?;
+        }
+        if let Err(error) = self
+            .service
+            .activation_store()
+            .set(info, scope.clone(), enabled)
+            .await
+        {
+            if matches!(scope, PluginActivationScope::Global) {
+                if let Err(rollback_error) = self
+                    .service
+                    .registry()
+                    .set_enabled(&info.id, !enabled)
+                    .await
+                {
+                    tracing::error!(
+                        %rollback_error,
+                        plugin_id = %info.id,
+                        "failed to roll back live plugin activation after durable write failure"
+                    );
+                }
+            }
+            return Err(PluginManagementError::Activation(error.to_string()));
+        }
+        Ok(())
     }
 
     /// Remove (unregister) a plugin from the registry by selector.
@@ -293,6 +451,11 @@ impl PluginManager {
             .resolve_plugin_selector(selector)
             .await
             .map_err(registry_error_to_management)?;
+        self.service
+            .activation_store()
+            .remove_plugin(&info.id)
+            .await
+            .map_err(|error| PluginManagementError::Activation(error.to_string()))?;
         let removed = self
             .service
             .registry()
@@ -349,7 +512,8 @@ impl PluginManager {
             .get(&plugin_id)
             .await
             .ok_or(PluginManagementError::NotFound(plugin_id))?;
-        Ok(PluginManagementView::from_info(&updated))
+        let activation = self.service.activation_for_workspace(None).await;
+        Ok(view_with_activation(&updated, &activation))
     }
 
     /// Uninstall a plugin: unregister from the registry and remove
@@ -408,6 +572,14 @@ impl PluginManager {
                 }
             }
         }
+
+        // Remove durable selections before unregistering. If persistence
+        // fails, the live registry and install remain untouched.
+        self.service
+            .activation_store()
+            .remove_plugin(&info.id)
+            .await
+            .map_err(|error| PluginManagementError::Activation(error.to_string()))?;
 
         // Step 2: unregister from the live registry.
         let removed = self
@@ -952,6 +1124,30 @@ mod tests {
 
         let view = manager.disable("test:1").await.unwrap();
         assert!(!view.enabled);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workspace_activation_is_reported_and_uninstall_cleans_records() {
+        let registry = PluginRegistry::new();
+        registry
+            .register(make_info("test:1", "test", true))
+            .await
+            .unwrap();
+        let store = Arc::new(crate::plugin::activation::PluginActivationStore::in_memory());
+        let service =
+            Arc::new(PluginService::new(Arc::new(registry)).with_activation_store(store.clone()));
+        let manager = PluginManager::new(service);
+
+        let view = manager
+            .disable_for_workspace("test:1", "workspace-a")
+            .await
+            .unwrap();
+        assert!(!view.enabled);
+        assert_eq!(view.activation_scope, "workspace:workspace-a");
+        assert_eq!(view.activation_source, "workspace override");
+
+        manager.remove("test:1").await.unwrap();
+        assert!(store.records().await.is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

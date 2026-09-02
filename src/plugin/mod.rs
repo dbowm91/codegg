@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+pub mod activation;
 pub mod api;
 pub mod builtin;
 pub mod event_bus;
@@ -19,6 +20,10 @@ pub mod service;
 pub mod tui;
 
 pub use crate::protocol::plugin::PluginResponse;
+pub use activation::{
+    PluginActivationError, PluginActivationRecord, PluginActivationScope, PluginActivationSource,
+    PluginActivationStore, ResolvedPluginActivation, ResolvedPluginActivationSet,
+};
 pub use api::{ApiVersion, Stability, API_VERSION};
 pub use event_bus::{PluginEventBus, PluginEventSubscription};
 pub use hooks::{HookContext, HookResult, HookType};
@@ -68,6 +73,21 @@ pub async fn create_default_plugin_service() -> Option<Arc<PluginService>> {
     let handler_registry = Arc::new(builtin::builtin_runtime_registry());
     let builtin_runtime = Arc::new(BuiltinRuntime::new(handler_registry));
 
-    let service = Arc::new(PluginService::new(registry).with_builtin_runtime(builtin_runtime));
+    let activation_store = match PluginActivationStore::load(
+        crate::core::instance::DaemonPaths::resolve().plugin_activation_path(),
+    )
+    .await
+    {
+        Ok(store) => Arc::new(store),
+        Err(error) => {
+            tracing::error!(%error, "plugin activation state is unavailable; plugins disabled");
+            return None;
+        }
+    };
+    let service = Arc::new(
+        PluginService::new(registry)
+            .with_builtin_runtime(builtin_runtime)
+            .with_activation_store(activation_store),
+    );
     Some(service)
 }

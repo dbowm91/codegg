@@ -172,6 +172,13 @@ impl DaemonPaths {
         self.socket_path.to_string_lossy().into_owned()
     }
 
+    /// Durable user-scoped plugin activation state. Installation metadata
+    /// remains owned by the plugin registry; this file stores only activation
+    /// selections and is written atomically by the plugin activation store.
+    pub fn plugin_activation_path(&self) -> PathBuf {
+        self.root.join("plugin-activation.json")
+    }
+
     /// Open the append-only daemon log with user-only permissions.
     pub fn open_log_file(&self) -> Result<std::fs::File, AppError> {
         self.ensure_root()?;

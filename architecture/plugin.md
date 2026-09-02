@@ -13,6 +13,7 @@ installing, and removing plugins.
 | Path | Role |
 |------|------|
 | `src/plugin/mod.rs` | Public re-exports, `create_default_plugin_service()` |
+| `src/plugin/activation.rs` | Durable global/workspace activation records and immutable resolved views |
 | `src/plugin/registry.rs` | `PluginRegistry`, `PluginInfo`, capability indexing |
 | `src/plugin/service.rs` | `PluginService` — hook dispatch and command invocation |
 | `src/plugin/manifest.rs` | `PluginManifest`, `PluginCapability`, `PluginRuntimeSpec` |
@@ -77,6 +78,21 @@ extracted from manifests at registration time:
 All queries filter against an `enabled_plugin_ids()` snapshot acquired
 under a single read guard, eliminating lock-contention false negatives.
 
+The registry is the installed-plugin/capability index; it is not the durable
+activation authority. `PluginActivationStore` writes user-scoped
+`plugin-activation.json` atomically beneath the daemon runtime root. A
+`Global` record supplies the default, while a `Workspace(id)` record overrides
+it for that stable workspace identity. Missing records preserve the legacy
+default-active behavior for non-builtin plugins. Builtin plugins use an
+explicit builtin policy so auth/provider compatibility is not changed by
+third-party activation records.
+
+`PluginService::for_workspace()` resolves the store against the installed
+registry and pins a `ResolvedPluginActivationSet`. Turn/runtime construction
+uses this context-bound service, so project A and project B may see different
+activation states while sharing one registry and runtime implementation. A
+running turn retains its pinned view; later turns resolve later records.
+
 ### Hook Dispatch Pipeline
 
 ```
@@ -120,8 +136,10 @@ all defaulting to conservative:
 |--------|-------------|
 | `list()` | All plugins as `PluginManagementView` |
 | `info(selector)` | Single plugin by id/name/prefix |
-| `enable(selector)` | Runtime-only enable |
-| `disable(selector)` | Runtime-only disable |
+| `enable(selector)` | Persist a global activation override |
+| `disable(selector)` | Persist a global deactivation override |
+| `enable_for_workspace(selector, id)` | Persist a workspace activation override |
+| `disable_for_workspace(selector, id)` | Persist a workspace deactivation override |
 | `install_from_path(path)` | Copy + register + live registry |
 | `uninstall(selector)` | Validate + unregister + rm |
 | `doctor(selector)` | Read-only diagnostic checks |
@@ -184,7 +202,10 @@ pub struct HookResult { pub output, pub blocked, pub error, pub effects }
 
 ```rust
 // src/plugin/service.rs:20
-pub struct PluginService { registry, hook_timeout, builtin_runtime, policy }
+pub struct PluginService {
+    registry, hook_timeout, builtin_runtime, policy,
+    activation_store, pinned_activation,
+}
 
 // src/plugin/service.rs:530
 pub enum PluginError { CommandNotFound, PluginNotFound, PluginDisabled, Registry, Runtime }
@@ -243,8 +264,11 @@ Controlled via `cargo build --features plugins`.
 
 - **BuiltinRuntime is hook-only**: Command invocations against builtin
   plugins return `PluginError::Runtime`. No command handler registry.
-- **Enable/disable is runtime-only**: No persistence. `/plugins` shows
-  a notice. Re-registration restores original state.
+- **Installation and activation are separate**: enable/disable writes the
+  daemon-owned activation store. The default management methods write a
+  global override; context-aware callers may write a workspace override.
+  Re-registration reloads durable state, and stale install identities remain
+  inactive with diagnostics.
 - **Global command uniqueness**: Two plugins cannot register the same
   normalized command name (leading `/` stripped, lowercased). Second
   registration fails with `DuplicateCommand`.

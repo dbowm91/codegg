@@ -2684,7 +2684,19 @@ impl CoreDaemon {
 
                 // Delegate to the injected turn runtime which handles tool
                 // registry, agent loop construction, and background spawning.
-                let plugin_service = crate::plugin::create_default_plugin_service().await;
+                let plugin_service = match crate::plugin::create_default_plugin_service().await {
+                    Some(service) => match service
+                        .for_workspace(runtime.workspace_id.to_string())
+                        .await
+                    {
+                        Ok(contextual) => Some(Arc::new(contextual)),
+                        Err(error) => {
+                            tracing::error!(%error, "failed to resolve plugin activation for workspace");
+                            None
+                        }
+                    },
+                    None => None,
+                };
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,

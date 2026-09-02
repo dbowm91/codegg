@@ -21,6 +21,8 @@ The plugin module (`src/plugin/`) consists of:
 - **`lifecycle.rs`** - Plugin lifecycle management
 - **`permission.rs`** - Plugin permission handling
 - **`management_ui.rs`** - TUI-facing plugin management views
+- **`activation.rs`** - Durable global/workspace activation records and
+  immutable context-bound activation views
 - **`policy.rs`** - `PluginPolicy` composite security policy
 - **`runtime/`** - Runtime implementations (`mod.rs`, `wasm.rs`, `process.rs`, `builtin.rs`, `wasm_cache.rs`)
 - **`builtin/`** - Built-in plugins (poe, gitlab, copilot, codex)
@@ -187,6 +189,29 @@ Key methods:
 - `dispatch_hook()` - Execute a single hook
 - `dispatch_tool_definition()` - Modify tool definitions
 - `register_plugin()` - Add a plugin to the registry
+
+## Installation and activation
+
+Installation and activation are separate. Installing or discovering a plugin
+adds it to the daemon's installed registry; it does not write an installed
+manifest or grant new execution authority. The plugin manager's `enable` and
+`disable` methods persist a global override in the user-scoped daemon
+`plugin-activation.json` file. Context-aware callers can use
+`enable_for_workspace` and `disable_for_workspace` with a stable workspace ID.
+
+Resolution is deterministic: builtin compatibility policy is resolved first,
+then a workspace override, then a global override, then the migration default
+(active for legacy non-builtin plugins). A resolved set is pinned by
+`PluginService::for_workspace` and is immutable for the turn. Activation
+changes therefore affect later turns only, even when multiple workspaces share
+one daemon and installed registry.
+
+`list` and `info` report active state, scope, activation source, and stale
+record diagnostics. Activation records include the observed plugin version
+and install path. If either changes, the record is stale and the plugin stays
+inactive until explicitly activated again. Uninstall removes all records before
+unregistering the plugin; a failed persistence operation leaves the live
+registry and files untouched.
 
 ## Installation
 
@@ -412,8 +437,8 @@ First-class slash commands for local plugin management:
 
 - `/plugins` — List all installed and built-in plugins with status and capability summary
 - `/plugin-info <id>` — Show detailed plugin info (runtime, capabilities, trust, permissions, diagnostics, install path)
-- `/plugin-enable <id>` — Enable a plugin (runtime-only; `/plugins` shows a notice)
-- `/plugin-disable <id>` — Disable a plugin (runtime-only; `/plugins` shows a notice)
+- `/plugin-enable <id>` — Persist a global activation override
+- `/plugin-disable <id>` — Persist a global deactivation override
 - `/plugin-doctor [id]` — Run diagnostic checks on plugin configuration and health
 - `/plugin-remove <id>` — Remove a locally installed plugin; unregisters it from the live registry and, when an install path was recorded, deletes that directory from disk
 - `/plugin-install <path>` — Install a plugin from a local directory path (absolute or relative)
@@ -453,7 +478,7 @@ touching the registry.
 
 ### Safety
 
-- Enable/disable is runtime-only (in-memory `PluginRegistry::set_enabled`); `/plugins` shows a notice
+- Enable/disable is durable in the daemon-owned activation store; `/plugins` and `/plugin-info` show the effective scope/source and stale-record diagnostics
 - Remove only deletes from the canonical plugin directory (`~/.local/share/codegg/plugins/`); the target is validated against this directory before unregister and removal
 - Install validates manifests before copying and rejects invalid manifests; local source paths are canonicalized and must contain a `manifest.toml`; archive members and copy-relative paths remain strictly validated
 - Doctor checks are read-only and never execute plugin code by default

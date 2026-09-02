@@ -7,8 +7,8 @@ use super::management::{PluginDoctorReport, PluginManagementView};
 
 /// Build a table node listing all plugins.
 ///
-/// Columns: ID, Name, Version, Runtime, Trust, Enabled, Commands, Hooks,
-/// Panels, Widgets, Events
+/// Columns: ID, Name, Version, Runtime, Trust, Active, Scope, Source,
+/// Commands, Hooks, Panels, Widgets, Events
 pub fn plugins_table(plugins: &[PluginManagementView]) -> UiNode {
     let columns = vec![
         "ID".to_string(),
@@ -16,7 +16,9 @@ pub fn plugins_table(plugins: &[PluginManagementView]) -> UiNode {
         "Version".to_string(),
         "Runtime".to_string(),
         "Trust".to_string(),
-        "Enabled".to_string(),
+        "Active".to_string(),
+        "Scope".to_string(),
+        "Activation".to_string(),
         "Commands".to_string(),
         "Hooks".to_string(),
         "Panels".to_string(),
@@ -34,6 +36,8 @@ pub fn plugins_table(plugins: &[PluginManagementView]) -> UiNode {
                 p.runtime_kind.clone(),
                 format!("{:?}", p.trust),
                 if p.enabled { "yes" } else { "no" }.to_string(),
+                p.activation_scope.clone(),
+                p.activation_source.clone(),
                 p.command_count.to_string(),
                 p.hook_count.to_string(),
                 p.panel_count.to_string(),
@@ -88,9 +92,23 @@ pub fn plugin_info_node(plugin: &PluginManagementView) -> UiNode {
         value: format!("{:?}", plugin.trust),
     });
     entries.push(KeyValueEntry {
-        key: "Enabled".to_string(),
+        key: "Active".to_string(),
         value: if plugin.enabled { "yes" } else { "no" }.to_string(),
     });
+    entries.push(KeyValueEntry {
+        key: "Activation scope".to_string(),
+        value: plugin.activation_scope.clone(),
+    });
+    entries.push(KeyValueEntry {
+        key: "Activation source".to_string(),
+        value: plugin.activation_source.clone(),
+    });
+    if let Some(diagnostic) = &plugin.activation_diagnostic {
+        entries.push(KeyValueEntry {
+            key: "Activation diagnostic".to_string(),
+            value: diagnostic.clone(),
+        });
+    }
 
     // Source
     entries.push(KeyValueEntry {
@@ -276,6 +294,9 @@ mod tests {
             version: "1.0.0".to_string(),
             api_version: 1,
             enabled: true,
+            activation_scope: "global".into(),
+            activation_source: "migration default".into(),
+            activation_diagnostic: None,
             runtime_kind: "builtin".to_string(),
             trust: PluginTrustClass::Builtin,
             source_path: None,
@@ -309,7 +330,7 @@ mod tests {
         let node = plugins_table(&plugins);
         match &node {
             UiNode::Table(t) => {
-                assert_eq!(t.columns.len(), 11);
+                assert_eq!(t.columns.len(), 13);
                 assert_eq!(t.rows.len(), 3);
                 assert_eq!(t.rows[0][0], "a:1");
                 assert_eq!(t.rows[0][1], "alpha");
@@ -325,7 +346,7 @@ mod tests {
         let node = plugins_table(&[]);
         match &node {
             UiNode::Table(t) => {
-                assert_eq!(t.columns.len(), 11);
+                assert_eq!(t.columns.len(), 13);
                 assert!(t.rows.is_empty());
             }
             other => panic!("expected Table, got {:?}", other),
@@ -342,7 +363,7 @@ mod tests {
                 assert_eq!(c.children.len(), 1);
                 match &c.children[0] {
                     UiNode::KeyValue(kv) => {
-                        assert!(kv.entries.len() >= 15);
+                        assert!(kv.entries.len() >= 18);
                         let keys: Vec<&str> = kv.entries.iter().map(|e| e.key.as_str()).collect();
                         assert!(keys.contains(&"ID"));
                         assert!(keys.contains(&"Name"));
@@ -351,7 +372,9 @@ mod tests {
                         assert!(keys.contains(&"Description"));
                         assert!(keys.contains(&"Runtime"));
                         assert!(keys.contains(&"Trust"));
-                        assert!(keys.contains(&"Enabled"));
+                        assert!(keys.contains(&"Active"));
+                        assert!(keys.contains(&"Activation scope"));
+                        assert!(keys.contains(&"Activation source"));
                         assert!(keys.contains(&"Source Path"));
                         assert!(keys.contains(&"Commands"));
                         assert!(keys.contains(&"Hooks"));

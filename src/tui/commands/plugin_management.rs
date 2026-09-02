@@ -3,8 +3,8 @@
 //! Provides list/info/enable/disable/install/remove/doctor operations
 //! for installed plugins. Uses the canonical [`PluginManager`] (wrapping
 //! [`PluginService`]/[`PluginRegistry`] with builtins) as the source of
-//! truth. Enable/disable state is held in the live registry and is
-//! runtime-only until a persistence backend lands.
+//! truth. Enable/disable state is persisted in the daemon-owned activation
+//! store; the live registry remains an installation/capability index.
 //!
 //! All handlers are `pub(crate) fn` (non-async) and spawn background
 //! tasks via [`spawn_registered_tui_task`] (tracked by the
@@ -54,7 +54,8 @@ pub(crate) fn show_plugins(app: &mut App) {
             lines.insert(1, String::new());
             lines.insert(
                 2,
-                "Note: enable/disable is runtime-only until persistence lands.".to_string(),
+                "Activation defaults globally; workspace-scoped overrides are available through the management API."
+                    .to_string(),
             );
             lines.insert(3, String::new());
 
