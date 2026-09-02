@@ -52,6 +52,13 @@ crates/codegg-core/src/goal/
    verifier. Only a deterministic `Met` verdict can transition the goal to
    `Complete`; model prose and claimed file/test lists are not authority.
 
+Supervised Test and Subagent jobs created by the daemon while a goal is
+active carry the host-written reserved `goal_id` label. Completion evidence
+is eligible only when that durable label matches the exact goal being
+verified, with session identity and creation time serving only as additional
+bounds. Jobs without the label are legacy/unavailable evidence; their
+relation is never inferred from timestamps, display names, or model claims.
+
 ### Budget Enforcement
 
 `GoalStore::increment_usage()` atomically advances counters and checks
@@ -265,9 +272,14 @@ Budget axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
 - `maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per run to
   prevent infinite loops.
 - `GoalRequestCompletionTool` submits a bounded model proposal; only a
-  passing host-owned test/delegated-job evidence set can produce `Met`.
-  Failed/missing evidence produces `NotMet`, and semantic criteria or
-  remaining risks require `AwaitingUser`.
+  passing exact-goal-owned test/delegated-job evidence set can produce `Met`.
+  Failed/missing evidence produces `NotMet`, and non-empty natural-language
+  criteria or remaining risks require `AwaitingUser`. Criteria are not
+  classified by words such as `test`, `pass`, `green`, `todo`, or `task`.
+- `proposal.tests_run` and `proposal.files_changed` are bounded explanatory
+  claims. A test claim requires a passing host-owned test for the active goal,
+  but its free-form name is not treated as invocation identity; file claims
+  never provide positive proof without a separate host-owned source.
 - `BudgetLimited` is treated as terminal by `is_terminal()` — the agent
   cannot auto-continue. The user must raise the budget to resume.
 - Wall-clock seconds are persisted in SQLite and survive session

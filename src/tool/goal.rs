@@ -282,10 +282,14 @@ impl Tool for GoalRequestCompletionTool {
             }
         };
 
-        let host_evidence =
-            crate::goal_verification::assemble(&self.pool, &self.session_id, goal.created_at)
-                .await
-                .map_err(ToolError::Execution)?;
+        let host_evidence = crate::goal_verification::assemble(
+            &self.pool,
+            &self.session_id,
+            &goal.id,
+            goal.created_at,
+        )
+        .await
+        .map_err(ToolError::Execution)?;
         let verdict = GoalVerificationService.verify(&goal, &proposal, &host_evidence);
 
         match verdict {
@@ -456,6 +460,20 @@ mod tests {
     }
 
     async fn insert_test_job(pool: &SqlitePool, session_id: &str, terminal_state: AttemptState) {
+        let goal_id = GoalStore::new(pool.clone())
+            .active_for_session(session_id)
+            .await
+            .unwrap()
+            .map(|goal| goal.id);
+        insert_test_job_for_goal(pool, session_id, terminal_state, goal_id.as_deref()).await;
+    }
+
+    async fn insert_test_job_for_goal(
+        pool: &SqlitePool,
+        session_id: &str,
+        terminal_state: AttemptState,
+        goal_id: Option<&str>,
+    ) {
         let jobs = SqliteJobStore::new(pool.clone());
         let job = jobs
             .create_job(NewJob {
@@ -488,6 +506,14 @@ mod tests {
             })
             .await
             .unwrap();
+        if let Some(goal_id) = goal_id {
+            let mut labels = std::collections::HashMap::new();
+            labels.insert(
+                codegg_core::jobs::GOAL_PROVENANCE_LABEL_KEY.to_string(),
+                goal_id.to_string(),
+            );
+            jobs.set_job_labels(&job.job_id, labels).await.unwrap();
+        }
         let attempt = jobs
             .begin_attempt(
                 &job.job_id,
@@ -753,5 +779,117 @@ mod tests {
                 .status,
             GoalStatus::AwaitingUser
         );
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_pass_security_review_awaits_user() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Test Goal",
+                "Do something",
+                None,
+                None,
+                vec!["Pass security review".into()],
+            )
+            .await
+            .unwrap();
+        insert_completed_test_job(&pool, "session1").await;
+        let tool = GoalRequestCompletionTool::new(pool, "session1".to_string());
+        let result = tool
+            .execute(serde_json::json!({
+                "evidence": "all done",
+                "tests_run": ["cargo test"]
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["verdict"], "awaiting_user");
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_ignores_other_goal_evidence() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        let goal_a = store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Goal A",
+                "Do A",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        insert_test_job_for_goal(&pool, "session1", AttemptState::Completed, Some(&goal_a.id))
+            .await;
+        let goal_b = store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Goal B",
+                "Do B",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        let evidence =
+            crate::goal_verification::assemble(&pool, "session1", &goal_b.id, goal_b.created_at)
+                .await
+                .unwrap();
+        assert!(evidence.executions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_other_goal_failure_does_not_poison_current_goal() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        let goal_a = store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Goal A",
+                "Do A",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        insert_test_job_for_goal(&pool, "session1", AttemptState::Failed, Some(&goal_a.id)).await;
+        let goal_b = store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Goal B",
+                "Do B",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        insert_test_job_for_goal(&pool, "session1", AttemptState::Completed, Some(&goal_b.id))
+            .await;
+        let tool = GoalRequestCompletionTool::new(pool, "session1".to_string());
+        let result = tool
+            .execute(serde_json::json!({
+                "evidence": "all done",
+                "tests_run": ["unrelated claim"]
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["accepted"], true);
     }
 }

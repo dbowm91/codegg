@@ -10,7 +10,7 @@ use codegg_core::goal::{
     GoalEvidenceContext, GoalExecutionEvidence, GoalTodoEvidence, HostEvidenceStatus,
 };
 use codegg_core::jobs::store::JobStoreQuery;
-use codegg_core::jobs::{JobKind, JobState, JobStore, SqliteJobStore};
+use codegg_core::jobs::{JobKind, JobState, JobStore, SqliteJobStore, GOAL_PROVENANCE_LABEL_KEY};
 use sqlx::SqlitePool;
 
 const MAX_EVIDENCE_RECORDS: u32 = 128;
@@ -18,6 +18,7 @@ const MAX_EVIDENCE_RECORDS: u32 = 128;
 pub async fn assemble(
     pool: &SqlitePool,
     session_id: &str,
+    goal_id: &str,
     goal_created_at: DateTime<Utc>,
 ) -> Result<GoalEvidenceContext, String> {
     let job_store = SqliteJobStore::new(pool.clone());
@@ -33,10 +34,17 @@ pub async fn assemble(
 
     let mut executions = Vec::with_capacity(jobs.len());
     for job in jobs {
-        // Session identity is host-owned provenance. The creation boundary
-        // prevents a failed job from an earlier goal from poisoning a newer
-        // goal after restart while remaining reconstructable from SQLite.
+        // Session identity and creation time are defense-in-depth bounds.
+        // Exact ownership comes only from the host-written goal label.
         if job.created_at < goal_created_at {
+            continue;
+        }
+        if job
+            .labels
+            .get(GOAL_PROVENANCE_LABEL_KEY)
+            .map(String::as_str)
+            != Some(goal_id)
+        {
             continue;
         }
         let source = match job.kind {

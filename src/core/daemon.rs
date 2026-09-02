@@ -338,12 +338,21 @@ impl CoreDaemon {
                 "failed to wire durable agent-run store into scheduler"
             );
         }
-        let submission = crate::scheduler::JobSubmissionService::new(
-            deps.job_store.clone(),
-            scheduler.clone(),
-            workspace_services.clone(),
-            deps.daemon_generation.clone(),
-        );
+        let submission = match deps.pool.clone() {
+            Some(pool) => crate::scheduler::JobSubmissionService::new_with_goal_store(
+                deps.job_store.clone(),
+                scheduler.clone(),
+                workspace_services.clone(),
+                deps.daemon_generation.clone(),
+                Arc::new(codegg_core::goal::GoalStore::new(pool)),
+            ),
+            None => crate::scheduler::JobSubmissionService::new(
+                deps.job_store.clone(),
+                scheduler.clone(),
+                workspace_services.clone(),
+                deps.daemon_generation.clone(),
+            ),
+        };
         deps.submission = Some(submission.clone());
         if let Some(pool) = deps.legacy_agent.subagent_pool.as_ref() {
             pool.configure_durable_delegation(

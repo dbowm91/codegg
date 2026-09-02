@@ -39,6 +39,15 @@ executor. The executor creates an `AttemptRecord`, runs the work, and
 persists exactly one terminal `AttemptCompletion` that atomically
 advances the parent job to a terminal state.
 
+When the daemon has an active goal for the submitted session, the host
+submission boundary attaches the reserved `goal_id` label to supervised
+`Test` and `Subagent` jobs before enqueueing them. Callers do not provide
+this label, and model/tool payloads cannot override it. Child evidence jobs
+use the active-goal snapshot read at their own host submission boundary;
+there is no inherited ambient or later-resolved goal identity. The label is
+durable job metadata used for evidence correlation only and grants no
+execution authority.
+
 ## Key Types & APIs
 
 ### Typed Identifiers (`mod.rs:340–461`)

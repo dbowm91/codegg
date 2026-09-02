@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use codegg_core::jobs::{
     DaemonGeneration, JobId, JobKind, JobPayload, JobRecord, JobState, JobStore, NewJob,
-    ResourceRequest,
+    ResourceRequest, GOAL_PROVENANCE_LABEL_KEY,
 };
 use codegg_core::workspace::WorkspaceId;
 use codegg_core::workspace_services::WorkspaceServiceRegistry;
@@ -72,6 +72,8 @@ pub enum JobSubmissionError {
     PayloadTooLarge,
     #[error("unsupported job payload for kind '{0}'")]
     InvalidPayload(String),
+    #[error("active goal lookup failed: {0}")]
+    Goal(String),
 }
 
 #[derive(Clone)]
@@ -89,6 +91,7 @@ pub struct JobSubmissionService {
     /// generation is retained here for provenance and future store-backed
     /// submission-key indexing.
     daemon_generation: DaemonGeneration,
+    goal_store: Option<Arc<codegg_core::goal::GoalStore>>,
     idempotency: Mutex<HashMap<SubmissionKey, IdempotentSubmission>>,
 }
 
@@ -104,6 +107,27 @@ impl JobSubmissionService {
             scheduler,
             workspaces,
             daemon_generation,
+            goal_store: None,
+            idempotency: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Construct a submission boundary that can attach the active goal
+    /// snapshot to supervised Test/Subagent jobs. The goal is read at the
+    /// host submission boundary; callers cannot supply or override it.
+    pub fn new_with_goal_store(
+        store: Arc<dyn JobStore>,
+        scheduler: Arc<JobScheduler>,
+        workspaces: Arc<WorkspaceServiceRegistry>,
+        daemon_generation: DaemonGeneration,
+        goal_store: Arc<codegg_core::goal::GoalStore>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            store,
+            scheduler,
+            workspaces,
+            daemon_generation,
+            goal_store: Some(goal_store),
             idempotency: Mutex::new(HashMap::new()),
         })
     }
@@ -155,6 +179,7 @@ impl JobSubmissionService {
         drop(lease);
 
         apply_resource_policy(&mut spec);
+        let labels = self.goal_provenance_labels(&spec).await?;
         let fingerprint = fingerprint(&spec);
 
         // Check the in-memory retry index without holding its lock across
@@ -224,7 +249,7 @@ impl JobSubmissionService {
         } else {
             None
         };
-        let job = self.store.create_job(spec).await?;
+        let job = self.store.create_job_with_labels(spec, labels).await?;
         crate::test_failpoint::hit("tool_program_after_job_persist");
         if let Err(error) = self.scheduler.enqueue_existing(job.clone()).await {
             // Durable creation can succeed even when queue admission/wake-up
@@ -259,6 +284,34 @@ impl JobSubmissionService {
             );
         }
         Ok(to_submitted(&job))
+    }
+
+    async fn goal_provenance_labels(
+        &self,
+        spec: &NewJob,
+    ) -> Result<HashMap<String, String>, JobSubmissionError> {
+        if !matches!(spec.kind, JobKind::Test | JobKind::Subagent) {
+            return Ok(HashMap::new());
+        }
+        let Some(goal_store) = self.goal_store.as_ref() else {
+            return Ok(HashMap::new());
+        };
+        let Some(session_id) = spec.session_id.as_deref() else {
+            return Ok(HashMap::new());
+        };
+        let Some(goal) = goal_store
+            .active_for_session(session_id)
+            .await
+            .map_err(|error| JobSubmissionError::Goal(error.to_string()))?
+        else {
+            return Ok(HashMap::new());
+        };
+        if !goal.is_active() {
+            return Ok(HashMap::new());
+        }
+        let mut labels = HashMap::new();
+        labels.insert(GOAL_PROVENANCE_LABEL_KEY.to_string(), goal.id);
+        Ok(labels)
     }
 }
 
@@ -358,14 +411,57 @@ fn fingerprint_record(job: &codegg_core::jobs::JobRecord) -> String {
 mod tests {
     use super::*;
     use codegg_core::jobs::{
-        IdempotencyClass, InMemoryJobStore, JobPriority, JobSource, JobStore, ResourceRequest,
-        RetryPolicy,
+        IdempotencyClass, InMemoryJobStore, JobPayload, JobPriority, JobSource, JobStore,
+        ResourceRequest, RetryPolicy, SqliteJobStore,
     };
     use codegg_core::workspace::{InMemoryWorkspaceStore, WorkspaceRegistry};
     use codegg_core::workspace_services::{
         ProductionWorkspaceServicesFactory, WorkspaceServicePolicy, WorkspaceServiceRegistry,
     };
     use std::sync::Arc;
+
+    async fn goal_test_pool() -> sqlx::SqlitePool {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::str::FromStr;
+        let url = format!(
+            "file:submission_goal_test_{}?mode=memory&cache=shared",
+            uuid::Uuid::new_v4().simple()
+        );
+        let options = SqliteConnectOptions::from_str(&url)
+            .expect("valid sqlite options")
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("connect sqlite");
+        codegg_core::session::schema::migrate(&pool)
+            .await
+            .expect("migrate");
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO project (id, worktree, sandboxes, time_created, time_updated) VALUES (?, ?, '[]', ?, ?)",
+        )
+        .bind("project-1")
+        .bind("/tmp")
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert project");
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, ?, 'test', '/tmp', 'Test', '1', ?, ?)",
+        )
+        .bind("session-1")
+        .bind("project-1")
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .expect("insert session");
+        pool
+    }
 
     fn spec(workspace_id: WorkspaceId) -> NewJob {
         NewJob {
@@ -525,6 +621,111 @@ mod tests {
             .await
             .expect("list jobs");
         assert_eq!(jobs.len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_goal_provenance_is_host_written_for_test_and_subagent_jobs() {
+        let root = tempfile::tempdir().expect("temp workspace");
+        let workspace_registry = WorkspaceRegistry::load(Arc::new(InMemoryWorkspaceStore::new()))
+            .await
+            .expect("workspace registry");
+        let workspace = workspace_registry
+            .get_or_register(root.path())
+            .await
+            .expect("register workspace");
+        let services = WorkspaceServiceRegistry::new(
+            workspace_registry,
+            Arc::new(ProductionWorkspaceServicesFactory),
+            WorkspaceServicePolicy::default(),
+        );
+        let pool = goal_test_pool().await;
+        let goal = codegg_core::goal::GoalStore::new(pool.clone())
+            .create_active(
+                "session-1",
+                "project-1",
+                "Goal",
+                "Do work",
+                None,
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("create goal");
+        let store: Arc<dyn JobStore> = Arc::new(SqliteJobStore::new(pool.clone()));
+        let generation = DaemonGeneration::new_unchecked("goal-provenance-generation");
+        let scheduler = JobScheduler::new(
+            store.clone(),
+            services.clone(),
+            crate::scheduler::config::ResolvedSchedulerConfig::default(),
+            generation.clone(),
+        );
+        let submission = JobSubmissionService::new_with_goal_store(
+            store.clone(),
+            scheduler,
+            services,
+            generation,
+            Arc::new(codegg_core::goal::GoalStore::new(pool.clone())),
+        );
+
+        let mut test_spec = spec(workspace.id.clone());
+        test_spec.session_id = Some("session-1".to_string());
+        let test_job = submission
+            .submit(None, test_spec)
+            .await
+            .expect("submit test");
+        let test_record = store
+            .get_job(&test_job.job_id)
+            .await
+            .expect("get test")
+            .expect("test exists");
+        assert_eq!(
+            test_record.labels.get(GOAL_PROVENANCE_LABEL_KEY),
+            Some(&goal.id)
+        );
+
+        let mut subagent_spec = spec(workspace.id.clone());
+        subagent_spec.session_id = Some("session-1".to_string());
+        subagent_spec.kind = JobKind::Subagent;
+        subagent_spec.payload = JobPayload::Subagent {
+            prompt: "inspect".into(),
+            agent: "reviewer".into(),
+            parent_id: Some("session-1".into()),
+            denied_tools: Vec::new(),
+            allowed_paths: Vec::new(),
+            max_tool_calls: None,
+        };
+        let subagent_job = submission
+            .submit(None, subagent_spec)
+            .await
+            .expect("submit subagent");
+        let subagent_record = store
+            .get_job(&subagent_job.job_id)
+            .await
+            .expect("get subagent")
+            .expect("subagent exists");
+        assert_eq!(
+            subagent_record.labels.get(GOAL_PROVENANCE_LABEL_KEY),
+            Some(&goal.id)
+        );
+
+        codegg_core::goal::GoalStore::new(pool.clone())
+            .clear_active_for_session("session-1")
+            .await
+            .expect("clear goal");
+        let mut no_goal_spec = spec(workspace.id.clone());
+        no_goal_spec.session_id = Some("session-1".to_string());
+        let no_goal_job = submission
+            .submit(None, no_goal_spec)
+            .await
+            .expect("submit without goal");
+        let no_goal_record = store
+            .get_job(&no_goal_job.job_id)
+            .await
+            .expect("get no-goal job")
+            .expect("no-goal job exists");
+        assert!(!no_goal_record
+            .labels
+            .contains_key(GOAL_PROVENANCE_LABEL_KEY));
     }
 
     #[tokio::test(flavor = "multi_thread")]

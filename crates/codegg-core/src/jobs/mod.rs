@@ -40,6 +40,10 @@ use crate::error::StorageError;
 use crate::run_store::RunId;
 use crate::workspace::WorkspaceId;
 
+/// Reserved host-owned label used to associate supervised execution evidence
+/// with the exact active goal that authorized its submission.
+pub const GOAL_PROVENANCE_LABEL_KEY: &str = "goal_id";
+
 pub mod schedule;
 pub mod schedule_store;
 pub mod store;
@@ -1260,6 +1264,35 @@ pub trait JobStore: Send + Sync {
     /// Persist a new job. Returns the assigned record including its
     /// generated `JobId`.
     async fn create_job(&self, spec: NewJob) -> Result<JobRecord, JobStoreError>;
+
+    /// Persist host-owned labels for a newly created job before it is exposed
+    /// to the scheduler. Custom stores must opt in explicitly; silently
+    /// dropping provenance would make evidence correlation unsafe.
+    async fn set_job_labels(
+        &self,
+        _id: &JobId,
+        _labels: HashMap<String, String>,
+    ) -> Result<JobRecord, JobStoreError> {
+        Err(JobStoreError::InvalidPayload(
+            "job labels are unsupported by this store".to_string(),
+        ))
+    }
+
+    /// Create a job and attach host-owned labels before the caller can enqueue
+    /// it. The built-in stores override the label write with their native
+    /// persistence implementation; the default keeps custom stores
+    /// source-compatible while failing closed for non-empty labels.
+    async fn create_job_with_labels(
+        &self,
+        spec: NewJob,
+        labels: HashMap<String, String>,
+    ) -> Result<JobRecord, JobStoreError> {
+        if labels.is_empty() {
+            return self.create_job(spec).await;
+        }
+        let job = self.create_job(spec).await?;
+        self.set_job_labels(&job.job_id, labels).await
+    }
 
     /// Fetch a job by id.
     async fn get_job(&self, id: &JobId) -> Result<Option<JobRecord>, JobStoreError>;

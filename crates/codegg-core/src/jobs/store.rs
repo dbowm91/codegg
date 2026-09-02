@@ -356,6 +356,22 @@ impl JobStore for InMemoryJobStore {
         Ok(guard.jobs.get(id).cloned())
     }
 
+    async fn set_job_labels(
+        &self,
+        id: &JobId,
+        labels: HashMap<String, String>,
+    ) -> Result<JobRecord, JobStoreError> {
+        let mut guard = self.inner.lock().await;
+        let job = guard
+            .jobs
+            .get(id)
+            .cloned()
+            .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))?;
+        let updated = JobRecord { labels, ..job };
+        guard.jobs.insert(id.clone(), updated.clone());
+        Ok(updated)
+    }
+
     async fn get_jobs(&self, ids: &[JobId]) -> Result<Vec<JobRecord>, JobStoreError> {
         let guard = self.inner.lock().await;
         Ok(ids
@@ -1180,6 +1196,27 @@ impl JobStore for SqliteJobStore {
         .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
         let Some(row) = row else { return Ok(None) };
         Ok(Some(row_to_job(&row)?))
+    }
+
+    async fn set_job_labels(
+        &self,
+        id: &JobId,
+        labels: HashMap<String, String>,
+    ) -> Result<JobRecord, JobStoreError> {
+        let labels_json = serde_json::to_string(&labels)
+            .map_err(|e| JobStoreError::Serialization(e.to_string()))?;
+        let result = sqlx::query("UPDATE job SET labels_json = ? WHERE id = ?")
+            .bind(labels_json)
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| JobStoreError::Storage(StorageError::Database(e.to_string())))?;
+        if result.rows_affected() == 0 {
+            return Err(JobStoreError::JobNotFound(id.to_string()));
+        }
+        self.get_job(id)
+            .await?
+            .ok_or_else(|| JobStoreError::JobNotFound(id.to_string()))
     }
 
     async fn get_jobs(&self, ids: &[JobId]) -> Result<Vec<JobRecord>, JobStoreError> {

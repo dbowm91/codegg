@@ -1,6 +1,6 @@
 # Agent Runtime Correctness Milestone 013 — Goal Evidence Provenance and Criterion Corrective Pass
 
-Status: ready
+Status: implemented
 
 Repository baseline: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 

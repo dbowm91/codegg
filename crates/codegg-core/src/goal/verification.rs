@@ -21,7 +21,11 @@ pub struct GoalCompletionProposal {
     /// Model-supplied explanation. It is retained only as bounded context and
     /// never treated as proof of completion.
     pub evidence: String,
+    /// Model claims retained for explanation only. They do not prove that
+    /// files changed or that a named test ran.
     pub files_changed: Vec<String>,
+    /// A non-empty claim requires at least one passing host-owned test for
+    /// this goal; the individual names are not treated as invocation identity.
     pub tests_run: Vec<String>,
     pub remaining_risks: Vec<String>,
 }
@@ -184,40 +188,24 @@ impl GoalVerificationService {
             gaps.push("the completion request contains no test claim or explicit risk".to_string());
         }
 
-        let mut unavailable_criteria = Vec::new();
-        for criterion in goal.completion_criteria.iter().take(MAX_VERDICT_ITEMS) {
-            let normalized = criterion.to_ascii_lowercase();
-            if normalized.contains("test")
-                || normalized.contains("pass")
-                || normalized.contains("green")
-            {
-                if !has_passed_test {
-                    unavailable_criteria
-                        .push(bounded_text(criterion.clone(), MAX_VERDICT_TEXT_CHARS));
-                }
-            } else if normalized.contains("todo")
-                || normalized.contains("task")
-                || normalized.contains("remaining")
-            {
-                if !unfinished_todos.is_empty() {
-                    unavailable_criteria
-                        .push(bounded_text(criterion.clone(), MAX_VERDICT_TEXT_CHARS));
-                }
-            } else {
-                unavailable_criteria.push(bounded_text(criterion.clone(), MAX_VERDICT_TEXT_CHARS));
-            }
-        }
+        // Free-form criteria are explanatory only. Without an explicit typed
+        // contract, the host cannot safely infer whether a phrase is proved
+        // by tests, todos, review, or some other authority. In particular,
+        // words such as "pass" and "test" must never manufacture semantics.
+        let unavailable_criteria: Vec<String> = goal
+            .completion_criteria
+            .iter()
+            .take(MAX_VERDICT_ITEMS)
+            .map(|criterion| bounded_text(criterion.clone(), MAX_VERDICT_TEXT_CHARS))
+            .collect();
 
         if !unavailable_criteria.is_empty() {
-            if proposal.remaining_risks.is_empty() {
-                return GoalVerificationVerdict::AwaitingUser {
-                    reason: format!(
-                        "completion criteria require user-verifiable evidence: {}",
-                        unavailable_criteria.join("; ")
-                    ),
-                };
-            }
-            gaps.extend(unavailable_criteria);
+            return GoalVerificationVerdict::AwaitingUser {
+                reason: format!(
+                    "completion criteria require user-verifiable evidence: {}",
+                    unavailable_criteria.join("; ")
+                ),
+            };
         }
 
         if !proposal.remaining_risks.is_empty() {
@@ -249,7 +237,10 @@ impl GoalVerificationService {
         if !proposal.tests_run.is_empty() && !has_passed_test {
             return GoalVerificationVerdict::NotMet {
                 unmet_criteria: vec!["a passing host-recorded test is required".to_string()],
-                evidence_gaps: vec!["claimed tests are not authoritative evidence".to_string()],
+                evidence_gaps: vec![
+                    "claimed test names are explanatory; a passing goal-owned host test is required"
+                        .to_string(),
+                ],
                 next_action: "run the required test through the supervised test tool, then request completion again".to_string(),
             };
         }
@@ -360,6 +351,27 @@ mod tests {
         };
         let verdict = GoalVerificationService.verify(
             &goal(vec!["Product owner signs off"]),
+            &proposal(),
+            &evidence,
+        );
+        assert!(matches!(
+            verdict,
+            GoalVerificationVerdict::AwaitingUser { .. }
+        ));
+    }
+
+    #[test]
+    fn pass_security_review_is_not_a_test_criterion() {
+        let evidence = GoalEvidenceContext {
+            executions: vec![GoalExecutionEvidence {
+                id: "job-1".into(),
+                source: "test".into(),
+                status: HostEvidenceStatus::Passed,
+            }],
+            todos: Vec::new(),
+        };
+        let verdict = GoalVerificationService.verify(
+            &goal(vec!["Pass security review"]),
             &proposal(),
             &evidence,
         );
