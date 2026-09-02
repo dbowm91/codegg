@@ -1,6 +1,6 @@
 # Runtime Assets — Plugin Declarative Contributions Addendum
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -142,7 +142,7 @@ M006 declarative runtime-asset + MCP contribution bridge
 
 ### M005 — Durable and workspace-aware plugin activation
 
-Status: ready
+Status: closed
 
 Plan:
 
@@ -160,7 +160,7 @@ Exit conditions:
 
 ### M006 — Plugin declarative runtime-asset and MCP contribution bridge
 
-Status: blocked on M005
+Status: ready
 
 Plan:
 

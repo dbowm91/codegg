@@ -1,6 +1,6 @@
 # Runtime Assets Milestone 006 — Plugin Declarative Asset and MCP Contributions
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -20,17 +20,18 @@ Applicable ADRs:
 
 Primary class: capability
 
-Hard dependency:
+Dependency:
 
-- `plans/implementation/runtime-assets/005-durable-context-aware-plugin-activation.md` must be closed with a stable immutable resolved activation interface.
+- M005 is closed through `plans/closure/runtime-assets/005-status.md`, including
+  the stable immutable `ResolvedPluginActivationSet` interface.
 
 ## 1. Objective
 
 Allow an activated CodeGG plugin to package passive agents/skills/optional instructions and MCP server declarations while routing each contribution through its existing canonical owner, with explicit provenance, deterministic namespacing/precedence, workspace isolation, refresh semantics, and no duplicate extension runtime.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-Passive plugin contributions affect runtime behavior beyond an executable plugin command/hook. They therefore require durable project-aware activation first. Until M005 closes, loading contributed assets/MCP servers would inherit the current process-global runtime-only enable/disable ambiguity and could leak across projects after restart or concurrent use.
+Passive plugin contributions affect runtime behavior beyond an executable plugin command/hook. M005 now provides durable project-aware activation, immutable turn-pinned resolution, stale-install diagnostics, and one shared installed registry/runtime boundary. M006 can consume that interface without reading activation storage directly.
 
 ## 3. Current implementation evidence
 

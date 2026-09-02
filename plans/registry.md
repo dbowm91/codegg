@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions follow-up | ready | `plans/subsystems/runtime-assets-plugin-contributions-addendum.md` | M005 ready; M006 blocked | M006 hard-blocked on M005 durable/context-aware activation closure. |
+| Runtime assets — plugin declarative contributions follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-addendum.md` | M006 ready | M005 closed; M006 is now dependency-ready for passive contribution bridge work. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
@@ -49,7 +49,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
 | Runtime safety — edit history | M011 | `plans/implementation/runtime-safety-resource-footprint/011-mutation-attribution-and-edit-checkpoints.md` | Snapshot persistence and explicit workspace-bound tool execution already exist; this milestone corrects attribution/coverage before exposing rollback. |
-| Runtime assets — plugin activation | M005 | `plans/implementation/runtime-assets/005-durable-context-aware-plugin-activation.md` | Plugin runtime/management and explicit project/workspace context already exist; passive contributions are intentionally deferred to blocked M006. |
+| Runtime assets — plugin contributions | M006 | `plans/implementation/runtime-assets/006-plugin-declarative-asset-mcp-contributions.md` | M005 closure provides durable context-aware activation and immutable resolved views; existing asset/MCP owners remain stable. |
 
 ## Closure work and dependencies
 
@@ -70,7 +70,6 @@ Verification remains deliberately light: the newly registered follow-ups require
 ## Blocked work
 
 - Runtime safety M012, `plans/implementation/runtime-safety-resource-footprint/012-checked-undo-reapply.md`, is hard-blocked until M011 closes exact workspace/session/turn mutation attribution, complete supported-native-mutator pre/post checkpoints, and overlap ordering.
-- Runtime assets M006, `plans/implementation/runtime-assets/006-plugin-declarative-asset-mcp-contributions.md`, is hard-blocked until M005 closes durable project/workspace-aware plugin activation and immutable activation resolution.
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history follow-up unless implementation touches that sandbox path.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
@@ -78,9 +77,9 @@ No new work is registered for browser-specific security, generic hook-taxonomy e
 ## New follow-up execution order
 
 1. Agent-runtime goal-verification M012 is closed; its dependency audit found no registered downstream plan to unblock.
-2. Runtime-safety M011 and runtime-assets M005 remain independent ready work.
+2. Runtime-safety M011 and runtime-assets M005 were independent ready work; both are now active/closed according to their linked records.
 3. Runtime-safety M012 becomes ready only after an accepted M011 closure record.
-4. Runtime-assets M006 becomes ready only after an accepted M005 closure record.
+4. Runtime-assets M006 is ready after the accepted M005 closure record; its next handoff must consume `ResolvedPluginActivationSet` rather than activation storage.
 5. These follow-ups must preserve the accepted closure history of their parent subsystems rather than rewriting prior milestones as incomplete.
 
 ## Agent-runtime correctness execution order
@@ -121,6 +120,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Runtime consolidation, deletion, and footprint | M007 — integration, verification, and strict closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/007-status.md`; exact hosted run `31724978736` / job `94530985774` |
 | Runtime consolidation, deletion, and footprint | M009 — architectural corrective closure (historical) | closed; current TUI disposition superseded by M010 | `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`; later audit found the short-ID deletion and missing-label defects now owned by M010. |
 | Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`; implementation `58dd05de`; no registered future plan was unblocked. |
+| Runtime assets and harness interoperability | M005 — durable context-aware plugin activation | closed | `plans/closure/runtime-assets/005-status.md`; durable scoped activation and immutable context resolution; M006 moved to ready. |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; no registered future plan was unblocked |
