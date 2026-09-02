@@ -1,6 +1,6 @@
 # Agent Runtime Correctness — Goal Verification Corrective Addendum
 
-Status: active — M013 ready
+Status: closed — M013 closed
 
 Repository baseline reviewed: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 
@@ -65,7 +65,7 @@ Model `files_changed` claims are bounded but not host-derived. They currently do
 
 ### M013 — Goal evidence provenance and criterion corrective pass
 
-Status: ready
+Status: closed
 
 Plan:
 
@@ -119,4 +119,4 @@ Do not add an LLM evaluator suite, new CI lane, workflow engine, or broad job-sc
 
 ## 8. Closure disposition
 
-M012 remains valid historical evidence that direct model self-certification was removed. Until M013 closes, the goal-verification line should be considered active corrective work because exact evidence ownership and criterion semantics are not yet strict enough for final closure.
+M012 remains valid historical evidence that direct model self-certification was removed. M013 is now the accepted strict corrective closure for exact evidence ownership and criterion semantics. No further goal-verification milestone is registered behind this addendum.
