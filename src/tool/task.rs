@@ -1086,8 +1086,7 @@ impl TaskTool {
                     .await
                     .map_err(|e| ToolError::Execution(e.to_string()))?;
                 let durable = if let Some(agent_runs) = self.agent_runs.clone() {
-                    let delegation_key =
-                        delegation_key(&call_identity, &agent, &prompt, &allowed_paths);
+                    let delegation_key = delegation_key(&call_identity);
                     let project_id = self.project_id.clone().unwrap_or_default();
                     let provider = self
                         .parent_model
@@ -1480,24 +1479,13 @@ fn format_group_summary(
     lines.join("\n")
 }
 
-fn delegation_key(
-    call_identity: &str,
-    agent: &str,
-    prompt: &str,
-    allowed_paths: &[String],
-) -> String {
+fn delegation_key(call_identity: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(b"agent-delegation-v2");
+    hasher.update(b"agent-delegation-v3");
     hasher.update([0]);
     hasher.update(call_identity.as_bytes());
     hasher.update([0]);
-    hasher.update(agent.as_bytes());
-    hasher.update([0]);
-    hasher.update(prompt.as_bytes());
-    for path in allowed_paths {
-        hasher.update([0]);
-        hasher.update(path.as_bytes());
-    }
+    hasher.update(b"spawn");
     format!("agent-delegation-{:x}", hasher.finalize())
 }
 
@@ -1582,13 +1570,41 @@ mod tests {
 
     #[test]
     fn identical_spawn_payloads_are_distinguished_by_call_identity() {
-        let paths = vec!["src".into()];
-        let first = delegation_key("call-a", "general", "same prompt", &paths);
-        let second = delegation_key("call-b", "general", "same prompt", &paths);
+        let first = delegation_key("call-a");
+        let second = delegation_key("call-b");
         assert_ne!(first, second);
+        assert_eq!(delegation_key("call-a"), delegation_key("call-a"));
         assert_eq!(
-            spawn_request_fingerprint("general", "same description", "same prompt", &paths, None,),
-            spawn_request_fingerprint("general", "same description", "same prompt", &paths, None,)
+            spawn_request_fingerprint(
+                "general",
+                "same description",
+                "same prompt",
+                &["src".into()],
+                None,
+            ),
+            spawn_request_fingerprint(
+                "general",
+                "same description",
+                "same prompt",
+                &["src".into()],
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn delegation_identity_excludes_request_body() {
+        assert_eq!(
+            delegation_key("accepted-call"),
+            delegation_key("accepted-call")
+        );
+        assert_ne!(
+            delegation_key("accepted-call"),
+            delegation_key("other-call")
+        );
+        assert_ne!(
+            spawn_request_fingerprint("general", "description-a", "prompt", &[], None),
+            spawn_request_fingerprint("general", "description-b", "prompt", &[], None)
         );
     }
 }

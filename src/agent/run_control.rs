@@ -28,6 +28,12 @@ pub struct LiveRunHandle {
     pub interrupt_flag: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LiveTurnOwner {
+    pub session_id: String,
+    pub turn_id: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ControlActor {
     pub session_id: Option<String>,
@@ -66,6 +72,7 @@ pub struct RunControlService {
     runs: Arc<dyn AgentRunStore>,
     controls: Arc<dyn AgentRunControlStore>,
     live: Mutex<HashMap<AgentRunId, LiveRunHandle>>,
+    live_turns: Mutex<HashMap<LiveTurnOwner, mpsc::Sender<String>>>,
     scheduler: Mutex<Option<Arc<crate::scheduler::JobScheduler>>>,
     groups: Mutex<Option<Arc<codegg_core::agent_run_group::AgentRunGroupService>>>,
 }
@@ -76,6 +83,7 @@ impl RunControlService {
             runs,
             controls: Arc::new(InMemoryAgentRunControlStore::new()),
             live: Mutex::new(HashMap::new()),
+            live_turns: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
             groups: Mutex::new(None),
         })
@@ -86,6 +94,7 @@ impl RunControlService {
             runs,
             controls: Arc::new(SqliteAgentRunControlStore::new(pool)),
             live: Mutex::new(HashMap::new()),
+            live_turns: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
             groups: Mutex::new(None),
         })
@@ -99,6 +108,7 @@ impl RunControlService {
             runs,
             controls,
             live: Mutex::new(HashMap::new()),
+            live_turns: Mutex::new(HashMap::new()),
             scheduler: Mutex::new(None),
             groups: Mutex::new(None),
         })
@@ -143,6 +153,35 @@ impl RunControlService {
 
     pub async fn unregister_live(&self, run_id: &AgentRunId) {
         self.live.lock().await.remove(run_id);
+    }
+
+    pub async fn register_live_turn(
+        &self,
+        session_id: String,
+        turn_id: String,
+        follow_up_tx: mpsc::Sender<String>,
+    ) {
+        self.live_turns.lock().await.insert(
+            LiveTurnOwner {
+                session_id,
+                turn_id,
+            },
+            follow_up_tx,
+        );
+    }
+
+    pub async fn unregister_live_turn(
+        &self,
+        owner: &LiveTurnOwner,
+        follow_up_tx: &mpsc::Sender<String>,
+    ) {
+        let mut live_turns = self.live_turns.lock().await;
+        if live_turns
+            .get(owner)
+            .is_some_and(|registered| registered.same_channel(follow_up_tx))
+        {
+            live_turns.remove(owner);
+        }
     }
 
     pub async fn authorize(
@@ -354,45 +393,59 @@ impl RunControlService {
             ],
         )
         .await?;
-        let parent = self
+        let run = self
             .runs
             .get_run(&run_id)
             .await
             .map_err(|e| RunControlError::RunStore(e.to_string()))?
-            .and_then(|run| run.parent_run_id);
-        if let Some(parent) = parent {
+            .ok_or_else(|| RunControlError::RunNotFound(run_id.to_string()))?;
+        let notice = format!(
+            "Child run {} finished with status {}. Summary: {}",
+            run_id,
+            status.as_str(),
+            bounded(summary, MAX_NOTIFICATION_BYTES)
+        );
+        if let Some(parent) = run.parent_run_id {
             if let Some(handle) = self.live.lock().await.get(&parent).cloned() {
-                let notice = format!(
-                    "Child run {} finished with status {}. Summary: {}",
-                    run_id,
-                    status.as_str(),
-                    bounded(summary, MAX_NOTIFICATION_BYTES)
-                );
-                let _ = handle.follow_up_tx.try_send(notice);
+                let _ = handle.follow_up_tx.try_send(notice.clone());
+            }
+        } else if let Some(task) = self
+            .runs
+            .get_task(&run.task_id)
+            .await
+            .map_err(|e| RunControlError::RunStore(e.to_string()))?
+        {
+            if let Some(turn_id) = task.originating_turn_id {
+                let owner = LiveTurnOwner {
+                    session_id: task.originating_session_id,
+                    turn_id,
+                };
+                if let Some(follow_up_tx) = self.live_turns.lock().await.get(&owner).cloned() {
+                    let _ = follow_up_tx.try_send(notice);
+                }
             }
         }
         if let Some(groups) = self.groups.lock().await.clone() {
-            match groups.member_changed(&run_id).await {
+            match groups.member_changed_with_notifications(&run_id).await {
                 Ok(summaries) => {
-                    for summary in summaries {
-                        if summary.group.status.is_terminal() {
-                            if let Some(handle) = self
-                                .live
-                                .lock()
-                                .await
-                                .get(&summary.group.owner_run_id)
-                                .cloned()
-                            {
-                                let notice = format!(
-                                    "Run group {} finished with status {}: {}/{} successful, {} failed.",
-                                    summary.group.group_id,
-                                    summary.group.status.as_str(),
-                                    summary.successful,
-                                    summary.members.len(),
-                                    summary.failed,
-                                );
-                                let _ = handle.follow_up_tx.try_send(notice);
-                            }
+                    for (summary, notification_claimed) in summaries {
+                        if let Err(error) = self.publish_group_projection(&summary).await {
+                            tracing::warn!(
+                                group_id = %summary.group.group_id,
+                                %error,
+                                "failed to publish run group projection"
+                            );
+                        }
+                        if summary.group.status.is_terminal() && notification_claimed {
+                            let notice = format!(
+                                "Run group {} finished with status {}: {}/{} successful, {} failed.",
+                                summary.group.group_id,
+                                summary.group.status.as_str(),
+                                summary.successful,
+                                summary.members.len(),
+                                summary.failed,
+                            );
+                            self.send_group_notice(&summary, notice).await?;
                         }
                     }
                 }
@@ -458,6 +511,68 @@ impl RunControlService {
                 )
                 .await;
         }
+        Ok(())
+    }
+
+    async fn send_group_notice(
+        &self,
+        summary: &codegg_core::agent_run_group::AgentRunGroupSummary,
+        notice: String,
+    ) -> Result<(), RunControlError> {
+        match &summary.group.owner {
+            codegg_core::agent_run_group::AgentRunGroupOwner::Run { run_id } => {
+                if let Some(handle) = self.live.lock().await.get(run_id).cloned() {
+                    let _ = handle.follow_up_tx.try_send(notice);
+                }
+            }
+            codegg_core::agent_run_group::AgentRunGroupOwner::Turn {
+                session_id,
+                turn_id,
+            } => {
+                let owner = LiveTurnOwner {
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                };
+                if let Some(follow_up_tx) = self.live_turns.lock().await.get(&owner).cloned() {
+                    let _ = follow_up_tx.try_send(notice);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn publish_group_projection(
+        &self,
+        summary: &codegg_core::agent_run_group::AgentRunGroupSummary,
+    ) -> Result<(), RunControlError> {
+        let session_id = match &summary.group.owner {
+            codegg_core::agent_run_group::AgentRunGroupOwner::Turn { session_id, .. } => {
+                session_id.clone()
+            }
+            codegg_core::agent_run_group::AgentRunGroupOwner::Run { run_id } => {
+                let owner = self
+                    .runs
+                    .get_run(run_id)
+                    .await
+                    .map_err(|e| RunControlError::RunStore(e.to_string()))?
+                    .ok_or_else(|| RunControlError::RunNotFound(run_id.to_string()))?;
+                self.runs
+                    .get_task(&owner.task_id)
+                    .await
+                    .map_err(|e| RunControlError::RunStore(e.to_string()))?
+                    .map(|task| task.originating_session_id)
+                    .ok_or_else(|| RunControlError::RunNotFound(owner.task_id.to_string()))?
+            }
+        };
+        crate::bus::global::GlobalEventBus::publish(
+            crate::bus::events::AppEvent::AgentRunGroupUpdated {
+                session_id,
+                group: codegg_core::projection_replay::run_group_summary(
+                    summary,
+                    chrono::Utc::now().timestamp_millis(),
+                ),
+            },
+        );
         Ok(())
     }
 }
@@ -685,6 +800,131 @@ mod tests {
         assert!(
             matches!(outcome, ControlOutcome::Wait { timed_out: false, run } if run.status == AgentRunStatus::Completed)
         );
+    }
+
+    #[tokio::test]
+    async fn top_level_completion_routes_to_the_exact_live_originating_turn() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let run = running_run(&runs, "owner-session").await;
+        let service = RunControlService::in_memory(runs.clone());
+        let (owner_tx, mut owner_rx) = mpsc::channel(4);
+        let (other_tx, mut other_rx) = mpsc::channel(4);
+        service
+            .register_live_turn("owner-session".into(), "owner-turn".into(), owner_tx)
+            .await;
+        service
+            .register_live_turn("owner-session".into(), "other-turn".into(), other_tx)
+            .await;
+
+        runs.finish(
+            &run.run_id,
+            codegg_core::agent_run::AgentRunTerminalOutcome::Completed,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        service
+            .record_terminal(run.run_id, AgentRunStatus::Completed, "done")
+            .await
+            .unwrap();
+
+        assert!(owner_rx.recv().await.unwrap().contains("finished"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), other_rx.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_owned_group_publishes_and_notifies_once() {
+        let runs: Arc<dyn AgentRunStore> =
+            Arc::new(codegg_core::agent_run::InMemoryAgentRunStore::new());
+        let first = running_run(&runs, "owner-session").await;
+        let second = running_run(&runs, "owner-session").await;
+        let groups = codegg_core::agent_run_group::AgentRunGroupService::in_memory(runs.clone());
+        let groups_for_claim = groups.clone();
+        let created = groups
+            .create(codegg_core::agent_run_group::NewAgentRunGroup {
+                group_id: codegg_core::identity::AgentRunGroupId::new(),
+                root_run_id: first.run_id.clone(),
+                owner_run_id: first.run_id.clone(),
+                owner: codegg_core::agent_run_group::AgentRunGroupOwner::Turn {
+                    session_id: "owner-session".into(),
+                    turn_id: "owner-turn".into(),
+                },
+                member_run_ids: vec![first.run_id.clone(), second.run_id.clone()],
+                join_policy: codegg_core::agent_run_group::RunJoinPolicy::All,
+                cancel_remaining_on_satisfaction: false,
+                idempotency_key: "turn-group-test".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            created.group.status,
+            codegg_core::agent_run_group::RunGroupStatus::Running
+        );
+
+        let service = RunControlService::in_memory(runs.clone());
+        service.set_group_service_sync(groups);
+        let (follow_tx, mut follow_rx) = mpsc::channel(8);
+        service
+            .register_live_turn("owner-session".into(), "owner-turn".into(), follow_tx)
+            .await;
+        let mut events = crate::bus::global::GlobalEventBus::subscribe();
+
+        for run in [&first, &second] {
+            runs.finish(
+                &run.run_id,
+                codegg_core::agent_run::AgentRunTerminalOutcome::Completed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            service
+                .record_terminal(run.run_id.clone(), AgentRunStatus::Completed, "done")
+                .await
+                .unwrap();
+        }
+
+        let notices = [
+            follow_rx.recv().await.unwrap(),
+            follow_rx.recv().await.unwrap(),
+            follow_rx.recv().await.unwrap(),
+        ];
+        assert!(notices.iter().any(|notice| notice.contains("Run group")));
+        assert!(notices.iter().any(|notice| notice.contains("Child run")));
+
+        let projection = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let crate::bus::events::AppEvent::AgentRunGroupUpdated { group, .. } =
+                    events.recv().await.unwrap()
+                {
+                    if group.group_id == created.group.group_id.to_string()
+                        && group.status == "completed"
+                    {
+                        break group;
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(projection.status, "completed");
+
+        let (_, claimed) = groups_for_claim
+            .member_changed_with_notifications(&second.run_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(!claimed);
     }
 
     #[tokio::test]

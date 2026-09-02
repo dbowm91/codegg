@@ -1732,7 +1732,7 @@ mod tests {
             updated_at: 1,
             ..AgentRunGroupSummaryProjection::default()
         };
-        let events = vec![
+        let events = [
             ProjectionEvent::AgentRunUpserted { run },
             ProjectionEvent::WorktreeUpserted { worktree },
             ProjectionEvent::AgentRunGroupUpserted { group },

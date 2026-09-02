@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Final Corrective Closure Addendum
 
-Status: active — M009 ready
+Status: active — M009 implementation complete; hosted closure evidence pending
 
 Repository baseline reviewed: `d08f089f7a72319eb343a070c93369cbb4fc50a4`
 
@@ -161,7 +161,7 @@ While M009 is open:
 
 After accepted M009 closure:
 
-- mark M009 implemented/closed;
-- mark this addendum closed;
+- M009 is implemented and closed by the accepted closure record;
+- this addendum is closed;
 - return the subsystem row to strict `closed`;
 - preserve the failed M008 hosted run and post-closure findings as historical evidence rather than rewriting them away.

@@ -119,6 +119,16 @@ run's existing follow-up, steering, and cancellation channels. Live channels
 are an optimization; queued/delivered records are replayed when a run
 reattaches after disconnect or restart.
 
+The same bridge keeps a bounded live-turn map keyed by the exact
+(session_id, turn_id) supplied by TurnRunInput. A top-level child completion
+uses that endpoint when the originating root turn is still active; it never
+guesses from session-only or current-UI state. Nested completion continues to
+use the direct parent run handle. Turn-owned group completion follows the
+persisted owner discriminator, and member-terminal reconciliation publishes
+the bounded group projection through the same bus path. Durable notification
+claims prevent replay or concurrent reconciliation from duplicating terminal
+follow-ups.
+
 The `task` tool exposes `spawn`, `status` (`get` remains the legacy alias),
 `message`, `interrupt`, `wait`, and `cancel`. `message` is ordinary bounded
 model input. `interrupt` sets the loop steering flag and delivers at the next
@@ -142,6 +152,14 @@ Delegation, group, and mailbox acceptance therefore distinguish identical
 intentional calls while retrying one accepted call idempotently. Durable task
 rows retain a bounded request fingerprint so reusing one call identity for a
 different spawn request fails closed.
+
+The invocation key is a bounded digest of the execution owner (root turn or
+durable run), provider-turn occurrence, provider call ID, and accepted call
+ordinal. Delegation identity is derived from that resolved call identity only;
+the durable task row's bounded request fingerprint independently rejects
+reusing one accepted call identity for a different spawn request. Thus
+identical requests from different accepted calls remain distinct while an
+internal retry of one accepted call remains idempotent.
 
 ## Key Types & APIs
 

@@ -550,6 +550,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             tool_registry,
             pool,
             session_id: session_id.clone(),
+            turn_id: Some(turn_id.clone()),
             subagent_pool,
             task_state_policy,
             mcp_service,
@@ -606,11 +607,25 @@ impl TurnRuntime for DefaultTurnRuntime {
         let (steer_tx, steer_rx) = tokio::sync::mpsc::channel(32);
         agent_loop.set_steer_receiver(steer_rx);
 
+        let turn_owner = crate::agent::run_control::LiveTurnOwner {
+            session_id: session_id.clone(),
+            turn_id: turn_id.clone(),
+        };
+        let turn_follow_up_tx = agent_loop.follow_up_sender();
+        run_control
+            .register_live_turn(
+                turn_owner.session_id.clone(),
+                turn_owner.turn_id.clone(),
+                turn_follow_up_tx.clone(),
+            )
+            .await;
+
         // ── Spawn agent loop ─────────────────────────────────────────
         let session_id_for_spawn = session_id.clone();
         let turn_id_for_spawn = turn_id.clone();
         let event_log_for_spawn = event_log;
         let specialized_prepared_for_spawn = specialized_prepared;
+        let run_control_for_spawn = run_control;
         tokio::spawn(async move {
             // A panic inside the agent-loop task must not vanish with the
             // detached JoinHandle: catch it, log it, and surface TurnFailed.
@@ -635,6 +650,9 @@ impl TurnRuntime for DefaultTurnRuntime {
                     )))
                 }
             };
+            run_control_for_spawn
+                .unregister_live_turn(&turn_owner, &turn_follow_up_tx)
+                .await;
             if let Err(e) = result {
                 tracing::error!("Agent loop error: {}", e);
                 event_log_for_spawn

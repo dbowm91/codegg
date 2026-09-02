@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency M009 — Root Completion Delivery, Invocation Scope, and Exact-Head Closure
 
-Status: ready
+Status: implemented
 
 Repository baseline: `d08f089f7a72319eb343a070c93369cbb4fc50a4`
 

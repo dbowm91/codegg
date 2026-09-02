@@ -15,6 +15,7 @@ pub struct AgentLoopBuildInput {
     pub tool_registry: ToolRegistry,
     pub pool: Option<sqlx::SqlitePool>,
     pub session_id: String,
+    pub turn_id: Option<String>,
     pub subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub task_state_policy: TaskStatePolicy,
     pub mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
@@ -43,6 +44,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.execution.workspace_root.clone(),
         input.session_id,
     );
+    agent_loop.set_turn_id(input.turn_id);
     if let Some(spool) = input.subagent_pool {
         agent_loop.set_subagent_pool(spool);
     }

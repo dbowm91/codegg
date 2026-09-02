@@ -449,6 +449,10 @@ pub struct AgentLoop {
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
     pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
     pub(super) session_id: String,
+    /// Exact daemon-owned turn identity for this loop, when available.
+    /// Durable child loops retain the originating turn for provenance while
+    /// their run ID remains the invocation owner scope.
+    pub(super) turn_id: Option<String>,
     pub(super) mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
     pub(super) tool_def_cache: Option<ToolDefCache>,
     pub(super) deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
@@ -716,6 +720,7 @@ impl AgentLoop {
             question_rx: None,
             plugin_service: None,
             session_id,
+            turn_id: None,
             mcp_service,
             tool_def_cache: None,
             deferred_tool_definitions: Vec::new(),
@@ -998,6 +1003,10 @@ impl AgentLoop {
     /// callers. Workspace authority is immutable and is never changed here.
     pub fn set_session_id(&mut self, id: &str) {
         self.session_id = id.to_string();
+    }
+
+    pub fn set_turn_id(&mut self, turn_id: Option<String>) {
+        self.turn_id = turn_id;
     }
 
     pub fn context_tracker(&mut self) -> &mut ContextTracker {

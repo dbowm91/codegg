@@ -779,10 +779,27 @@ impl AgentRunGroupService {
         &self,
         member_run_id: &AgentRunId,
     ) -> Result<Vec<AgentRunGroupSummary>, AgentRunGroupError> {
+        Ok(self
+            .member_changed_with_notifications(member_run_id)
+            .await?
+            .into_iter()
+            .map(|(summary, _)| summary)
+            .collect())
+    }
+
+    /// Recompute groups after a member terminal transition and report which
+    /// terminal notifications were durably claimed by this call. The claim
+    /// result lets live delivery remain exactly-once across replay and
+    /// concurrent reconciliation while every caller still receives the
+    /// authoritative summary for projection publication.
+    pub async fn member_changed_with_notifications(
+        &self,
+        member_run_id: &AgentRunId,
+    ) -> Result<Vec<(AgentRunGroupSummary, bool)>, AgentRunGroupError> {
         let groups = self.groups.list_by_member(member_run_id).await?;
         let mut summaries = Vec::with_capacity(groups.len());
         for group in groups {
-            summaries.push(self.refresh(&group.group_id).await?);
+            summaries.push(self.recompute_group_with_notification(group).await?);
         }
         Ok(summaries)
     }
@@ -808,7 +825,7 @@ impl AgentRunGroupService {
             .get(group_id)
             .await?
             .ok_or_else(|| AgentRunGroupError::NotFound(group_id.to_string()))?;
-        self.recompute_group(group).await
+        Ok(self.recompute_group_with_notification(group).await?.0)
     }
 
     /// Return groups that reference a run as owner or member. This is a
@@ -832,8 +849,15 @@ impl AgentRunGroupService {
 
     async fn recompute_group(
         &self,
-        mut group: AgentRunGroupRecord,
+        group: AgentRunGroupRecord,
     ) -> Result<AgentRunGroupSummary, AgentRunGroupError> {
+        Ok(self.recompute_group_with_notification(group).await?.0)
+    }
+
+    async fn recompute_group_with_notification(
+        &self,
+        mut group: AgentRunGroupRecord,
+    ) -> Result<(AgentRunGroupSummary, bool), AgentRunGroupError> {
         let mut members = Vec::with_capacity(group.member_run_ids.len());
         for (ordinal, run_id) in group.member_run_ids.iter().enumerate() {
             let run = self
@@ -866,6 +890,7 @@ impl AgentRunGroupService {
             })
             .count();
 
+        let mut notification_claimed = false;
         if !group.status.is_terminal() {
             let first_terminal = members.iter().find(|member| member.status.is_terminal());
             let (status, winner) = match group.join_policy {
@@ -945,20 +970,24 @@ impl AgentRunGroupService {
                             }
                         }
                     }
-                    self.emit_notification(&group, successful, failed).await?;
+                    notification_claimed =
+                        self.emit_notification(&group, successful, failed).await?;
                 }
             }
         }
         let timed_out = false;
         self.changed.notify_waiters();
-        Ok(AgentRunGroupSummary {
-            group,
-            members,
-            successful,
-            failed,
-            active,
-            timed_out,
-        })
+        Ok((
+            AgentRunGroupSummary {
+                group,
+                members,
+                successful,
+                failed,
+                active,
+                timed_out,
+            },
+            notification_claimed,
+        ))
     }
 
     async fn emit_notification(
@@ -966,7 +995,7 @@ impl AgentRunGroupService {
         group: &AgentRunGroupRecord,
         successful: usize,
         failed: usize,
-    ) -> Result<(), AgentRunGroupError> {
+    ) -> Result<bool, AgentRunGroupError> {
         if self.groups.claim_notification(&group.group_id).await? {
             let _ = self.notifications.send(AgentRunGroupNotification {
                 group_id: group.group_id.clone(),
@@ -976,8 +1005,9 @@ impl AgentRunGroupService {
                 failed,
                 member_count: group.member_run_ids.len(),
             });
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     async fn authorize(

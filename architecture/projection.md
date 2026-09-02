@@ -238,6 +238,13 @@ Older snapshots deserialize with the fields absent. These fields describe
 ownership only; they do not grant control authority, which remains enforced by
 the durable group/control services.
 
+Member-terminal reconciliation publishes an AgentRunGroupUpdated event for
+the authoritative recomputed summary, including terminal summaries reached
+without a later status_group request. The event's session routing comes from
+the persisted turn owner or the owner run's originating task. Terminal live
+follow-up delivery is separately claim-gated by durable group notification
+state, so replay can refresh projections without duplicating user messages.
+
 The reducer only upserts derived state. It never sends a message, cancels a
 run, allocates a worktree, or submits a job. Existing numeric subagent events
 and `task get` remain compatibility adapters for the migration window; new

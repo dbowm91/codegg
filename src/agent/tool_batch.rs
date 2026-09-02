@@ -74,11 +74,20 @@ impl AgentLoop {
     pub(super) fn build_tool_execution_context(
         &self,
         tc: &ToolCall,
+        accepted_call_ordinal: usize,
         timeout_ms: Option<u64>,
         receipt: &PermissionDecisionReceipt,
     ) -> crate::tool::backend::ToolExecutionContext {
         let backend = self.resolve_native_backend(&tc.name);
         let agent_id = self.state.current_agent.clone();
+        let invocation_key = invocation_key_for(
+            &self.session_id,
+            self.turn_id.as_deref(),
+            self.run_id.as_ref(),
+            self.state.turn_count,
+            tc.id.as_str(),
+            accepted_call_ordinal,
+        );
         crate::tool::backend::ToolExecutionContext {
             backend,
             session_id: Some(self.session_id.clone()),
@@ -87,8 +96,8 @@ impl AgentLoop {
             cwd: self.workspace_root.clone(),
             permission_mode: None,
             timeout_ms,
-            invocation_key: Some(format!("{}:{}", self.session_id, tc.id)),
-            turn_id: None,
+            invocation_key: Some(invocation_key),
+            turn_id: self.turn_id.clone(),
             agent_id: Some(agent_id.clone()),
             parent_job_id: None,
             parent_attempt_id: None,
@@ -625,8 +634,12 @@ impl AgentLoop {
             // `async move` closure to capture `self` by move.
             let tool_name_for_ctx = tc.name.clone();
             let timeout = self.get_tool_timeout(&tool_name_for_ctx);
-            let exec_ctx =
-                self.build_tool_execution_context(&tc, Some(timeout.as_millis() as u64), &receipt);
+            let exec_ctx = self.build_tool_execution_context(
+                &tc,
+                orig_idx,
+                Some(timeout.as_millis() as u64),
+                &receipt,
+            );
             let tc_arc = Arc::new(tc);
             let sem = Arc::clone(&sem);
             let id = tc_arc.id.clone();
@@ -1261,5 +1274,64 @@ impl AgentLoop {
             .collect();
 
         Ok(ordered_results)
+    }
+}
+
+fn invocation_key_for(
+    session_id: &str,
+    turn_id: Option<&str>,
+    run_id: Option<&codegg_core::identity::AgentRunId>,
+    provider_turn: usize,
+    provider_call_id: &str,
+    accepted_call_ordinal: usize,
+) -> String {
+    let owner_scope = if let Some(run_id) = run_id {
+        format!("run:{run_id}")
+    } else if let Some(turn_id) = turn_id {
+        format!("turn:{session_id}:{turn_id}")
+    } else {
+        format!("session:{session_id}")
+    };
+    let invocation_material = format!(
+        "agent-invocation-v2/{owner_scope}/provider-turn/{provider_turn}/tool-call/{provider_call_id}/ordinal/{accepted_call_ordinal}"
+    );
+    use sha2::Digest;
+    format!(
+        "agent-invocation-{:x}",
+        sha2::Sha256::digest(invocation_material.as_bytes())
+    )
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::invocation_key_for;
+    use codegg_core::identity::AgentRunId;
+
+    #[test]
+    fn invocation_identity_is_scoped_to_owner_and_provider_turn() {
+        let first_turn = invocation_key_for("session", Some("turn-1"), None, 1, "text-repair-0", 0);
+        let second_turn =
+            invocation_key_for("session", Some("turn-2"), None, 1, "text-repair-0", 0);
+        let later_provider_turn =
+            invocation_key_for("session", Some("turn-1"), None, 2, "text-repair-0", 0);
+        let run = AgentRunId::new();
+        let child =
+            invocation_key_for("session", Some("turn-1"), Some(&run), 1, "text-repair-0", 0);
+
+        assert_ne!(first_turn, second_turn);
+        assert_ne!(first_turn, later_provider_turn);
+        assert_ne!(first_turn, child);
+        assert_eq!(
+            first_turn,
+            invocation_key_for("session", Some("turn-1"), None, 1, "text-repair-0", 0)
+        );
+    }
+
+    #[test]
+    fn duplicate_provider_ids_are_separated_by_accepted_ordinal() {
+        assert_ne!(
+            invocation_key_for("session", Some("turn"), None, 1, "duplicate", 0),
+            invocation_key_for("session", Some("turn"), None, 1, "duplicate", 1)
+        );
     }
 }

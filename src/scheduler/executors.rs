@@ -847,17 +847,17 @@ impl JobExecutor for SubagentJobExecutor {
                 if let (Some(store), Some(run_id)) =
                     (&self.agent_runs, run_id_for_lifecycle.as_ref())
                 {
-                    let structured = collect_agent_run_result(
+                    let structured = collect_agent_run_result(CollectAgentRunResultInput {
                         run_id,
-                        result.success,
-                        &result.result,
-                        result.report.as_ref(),
-                        &result.validation,
-                        &result.artifacts,
-                        owned_worktree.as_ref().map(|(record, _)| record),
-                        effective_workspace_root.as_deref(),
-                        ctx.cancellation.is_cancelled(),
-                    )
+                        success: result.success,
+                        summary: &result.result,
+                        report: result.report.as_ref(),
+                        validation: &result.validation,
+                        artifacts: &result.artifacts,
+                        worktree: owned_worktree.as_ref().map(|(record, _)| record),
+                        workspace_root: effective_workspace_root.as_deref(),
+                        cancelled: ctx.cancellation.is_cancelled(),
+                    })
                     .await;
                     let _ = store.save_result(structured).await;
                     let outcome = match status {
@@ -917,17 +917,17 @@ impl JobExecutor for SubagentJobExecutor {
                 if let (Some(store), Some(run_id)) =
                     (&self.agent_runs, run_id_for_lifecycle.as_ref())
                 {
-                    let structured = collect_agent_run_result(
+                    let structured = collect_agent_run_result(CollectAgentRunResultInput {
                         run_id,
-                        false,
-                        &e,
-                        None,
-                        &[],
-                        &[],
-                        owned_worktree.as_ref().map(|(record, _)| record),
-                        effective_workspace_root.as_deref(),
-                        ctx.cancellation.is_cancelled(),
-                    )
+                        success: false,
+                        summary: &e,
+                        report: None,
+                        validation: &[],
+                        artifacts: &[],
+                        worktree: owned_worktree.as_ref().map(|(record, _)| record),
+                        workspace_root: effective_workspace_root.as_deref(),
+                        cancelled: ctx.cancellation.is_cancelled(),
+                    })
                     .await;
                     let _ = store.save_result(structured).await;
                     let outcome = if ctx.cancellation.is_cancelled() {
@@ -964,17 +964,32 @@ impl JobExecutor for SubagentJobExecutor {
     }
 }
 
-async fn collect_agent_run_result(
-    run_id: &codegg_core::identity::AgentRunId,
+struct CollectAgentRunResultInput<'a> {
+    run_id: &'a codegg_core::identity::AgentRunId,
     success: bool,
-    summary: &str,
-    report: Option<&crate::agent::worker::SubAgentReport>,
-    validation: &[codegg_core::run_result::ValidationEvidence],
-    artifacts: &[codegg_core::run_result::AgentRunArtifact],
-    worktree: Option<&codegg_core::worktree_service::WorktreeRecord>,
-    workspace_root: Option<&std::path::Path>,
+    summary: &'a str,
+    report: Option<&'a crate::agent::worker::SubAgentReport>,
+    validation: &'a [codegg_core::run_result::ValidationEvidence],
+    artifacts: &'a [codegg_core::run_result::AgentRunArtifact],
+    worktree: Option<&'a codegg_core::worktree_service::WorktreeRecord>,
+    workspace_root: Option<&'a std::path::Path>,
     cancelled: bool,
+}
+
+async fn collect_agent_run_result(
+    input: CollectAgentRunResultInput<'_>,
 ) -> codegg_core::run_result::AgentRunResult {
+    let CollectAgentRunResultInput {
+        run_id,
+        success,
+        summary,
+        report,
+        validation,
+        artifacts,
+        worktree,
+        workspace_root,
+        cancelled,
+    } = input;
     let root = worktree
         .map(|record| record.path.as_path())
         .or(workspace_root);
