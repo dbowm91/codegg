@@ -1,6 +1,6 @@
 # Agent Runtime Correctness — Host-Owned Goal Verification Addendum
 
-Status: closing — M012 implementation landed; closure evidence is being recorded
+Status: closed — M012 accepted
 
 Repository baseline reviewed: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -75,7 +75,7 @@ A later read-only semantic verifier may be considered only after deterministic h
 
 At the reviewed baseline:
 
-- `src/tool/goal.rs` accepts model-supplied completion evidence, requires either tests or an explicit remaining-risk justification, and then directly calls `GoalStore::update_status(..., GoalStatus::Complete)`.
+- `src/tool/goal.rs` accepts bounded model claims, assembles durable host evidence, and submits the request to the deterministic verifier before any terminal transition.
 - `GoalCompleted` is currently described as a goal marked complete by the model.
 - goal runtime already has terminal states, budgets, continuation decisions, checkpoints, and TUI/projection updates.
 - scheduler jobs already carry session/turn identity, parent lineage, and durable labels; delegated runs carry scheduler job identity and durable run provenance.
@@ -113,7 +113,7 @@ For initial provenance, prefer a host-written goal identifier in existing bounde
 
 ### M012 — Host-owned goal completion verification
 
-Status: implemented
+Status: closed
 
 Plan:
 

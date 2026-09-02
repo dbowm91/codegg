@@ -34,7 +34,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runtime — host-owned goal verification follow-up | ready | `plans/subsystems/agent-runtime-goal-verification-addendum.md` | M012 ready | Closed goal/runtime/scheduler evidence interfaces are sufficient; no new execution subsystem required. |
+| Agent runtime — host-owned goal verification follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-addendum.md` | M012 closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; no registered future plan was unblocked. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
@@ -48,7 +48,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Agent runtime — goal verification | M012 | `plans/implementation/agent-runtime-correctness-autonomy-simplification/012-host-owned-goal-completion-verification.md` | Goal state, scheduler/run evidence, bounded continuation, and user-control prerequisites are already closed. |
 | Runtime safety — edit history | M011 | `plans/implementation/runtime-safety-resource-footprint/011-mutation-attribution-and-edit-checkpoints.md` | Snapshot persistence and explicit workspace-bound tool execution already exist; this milestone corrects attribution/coverage before exposing rollback. |
 | Runtime assets — plugin activation | M005 | `plans/implementation/runtime-assets/005-durable-context-aware-plugin-activation.md` | Plugin runtime/management and explicit project/workspace context already exist; passive contributions are intentionally deferred to blocked M006. |
 
@@ -78,10 +77,11 @@ No new work is registered for browser-specific security, generic hook-taxonomy e
 
 ## New follow-up execution order
 
-1. Agent-runtime M012, runtime-safety M011, and runtime-assets M005 are independent and may execute in parallel.
-2. Runtime-safety M012 becomes ready only after an accepted M011 closure record.
-3. Runtime-assets M006 becomes ready only after an accepted M005 closure record.
-4. These follow-ups must preserve the accepted closure history of their parent subsystems rather than rewriting prior milestones as incomplete.
+1. Agent-runtime goal-verification M012 is closed; its dependency audit found no registered downstream plan to unblock.
+2. Runtime-safety M011 and runtime-assets M005 remain independent ready work.
+3. Runtime-safety M012 becomes ready only after an accepted M011 closure record.
+4. Runtime-assets M006 becomes ready only after an accepted M005 closure record.
+5. These follow-ups must preserve the accepted closure history of their parent subsystems rather than rewriting prior milestones as incomplete.
 
 ## Agent-runtime correctness execution order
 
@@ -123,6 +123,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`; implementation `58dd05de`; no registered future plan was unblocked. |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
+| Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; no registered future plan was unblocked |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; authorization/call-identity composition is now owned by M007–M009. |
 | Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; nested context/base composition remains accepted after M007. |
