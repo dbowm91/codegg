@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` | M008 closed | `plans/closure/agent-run-worktree-concurrency/008-status.md`; strict corrective closure accepted. |
+| Agent runs, async delegation, and worktree concurrency | active | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 ready | Post-M008 audit found bounded root-turn completion, invocation-scope, group-terminal projection, and exact-head CI gaps. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -41,27 +41,31 @@ Canonical direction remains in:
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
+## Dependency-ready implementation plans
+
+| Subsystem | Milestone | Plan | Why ready |
+|---|---|---|---|
+| Agent runs, async delegation, and worktree concurrency | M009 — root completion delivery, invocation scope, and exact-head closure | `plans/implementation/agent-run-worktree-concurrency/009-root-turn-notification-invocation-scope-and-exact-head-closure.md` | M007/M008 infrastructure is present; the remaining defects are bounded to existing run-control, AgentLoop/TaskTool identity, group projection publication, and the current CI lint blocker. |
+
 ## Closure work and dependencies
 
-Agent-run/worktree M001–M006 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. The M006 strict subsystem disposition is superseded by `plans/subsystems/agent-run-worktree-concurrency-corrective-closure-addendum.md` after the post-closure production-path audit. M007 is closed by `plans/closure/agent-run-worktree-concurrency/007-status.md`; M008 is closed by `plans/closure/agent-run-worktree-concurrency/008-status.md`.
+Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition is now superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. M009 is ready and owns the final corrective disposition.
 
 Historical closed control points remain:
 
-- Agent-run/worktree M006 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/006-status.md` (reviewed implementation `7bc39c28`). Its evidence remains preserved; M007/M008 own the corrective disposition.
+- Agent-run/worktree M006 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/006-status.md` (reviewed implementation `7bc39c28`). Its evidence remains preserved; M007–M009 own later corrective disposition.
+- Agent-run/worktree M008 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/008-status.md` (implementation `5ced31bf`). Its local evidence remains preserved, including the later-observed exact-head hosted Clippy failure; M009 owns final closure.
 - Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record.
 - Tool Programs M019 independent strict review: `plans/closure/tool-programs/019-status.md`. `018-status.md` remains provisional implementation-authored historical evidence.
 - Tool Programs M020 corrective disposition (child-artifact recovery): `plans/closure/tool-programs/020-status.md`.
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 
-Verification remains deliberately light: the corrective workstream must use focused lineage/fan-out/authorization/idempotency/projection/restart/security tests plus the repository’s existing quick broad verification posture. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
+Verification remains deliberately light: M009 uses focused completion-routing, invocation-identity, idempotency-conflict, group-projection, restart, and regression tests plus the repository's existing quick posture and existing single normal CI lane. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
-No registered work remains blocked on M008. The downstream dependency audit
-found no registered future plan that names this corrective closure as a
-remaining dependency, so nothing was unblocked. No unrelated previously
-closed subsystem is reopened.
+M009 has no named external blocker and is ready for handoff. No other registered work is blocked on M009 at registration time. No unrelated previously closed subsystem is reopened.
 
 ## Agent-runtime correctness execution order
 
@@ -69,7 +73,7 @@ closed subsystem is reopened.
 2. M010 remains conditionally closed historical corrective evidence; its bootstrap/dead-branch/continuation cleanup must not regress.
 3. M011 owned the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence; it is closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
 4. The exact final candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
-5. The agent-run/worktree corrective addendum consumes this closed runtime as a dependency and must not rewrite M011 history or weaken its accepted recovery/tool-outcome invariants.
+5. The agent-run/worktree corrective work consumes this closed runtime as a dependency and must not rewrite M011 history or weaken its accepted recovery/tool-outcome invariants.
 
 ## Agent-runtime correctness closure policy
 
@@ -103,13 +107,13 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
-| Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; authorization/call-identity composition is now owned by M007/M008. |
-| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; nested context/base composition is now re-verified by M007. |
-| Agent runs, async delegation, and worktree concurrency | M004 — isolated mutation and structured results | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/004-status.md`; implementation commit `37b9cc9c`; core isolation/result machinery remains accepted while nested production wiring is re-verified. |
-| Agent runs, async delegation, and worktree concurrency | M005 — run groups and background joins | closed historical evidence; capability disposition superseded | `plans/closure/agent-run-worktree-concurrency/005-status.md`; group service/store landed, but root/nested owner reachability is now owned by M007. |
-| Agent runs, async delegation, and worktree concurrency | M006 — projection compatibility and closure | historical closed record; strict subsystem disposition superseded | `plans/closure/agent-run-worktree-concurrency/006-status.md`; post-closure audit found owner/lineage/idempotency/projection defects, now owned by M007/M008. |
-| Agent runs, async delegation, and worktree concurrency | M007 — durable lineage, owner context, fan-out, and authorization corrective pass | closed | `plans/closure/agent-run-worktree-concurrency/007-status.md`; implementation `4863765a`; M008 is promoted to ready. |
-| Agent runs, async delegation, and worktree concurrency | M008 — call identity, authoritative projection, and strict corrective closure | closed | `plans/closure/agent-run-worktree-concurrency/008-status.md`; implementation `5ced31bf`; no registered future plan was unblocked. |
+| Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; authorization/call-identity composition is now owned by M007–M009. |
+| Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; nested context/base composition remains accepted after M007. |
+| Agent runs, async delegation, and worktree concurrency | M004 — isolated mutation and structured results | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/004-status.md`; implementation commit `37b9cc9c`; core isolation/result machinery remains accepted. |
+| Agent runs, async delegation, and worktree concurrency | M005 — run groups and background joins | closed historical evidence; capability disposition superseded | `plans/closure/agent-run-worktree-concurrency/005-status.md`; group service/store landed; M007 fixed owner reachability and M009 owns final completion delivery/projection composition. |
+| Agent runs, async delegation, and worktree concurrency | M006 — projection compatibility and closure | historical closed record; strict subsystem disposition superseded | `plans/closure/agent-run-worktree-concurrency/006-status.md`; post-closure audit found owner/lineage/idempotency/projection defects, corrected across M007–M009. |
+| Agent runs, async delegation, and worktree concurrency | M007 — durable lineage, owner context, fan-out, and authorization corrective pass | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/007-status.md`; implementation `4863765a`. |
+| Agent runs, async delegation, and worktree concurrency | M008 — call identity, authoritative projection, and strict corrective closure | closed historical evidence; strict subsystem disposition superseded by M009 | `plans/closure/agent-run-worktree-concurrency/008-status.md`; implementation `5ced31bf`; later exact-head audit found root-turn completion/invocation-scope gaps and push CI `33566227214` failed Workspace Clippy before tests. |
 | Agent runtime, model adaptation, and ACP | M017 — corrective integration evidence and closure | closed | `plans/closure/agent-runtime-model-adaptation-acp/017-status.md` |
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
