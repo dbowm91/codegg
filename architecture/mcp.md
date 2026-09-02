@@ -298,6 +298,13 @@ Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
 - **Tool definition cache**: Uses `mcp_tool_count` as a proxy for
   changes. If tool identities change without count changing, cache
   may be stale.
+- **Plugin contributions**: `McpService::reconcile_plugin_servers` translates
+  active declarative plugin declarations into the normal stdio/http lifecycle.
+  Plugin server names are `plugin:<plugin-name>:<declared-name>` and carry
+  `McpServerOrigin::Plugin`. Reconciliation removes only stale plugin-owned
+  servers and reports configured/other-plugin collisions; it never overwrites
+  configured servers. All transport, security, exposure, and permission
+  behavior remains in this service.
 
 ## Testing
 

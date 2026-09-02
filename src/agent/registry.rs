@@ -241,6 +241,7 @@ pub enum AgentSourceKind {
     ConfigAgent,
     ConfigMode,
     Session,
+    PluginFile,
 }
 
 /// Issues found during resolution.

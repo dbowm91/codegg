@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-addendum.md` | M006 ready | M005 closed; M006 is now dependency-ready for passive contribution bridge work. |
+| Runtime assets — plugin declarative contributions follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-addendum.md` | M006 closing | M005 closed; implementation landed and closure evidence is being gathered. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
@@ -49,9 +49,10 @@ Canonical direction remains in:
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
 | Runtime safety — edit history | M011 | `plans/implementation/runtime-safety-resource-footprint/011-mutation-attribution-and-edit-checkpoints.md` | Snapshot persistence and explicit workspace-bound tool execution already exist; this milestone corrects attribution/coverage before exposing rollback. |
-| Runtime assets — plugin contributions | M006 | `plans/implementation/runtime-assets/006-plugin-declarative-asset-mcp-contributions.md` | M005 closure provides durable context-aware activation and immutable resolved views; existing asset/MCP owners remain stable. |
 
 ## Closure work and dependencies
+
+- Runtime-assets M006 is closing through `plans/closure/runtime-assets/006-status.md` after implementation landed; the closure record is the remaining acceptance authority.
 
 Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. M009 is now closed through the linked closure record.
 

@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::error::AgentError;
 
@@ -85,6 +86,7 @@ pub struct AssetContext {
     global_roots: Vec<PathBuf>,
     config_revision: u64,
     session_id: Option<String>,
+    plugin_contributions: Option<Arc<crate::plugin::ResolvedPluginContributionSet>>,
 }
 
 impl AssetContext {
@@ -112,6 +114,21 @@ impl AssetContext {
         self.session_id.as_deref()
     }
 
+    /// Immutable passive plugin inputs captured for this asset generation.
+    pub fn plugin_contributions(
+        &self,
+    ) -> Option<&Arc<crate::plugin::ResolvedPluginContributionSet>> {
+        self.plugin_contributions.as_ref()
+    }
+
+    pub fn with_plugin_contributions(
+        mut self,
+        contributions: Arc<crate::plugin::ResolvedPluginContributionSet>,
+    ) -> Self {
+        self.plugin_contributions = Some(contributions);
+        self
+    }
+
     /// True when this context was created from a closed project/workspace
     /// identity interface and may drive daemon-owned execution paths.
     pub fn is_authoritative(&self) -> bool {
@@ -129,6 +146,7 @@ pub struct AssetContextBuilder {
     global_roots: Vec<PathBuf>,
     config_revision: u64,
     session_id: Option<String>,
+    plugin_contributions: Option<Arc<crate::plugin::ResolvedPluginContributionSet>>,
 }
 
 impl AssetContextBuilder {
@@ -140,6 +158,7 @@ impl AssetContextBuilder {
             global_roots: Vec::new(),
             config_revision: 0,
             session_id: None,
+            plugin_contributions: None,
         }
     }
 
@@ -180,6 +199,14 @@ impl AssetContextBuilder {
         self
     }
 
+    pub fn with_plugin_contributions(
+        mut self,
+        contributions: Arc<crate::plugin::ResolvedPluginContributionSet>,
+    ) -> Self {
+        self.plugin_contributions = Some(contributions);
+        self
+    }
+
     /// Build the context. Refuses if:
     ///
     /// - workspace root is missing or not a directory (when one is provided);
@@ -208,6 +235,7 @@ impl AssetContextBuilder {
             global_roots: self.global_roots,
             config_revision: self.config_revision,
             session_id: self.session_id,
+            plugin_contributions: self.plugin_contributions,
         })
     }
 }

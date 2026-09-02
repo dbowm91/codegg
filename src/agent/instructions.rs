@@ -90,6 +90,8 @@ pub enum InstructionSourceKind {
     InstructionsFile,
     /// Global `~/.config/codegg/instructions.md`.
     GlobalInstructions,
+    /// An instruction fragment packaged by an activated plugin.
+    Plugin,
 }
 
 /// A single instruction fragment with provenance and digest.
@@ -100,6 +102,9 @@ pub struct InstructionFragment {
     pub content: String,
     pub content_digest: String,
     pub size_bytes: u64,
+    /// Plugin identity for contributed fragments; absent for native sources.
+    #[serde(default)]
+    pub plugin_id: Option<String>,
 }
 
 /// Bounded, deterministic resolver.
@@ -179,6 +184,28 @@ impl ProjectInstructionResolver {
             }
         }
 
+        // Plugin paths were validated against their installed root before
+        // reaching the context. Sort by canonical plugin identity and path
+        // so refreshes are deterministic across HashMap/registry order.
+        if let Some(contributions) = ctx.plugin_contributions() {
+            let mut plugin_files = contributions
+                .plugins
+                .iter()
+                .flat_map(|plugin| {
+                    plugin
+                        .instructions
+                        .iter()
+                        .map(move |source| (plugin.plugin_id.clone(), source.path.clone()))
+                })
+                .collect::<Vec<_>>();
+            plugin_files.sort();
+            found.extend(
+                plugin_files
+                    .into_iter()
+                    .map(|(_, path)| (InstructionSourceKind::Plugin, path)),
+            );
+        }
+
         let mut total: u64 = 0;
         for (kind, path) in found {
             if fragments.len() >= self.config.max_fragment_count {
@@ -217,12 +244,18 @@ impl ProjectInstructionResolver {
                     }
                     total += size;
                     let digest = compute_digest(&content);
+                    let plugin_id = if kind == InstructionSourceKind::Plugin {
+                        plugin_id_for_path(ctx, &path)
+                    } else {
+                        None
+                    };
                     fragments.push(InstructionFragment {
                         kind,
                         source_path: path,
                         content,
                         content_digest: digest,
                         size_bytes: size,
+                        plugin_id,
                     });
                 }
                 Err(ReadError::TooLarge) => {
@@ -255,6 +288,19 @@ impl ProjectInstructionResolver {
             diagnostics,
         }
     }
+}
+
+fn plugin_id_for_path(ctx: &AssetContext, path: &Path) -> Option<String> {
+    ctx.plugin_contributions()?
+        .plugins
+        .iter()
+        .find_map(|plugin| {
+            plugin
+                .instructions
+                .iter()
+                .any(|source| source.path == path)
+                .then(|| plugin.plugin_id.clone())
+        })
 }
 
 fn merge_fragments(fragments: &[InstructionFragment]) -> String {

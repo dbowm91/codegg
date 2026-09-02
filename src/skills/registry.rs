@@ -20,14 +20,52 @@ impl AssetRegistry {
         project_root: &Path,
         global_roots: &[PathBuf],
     ) -> Self {
+        Self::build_with_plugin_sources(config, project_root, global_roots, &[])
+    }
+
+    pub fn build_with_plugin_sources(
+        config: &AssetDiscoveryConfig,
+        project_root: &Path,
+        global_roots: &[PathBuf],
+        plugin_sources: &[crate::plugin::PluginAssetPath],
+    ) -> Self {
         let mut all_candidates: Vec<SkillCandidate> = Vec::new();
         let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
         let mut source_summaries: Vec<SourceSummary> = Vec::new();
 
         let source_roots = resolve_source_roots(config, project_root, global_roots);
+        let mut plugin_roots = Vec::new();
+        for source in plugin_sources {
+            let path = source
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| source.path.clone());
+            let (root_path, single_file) = if path.is_dir() {
+                (path.clone(), None)
+            } else {
+                (
+                    path.parent().unwrap_or(&path).to_path_buf(),
+                    Some(path.clone()),
+                )
+            };
+            plugin_roots.push((
+                SourceRoot {
+                    kind: SourceKind::Plugin,
+                    canonical_path: root_path,
+                    display_path: path,
+                    plugin_id: Some(source.plugin_id.clone()),
+                },
+                single_file,
+            ));
+        }
+        plugin_roots.sort_by(|a, b| {
+            a.0.plugin_id
+                .cmp(&b.0.plugin_id)
+                .then_with(|| a.0.display_path.cmp(&b.0.display_path))
+        });
 
         for source_root in &source_roots {
-            let (candidates, diagnostics) = discover_in_root(source_root, config);
+            let (candidates, diagnostics) = discover_in_root(source_root, config, None);
             let discovered = candidates.len()
                 + diagnostics
                     .iter()
@@ -44,6 +82,28 @@ impl AssetRegistry {
                 discovered_count: discovered,
                 valid_count: valid,
                 invalid_count: invalid,
+            });
+            all_candidates.extend(candidates);
+            all_diagnostics.extend(diagnostics);
+        }
+
+        for (source_root, single_file) in &plugin_roots {
+            let (candidates, diagnostics) =
+                discover_in_root(source_root, config, single_file.as_deref());
+            let discovered = candidates.len()
+                + diagnostics
+                    .iter()
+                    .filter(|d| d.severity == super::diagnostic::Severity::Error)
+                    .count();
+            source_summaries.push(SourceSummary {
+                kind: source_root.kind,
+                canonical_path: source_root.canonical_path.clone(),
+                discovered_count: discovered,
+                valid_count: candidates.len(),
+                invalid_count: diagnostics
+                    .iter()
+                    .filter(|d| d.severity == super::diagnostic::Severity::Error)
+                    .count(),
             });
             all_candidates.extend(candidates);
             all_diagnostics.extend(diagnostics);
@@ -136,6 +196,7 @@ fn resolve_source_roots(
                     kind: SourceKind::CodeGGProject,
                     display_path: path,
                     canonical_path: canonical,
+                    plugin_id: None,
                 });
             }
         }
@@ -149,6 +210,7 @@ fn resolve_source_roots(
                     kind: SourceKind::AgentsProject,
                     display_path: path,
                     canonical_path: canonical,
+                    plugin_id: None,
                 });
             }
         }
@@ -165,6 +227,7 @@ fn resolve_source_roots(
                     kind: SourceKind::OpenCodeProject,
                     display_path: path,
                     canonical_path: canonical,
+                    plugin_id: None,
                 });
             }
         }
@@ -178,6 +241,7 @@ fn resolve_source_roots(
                     kind: SourceKind::ClaudeProject,
                     display_path: path,
                     canonical_path: canonical,
+                    plugin_id: None,
                 });
             }
         }
@@ -192,6 +256,7 @@ fn resolve_source_roots(
                         kind: SourceKind::CodeGGGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        plugin_id: None,
                     });
                 }
             }
@@ -204,6 +269,7 @@ fn resolve_source_roots(
                         kind: SourceKind::AgentsGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        plugin_id: None,
                     });
                 }
             }
@@ -216,6 +282,7 @@ fn resolve_source_roots(
                         kind: SourceKind::OpenCodeGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        plugin_id: None,
                     });
                 }
             }
@@ -228,6 +295,7 @@ fn resolve_source_roots(
                         kind: SourceKind::ClaudeGlobal,
                         display_path: path,
                         canonical_path: canonical,
+                        plugin_id: None,
                     });
                 }
             }
@@ -240,6 +308,7 @@ fn resolve_source_roots(
 fn discover_in_root(
     source_root: &SourceRoot,
     config: &AssetDiscoveryConfig,
+    single_file: Option<&Path>,
 ) -> (Vec<SkillCandidate>, Vec<Diagnostic>) {
     let mut candidates = Vec::new();
     let mut diagnostics = Vec::new();
@@ -272,6 +341,11 @@ fn discover_in_root(
         }
 
         let path = entry.path();
+        if let Some(single_file) = single_file {
+            if path != single_file {
+                continue;
+            }
+        }
         let source_kind = source_root.kind;
 
         if path.is_dir() {
@@ -285,7 +359,8 @@ fn discover_in_root(
                     }
                 }
                 match parser::parse_candidate(&skill_file, source_kind, config) {
-                    Ok(candidate) => {
+                    Ok(mut candidate) => {
+                        namespace_plugin_candidate(&mut candidate, source_root);
                         candidates.push(candidate);
                         skill_count += 1;
                     }
@@ -295,7 +370,8 @@ fn discover_in_root(
                 }
             }
         } else if (source_kind == SourceKind::CodeGGNativeCompat
-            || source_kind == SourceKind::CodeGGProject)
+            || source_kind == SourceKind::CodeGGProject
+            || source_kind == SourceKind::Plugin)
             && path.extension().and_then(|e| e.to_str()) == Some("md")
         {
             match validate_symlink_boundary(&path, &source_root.canonical_path) {
@@ -311,7 +387,8 @@ fn discover_in_root(
                 source_kind
             };
             match parser::parse_candidate(&path, compat_kind, config) {
-                Ok(candidate) => {
+                Ok(mut candidate) => {
+                    namespace_plugin_candidate(&mut candidate, source_root);
                     candidates.push(candidate);
                     skill_count += 1;
                 }
@@ -323,6 +400,20 @@ fn discover_in_root(
     }
 
     (candidates, diagnostics)
+}
+
+fn namespace_plugin_candidate(candidate: &mut SkillCandidate, source_root: &SourceRoot) {
+    let Some(plugin_id) = source_root.plugin_id.as_deref() else {
+        return;
+    };
+    let name = candidate.name.clone();
+    let raw_id = plugin_id.strip_prefix("plugin:").unwrap_or(plugin_id);
+    candidate.name = format!("plugin:{raw_id}:{name}");
+    candidate.normalized_name = candidate.name.to_lowercase();
+    candidate.metadata.insert(
+        "plugin_id".to_string(),
+        serde_json::Value::String(plugin_id.to_string()),
+    );
 }
 
 fn validate_symlink_boundary(file: &Path, root: &Path) -> Result<(), Diagnostic> {

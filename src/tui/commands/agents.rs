@@ -294,6 +294,7 @@ pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
             AgentSourceKind::ConfigAgent => "config",
             AgentSourceKind::ConfigMode => "mode",
             AgentSourceKind::Session => "session",
+            AgentSourceKind::PluginFile => "plugin",
         };
         match &source.path {
             Some(path) => lines.push(format!("  {kind_str}: {}", path.display())),
@@ -364,6 +365,7 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
             AgentSourceKind::ConfigAgent => "config",
             AgentSourceKind::ConfigMode => "mode",
             AgentSourceKind::Session => "session",
+            AgentSourceKind::PluginFile => "plugin",
         };
         match &source.path {
             Some(path) => lines.push(format!("  {kind_str}: {}", path.display())),

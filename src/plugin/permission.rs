@@ -282,6 +282,7 @@ mod tests {
                 output: vec![PluginOutputSurface::Chat, PluginOutputSurface::Toast],
             })],
             permissions: PluginPermissionSet::default(),
+            contributions: Default::default(),
             description: None,
             author: None,
             homepage: None,
@@ -306,6 +307,7 @@ mod tests {
                 secrets: vec!["MY_SECRET".into()],
                 ..Default::default()
             },
+            contributions: Default::default(),
             description: None,
             author: None,
             homepage: None,
@@ -388,6 +390,7 @@ mod tests {
                 aliases: vec![],
                 output: vec![PluginOutputSurface::Toast], // no Chat
             })],
+            contributions: Default::default(),
             permissions: PluginPermissionSet::default(),
             description: None,
             author: None,
@@ -453,6 +456,7 @@ mod tests {
                     handler: None,
                 },
             )],
+            contributions: Default::default(),
             permissions: PluginPermissionSet::default(),
             description: None,
             author: None,

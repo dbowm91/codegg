@@ -34,6 +34,11 @@ pub struct PluginManagementView {
     pub panel_count: usize,
     pub status_widget_count: usize,
     pub event_subscription_count: usize,
+    pub passive_skill_count: usize,
+    pub passive_agent_count: usize,
+    pub passive_instruction_count: usize,
+    pub passive_mcp_count: usize,
+    pub passive_contribution_diagnostics: Vec<String>,
     pub permissions_summary: String,
     pub diagnostic_count: usize,
     pub description: Option<String>,
@@ -92,6 +97,15 @@ impl PluginManagementView {
             panel_count: manifest.panels().count(),
             status_widget_count: manifest.status_widgets().count(),
             event_subscription_count: manifest.event_subscriptions().count(),
+            passive_skill_count: manifest.contributions.skills.len(),
+            passive_agent_count: manifest.contributions.agents.len(),
+            passive_instruction_count: manifest.contributions.instructions.len(),
+            passive_mcp_count: manifest.contributions.mcp_servers.len(),
+            passive_contribution_diagnostics: manifest
+                .validate_contributions()
+                .err()
+                .into_iter()
+                .collect(),
             permissions_summary,
             diagnostic_count: info.diagnostics.len(),
             description: manifest.description.clone(),
@@ -124,6 +138,11 @@ impl PluginManagementView {
             panel_count: 0,
             status_widget_count: 0,
             event_subscription_count: 0,
+            passive_skill_count: 0,
+            passive_agent_count: 0,
+            passive_instruction_count: 0,
+            passive_mcp_count: 0,
+            passive_contribution_diagnostics: Vec::new(),
             permissions_summary: "n/a (marketplace listing)".to_string(),
             diagnostic_count: 0,
             description: plugin.description.clone(),
@@ -715,6 +734,25 @@ impl PluginManager {
         // Check: duplicate capability conflicts
         let dup_check = check_duplicate_capabilities(&self.service.registry().clone(), &info).await;
         checks.push(dup_check);
+
+        checks.push(match info.manifest.validate_contributions() {
+            Ok(()) => PluginDoctorCheck {
+                name: "passive_contributions".to_string(),
+                passed: true,
+                message: format!(
+                    "{} skill(s), {} agent(s), {} instruction(s), {} MCP server(s); passive only",
+                    info.manifest.contributions.skills.len(),
+                    info.manifest.contributions.agents.len(),
+                    info.manifest.contributions.instructions.len(),
+                    info.manifest.contributions.mcp_servers.len(),
+                ),
+            },
+            Err(error) => PluginDoctorCheck {
+                name: "passive_contributions".to_string(),
+                passed: false,
+                message: format!("invalid passive contribution declaration: {error}"),
+            },
+        });
 
         // Check: permission/trust warnings (informational)
         let perms = &info.manifest.permissions;

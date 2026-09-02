@@ -80,6 +80,37 @@ impl PluginService {
         self.activation_store.resolve(&plugins, workspace_id).await
     }
 
+    /// Resolve passive contributions from the same immutable activation view
+    /// used by this service. Callers pass the result to an explicit asset
+    /// context or to `McpService`; activation storage is never read by those
+    /// owners directly.
+    pub async fn resolved_contributions(
+        &self,
+    ) -> crate::plugin::contributions::ResolvedPluginContributionSet {
+        let plugins = self.registry.list().await;
+        let activation = match &self.pinned_activation {
+            Some(activation) => activation.as_ref().clone(),
+            None => self.activation_store.resolve(&plugins, None).await,
+        };
+        crate::plugin::contributions::ResolvedPluginContributionSet::resolve(&plugins, &activation)
+    }
+
+    /// Reconcile active passive MCP declarations through the canonical MCP
+    /// service. A connection failure is reported as degraded state and does
+    /// not disable the plugin or affect unrelated servers.
+    pub async fn reconcile_mcp_servers(
+        &self,
+        service: &mut crate::mcp::McpService,
+    ) -> crate::mcp::McpPluginReconcileReport {
+        let contributions = self.resolved_contributions().await;
+        for diagnostic in &contributions.diagnostics {
+            tracing::warn!(diagnostic, "plugin contribution diagnostic");
+        }
+        service
+            .reconcile_plugin_servers(&contributions.mcp_servers().cloned().collect::<Vec<_>>())
+            .await
+    }
+
     fn active_plugin_ids(&self) -> Option<std::collections::HashSet<String>> {
         self.pinned_activation
             .as_ref()

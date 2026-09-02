@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Trust class for a plugin, inferred from its runtime kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -80,6 +81,167 @@ pub enum PluginCapability {
     Panel(PluginPanelContribution),
     StatusWidget(PluginStatusContribution),
     EventSubscription(PluginEventSubscriptionSpec),
+}
+
+/// Passive, declarative inputs consumed by CodeGG's existing asset and MCP
+/// owners. These are deliberately separate from [`PluginCapability`]:
+/// discovering one never invokes plugin code.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PluginContributions {
+    /// Skill directories or individual `SKILL.md`/Markdown files relative to
+    /// the installed plugin root.
+    pub skills: Vec<String>,
+    /// CodeGG-compatible agent files or directories relative to the install
+    /// root. Only the existing TOML/Markdown agent parsers are used.
+    pub agents: Vec<String>,
+    /// Bounded instruction fragments relative to the install root.
+    pub instructions: Vec<String>,
+    /// MCP declarations translated into the normal [`McpService`] lifecycle.
+    pub mcp_servers: Vec<PluginMcpServerContribution>,
+}
+
+/// A passive MCP server declaration packaged by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PluginMcpServerContribution {
+    pub name: String,
+    /// `local`/`stdio` or `remote`/`http` are accepted for compatibility with
+    /// the configured MCP schema.
+    #[serde(rename = "type")]
+    pub server_type: String,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: HashMap<String, String>,
+    pub url: Option<String>,
+    pub headers: HashMap<String, String>,
+    #[serde(alias = "timeout_ms")]
+    pub timeout: Option<u64>,
+}
+
+impl PluginContributions {
+    pub const MAX_PATHS: usize = 64;
+    pub const MAX_MCP_SERVERS: usize = 32;
+    pub const MAX_PATH_LENGTH: usize = 512;
+    pub const MAX_NAME_LENGTH: usize = 128;
+
+    /// Validate declarative fields which do not require an install root.
+    /// Filesystem containment and symlink checks are performed when the
+    /// contribution is resolved against the canonical installed root.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.skills.len() > Self::MAX_PATHS
+            || self.agents.len() > Self::MAX_PATHS
+            || self.instructions.len() > Self::MAX_PATHS
+        {
+            return Err(format!(
+                "passive contribution path count exceeds {}",
+                Self::MAX_PATHS
+            ));
+        }
+        if self.mcp_servers.len() > Self::MAX_MCP_SERVERS {
+            return Err(format!(
+                "MCP contribution count exceeds {}",
+                Self::MAX_MCP_SERVERS
+            ));
+        }
+        for path in self
+            .skills
+            .iter()
+            .chain(self.agents.iter())
+            .chain(self.instructions.iter())
+        {
+            validate_relative_contribution_path(path)?;
+        }
+        for server in &self.mcp_servers {
+            if server.name.is_empty() || server.name.len() > Self::MAX_NAME_LENGTH {
+                return Err(format!("invalid MCP contribution name '{}'", server.name));
+            }
+            if !matches!(
+                server.server_type.as_str(),
+                "local" | "stdio" | "remote" | "http"
+            ) {
+                return Err(format!(
+                    "MCP contribution '{}' has unsupported type '{}'",
+                    server.name, server.server_type
+                ));
+            }
+            let local = matches!(server.server_type.as_str(), "local" | "stdio");
+            if local != server.command.is_some() || (!local) != server.url.is_some() {
+                return Err(format!(
+                    "MCP contribution '{}' has incomplete {} configuration",
+                    server.name,
+                    if local { "stdio" } else { "http" }
+                ));
+            }
+            if server.args.len() > 64 || server.env.len() > 64 || server.headers.len() > 64 {
+                return Err(format!(
+                    "MCP contribution '{}' exceeds field bounds",
+                    server.name
+                ));
+            }
+            for key in server.headers.keys().chain(server.env.keys()) {
+                let lower = key.to_ascii_lowercase();
+                if lower.contains("authorization")
+                    || lower.contains("cookie")
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                    || lower.contains("password")
+                {
+                    return Err(format!(
+                        "MCP contribution '{}' cannot embed credential field '{}'",
+                        server.name, key
+                    ));
+                }
+            }
+            if server
+                .command
+                .as_deref()
+                .is_some_and(|value| value.len() > Self::MAX_PATH_LENGTH)
+                || server
+                    .url
+                    .as_deref()
+                    .is_some_and(|value| value.len() > Self::MAX_PATH_LENGTH)
+                || server
+                    .args
+                    .iter()
+                    .any(|value| value.len() > Self::MAX_PATH_LENGTH)
+                || server.env.iter().any(|(key, value)| {
+                    key.len() > Self::MAX_PATH_LENGTH || value.len() > Self::MAX_PATH_LENGTH
+                })
+                || server.headers.iter().any(|(key, value)| {
+                    key.len() > Self::MAX_PATH_LENGTH || value.len() > Self::MAX_PATH_LENGTH
+                })
+            {
+                return Err(format!(
+                    "MCP contribution '{}' exceeds string bounds",
+                    server.name
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_relative_contribution_path(path: &str) -> Result<(), String> {
+    let candidate = Path::new(path);
+    if path.is_empty() || path.len() > PluginContributions::MAX_PATH_LENGTH {
+        return Err(format!("invalid passive contribution path '{path}'"));
+    }
+    if candidate.is_absolute()
+        || candidate.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "passive contribution path must stay relative: {path}"
+        ));
+    }
+    Ok(())
 }
 
 /// Declares a slash command contributed by a plugin.
@@ -222,6 +384,10 @@ pub struct PluginManifest {
     pub capabilities: Vec<PluginCapability>,
     #[serde(default)]
     pub permissions: PluginPermissionSet,
+    /// Optional passive composition inputs. Legacy manifests deserialize with
+    /// an empty section.
+    #[serde(default)]
+    pub contributions: PluginContributions,
 
     // Legacy fields (kept for backwards compatibility)
     pub description: Option<String>,
@@ -261,6 +427,7 @@ impl Default for PluginManifest {
             },
             capabilities: Vec::new(),
             permissions: PluginPermissionSet::default(),
+            contributions: PluginContributions::default(),
             description: None,
             author: None,
             homepage: None,
@@ -336,6 +503,7 @@ impl PluginManifest {
             runtime,
             capabilities,
             permissions: PluginPermissionSet::default(),
+            contributions: PluginContributions::default(),
             description: legacy.description.clone(),
             author: legacy.author.clone(),
             homepage: legacy.homepage.clone(),
@@ -397,6 +565,10 @@ impl PluginManifest {
             PluginCapability::EventSubscription(es) => Some(es),
             _ => None,
         })
+    }
+
+    pub fn validate_contributions(&self) -> Result<(), String> {
+        self.contributions.validate()
     }
 }
 

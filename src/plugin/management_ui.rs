@@ -140,6 +140,22 @@ pub fn plugin_info_node(plugin: &PluginManagementView) -> UiNode {
         key: "Events".to_string(),
         value: plugin.event_subscription_count.to_string(),
     });
+    entries.push(KeyValueEntry {
+        key: "Passive contributions".to_string(),
+        value: format!(
+            "skills={}, agents={}, instructions={}, MCP={}",
+            plugin.passive_skill_count,
+            plugin.passive_agent_count,
+            plugin.passive_instruction_count,
+            plugin.passive_mcp_count
+        ),
+    });
+    if !plugin.passive_contribution_diagnostics.is_empty() {
+        entries.push(KeyValueEntry {
+            key: "Contribution diagnostic".to_string(),
+            value: plugin.passive_contribution_diagnostics.join("; "),
+        });
+    }
 
     // Permissions & diagnostics
     entries.push(KeyValueEntry {
@@ -305,6 +321,11 @@ mod tests {
             panel_count: 1,
             status_widget_count: 0,
             event_subscription_count: 1,
+            passive_skill_count: 0,
+            passive_agent_count: 0,
+            passive_instruction_count: 0,
+            passive_mcp_count: 0,
+            passive_contribution_diagnostics: Vec::new(),
             permissions_summary: "none".to_string(),
             diagnostic_count: 0,
             description: Some("A test plugin".to_string()),

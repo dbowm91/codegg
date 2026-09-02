@@ -579,7 +579,25 @@ impl CoreDaemon {
         session_id: Option<&str>,
         reason: crate::agent::asset_refresh::RefreshReason,
     ) -> Result<crate::agent::asset_refresh::RefreshReport, AppError> {
-        let asset_context = Self::asset_context_for_project(context, session_id)?;
+        let mut asset_context = Self::asset_context_for_project(context, session_id)?;
+        // Capture the same immutable activation view used for this refresh as
+        // explicit context input. The snapshot builder never reads plugin
+        // activation storage or mutable plugin state itself.
+        if let Some(plugin_service) = crate::plugin::create_default_plugin_service().await {
+            match plugin_service
+                .for_workspace(context.workspace_id.to_string())
+                .await
+            {
+                Ok(plugin_service) => {
+                    let contributions = plugin_service.resolved_contributions().await;
+                    asset_context =
+                        asset_context.with_plugin_contributions(Arc::new(contributions));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "plugin activation unavailable during asset refresh")
+                }
+            }
+        }
         let scope = crate::agent::asset_refresh::AssetScope::new(
             context.project_id.as_str(),
             context.workspace_id.as_str(),

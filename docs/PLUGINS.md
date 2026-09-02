@@ -80,6 +80,44 @@ The legacy flat format (a top-level `[hooks]` table mapping hook type to export
 name) is still accepted and is auto-converted to `[[capabilities]]` entries on
 load. New manifests should use the canonical form above.
 
+### Passive contributions
+
+Plugins may also declare bounded passive inputs. These are packaging
+descriptors, not executable capabilities:
+
+```toml
+[contributions]
+skills = ["skills"]
+agents = ["agents/reviewer.md"]
+instructions = ["instructions/review.md"]
+
+[[contributions.mcp_servers]]
+name = "docs"
+type = "stdio"
+command = "docs-mcp"
+args = ["--stdio"]
+```
+
+Only CodeGG-compatible agent files and existing skill formats are accepted.
+Every path is relative to the installed plugin root and is checked for
+containment, symlink escapes, and size/count limits before being read. Passive
+discovery never starts the plugin runtime. Contributions from an active plugin
+are resolved through `ProjectAssetSnapshotBuilder` and `McpService`; the
+executable plugin runtime and scheduler remain the owners of execution.
+
+Plugin asset identities are namespaced as `plugin:<plugin-name>:<asset-name>`.
+Native project assets retain their existing precedence. MCP declarations use
+the same namespacing for server identity and carry plugin origin metadata, so a
+plugin cannot replace a configured server or another plugin's server. MCP
+transport, DNS/redirect, OAuth, exposure, and permission policy remain owned
+by `McpService`.
+
+`PluginManager::info` and `/plugin-doctor` expose only bounded contribution
+counts and validation diagnostics; they do not print prompts, skill bodies, or
+credential values. Activation is workspace-aware and immutable for an
+in-flight asset snapshot. Disabling or uninstalling affects later generations
+and MCP reconciliation only.
+
 ## Hook System
 
 Plugins register hooks to intercept and modify behavior at various points:

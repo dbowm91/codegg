@@ -439,7 +439,7 @@ mod tests {
             .await
             .unwrap();
 
-        let a = store.resolve(&[p.clone()], Some("a")).await;
+        let a = store.resolve(std::slice::from_ref(&p), Some("a")).await;
         let b = store.resolve(&[p], Some("b")).await;
         assert!(a.is_active("demo"));
         assert!(!b.is_active("demo"));

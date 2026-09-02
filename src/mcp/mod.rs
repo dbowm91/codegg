@@ -81,10 +81,31 @@ pub enum McpServerStatus {
 
 pub struct McpServer {
     pub name: String,
+    pub origin: McpServerOrigin,
     pub status: McpServerStatus,
     pub tools: Vec<McpTool>,
     pub server_version: Option<String>,
     pub client: McpClientType,
+}
+
+/// Ownership metadata for an MCP server. Plugin names are internal and
+/// namespaced; configured servers remain authoritative and cannot be replaced
+/// by a plugin declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerOrigin {
+    Configured,
+    Plugin {
+        plugin_id: String,
+        plugin_version: String,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpPluginReconcileReport {
+    pub connected: Vec<String>,
+    pub removed: Vec<String>,
+    pub collisions: Vec<String>,
+    pub failed: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -178,6 +199,35 @@ impl McpService {
         }
     }
 
+    /// Create a workspace/turn-scoped view containing only configured
+    /// servers. Client handles remain shared, while plugin-owned servers are
+    /// intentionally excluded so one workspace's activation cannot leak into
+    /// another workspace's model tool surface.
+    pub fn clone_configured_servers(&self) -> Self {
+        let servers = self
+            .servers
+            .iter()
+            .filter(|(_, server)| matches!(server.origin, McpServerOrigin::Configured))
+            .map(|(name, server)| {
+                (
+                    name.clone(),
+                    McpServer {
+                        name: server.name.clone(),
+                        origin: McpServerOrigin::Configured,
+                        status: server.status.clone(),
+                        tools: server.tools.clone(),
+                        server_version: server.server_version.clone(),
+                        client: server.client.clone(),
+                    },
+                )
+            })
+            .collect();
+        Self {
+            servers,
+            oauth: OAuthManager::new(),
+        }
+    }
+
     pub async fn connect_stdio(
         &mut self,
         name: &str,
@@ -207,6 +257,7 @@ impl McpService {
 
         let server = McpServer {
             name: name.to_string(),
+            origin: McpServerOrigin::Configured,
             status: McpServerStatus::Connected,
             tools: mcp_tools,
             server_version,
@@ -250,6 +301,7 @@ impl McpService {
 
         let server = McpServer {
             name: name.to_string(),
+            origin: McpServerOrigin::Configured,
             status: McpServerStatus::Connected,
             tools: mcp_tools,
             server_version,
@@ -279,6 +331,90 @@ impl McpService {
         server.status = McpServerStatus::Disconnected;
         server.tools.clear();
         Ok(())
+    }
+
+    /// Reconcile only plugin-owned servers. Configured and other plugin
+    /// origins are never removed or overwritten by this operation.
+    pub async fn reconcile_plugin_servers(
+        &mut self,
+        desired: &[crate::plugin::ResolvedPluginMcpServer],
+    ) -> McpPluginReconcileReport {
+        let mut report = McpPluginReconcileReport::default();
+        let desired_names: std::collections::HashSet<&str> = desired
+            .iter()
+            .map(|server| server.canonical_name.as_str())
+            .collect();
+
+        let stale: Vec<String> = self
+            .servers
+            .iter()
+            .filter_map(|(name, server)| match &server.origin {
+                McpServerOrigin::Plugin { .. } if !desired_names.contains(name.as_str()) => {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for name in stale {
+            match self.disconnect(&name).await {
+                Ok(()) => {
+                    self.servers.remove(&name);
+                    report.removed.push(name);
+                }
+                Err(error) => report.failed.push(format!(
+                    "failed to remove stale plugin MCP server '{name}': {error}"
+                )),
+            }
+        }
+
+        for server in desired {
+            if let Some(existing) = self.servers.get(&server.canonical_name) {
+                match &existing.origin {
+                    McpServerOrigin::Configured => report.collisions.push(format!(
+                        "plugin '{}' cannot replace configured MCP server '{}'",
+                        server.plugin_id, server.canonical_name
+                    )),
+                    McpServerOrigin::Plugin { plugin_id, .. } if plugin_id != &server.plugin_id => {
+                        report.collisions.push(format!(
+                            "plugin '{}' cannot replace MCP server '{}' owned by '{}'",
+                            server.plugin_id, server.canonical_name, plugin_id
+                        ))
+                    }
+                    McpServerOrigin::Plugin { .. } => {}
+                }
+                continue;
+            }
+
+            let declaration = &server.declaration;
+            let result = self
+                .connect_from_config(
+                    &server.canonical_name,
+                    &declaration.server_type,
+                    declaration.command.as_deref(),
+                    Some(&declaration.args),
+                    Some(declaration.env.clone()),
+                    declaration.url.as_deref(),
+                    Some(declaration.headers.clone()),
+                    declaration.timeout.unwrap_or(60_000),
+                )
+                .await;
+            match result {
+                Ok(()) => {
+                    if let Some(registered) = self.servers.get_mut(&server.canonical_name) {
+                        registered.origin = McpServerOrigin::Plugin {
+                            plugin_id: server.plugin_id.clone(),
+                            plugin_version: server.plugin_version.clone(),
+                        };
+                    }
+                    report.connected.push(server.canonical_name.clone());
+                }
+                Err(error) => report.failed.push(format!(
+                    "MCP server '{}' from plugin '{}': {error}",
+                    server.canonical_name, server.plugin_id
+                )),
+            }
+        }
+        report
     }
 
     pub async fn call_tool(
@@ -347,6 +483,10 @@ impl McpService {
         self.servers
             .get(server)
             .and_then(|s| s.server_version.clone())
+    }
+
+    pub fn server_origin(&self, server: &str) -> Option<McpServerOrigin> {
+        self.servers.get(server).map(|server| server.origin.clone())
     }
 
     /// List MCP tool definitions, filtered through the given
@@ -488,8 +628,41 @@ impl McpService {
         tools: Vec<McpTool>,
         handler: Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
     ) {
+        self.register_mock_server_with_origin(name, McpServerOrigin::Configured, tools, handler);
+    }
+
+    /// Test-only helper for exercising origin-aware reconciliation without
+    /// spawning a subprocess. Production plugin MCP connections use the
+    /// normal stdio/http methods above.
+    pub fn register_mock_plugin_server(
+        &mut self,
+        name: &str,
+        plugin_id: &str,
+        plugin_version: &str,
+        tools: Vec<McpTool>,
+        handler: Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
+    ) {
+        self.register_mock_server_with_origin(
+            name,
+            McpServerOrigin::Plugin {
+                plugin_id: plugin_id.to_string(),
+                plugin_version: plugin_version.to_string(),
+            },
+            tools,
+            handler,
+        );
+    }
+
+    fn register_mock_server_with_origin(
+        &mut self,
+        name: &str,
+        origin: McpServerOrigin,
+        tools: Vec<McpTool>,
+        handler: Box<dyn Fn(&str, serde_json::Value) -> Result<String, McpError> + Send + Sync>,
+    ) {
         let server = McpServer {
             name: name.to_string(),
+            origin,
             status: McpServerStatus::Connected,
             tools,
             server_version: None,

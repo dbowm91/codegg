@@ -137,6 +137,9 @@ pub async fn install_from_path_into(
     let manifest_content = tokio::fs::read_to_string(&manifest_path).await?;
     let manifest: PluginManifest =
         toml::from_str(&manifest_content).map_err(|e| InstallError::Manifest(e.to_string()))?;
+    manifest
+        .validate_contributions()
+        .map_err(InstallError::Manifest)?;
 
     tokio::fs::create_dir_all(dest_root).await?;
 

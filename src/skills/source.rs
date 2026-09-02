@@ -8,6 +8,8 @@ pub enum SourceKind {
     AgentsProject = 10,
     OpenCodeProject = 20,
     ClaudeProject = 30,
+    /// Installed plugin contribution; project-native sources outrank it.
+    Plugin = 35,
     CodeGGGlobal = 40,
     AgentsGlobal = 50,
     OpenCodeGlobal = 60,
@@ -27,6 +29,7 @@ impl SourceKind {
                 | SourceKind::AgentsProject
                 | SourceKind::OpenCodeProject
                 | SourceKind::ClaudeProject
+                | SourceKind::Plugin
                 | SourceKind::CodeGGNativeCompat
         )
     }
@@ -49,6 +52,7 @@ impl SourceKind {
             SourceKind::AgentsProject | SourceKind::AgentsGlobal => "agents",
             SourceKind::OpenCodeProject | SourceKind::OpenCodeGlobal => "opencode",
             SourceKind::ClaudeProject | SourceKind::ClaudeGlobal => "claude",
+            SourceKind::Plugin => "plugin",
         }
     }
 
@@ -70,6 +74,8 @@ pub struct SourceRoot {
     pub kind: SourceKind,
     pub canonical_path: PathBuf,
     pub display_path: PathBuf,
+    #[serde(default)]
+    pub plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

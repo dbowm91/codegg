@@ -11,6 +11,7 @@
 //! deterministic output for unchanged inputs.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -95,10 +96,18 @@ impl ProjectAssetSnapshotBuilder {
         // The legacy AssetRegistry::build expects &[PathBuf] which is
         // cheaply constructible from a slice of references.
         let global_root_refs: Vec<std::path::PathBuf> = global_roots.to_vec();
-        let registry = AssetRegistry::build(
+        let plugin_sources = ctx
+            .plugin_contributions()
+            .into_iter()
+            .flat_map(|set| set.plugins.iter())
+            .flat_map(|plugin| plugin.skills.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let registry = AssetRegistry::build_with_plugin_sources(
             &self.config.asset_discovery,
             ctx.workspace_root(),
             &global_root_refs,
+            &plugin_sources,
         );
         Ok(registry)
     }
@@ -119,8 +128,131 @@ impl ProjectAssetSnapshotBuilder {
         for ra in registry.list() {
             agents.insert(ra.agent.name.clone(), ra.clone());
         }
-        Ok((agents, registry.diagnostics().to_vec()))
+        let mut diagnostics = registry.diagnostics().to_vec();
+        let plugin_sets = ctx
+            .plugin_contributions()
+            .into_iter()
+            .flat_map(|set| set.plugins.iter());
+        for plugin in plugin_sets {
+            let mut files = Vec::new();
+            for source in &plugin.agents {
+                if source.path.is_dir() {
+                    match load_plugin_agents_from_dir(&source.path) {
+                        Ok(mut loaded) => files.append(&mut loaded),
+                        Err(error) => {
+                            diagnostics.push(crate::agent::registry::AgentDiagnostic::new(
+                                crate::agent::registry::AgentDiagnosticSeverity::Error,
+                                format!("plugin:{}", plugin.plugin_id),
+                                format!("failed to load plugin agent directory: {error}"),
+                            ))
+                        }
+                    }
+                } else {
+                    let result = match source.path.extension().and_then(|ext| ext.to_str()) {
+                        Some("md") => crate::agent::load_agent_from_file(&source.path),
+                        Some("toml") => crate::agent::load_agent_from_toml(&source.path),
+                        _ => Err(crate::error::AgentError::Invalid(
+                            "plugin agent must be TOML or Markdown".into(),
+                        )),
+                    };
+                    match result {
+                        Ok(Some(file_agent)) => files.push(file_agent),
+                        Ok(None) => diagnostics.push(crate::agent::registry::AgentDiagnostic::new(
+                            crate::agent::registry::AgentDiagnosticSeverity::Warning,
+                            format!("plugin:{}", plugin.plugin_id),
+                            format!("plugin agent '{}' has no definition", source.relative_path),
+                        )),
+                        Err(error) => {
+                            diagnostics.push(crate::agent::registry::AgentDiagnostic::new(
+                                crate::agent::registry::AgentDiagnosticSeverity::Error,
+                                format!("plugin:{}", plugin.plugin_id),
+                                format!(
+                                    "failed to parse plugin agent '{}': {error}",
+                                    source.relative_path
+                                ),
+                            ))
+                        }
+                    }
+                }
+            }
+            files.sort_by(|a, b| a.source.cmp(&b.source));
+            for file_agent in files {
+                let raw_name = file_agent.agent.name.clone();
+                let raw_plugin = plugin
+                    .plugin_id
+                    .strip_prefix("plugin:")
+                    .unwrap_or(&plugin.plugin_id);
+                let name = format!("plugin:{raw_plugin}:{raw_name}");
+                let mut agent = file_agent.agent;
+                agent.name = name.clone();
+                let mut agent_diagnostics = file_agent.diagnostics;
+                for diagnostic in &mut agent_diagnostics {
+                    diagnostic.agent_name = name.clone();
+                    diagnostic.source = Some(crate::agent::registry::AgentSourceKind::PluginFile);
+                }
+                let resolved = ResolvedAgent {
+                    agent,
+                    sources: vec![crate::agent::registry::AgentSource {
+                        kind: crate::agent::registry::AgentSourceKind::PluginFile,
+                        path: Some(PathBuf::from(file_agent.source)),
+                        name: name.clone(),
+                    }],
+                    diagnostics: agent_diagnostics.clone(),
+                };
+                if agents.insert(name.clone(), resolved).is_some() {
+                    diagnostics.push(crate::agent::registry::AgentDiagnostic::new(
+                        crate::agent::registry::AgentDiagnosticSeverity::Warning,
+                        name.clone(),
+                        "duplicate plugin agent identity; later path wins deterministically",
+                    ));
+                }
+                diagnostics.extend(agent_diagnostics);
+            }
+        }
+        Ok((agents, diagnostics))
     }
+}
+
+fn load_plugin_agents_from_dir(
+    dir: &std::path::Path,
+) -> Result<Vec<crate::agent::FileAgent>, crate::error::AgentError> {
+    let canonical_dir = dir
+        .canonicalize()
+        .map_err(|error| crate::error::AgentError::Invalid(error.to_string()))?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|error| crate::error::AgentError::Invalid(error.to_string()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("md" | "toml")
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries.truncate(crate::plugin::manifest::PluginContributions::MAX_PATHS);
+    let mut agents = Vec::new();
+    for path in entries {
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| crate::error::AgentError::Invalid(error.to_string()))?;
+        if !canonical.starts_with(&canonical_dir) {
+            return Err(crate::error::AgentError::Invalid(format!(
+                "plugin agent path escapes contribution root: {}",
+                path.display()
+            )));
+        }
+        let loaded = match path.extension().and_then(|ext| ext.to_str()) {
+            Some("md") => crate::agent::load_agent_from_file(&path)?,
+            Some("toml") => crate::agent::load_agent_from_toml(&path)?,
+            _ => None,
+        };
+        if let Some(agent) = loaded {
+            agents.push(agent);
+        }
+    }
+    Ok(agents)
 }
 
 impl crate::agent::asset_snapshot::SnapshotBuilder for ProjectAssetSnapshotBuilder {

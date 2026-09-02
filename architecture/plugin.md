@@ -285,6 +285,16 @@ Controlled via `cargo build --features plugins`.
   Archive entries use strict `validate_relative_install_path`.
 - **Uninstall validation**: `validate_uninstall_target` canonicalizes
   the target and checks it is under the plugins dir.
+- **Passive contributions**: Optional manifest `contributions` entries package
+  bounded skills, CodeGG-compatible agents, instruction fragments, and MCP
+  declarations. They are resolved from the immutable workspace activation
+  view; discovery never invokes a plugin runtime. Asset inputs flow through
+  `ProjectAssetSnapshotBuilder`, MCP inputs through `McpService`, and each
+  identity is namespaced with `plugin:<plugin-name>:`.
+- **Origin and inspection**: MCP servers retain configured/plugin origin and
+  reconciliation removes only the owning plugin's servers. Management info
+  and doctor expose counts and validation diagnostics without bodies or
+  secrets. Project-native assets retain precedence over plugin defaults.
 - **`PluginResponse` is protocol-owned**: The local `PluginResponse` in
   `service.rs` is removed. `codegg_protocol::plugin::PluginResponse`
   (with `effects: Vec<UiEffect>`) is the canonical type, re-exported

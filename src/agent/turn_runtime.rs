@@ -539,8 +539,22 @@ impl TurnRuntime for DefaultTurnRuntime {
         let system = compiled_prompt.text.clone();
 
         // ── Search backend bootstrap ─────────────────────────────────
-        let (mcp_service, _report) =
+        let (configured_mcp_service, _report) =
             crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+        let mcp_service = if let Some(global_mcp) = configured_mcp_service {
+            let configured = global_mcp.read().await.clone_configured_servers();
+            Some(Arc::new(tokio::sync::RwLock::new(configured)))
+        } else {
+            None
+        };
+
+        if let (Some(plugin_svc), Some(mcp_arc)) = (&plugin_service, &mcp_service) {
+            let mut mcp = mcp_arc.write().await;
+            let report = plugin_svc.reconcile_mcp_servers(&mut mcp).await;
+            for diagnostic in report.collisions.iter().chain(report.failed.iter()) {
+                tracing::warn!(diagnostic, "plugin MCP contribution unavailable");
+            }
+        }
 
         // ── Agent loop construction ──────────────────────────────────
         let agent_loop_input = AgentLoopBuildInput {
