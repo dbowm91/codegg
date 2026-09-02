@@ -1,6 +1,6 @@
 # Agent Runtime Correctness — Host-Owned Goal Verification Addendum
 
-Status: ready
+Status: closing — M012 implementation landed; closure evidence is being recorded
 
 Repository baseline reviewed: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -113,7 +113,7 @@ For initial provenance, prefer a host-written goal identifier in existing bounde
 
 ### M012 — Host-owned goal completion verification
 
-Status: ready
+Status: implemented
 
 Plan:
 
@@ -135,6 +135,10 @@ Exit conditions:
 - cancellation, pause, budget limits, and user steering remain authoritative;
 - plugin absence/failure does not weaken completion requirements;
 - focused tests and the repository quick verification path pass.
+
+Closure record:
+
+- `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`
 
 ## 7. Security, restart, contention, and compatibility
 

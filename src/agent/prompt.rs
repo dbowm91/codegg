@@ -419,15 +419,15 @@ fn base_harness_contract() -> &'static str {
 ///   long-running goal with an objective, success criteria, and
 ///   optional budget. As work progresses, call `goal_update_progress`
 ///   with phase/next-action updates. When the objective is met,
-///   call `goal_request_completion` with concrete evidence (commands
-///   run, files changed, tests passing) and `remaining_risks`.
+///   request completion with concrete claims (commands run, files changed,
+///   tests passing) and `remaining_risks`; the host verifies the request.
 ///
 /// Do not mark a goal complete from a todo check-off alone. A
 /// successful todo is one of many steps toward the goal, not
 /// the goal itself. The runtime will validate evidence before
 /// transitioning the goal to `Complete`.
 fn goal_and_todos_contract() -> &'static str {
-    "Planning surfaces: use the `todo` tool for in-flight steps the user can check off within this turn. When work spans many turns or sessions, set a long-horizon goal with `goal_set` (or `/goal set <objective>`), then track phase/next-action with `goal_update_progress`. Mark completion with `goal_request_completion` carrying concrete evidence (commands run, files changed, tests passing) and an explicit `remaining_risks` list. A finished todo is a step toward a goal, not the goal itself — the runtime validates goal completion against evidence."
+    "Planning surfaces: use the `todo` tool for in-flight steps the user can check off within this turn. When work spans many turns or sessions, set a long-horizon goal with `goal_set` (or `/goal set <objective>`), then track phase/next-action with `goal_update_progress`. Request completion with `goal_request_completion` carrying bounded claims (commands run, files changed, tests passing) and an explicit `remaining_risks` list; the host-owned verifier derives authoritative evidence and decides whether completion is met. A finished todo is a step toward a goal, not the goal itself."
 }
 
 /// Contract injected into the system prompt when the agent is in plan mode.
@@ -497,7 +497,7 @@ fn planning_surfaces_contract(tools: &[String]) -> String {
     match (todos, goals) {
         (true, true) => goal_and_todos_contract().to_string(),
         (true, false) => "Planning surface: use the todo tools for in-flight steps, keep exactly one item in progress, and mark items complete only after verification.".to_string(),
-        (false, true) => "Planning surface: use the goal tools for work spanning turns or sessions; completion requires concrete evidence and explicit remaining risks.".to_string(),
+        (false, true) => "Planning surface: use the goal tools for work spanning turns or sessions; completion is a host-verified request, not model self-certification.".to_string(),
         (false, false) => String::new(),
     }
 }

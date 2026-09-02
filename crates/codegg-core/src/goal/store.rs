@@ -61,6 +61,7 @@ pub struct GoalStore {
 #[derive(sqlx::FromRow)]
 struct GoalRow {
     id: String,
+    revision: i64,
     session_id: String,
     project_id: String,
     title: String,
@@ -129,6 +130,7 @@ fn row_to_goal(row: GoalRow) -> Result<Goal, StorageError> {
 
     Ok(Goal {
         id: row.id,
+        revision: row.revision,
         session_id: row.session_id,
         project_id: row.project_id,
         title: row.title,
@@ -167,7 +169,7 @@ impl GoalStore {
     ) -> Result<Goal, StorageError> {
         // Pause any existing active/awaiting_user/budget_limited goal for this session
         sqlx::query(
-            r#"UPDATE goal SET status = 'paused', updated_at = ?1
+            r#"UPDATE goal SET status = 'paused', updated_at = ?1, revision = revision + 1
                WHERE session_id = ?2 AND status IN ('active', 'awaiting_user', 'budget_limited')"#,
         )
         .bind(datetime_to_millis(&Utc::now()))
@@ -182,11 +184,11 @@ impl GoalStore {
             serde_json::to_string(&completion_criteria).unwrap_or_else(|_| "[]".to_string());
 
         sqlx::query(
-            r#"INSERT INTO goal (id, session_id, project_id, title, objective, status,
+            r#"INSERT INTO goal (id, revision, session_id, project_id, title, objective, status,
                plan_path, checkpoint_path,
                completion_criteria, open_questions, budget, usage,
                progress_summary, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '[]', '{}', '{}', '', ?10, ?11)"#,
+               VALUES (?1, 0, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '[]', '{}', '{}', '', ?10, ?11)"#,
         )
         .bind(&id)
         .bind(session_id)
@@ -234,28 +236,80 @@ impl GoalStore {
         goal_id: &str,
         status: GoalStatus,
     ) -> Result<Option<Goal>, StorageError> {
+        if status == GoalStatus::Complete {
+            return Err(StorageError::Database(
+                "goal completion requires a host-owned compare-and-set transition".into(),
+            ));
+        }
         let now = datetime_to_millis(&Utc::now());
         let status_str = status_to_string(&status);
 
-        if status == GoalStatus::Complete {
-            sqlx::query(
-                r#"UPDATE goal SET status = ?1, updated_at = ?2, completed_at = ?2
-                   WHERE id = ?3"#,
-            )
-            .bind(&status_str)
-            .bind(now)
-            .bind(goal_id)
-            .execute(&self.pool)
-            .await?;
-        } else {
-            sqlx::query("UPDATE goal SET status = ?1, updated_at = ?2 WHERE id = ?3")
-                .bind(&status_str)
-                .bind(now)
-                .bind(goal_id)
-                .execute(&self.pool)
-                .await?;
-        }
+        sqlx::query(
+            "UPDATE goal SET status = ?1, updated_at = ?2, revision = revision + 1 WHERE id = ?3",
+        )
+        .bind(&status_str)
+        .bind(now)
+        .bind(goal_id)
+        .execute(&self.pool)
+        .await?;
 
+        self.get(goal_id).await
+    }
+
+    /// Complete a goal only if the proposal was built from the same active
+    /// goal revision that the caller observed. The status and revision
+    /// predicate makes pause, cancel, replacement, and competing completion
+    /// proposals win deterministically when they reach SQLite first.
+    pub async fn complete_if_active(
+        &self,
+        goal_id: &str,
+        expected_revision: i64,
+    ) -> Result<Option<Goal>, StorageError> {
+        let now = datetime_to_millis(&Utc::now());
+        let result = sqlx::query(
+            r#"UPDATE goal SET status = 'complete', updated_at = ?1, completed_at = ?1,
+                   revision = revision + 1
+               WHERE id = ?2 AND status = 'active' AND revision = ?3"#,
+        )
+        .bind(now)
+        .bind(goal_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get(goal_id).await
+    }
+
+    /// Apply a non-terminal status transition only when the caller still
+    /// owns the active goal revision. This keeps a cancellation or pause that
+    /// races verification authoritative.
+    pub async fn update_status_if_revision(
+        &self,
+        goal_id: &str,
+        expected_revision: i64,
+        status: GoalStatus,
+    ) -> Result<Option<Goal>, StorageError> {
+        if status == GoalStatus::Complete {
+            return self.complete_if_active(goal_id, expected_revision).await;
+        }
+        let now = datetime_to_millis(&Utc::now());
+        let status_str = status_to_string(&status);
+        let result = sqlx::query(
+            "UPDATE goal SET status = ?1, updated_at = ?2, revision = revision + 1
+             WHERE id = ?3 AND status = 'active' AND revision = ?4",
+        )
+        .bind(status_str)
+        .bind(now)
+        .bind(goal_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
         self.get(goal_id).await
     }
 
@@ -264,7 +318,7 @@ impl GoalStore {
         let cancelled = status_to_string(&GoalStatus::Cancelled);
 
         sqlx::query(
-            r#"UPDATE goal SET status = ?1, updated_at = ?2
+            r#"UPDATE goal SET status = ?1, updated_at = ?2, revision = revision + 1
                WHERE session_id = ?3 AND status IN ('active', 'awaiting_user', 'budget_limited', 'paused')"#,
         )
         .bind(&cancelled)
@@ -287,7 +341,10 @@ impl GoalStore {
             None => return Ok(None),
         };
 
-        let mut new_summary = goal.progress_summary.clone();
+        let mut new_summary = update
+            .progress_summary
+            .clone()
+            .unwrap_or_else(|| goal.progress_summary.clone());
 
         if !update.completed_items.is_empty() || !update.remaining_items.is_empty() {
             let timestamp = Utc::now().format("%Y-%m-%d %H:%M:%S");
@@ -336,7 +393,8 @@ impl GoalStore {
                    next_action = ?2,
                    progress_summary = ?3,
                    open_questions = ?4,
-                   updated_at = ?5
+               updated_at = ?5,
+               revision = revision + 1
                WHERE id = ?6"#,
         )
         .bind(current_phase)
@@ -392,12 +450,14 @@ impl GoalStore {
             .map_err(|e| StorageError::Database(format!("serialize usage: {}", e)))?;
 
         let now = datetime_to_millis(&Utc::now());
-        sqlx::query("UPDATE goal SET usage = ?1, updated_at = ?2 WHERE id = ?3")
-            .bind(&usage_json)
-            .bind(now)
-            .bind(goal_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE goal SET usage = ?1, updated_at = ?2, revision = revision + 1 WHERE id = ?3",
+        )
+        .bind(&usage_json)
+        .bind(now)
+        .bind(goal_id)
+        .execute(&self.pool)
+        .await?;
 
         // Check whether the new usage exceeds any budget axis.
         let breach = first_budget_breach(&goal.budget, &usage);
@@ -453,6 +513,7 @@ impl GoalStore {
             r#"UPDATE goal
                SET budget = ?1,
                    updated_at = ?2,
+                   revision = revision + 1,
                    status = CASE
                        WHEN status = 'budget_limited' THEN 'active'
                        ELSE status
@@ -661,7 +722,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn test_update_status_complete_sets_completed_at() {
+    async fn test_complete_if_active_sets_completed_at() {
         let pool = test_pool().await;
         ensure_test_session(&pool, "sess1", "proj1").await;
         let store = GoalStore::new(pool);
@@ -670,16 +731,64 @@ mod tests {
             .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
             .await
             .unwrap();
+        assert!(store
+            .update_status(&goal.id, GoalStatus::Complete)
+            .await
+            .is_err());
         assert!(goal.completed_at.is_none());
 
         let updated = store
-            .update_status(&goal.id, GoalStatus::Complete)
+            .complete_if_active(&goal.id, goal.revision)
             .await
             .unwrap()
             .unwrap();
 
         assert_eq!(updated.status, GoalStatus::Complete);
         assert!(updated.completed_at.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_complete_if_active_rejects_stale_or_paused_goal() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "sess1", "proj1").await;
+        let store = GoalStore::new(pool);
+
+        let goal = store
+            .create_active("sess1", "proj1", "Goal", "Obj", None, None, vec![])
+            .await
+            .unwrap();
+        store
+            .update_status(&goal.id, GoalStatus::Paused)
+            .await
+            .unwrap();
+        assert!(store
+            .complete_if_active(&goal.id, goal.revision)
+            .await
+            .unwrap()
+            .is_none());
+
+        let resumed = store
+            .update_status(&goal.id, GoalStatus::Active)
+            .await
+            .unwrap();
+        let resumed = resumed.unwrap();
+        let stale = store
+            .update_progress(
+                &goal.id,
+                GoalProgressUpdate {
+                    next_action: Some("new action".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .complete_if_active(&goal.id, resumed.revision)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(stale.status, GoalStatus::Active);
     }
 
     #[tokio::test(flavor = "current_thread")]

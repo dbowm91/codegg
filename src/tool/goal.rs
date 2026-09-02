@@ -5,6 +5,7 @@ use crate::error::ToolError;
 use crate::goal::model::*;
 use crate::goal::store::GoalStore;
 use crate::tool::Tool;
+use codegg_core::goal::{GoalCompletionProposal, GoalVerificationService, GoalVerificationVerdict};
 
 pub struct GoalGetTool {
     pool: SqlitePool,
@@ -202,7 +203,7 @@ impl Tool for GoalRequestCompletionTool {
     }
 
     fn description(&self) -> &str {
-        "Request completion of the current active goal"
+        "Request host verification and completion of the current active goal"
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -248,9 +249,10 @@ impl Tool for GoalRequestCompletionTool {
             })
             .unwrap_or_default();
 
-        if evidence.is_empty() {
+        if evidence.trim().is_empty() {
             return Ok(serde_json::json!({
                 "accepted": false,
+                "verdict": "not_met",
                 "reason": "Evidence is required to request completion"
             })
             .to_string());
@@ -263,28 +265,54 @@ impl Tool for GoalRequestCompletionTool {
             .map_err(|e| ToolError::Execution(e.to_string()))?
             .ok_or_else(|| ToolError::Execution("No active goal".to_string()))?;
 
-        if tests_run.is_empty() && remaining_risks.is_empty() {
-            return Ok(serde_json::json!({
-                "accepted": false,
-                "reason": "Either tests_run must be non-empty, or remaining_risks must explicitly justify skipped tests"
-            })
-            .to_string());
-        }
+        let proposal = match GoalCompletionProposal::from_request(CompletionRequest {
+            evidence: evidence.to_string(),
+            files_changed,
+            tests_run,
+            remaining_risks,
+        }) {
+            Ok(proposal) => proposal,
+            Err(reason) => {
+                return Ok(serde_json::json!({
+                    "accepted": false,
+                    "verdict": "not_met",
+                    "reason": reason,
+                })
+                .to_string())
+            }
+        };
 
-        match store.update_status(&goal.id, GoalStatus::Complete).await {
-            Ok(Some(updated_goal)) => {
-                if let Some(ref cp_path) = goal.checkpoint_path {
-                    let update = GoalProgressUpdate {
-                        current_phase: Some("Complete".to_string()),
-                        progress_summary: Some(format!(
-                            "Completed with evidence: {}",
-                            evidence.chars().take(200).collect::<String>()
-                        )),
-                        next_action: None,
-                        completed_items: files_changed,
-                        remaining_items: vec![],
-                        open_questions: vec![],
-                    };
+        let host_evidence =
+            crate::goal_verification::assemble(&self.pool, &self.session_id, goal.created_at)
+                .await
+                .map_err(ToolError::Execution)?;
+        let verdict = GoalVerificationService.verify(&goal, &proposal, &host_evidence);
+
+        match verdict {
+            GoalVerificationVerdict::Met { summary } => {
+                let Some(updated_goal) = store
+                    .complete_if_active(&goal.id, goal.revision)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?
+                else {
+                    return Ok(serde_json::json!({
+                        "accepted": false,
+                        "verdict": "stale",
+                        "goal_id": goal.id,
+                        "reason": "goal changed while completion was being verified",
+                    })
+                    .to_string());
+                };
+
+                let update = GoalProgressUpdate {
+                    current_phase: Some("Complete".to_string()),
+                    progress_summary: Some(summary.clone()),
+                    next_action: None,
+                    completed_items: vec![],
+                    remaining_items: vec![],
+                    open_questions: vec![],
+                };
+                if let Some(ref cp_path) = updated_goal.checkpoint_path {
                     let _ =
                         crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
                 }
@@ -298,38 +326,86 @@ impl Tool for GoalRequestCompletionTool {
                     crate::bus::events::AppEvent::GoalCompleted {
                         session_id: self.session_id.clone(),
                         goal_id: goal.id.clone(),
-                        evidence: evidence.chars().take(500).collect::<String>(),
+                        evidence: summary.clone(),
                     },
                 );
                 Ok(serde_json::json!({
                     "accepted": true,
+                    "verdict": "met",
                     "goal_id": goal.id,
-                    "status": "complete"
+                    "status": "complete",
+                    "summary": summary,
                 })
                 .to_string())
             }
-            Ok(None) => {
-                crate::bus::global::GlobalEventBus::publish(
-                    crate::bus::events::AppEvent::GoalUpdated {
-                        session_id: self.session_id.clone(),
-                        goal: Box::new(None),
-                    },
-                );
+            GoalVerificationVerdict::NotMet {
+                unmet_criteria,
+                evidence_gaps,
+                next_action,
+            } => {
+                let mut open_questions = unmet_criteria;
+                open_questions.extend(evidence_gaps);
+                open_questions.truncate(codegg_core::goal::verification::MAX_VERDICT_ITEMS);
+                let progress_summary =
+                    format!("Host verification not met: {}", open_questions.join("; "));
+                let updated_goal = store
+                    .update_progress(
+                        &goal.id,
+                        GoalProgressUpdate {
+                            current_phase: Some("Completion verification".to_string()),
+                            progress_summary: Some(progress_summary),
+                            next_action: Some(next_action.clone()),
+                            completed_items: vec![],
+                            remaining_items: vec![],
+                            open_questions,
+                        },
+                    )
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                publish_goal_update(&self.session_id, updated_goal.as_ref());
                 Ok(serde_json::json!({
-                    "accepted": true,
+                    "accepted": false,
+                    "verdict": "not_met",
                     "goal_id": goal.id,
-                    "status": "complete"
+                    "status": updated_goal.as_ref().map(|g| g.status_as_str()),
+                    "next_action": next_action,
                 })
                 .to_string())
             }
-            Err(e) => Err(ToolError::Execution(e.to_string())),
+            GoalVerificationVerdict::AwaitingUser { reason } => {
+                let updated_goal = store
+                    .update_status_if_revision(&goal.id, goal.revision, GoalStatus::AwaitingUser)
+                    .await
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                publish_goal_update(&self.session_id, updated_goal.as_ref());
+                Ok(serde_json::json!({
+                    "accepted": false,
+                    "verdict": "awaiting_user",
+                    "goal_id": goal.id,
+                    "status": updated_goal.as_ref().map(|g| g.status_as_str()),
+                    "reason": reason,
+                })
+                .to_string())
+            }
         }
     }
+}
+
+fn publish_goal_update(session_id: &str, goal: Option<&Goal>) {
+    crate::bus::global::GlobalEventBus::publish(crate::bus::events::AppEvent::GoalUpdated {
+        session_id: session_id.to_string(),
+        goal: Box::new(goal.map(Goal::to_snapshot)),
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codegg_core::jobs::{
+        AttemptCompletion, AttemptState, DaemonGeneration, IdempotencyClass, JobPayload,
+        JobPriority, JobSource, JobStore, NewJob, ResourceRequest, RetryPolicy, SqliteJobStore,
+    };
+    use codegg_core::workspace::WorkspaceId;
 
     async fn test_pool() -> SqlitePool {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -376,6 +452,67 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    async fn insert_test_job(pool: &SqlitePool, session_id: &str, terminal_state: AttemptState) {
+        let jobs = SqliteJobStore::new(pool.clone());
+        let job = jobs
+            .create_job(NewJob {
+                workspace_id: WorkspaceId::new_unchecked("/tmp/test"),
+                session_id: Some(session_id.to_string()),
+                turn_id: None,
+                kind: codegg_core::jobs::JobKind::Test,
+                source: JobSource::Interactive,
+                priority: JobPriority::Interactive,
+                payload: JobPayload::Test {
+                    command: "cargo test".into(),
+                    argv: vec!["cargo".into(), "test".into()],
+                    cwd: Some("/tmp/test".into()),
+                    scope: Some("workspace".into()),
+                },
+                resource_request: ResourceRequest::for_kind(codegg_core::jobs::JobKind::Test),
+                timeout: None,
+                retry_policy: RetryPolicy::no_retry(),
+                idempotency: IdempotencyClass::SafeRepeat,
+                not_before: None,
+                deadline: None,
+                schedule_id: None,
+                depends_on: Vec::new(),
+                parent_job_id: None,
+                parent_attempt_id: None,
+                parent_call_id: None,
+                parent_program_id: None,
+                parent_instruction_sequence: None,
+                relation_kind: None,
+            })
+            .await
+            .unwrap();
+        let attempt = jobs
+            .begin_attempt(
+                &job.job_id,
+                &DaemonGeneration::new_unchecked("test-generation"),
+            )
+            .await
+            .unwrap();
+        jobs.mark_attempt_running(&attempt.attempt_id)
+            .await
+            .unwrap();
+        jobs.finish_attempt(AttemptCompletion {
+            attempt_id: attempt.attempt_id,
+            state: terminal_state,
+            error: None,
+            run_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn insert_completed_test_job(pool: &SqlitePool, session_id: &str) {
+        insert_test_job(pool, session_id, AttemptState::Completed).await;
+    }
+
+    async fn insert_failed_test_job(pool: &SqlitePool, session_id: &str) {
+        insert_test_job(pool, session_id, AttemptState::Failed).await;
     }
 
     #[tokio::test]
@@ -480,6 +617,7 @@ mod tests {
             )
             .await
             .unwrap();
+        insert_completed_test_job(&pool, "session1").await;
         let tool = GoalRequestCompletionTool::new(pool, "session1".to_string());
         let result = tool
             .execute(serde_json::json!({
@@ -492,5 +630,127 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["accepted"], true);
         assert_eq!(parsed["status"], "complete");
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_failed_host_test_is_not_met() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Test Goal",
+                "Do something",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        insert_failed_test_job(&pool, "session1").await;
+        let tool = GoalRequestCompletionTool::new(pool.clone(), "session1".to_string());
+        let result = tool
+            .execute(serde_json::json!({
+                "evidence": "the model says it passed",
+                "tests_run": ["cargo test"]
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["accepted"], false);
+        assert_eq!(parsed["verdict"], "not_met");
+        assert_eq!(
+            store
+                .active_for_session("session1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            GoalStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_unfinished_todo_is_not_met() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Test Goal",
+                "Do something",
+                None,
+                None,
+                vec![],
+            )
+            .await
+            .unwrap();
+        insert_completed_test_job(&pool, "session1").await;
+        codegg_core::session::store::TodoStore::new(pool.clone())
+            .set(
+                "session1",
+                vec![codegg_core::session::models::TodoItemInput {
+                    content: "unfinished work".into(),
+                    status: "pending".into(),
+                    priority: "high".into(),
+                }],
+            )
+            .await
+            .unwrap();
+        let tool = GoalRequestCompletionTool::new(pool, "session1".to_string());
+        let result = tool
+            .execute(serde_json::json!({
+                "evidence": "all done",
+                "tests_run": ["cargo test"]
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["accepted"], false);
+        assert_eq!(parsed["verdict"], "not_met");
+    }
+
+    #[tokio::test]
+    async fn test_goal_request_completion_semantic_criterion_awaits_user() {
+        let pool = test_pool().await;
+        ensure_test_session(&pool, "session1", "/tmp/test").await;
+        let store = GoalStore::new(pool.clone());
+        store
+            .create_active(
+                "session1",
+                "/tmp/test",
+                "Test Goal",
+                "Do something",
+                None,
+                None,
+                vec!["Product owner signs off".into()],
+            )
+            .await
+            .unwrap();
+        insert_completed_test_job(&pool, "session1").await;
+        let tool = GoalRequestCompletionTool::new(pool.clone(), "session1".to_string());
+        let result = tool
+            .execute(serde_json::json!({
+                "evidence": "all done",
+                "tests_run": ["cargo test"]
+            }))
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["accepted"], false);
+        assert_eq!(parsed["verdict"], "awaiting_user");
+        assert_eq!(
+            store
+                .active_for_session("session1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            GoalStatus::AwaitingUser
+        );
     }
 }

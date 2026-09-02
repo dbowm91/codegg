@@ -157,6 +157,7 @@ mod tests {
     fn test_goal() -> Goal {
         Goal {
             id: "test-goal-id".to_string(),
+            revision: 0,
             session_id: "sess1".to_string(),
             project_id: "/tmp/test".to_string(),
             title: "Test Goal".to_string(),

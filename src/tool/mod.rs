@@ -488,6 +488,11 @@ impl ToolRegistry {
         } else {
             test_tool
         };
+        let test_tool = if let Some(session_id) = options.session_id.clone() {
+            test_tool.with_session_id(session_id)
+        } else {
+            test_tool
+        };
         registry.register(test_tool);
         let python_tool = if let Some(ref store) = options.run_store {
             crate::python_script::tool::PythonScriptTool::with_run_store(store.clone())

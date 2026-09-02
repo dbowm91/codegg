@@ -154,6 +154,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 44 {
         migrate_and_record(pool, 44).await?;
     }
+    if current_version < 45 {
+        migrate_and_record(pool, 45).await?;
+    }
 
     Ok(())
 }
@@ -210,6 +213,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             42 => migrate_v42(pool).await?,
             43 => migrate_v43(pool).await?,
             44 => migrate_v44(pool).await?,
+            45 => migrate_v45(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2069,6 +2073,16 @@ async fn migrate_v44(pool: &SqlitePool) -> Result<(), StorageError> {
         pool,
         "ALTER TABLE agent_task ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
             .to_string(),
+    )
+    .await
+}
+
+/// M012: add a durable monotonic goal revision used to reject stale
+/// host-verification proposals after progress, pause, cancel, or replacement.
+async fn migrate_v45(pool: &SqlitePool) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(
+        pool,
+        "ALTER TABLE goal ADD COLUMN revision INTEGER NOT NULL DEFAULT 0".to_string(),
     )
     .await
 }

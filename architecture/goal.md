@@ -18,7 +18,7 @@ work until the goal is complete or budget is exhausted.
 | Core types, store, runtime | `crates/codegg-core/src/goal/` |
 | Model-facing tools | `src/tool/goal.rs` |
 | TUI slash commands | `src/tui/commands/` (`/goal *`) |
-| DB schema | `crates/codegg-core/src/session/schema.rs` (migration v16) |
+| DB schema | `crates/codegg-core/src/session/schema.rs` (migration v16; revision CAS added in v45) |
 
 ### Module Structure
 
@@ -29,7 +29,8 @@ crates/codegg-core/src/goal/
 ├── store.rs        # GoalStore: SQLite persistence, budget accounting
 ├── runtime.rs      # GoalWallClock, should_continue, continuation prompts
 ├── render.rs       # Goal rendering helpers for TUI
-└── checkpoint.rs   # Session checkpoint integration for goals
+├── checkpoint.rs   # Session checkpoint integration for goals
+└── verification.rs # Host-owned completion proposals, evidence, and verdicts
 ```
 
 ## How It Works
@@ -47,7 +48,9 @@ crates/codegg-core/src/goal/
 5. `maybe_continue_goal()` loops up to 32 iterations, re-accounting
    after each continuation.
 6. Budget exhaustion → `BudgetLimited` status + wrap-up prompt.
-7. `goal_request_completion` → evidence-based transition to `Complete`.
+7. `goal_request_completion` submits a model proposal to the host-owned
+   verifier. Only a deterministic `Met` verdict can transition the goal to
+   `Complete`; model prose and claimed file/test lists are not authority.
 
 ### Budget Enforcement
 
@@ -69,6 +72,7 @@ surviving session restarts.
 ```rust
 pub struct Goal {
     pub id: String,
+    pub revision: i64,
     pub session_id: String,
     pub project_id: String,
     pub title: String,
@@ -148,6 +152,14 @@ pub struct CompletionRequest {
 }
 ```
 
+`GoalCompletionProposal` is the bounded runtime form of this request. The
+application assembles `GoalEvidenceContext` from durable session-scoped job
+and todo stores. Failed or in-flight supervised tests/delegated jobs and
+unfinished todos produce a bounded `NotMet` verdict. Criteria that cannot be
+decided deterministically produce `AwaitingUser` rather than being guessed by
+the model. The verifier is stateless and read-only; restart reconstructs its
+inputs from the owning stores.
+
 ### GoalRuntimeOutcome (`crates/codegg-core/src/goal/runtime.rs:55`)
 
 ```rust
@@ -177,7 +189,8 @@ SQLite-backed. Key methods:
 | `create_active(...)` | :157 | Pause existing, insert new Active goal |
 | `active_for_session(session_id)` | :209 | Fetch active/awaiting/budget-limited goal |
 | `get(id)` | :222 | Fetch by ID |
-| `update_status(id, status)` | :231 | Transition status |
+| `update_status(id, status)` | :231 | Transition non-certification status |
+| `complete_if_active(id, revision)` | — | Atomic host-accepted terminal transition |
 | `clear_active_for_session(sid)` | :261 | Cancel all active goals for session |
 | `update_progress(id, update)` | :278 | Advance phase/next-action/open_questions |
 | `increment_usage(...)` | :363 | Atomic usage advance + budget check |
@@ -251,9 +264,10 @@ Budget axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
   goals silently skip accounting.
 - `maybe_continue_goal()` caps at `MAX_CONTINUATIONS = 32` per run to
   prevent infinite loops.
-- `GoalRequestCompletionTool` requires either `tests_run` or
-  `remaining_risks` to be non-empty (safety gate against un-evidenced
-  completion).
+- `GoalRequestCompletionTool` submits a bounded model proposal; only a
+  passing host-owned test/delegated-job evidence set can produce `Met`.
+  Failed/missing evidence produces `NotMet`, and semantic criteria or
+  remaining risks require `AwaitingUser`.
 - `BudgetLimited` is treated as terminal by `is_terminal()` — the agent
   cannot auto-continue. The user must raise the budget to resume.
 - Wall-clock seconds are persisted in SQLite and survive session
@@ -264,7 +278,9 @@ Budget axes: `tokens`, `turns`, `tool-calls`, `wallclock`.
 ## DB Schema
 
 Defined in `crates/codegg-core/src/session/schema.rs` migration v16.
-Indexes on `(session_id, status)` and `(project_id, status)`.
+Indexes on `(session_id, status)` and `(project_id, status)`. Migration v45
+adds a monotonic `goal.revision` used by host verification compare-and-set
+transitions; old rows receive revision zero.
 
 ## Testing
 

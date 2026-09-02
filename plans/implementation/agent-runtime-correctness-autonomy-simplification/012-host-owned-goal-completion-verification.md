@@ -1,6 +1,6 @@
 # Agent Runtime Correctness Milestone 012 — Host-Owned Goal Completion Verification
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 

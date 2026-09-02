@@ -429,6 +429,7 @@ mod tests {
     fn test_goal(budget: GoalBudget, usage: GoalUsage) -> Goal {
         Goal {
             id: "g1".into(),
+            revision: 0,
             session_id: "s1".into(),
             project_id: "/tmp".into(),
             title: "Test".into(),

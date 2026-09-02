@@ -35,6 +35,7 @@ pub mod git_network_policy;
 pub mod git_recovery;
 pub mod git_run_store;
 pub mod git_service;
+pub mod goal_verification;
 pub mod hooks;
 pub mod ide;
 pub mod job_dispatcher;

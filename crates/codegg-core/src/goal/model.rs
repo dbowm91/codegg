@@ -51,6 +51,9 @@ pub struct GoalUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Goal {
     pub id: String,
+    /// Monotonic durable CAS token for verifier and other stale readers.
+    #[serde(default)]
+    pub revision: i64,
     pub session_id: String,
     pub project_id: String,
     pub title: String,

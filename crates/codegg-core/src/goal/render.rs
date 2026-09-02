@@ -92,6 +92,7 @@ mod tests {
     fn test_goal() -> Goal {
         Goal {
             id: "test-goal-id".to_string(),
+            revision: 0,
             session_id: "sess1".to_string(),
             project_id: "/tmp/test".to_string(),
             title: "Test Goal".to_string(),
@@ -149,6 +150,7 @@ mod tests {
     #[test]
     fn test_render_goal_context_handles_empty_optionals() {
         let goal = Goal {
+            revision: 0,
             current_phase: None,
             progress_summary: String::new(),
             next_action: None,

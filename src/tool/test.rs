@@ -20,6 +20,7 @@ pub struct TestTool {
     #[allow(dead_code)]
     run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    session_id: Option<String>,
 }
 
 impl TestTool {
@@ -27,6 +28,7 @@ impl TestTool {
         Self {
             run_store: None,
             submission: None,
+            session_id: None,
         }
     }
 
@@ -34,7 +36,13 @@ impl TestTool {
         Self {
             run_store: Some(store),
             submission: None,
+            session_id: None,
         }
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     pub fn with_submission(
@@ -122,10 +130,14 @@ impl Tool for TestTool {
     async fn execute_structured(
         &self,
         input: serde_json::Value,
-        _ctx: Option<ToolExecutionContext>,
+        ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let request = parse_test_request(&input)?;
+        let mut request = parse_test_request(&input)?;
+        request.session_id = request
+            .session_id
+            .or_else(|| ctx.as_ref().and_then(|context| context.session_id.clone()))
+            .or_else(|| self.session_id.clone());
         let max_report_bytes = request.max_report_bytes;
         let output = self.run_scheduled_test(request).await?;
         let output = max_report_bytes
@@ -167,7 +179,10 @@ impl TestTool {
                 None,
                 codegg_core::jobs::NewJob {
                     workspace_id,
-                    session_id: request.session_id.clone(),
+                    session_id: request
+                        .session_id
+                        .clone()
+                        .or_else(|| self.session_id.clone()),
                     turn_id: None,
                     kind: codegg_core::jobs::JobKind::Test,
                     source: codegg_core::jobs::JobSource::Interactive,

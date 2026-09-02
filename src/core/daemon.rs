@@ -4722,10 +4722,7 @@ impl CoreDaemon {
                 let goal_store = crate::goal::GoalStore::new(pool);
                 match goal_store.active_for_session(&session_id).await {
                     Ok(Some(goal)) => {
-                        match goal_store
-                            .update_status(&goal.id, crate::goal::GoalStatus::Complete)
-                            .await
-                        {
+                        match goal_store.complete_if_active(&goal.id, goal.revision).await {
                             Ok(Some(updated)) => {
                                 super::publish_goal_updated(&session_id, Some(updated.clone()));
                                 crate::bus::global::GlobalEventBus::publish(
