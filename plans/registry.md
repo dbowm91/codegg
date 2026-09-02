@@ -27,26 +27,30 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions follow-up | closed | `plans/subsystems/runtime-assets-plugin-contributions-addendum.md` | M006 closed | `plans/closure/runtime-assets/006-status.md`; no registered downstream plan was unblocked. |
+| Runtime assets — plugin declarative contributions corrective follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 ready | M005/M006 remain historical closed evidence; no hard blocker. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runtime — host-owned goal verification follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-addendum.md` | M012 closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; no registered future plan was unblocked. |
+| Agent runtime — goal verification corrective follow-up | active | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 ready | M012 remains historical closed evidence; no hard blocker. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Runtime safety — checked edit-history follow-up | closed | `plans/subsystems/runtime-safety-edit-history-addendum.md` | M012 closed | `plans/closure/runtime-safety-resource-footprint/012-status.md`; M011+M012 both closed. |
+| Runtime safety — checked edit-history corrective follow-up | active | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 ready | M011/M012 remain historical closed evidence; exact head `4dd1220c` failed hosted Workspace Clippy and M013 owns cross-session checkpoint correctness. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
 ## Dependency-ready implementation plans
 
-No dependency-ready implementation plan is currently queued. The checked edit-history follow-up (M012) was dependency-ready on M011 and is now closed (`plans/closure/runtime-safety-resource-footprint/012-status.md`).
+| Subsystem | Milestone | Plan | Why ready |
+|---|---|---|---|
+| Runtime safety — checked edit history | M013 | `plans/implementation/runtime-safety-resource-footprint/013-cross-session-checkpoint-atomicity-and-hosted-closure-corrective-pass.md` | Existing checkpoint, checked-restore, workspace-lock, and ToolBatch seams are sufficient; the corrective pass owns same-path inter-session attribution, mixed-batch restore eligibility, and the red exact-head Clippy result. |
+| Runtime assets — plugin contributions | M007 | `plans/implementation/runtime-assets/007-plugin-mcp-transport-alias-corrective-pass.md` | The defect is a bounded alias-translation mismatch between the existing contribution schema and `McpService`; no new dependency or runtime is required. |
+| Agent runtime — goal verification | M013 | `plans/implementation/agent-runtime-correctness-autonomy-simplification/013-goal-evidence-provenance-and-criterion-corrective-pass.md` | Durable goal/job stores and host-owned job labels already exist; the pass tightens exact-goal provenance and deterministic criterion semantics without adding a new scheduler/verifier runtime. |
 
 ## Closure work and dependencies
 
@@ -61,48 +65,52 @@ Historical closed control points remain:
 - Tool Programs M020 corrective disposition (child-artifact recovery): `plans/closure/tool-programs/020-status.md`.
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
+- Runtime-assets M005/M006, goal-verification M012, and runtime-safety M011/M012 remain immutable historical closure evidence. Their current strict subsystem disposition is superseded only by the newly registered corrective milestones M007/M013/M013.
 
-Verification remains deliberately light: the newly registered follow-ups require focused subsystem tests plus the repository's existing `scripts/verify.sh quick` posture. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
+Verification remains deliberately light: the newly registered follow-ups require focused subsystem tests plus the repository's existing `scripts/verify.sh quick` posture. Runtime-safety M013 additionally requires one ordinary exact-head hosted `CI / verify` result because the current head already has a known hosted Clippy failure. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
-- The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history follow-up unless implementation touches that sandbox path.
+- The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history corrective follow-up unless implementation touches that sandbox path.
 
-No registered plan is currently hard-blocked. The historical supported-Linux Landlock evidence condition remains as the only conditional-closure carryover under the existing runtime-safety workstream; it does not block the independent edit-history follow-up which is now closed.
+No newly registered corrective plan is hard-blocked. Runtime-safety M013, runtime-assets M007, and goal-verification M013 may proceed independently and in parallel.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
-## New follow-up execution order
+## New corrective execution order
 
-1. Agent-runtime goal-verification M012 is closed; its dependency audit found no registered downstream plan to unblock.
-2. Runtime-safety M011 is closed (`plans/closure/runtime-safety-resource-footprint/011-status.md`); its dependency audit moved M012 to ready. Runtime-assets M005 was independent ready work and is closed per its linked record.
-3. Runtime-safety M012 is now closed (`plans/closure/runtime-safety-resource-footprint/012-status.md`); its dependency audit found no registered downstream plan to unblock. The checked edit-history addendum is closed.
-4. Runtime-assets M006 is closed through `plans/closure/runtime-assets/006-status.md`; its implementation consumed `ResolvedPluginActivationSet` rather than activation storage.
-5. These follow-ups must preserve the accepted closure history of their parent subsystems rather than rewriting prior milestones as incomplete.
+1. Runtime-safety M013, runtime-assets M007, and goal-verification M013 are independent and dependency-ready; they may execute in parallel.
+2. Runtime-safety M013 must preserve M011/M012 checkpoint/Undo architecture while correcting same-path cross-session atomicity, mixed unknown-side-effect restore eligibility, and hosted Clippy closure evidence.
+3. Runtime-assets M007 must preserve M005/M006 plugin/MCP ownership while making every validated transport alias executable through the existing `McpService` path.
+4. Goal-verification M013 must preserve M012 host-owned terminal authority while adding exact goal provenance and conservative deterministic criterion semantics.
+5. Prior closure records are not rewritten; each corrective milestone receives a new closure record and becomes the current strict disposition for its narrow line of work.
 
 ## Agent-runtime correctness execution order
 
 1. M001-M009 remain historical predecessor work and are not reopened.
 2. M010 remains conditionally closed historical corrective evidence; its bootstrap/dead-branch/continuation cleanup must not regress.
 3. M011 owned the remaining stale hosted-Clippy test, typed tool-outcome propagation, and final exact hosted evidence; it is closed by `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`.
-4. The exact final candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
-5. The agent-run/worktree corrective work consumes this closed runtime as a dependency and must not rewrite M011 history or weaken its accepted recovery/tool-outcome invariants.
-6. New goal-verification M012 is a narrow follow-up only; it must not reopen the closed recovery/prompt/tool-authority milestones.
+4. The exact final M011 candidate passed focused/local verification and hosted run `31525206176` / job `93891703941` through Workspace tests.
+5. Agent-run/worktree corrective work consumes this closed runtime as a dependency and must not rewrite M011 history or weaken its accepted recovery/tool-outcome invariants.
+6. Goal-verification M012 remains historical closed evidence that removed direct model-owned completion.
+7. Goal-verification M013 is the current corrective owner for exact goal evidence provenance, claimed-test scope, and deterministic criterion semantics; it must not reopen unrelated recovery/prompt/tool-authority work.
 
 ## Agent-runtime correctness closure policy
 
-The historical agent-runtime correctness/autonomy/simplification workstream remains closed through M011 and `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. The separately registered goal-verification M012 addendum is new work and does not invalidate that closure.
+The historical agent-runtime correctness/autonomy/simplification workstream remains closed through M011 and `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`. Goal-verification M012 remains a separate historical closure and M013 is a new corrective milestone under `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md`.
 
 Historical control points remain:
 
 - M005: `plans/closure/agent-runtime-correctness-autonomy-simplification/005-status.md`
 - M009: `plans/closure/agent-runtime-correctness-autonomy-simplification/009-status.md`
 - M010: `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`
+- M011: `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`
+- goal-verification M012: `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`
 - corrective addendum: `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md`
 
-M010 must not be rewritten to conceal that its exact hosted evidence was unavailable at authorship and later became a failed hosted run. M011 must continue to cite the failed predecessor run and the final accepted green run.
+M010 must not be rewritten to conceal that its exact hosted evidence was unavailable at authorship and later became a failed hosted run. M011 must continue to cite the failed predecessor run and the final accepted green run. Goal M012 likewise remains unchanged; M013 records the later provenance/criterion findings instead of altering M012 history.
 
-Strict closure was accepted because all M011 acceptance criteria were met, no critical/high/medium unresolved finding remained in its scope, and hosted `CI / verify` run `31525206176` / job `93891703941` was green on the exact accepted candidate.
+Strict M011 closure was accepted because all M011 acceptance criteria were met, no critical/high/medium unresolved finding remained in its scope, and hosted `CI / verify` run `31525206176` / job `93891703941` was green on the exact accepted candidate.
 
 ## Recently closed or conditionally closed control points
 
@@ -119,10 +127,10 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Runtime consolidation, deletion, and footprint | M009 — architectural corrective closure (historical) | closed; current TUI disposition superseded by M010 | `plans/closure/runtime-consolidation-deletion-footprint/009-status.md`; later audit found the short-ID deletion and missing-label defects now owned by M010. |
 | Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`; implementation `58dd05de`; no registered future plan was unblocked. |
 | Runtime assets and harness interoperability | M005 — durable context-aware plugin activation | closed | `plans/closure/runtime-assets/005-status.md`; durable scoped activation and immutable context resolution; M006 moved to ready. |
-| Runtime assets — plugin declarative contributions | M006 — passive asset and MCP contribution bridge | closed | `plans/closure/runtime-assets/006-status.md`; implementation `35cf6f5`; no registered future plan was unblocked. |
+| Runtime assets — plugin declarative contributions | M006 — passive asset and MCP contribution bridge | closed historical evidence; current compatibility disposition owned by M007 | `plans/closure/runtime-assets/006-status.md`; implementation `35cf6f5`; M007 owns the later-discovered `stdio`/`http` transport alias mismatch. |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
-| Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; no registered future plan was unblocked |
+| Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed historical evidence; current evidence-quality disposition owned by M013 | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; M013 owns later exact-goal provenance and criterion-classification findings. |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; authorization/call-identity composition is now owned by M007–M009. |
 | Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; nested context/base composition remains accepted after M007. |
@@ -136,8 +144,8 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Post-audit correctness, simplification, and footprint | C002 — sandbox rights correction and strict closure | closed | `plans/closure/post-audit-correctness-simplification/010-sandbox-rights-correction-status.md`; hosted run `31425564638` |
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
 | Runtime safety, resource control, and footprint | C002 | conditionally closed | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
-| Runtime safety — checked edit-history follow-up | M011 — mutation attribution and durable edit checkpoints | closed | `plans/closure/runtime-safety-resource-footprint/011-status.md` |
-| Runtime safety — checked edit-history follow-up | M012 — checked Undo/Reapply | closed | `plans/closure/runtime-safety-resource-footprint/012-status.md` |
+| Runtime safety — checked edit-history follow-up | M011 — mutation attribution and durable edit checkpoints | closed historical evidence; current correctness disposition owned by M013 | `plans/closure/runtime-safety-resource-footprint/011-status.md`; M013 owns later-discovered same-workspace same-path inter-session attribution and mixed-batch eligibility gaps. |
+| Runtime safety — checked edit-history follow-up | M012 — checked Undo/Reapply | closed historical evidence; current strict subsystem disposition owned by M013 | `plans/closure/runtime-safety-resource-footprint/012-status.md`; exact head `4dd1220c` later failed hosted Workspace Clippy before tests. |
 | Provider connections and Eggpool | M007 — conditional disposition (historical) | superseded by strict closure | `plans/closure/provider-connections/007-status.md`; the record's historical sections preserve the earlier conditional result and hosted Clippy failure `30681164263`; see the strict row below |
 | Programmatic tool execution and Tool Programs | M018 — runtime fixture correction (historical) | provisional implementation evidence retained; strict disposition owned by M019 | `plans/closure/tool-programs/018-status.md`; see the M019/M020 rows below |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
