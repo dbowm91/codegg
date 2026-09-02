@@ -1,4 +1,5 @@
 pub mod affected_paths;
+pub mod checked_restore;
 pub mod checkpoint;
 pub mod diff;
 

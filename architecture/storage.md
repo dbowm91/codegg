@@ -109,7 +109,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 46` (`storage/mod.rs:39`) is exported and
+`STORAGE_LAYOUT_VERSION = 47` (`storage/mod.rs:39`) is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases. Migration 37 adds canonical
 `agent_task` and `agent_run` tables with typed string IDs, session/root/parent/
@@ -117,6 +117,8 @@ workspace/status indexes, unique delegation identity, scheduler job/attempt
 links, bounded terminal references, and versioned budget JSON. Migration 46
 adds the `edit_checkpoint` table for durable per-batch pre/post file states
 scoped to workspace/session/turn/batch, reusing snapshot size/symlink bounds.
+Migration 47 adds the `edit_restore_operation` audit table for checked
+Undo/Reapply lineage, conflict/partial evidence, and restart durability.
 The legacy `task` table remains readable as compatibility history; it is not
 backfilled with unverifiable durable-run provenance.
 
@@ -239,6 +241,7 @@ Key storage-layout migrations:
 - **v35**: Nullable typed lineage columns for child jobs
 - **v36**: Durable per-job execution timeouts
 - **v46**: `edit_checkpoint` for mutation attribution (pre/post Absent/Present, workspace/session/turn/batch scoped)
+- **v47**: `edit_restore_operation` for checked Undo/Reapply audit (applied/conflict/partial, durable lineage, bounded paths)
 
 ## Testing
 

@@ -66,7 +66,7 @@ use super::super::commands::tasks::{
 #[allow(unused_imports)]
 use super::super::commands::test::{apply_test_run_finished, start_test_run};
 
-use crate::protocol::core::CoreRequest;
+use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::components::toast::Toast;
 
 pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
@@ -1032,6 +1032,452 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     error = %e,
                     "manifest reset failed"
                 );
+            }
+        }
+        TuiCommand::EditUndoLatest {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::tui::async_cmd::spawn_tui_task(tx, "edit_undo_latest", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = crate::core::new_request(
+                    format!("edit-undo-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointUndoLatest {
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointUndoResult { result }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditReapplyLatest {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::tui::async_cmd::spawn_tui_task(tx, "edit_reapply_latest", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = crate::core::new_request(
+                    format!("edit-reapply-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointReapplyLatest {
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointReapplyResult { result }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditUndo {
+            checkpoint_id,
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let cid = checkpoint_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::tui::async_cmd::spawn_tui_task(tx, "edit_undo", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = crate::core::new_request(
+                    format!("edit-undo-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointUndo {
+                        checkpoint_id: cid,
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointUndoResult { result }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditUndoFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditUndoFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditReapply {
+            checkpoint_id,
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let cid = checkpoint_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::tui::async_cmd::spawn_tui_task(tx, "edit_reapply", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = crate::core::new_request(
+                    format!("edit-reapply-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointReapply {
+                        checkpoint_id: cid,
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointReapplyResult { result }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: Some(result),
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditReapplyFinished {
+                            session_id: sid,
+                            result: None,
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditReapplyFinished {
+                        session_id: sid,
+                        result: None,
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditCheckpointList {
+            session_id,
+            workspace_id,
+        } => {
+            let core_client = app.core_client.clone();
+            let sid = session_id.clone();
+            let wid = workspace_id.clone();
+            let tx = app.tui_cmd_tx.clone();
+            crate::tui::async_cmd::spawn_tui_task(tx, "edit_checkpoint_list", async move {
+                let Some(core_client) = core_client else {
+                    return Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some("Core unavailable".into()),
+                    });
+                };
+                let req = crate::core::new_request(
+                    format!("edit-list-{}", uuid::Uuid::new_v4()),
+                    CoreRequest::EditCheckpointList {
+                        workspace_id: wid,
+                        session_id: sid.clone(),
+                        limit: Some(20),
+                    },
+                );
+                match core_client.request(req).await {
+                    Ok(CoreResponse::EditCheckpointList { checkpoints }) => {
+                        Some(TuiCommand::EditCheckpointListFinished {
+                            session_id: sid,
+                            checkpoints,
+                            error: None,
+                        })
+                    }
+                    Ok(CoreResponse::Error { code, message }) => {
+                        Some(TuiCommand::EditCheckpointListFinished {
+                            session_id: sid,
+                            checkpoints: vec![],
+                            error: Some(format!("{code}: {message}")),
+                        })
+                    }
+                    Ok(_) => Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some("Unexpected core response".into()),
+                    }),
+                    Err(e) => Some(TuiCommand::EditCheckpointListFinished {
+                        session_id: sid,
+                        checkpoints: vec![],
+                        error: Some(e.to_string()),
+                    }),
+                }
+            });
+        }
+        TuiCommand::EditUndoFinished {
+            session_id: _,
+            result,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if let Some(res) = result {
+                match res {
+                    crate::protocol::dto::EditRestoreResultDto::Applied {
+                        checkpoint_id,
+                        restored_paths,
+                        direction,
+                        ..
+                    } => {
+                        let msg = format!(
+                            "{} applied for {} ({} paths)",
+                            direction,
+                            &checkpoint_id[..8.min(checkpoint_id.len())],
+                            restored_paths.len()
+                        );
+                        app.messages_state.toasts.success(&msg);
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::Conflict {
+                        stale_paths, ..
+                    } => {
+                        let bounded: Vec<&String> = stale_paths.iter().take(5).collect();
+                        let paths = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let msg = if stale_paths.len() > 5 {
+                            format!(
+                                "Undo blocked: {} paths stale ({} ... and {} more)",
+                                stale_paths.len(),
+                                paths,
+                                stale_paths.len() - 5
+                            )
+                        } else {
+                            format!("Undo blocked: stale paths: {}", paths)
+                        };
+                        app.messages_state.toasts.warning(&msg);
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::NotFound { checkpoint_id } => {
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("No checkpoint found: {}", checkpoint_id));
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::WrongWorkspace { .. } => {
+                        app.messages_state
+                            .toasts
+                            .error("Checkpoint belongs to another workspace");
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::WrongSession { .. } => {
+                        app.messages_state
+                            .toasts
+                            .error("Checkpoint belongs to another session");
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::PathValidationFailed {
+                        invalid_paths,
+                        reason,
+                        ..
+                    } => {
+                        let bounded: Vec<&String> = invalid_paths.iter().take(3).collect();
+                        let detail = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        app.messages_state
+                            .toasts
+                            .error(&format!("Path validation failed: {} ({})", reason, detail));
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::PartialFailure {
+                        applied_paths,
+                        failed_paths,
+                        error,
+                        ..
+                    } => {
+                        app.messages_state.toasts.error(&format!(
+                            "Partial failure: {} applied, {} failed: {} (applied: {}, failed: {})",
+                            applied_paths.len(),
+                            failed_paths.len(),
+                            error,
+                            applied_paths.join(", "),
+                            failed_paths.join(", ")
+                        ));
+                    }
+                    other => {
+                        app.messages_state
+                            .toasts
+                            .info(&format!("Undo result: {:?}", other));
+                    }
+                }
+            }
+        }
+        TuiCommand::EditReapplyFinished {
+            session_id: _,
+            result,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if let Some(res) = result {
+                match res {
+                    crate::protocol::dto::EditRestoreResultDto::Applied {
+                        checkpoint_id,
+                        restored_paths,
+                        direction,
+                        ..
+                    } => {
+                        let msg = format!(
+                            "{} applied for {} ({} paths)",
+                            direction,
+                            &checkpoint_id[..8.min(checkpoint_id.len())],
+                            restored_paths.len()
+                        );
+                        app.messages_state.toasts.success(&msg);
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::Conflict {
+                        stale_paths, ..
+                    } => {
+                        let bounded: Vec<&String> = stale_paths.iter().take(5).collect();
+                        let paths = bounded
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("Reapply blocked: stale paths: {}", paths));
+                    }
+                    crate::protocol::dto::EditRestoreResultDto::NotFound { checkpoint_id } => {
+                        app.messages_state
+                            .toasts
+                            .warning(&format!("No checkpoint to reapply: {}", checkpoint_id));
+                    }
+                    other => {
+                        app.messages_state
+                            .toasts
+                            .info(&format!("Reapply result: {:?}", other));
+                    }
+                }
+            }
+        }
+        TuiCommand::EditCheckpointListFinished {
+            session_id: _,
+            checkpoints,
+            error,
+        } => {
+            if let Some(err) = error {
+                app.messages_state.toasts.error(&err);
+            } else if checkpoints.is_empty() {
+                app.messages_state
+                    .toasts
+                    .info("No checkpoints for this session");
+            } else {
+                let lines: Vec<String> = checkpoints
+                    .iter()
+                    .take(10)
+                    .map(|cp| {
+                        format!(
+                            "{} | {} | {} | {} paths",
+                            &cp.id[..8.min(cp.id.len())],
+                            cp.created_at,
+                            cp.batch_seq,
+                            cp.file_count
+                        )
+                    })
+                    .collect();
+                // Bounded, path-safe: only ids/timestamps/counts, no file bodies
+                let footer = if checkpoints.len() > 10 {
+                    format!("... and {} more", checkpoints.len() - 10)
+                } else {
+                    String::new()
+                };
+                let mut msg = lines.join("\n");
+                if !footer.is_empty() {
+                    msg.push_str(&format!("\n{footer}"));
+                }
+                app.messages_state.toasts.info(&msg);
             }
         }
     }

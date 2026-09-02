@@ -331,12 +331,76 @@ The same `snapshot_config` bounds apply to both.
 - Both tables FK cascade on session delete; `edit_checkpoint` is indexed
   by workspace_id for scoped retrieval.
 
+### Checked Undo/Reapply (M012)
+
+Checked restore operates over durable `edit_checkpoint` records with
+compare-before-mutate semantics:
+
+```
+Undo(checkpoint): verify every current path == post, then atomically restore pre
+Reapply(checkpoint): verify every current path == pre, then atomically restore post
+```
+
+- **All-path preflight**: every path in the checkpoint is validated
+  (`is_safe_relative_path`, symlink, size, UTF-8) and compared against the
+  expected side (hash equality) before the first write. Any stale/conflicting
+  path fails the whole logical operation with zero mutation and a bounded
+  `stale_paths` set (no file bodies leaked).
+- **Workspace-scoped authority**: checkpoint IDs are not bearer capabilities.
+  The daemon resolves `workspace_id`/`session_id` explicitly via
+  `WorkspaceRegistry` and validates that the stored `workspace_id` matches the
+  requested workspace; `WrongWorkspace`/`WrongSession` are typed failures.
+  Every stored relative path is re-validated at restore time and resolved
+  against the explicit `workspace_root` (no implicit `current_dir`).
+- **Same mutation safety as normal writes**: `apply_file_state` reuses the
+  `restore_file_checked` atomic temp-file+rename path, `O_NOFOLLOW`,
+  canonical containment, and parent symlink checks. `Absent` deletes the file
+  only after the same containment/parent checks.
+- **Unsupported is explicit**: shell/bash, plugin/MCP, git, binary/oversized,
+  and malformed move args never produce a checkpoint and are reported as
+  non-restorable rather than partially undone. Old snapshots lacking pre/post
+  are not treated as edit checkpoints.
+- **Idempotent lineage**: after a successful `Undo`, the file system is at
+  `pre`, so a duplicate `Undo` sees `current != post` and returns
+  `Conflict` without double-applying. `Reapply` is the inverse and succeeds
+  only when `current == pre`. The operation is logged durably in
+  `edit_restore_operation` so `Reapply` of the latest undone checkpoint
+  survives daemon restart without in-memory stack authority.
+- **Contention**: the daemon acquires the narrow per-workspace
+  `WorkspaceLockTable::acquire_repository(workspace_root)` before the final
+  capture/compare and holds it through apply, so a concurrent CodeGG edit
+  cannot race between compare and write. No daemon-global lock is used;
+  independent workspaces remain independent.
+- **Partial I/O after validation**: cross-file atomicity is not available
+  from the filesystem. If an unexpected I/O error occurs after writes begin,
+  the operation stops, returns `PartialFailure` with exactly `applied_paths`
+  and `failed_paths`, does not advance logical lineage, and preserves audit
+  evidence for operator recovery. The ordinary stale case is caught before
+  this phase and produces zero mutations.
+- **Bounded audit**: `edit_restore_operation` stores `checkpoint_id`,
+  `workspace_id`, `session_id`, `direction`, `result`, bounded
+  `conflict_paths`/`applied_paths`/`failed_paths` (JSON arrays), and
+  `error_message`. `CheckpointSummary` exposed over the protocol carries
+  only `id`, `workspace_id`, `session_id`, `turn_id`, `batch_seq`,
+  `created_at`, `file_count`, `paths`, `restorable` — no file bodies.
+- **Protocol surface**: `CoreRequest::EditCheckpointList`,
+  `EditCheckpointGet`, `EditCheckpointUndo`, `EditCheckpointUndoLatest`,
+  `EditCheckpointReapply`, `EditCheckpointReapplyLatest` and
+  `CoreResponse::EditCheckpointList`, `EditCheckpointDetail`,
+  `EditCheckpointUndoResult`, `EditCheckpointReapplyResult`
+  (`EditRestoreResultDto` tagged `kind` with `applied`/`conflict`/
+  `not_found`/`wrong_workspace`/`wrong_session`/`path_validation_failed`/
+  `partial`/`unsupported`). The TUI exposes `/edit-undo [id]`,
+  `/edit-reapply [id]`, `/edit-checkpoints` via the same core service
+  (no direct file writes from the frontend).
+
 ## Testing
 
 ```bash
 cargo test -p codegg-core -- snapshot
 cargo test --test snapshot
 cargo test --test edit_checkpoint_integration
+cargo test --test checked_restore_integration
 ```
 
 Integration coverage includes write/edit/replace/multiedit and every
@@ -346,6 +410,17 @@ concurrent-batch isolation, foreign `FileChanged` contamination
 regression, overlapping-path serialization, symlink/oversize rejection,
 and restart reload (recreating manager from same pool still reads
 persisted checkpoints).
+
+Checked-restore coverage (M012) includes create/update/delete/move
+Undo/Reapply matrix, stale one-of-many prevents all mutation,
+human/external edit conflict, wrong-workspace/session rejection,
+duplicate/idempotent behavior, path-traversal/symlink rejection,
+no-file-bodies in conflict output, workspace isolation, restart
+durability (undo -> restart -> reapply), latest-undone lineage,
+partial degraded handling, and concurrent undo serialization via the
+per-workspace lock. TUI slash commands `/edit-undo`, `/edit-reapply`,
+`/edit-checkpoints` drive the same core service (verified by
+`checked_restore_integration` plus `cargo test tui`).
 
 ## Related Docs
 

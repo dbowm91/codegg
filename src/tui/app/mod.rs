@@ -787,6 +787,44 @@ pub enum TuiCommand {
     /// Milestone 4: operator requested resetting manifest
     /// persistence.
     ManifestPersistenceReset,
+    // M012 checked undo/reapply
+    EditUndoLatest {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditReapplyLatest {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditUndo {
+        checkpoint_id: String,
+        session_id: String,
+        workspace_id: String,
+    },
+    EditReapply {
+        checkpoint_id: String,
+        session_id: String,
+        workspace_id: String,
+    },
+    EditCheckpointList {
+        session_id: String,
+        workspace_id: String,
+    },
+    EditUndoFinished {
+        session_id: String,
+        result: Option<crate::protocol::dto::EditRestoreResultDto>,
+        error: Option<String>,
+    },
+    EditReapplyFinished {
+        session_id: String,
+        result: Option<crate::protocol::dto::EditRestoreResultDto>,
+        error: Option<String>,
+    },
+    EditCheckpointListFinished {
+        session_id: String,
+        checkpoints: Vec<crate::protocol::dto::EditCheckpointSummaryDto>,
+        error: Option<String>,
+    },
 }
 
 /// Send a [`TuiCommand`] on the bounded command channel, logging when a
@@ -7298,6 +7336,134 @@ impl App {
                     self.messages_state.toasts.warning("Usage: /revert <path>");
                 } else {
                     self.handle_revert_command(path_arg);
+                }
+            }
+            "/edit-undo" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.trim_start_matches("/edit-undo").trim();
+                self.ui_state.command_mode = false;
+                let (session_id, workspace_id) = match (
+                    self.active_session_id().map(|s| s.to_string()),
+                    self.active_workspace_id().map(|s| s.to_string()),
+                ) {
+                    (Some(sid), Some(wid)) => (sid, wid),
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("No active session/workspace for undo");
+                        return;
+                    }
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    if arg.is_empty() {
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::EditUndoLatest {
+                                session_id,
+                                workspace_id,
+                            },
+                        );
+                        self.messages_state
+                            .toasts
+                            .info("Undoing latest checkpoint...");
+                    } else {
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::EditUndo {
+                                checkpoint_id: arg.to_string(),
+                                session_id,
+                                workspace_id,
+                            },
+                        );
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Undoing checkpoint {arg}..."));
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("TUI command channel unavailable for undo");
+                }
+            }
+            "/edit-reapply" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let arg = query.trim_start_matches("/edit-reapply").trim();
+                self.ui_state.command_mode = false;
+                let (session_id, workspace_id) = match (
+                    self.active_session_id().map(|s| s.to_string()),
+                    self.active_workspace_id().map(|s| s.to_string()),
+                ) {
+                    (Some(sid), Some(wid)) => (sid, wid),
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("No active session/workspace for reapply");
+                        return;
+                    }
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    if arg.is_empty() {
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::EditReapplyLatest {
+                                session_id,
+                                workspace_id,
+                            },
+                        );
+                        self.messages_state
+                            .toasts
+                            .info("Reapplying latest undone checkpoint...");
+                    } else {
+                        let _ = send_tui(
+                            tx,
+                            TuiCommand::EditReapply {
+                                checkpoint_id: arg.to_string(),
+                                session_id,
+                                workspace_id,
+                            },
+                        );
+                        self.messages_state
+                            .toasts
+                            .info(&format!("Reapplying checkpoint {arg}..."));
+                    }
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("TUI command channel unavailable for reapply");
+                }
+            }
+            "/checkpoints" | "/history" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let _arg = query
+                    .trim_start_matches("/checkpoints")
+                    .trim_start_matches("/history")
+                    .trim();
+                self.ui_state.command_mode = false;
+                let (session_id, workspace_id) = match (
+                    self.active_session_id().map(|s| s.to_string()),
+                    self.active_workspace_id().map(|s| s.to_string()),
+                ) {
+                    (Some(sid), Some(wid)) => (sid, wid),
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("No active session/workspace for checkpoints");
+                        return;
+                    }
+                };
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::EditCheckpointList {
+                            session_id,
+                            workspace_id,
+                        },
+                    );
+                    self.messages_state.toasts.info("Loading checkpoints...");
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("TUI command channel unavailable for checkpoints");
                 }
             }
             "/research" => {

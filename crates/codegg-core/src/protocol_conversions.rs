@@ -872,3 +872,136 @@ fn failure_class_to_str(c: crate::jobs::FailureClass) -> String {
     }
     .to_string()
 }
+
+// ── Edit Checkpoint M012: checked undo/reapply conversions ───────────
+
+pub fn checkpoint_summary_to_dto(
+    s: &crate::snapshot::checked_restore::CheckpointSummary,
+) -> codegg_protocol::dto::EditCheckpointSummaryDto {
+    codegg_protocol::dto::EditCheckpointSummaryDto {
+        id: s.id.clone(),
+        workspace_id: s.workspace_id.clone(),
+        session_id: s.session_id.clone(),
+        turn_id: s.turn_id.clone(),
+        batch_seq: s.batch_seq,
+        created_at: s.created_at,
+        file_count: s.file_count,
+        paths: s.paths.clone(),
+        restorable: s.restorable,
+    }
+}
+
+pub fn checkpoint_to_detail_dto(
+    cp: &crate::snapshot::checkpoint::EditCheckpoint,
+) -> codegg_protocol::dto::EditCheckpointDetailDto {
+    codegg_protocol::dto::EditCheckpointDetailDto {
+        id: cp.id.clone(),
+        workspace_id: cp.workspace_id.clone(),
+        session_id: cp.session_id.clone(),
+        turn_id: cp.turn_id.clone(),
+        batch_seq: cp.batch_seq,
+        created_at: cp.created_at,
+        files: cp
+            .files
+            .iter()
+            .map(|f| codegg_protocol::dto::EditCheckpointFileSummaryDto {
+                path: f.path.clone(),
+                pre_present: !f.pre.is_absent(),
+                post_present: !f.post.is_absent(),
+            })
+            .collect(),
+    }
+}
+
+pub fn checked_restore_outcome_to_dto(
+    outcome: &crate::snapshot::checked_restore::CheckedRestoreOutcome,
+) -> codegg_protocol::dto::EditRestoreResultDto {
+    use crate::snapshot::checked_restore::CheckedRestoreOutcome as O;
+    match outcome {
+        O::Applied {
+            checkpoint_id,
+            workspace_id,
+            session_id,
+            direction,
+            restored_paths,
+        } => codegg_protocol::dto::EditRestoreResultDto::Applied {
+            checkpoint_id: checkpoint_id.clone(),
+            workspace_id: workspace_id.clone(),
+            session_id: session_id.clone(),
+            direction: direction.to_string(),
+            restored_paths: restored_paths.clone(),
+        },
+        O::Conflict {
+            checkpoint_id,
+            workspace_id,
+            direction,
+            stale_paths,
+        } => codegg_protocol::dto::EditRestoreResultDto::Conflict {
+            checkpoint_id: checkpoint_id.clone(),
+            workspace_id: workspace_id.clone(),
+            direction: direction.to_string(),
+            stale_paths: stale_paths.clone(),
+        },
+        O::NotFound { checkpoint_id } => codegg_protocol::dto::EditRestoreResultDto::NotFound {
+            checkpoint_id: checkpoint_id.clone(),
+        },
+        O::WrongWorkspace {
+            checkpoint_id,
+            expected_workspace,
+            actual_workspace,
+        } => codegg_protocol::dto::EditRestoreResultDto::WrongWorkspace {
+            checkpoint_id: checkpoint_id.clone(),
+            expected_workspace: expected_workspace.clone(),
+            actual_workspace: actual_workspace.clone(),
+        },
+        O::WrongSession {
+            checkpoint_id,
+            expected_session,
+            actual_session,
+        } => codegg_protocol::dto::EditRestoreResultDto::WrongSession {
+            checkpoint_id: checkpoint_id.clone(),
+            expected_session: expected_session.clone(),
+            actual_session: actual_session.clone(),
+        },
+        O::PathValidationFailed {
+            checkpoint_id,
+            invalid_paths,
+            reason,
+        } => codegg_protocol::dto::EditRestoreResultDto::PathValidationFailed {
+            checkpoint_id: checkpoint_id.clone(),
+            invalid_paths: invalid_paths.clone(),
+            reason: reason.clone(),
+        },
+        O::PermissionDenied {
+            checkpoint_id,
+            denied_paths,
+            reason,
+        } => codegg_protocol::dto::EditRestoreResultDto::PermissionDenied {
+            checkpoint_id: checkpoint_id.clone(),
+            denied_paths: denied_paths.clone(),
+            reason: reason.clone(),
+        },
+        O::PartialFailure {
+            checkpoint_id,
+            workspace_id,
+            direction,
+            applied_paths,
+            failed_paths,
+            error,
+        } => codegg_protocol::dto::EditRestoreResultDto::PartialFailure {
+            checkpoint_id: checkpoint_id.clone(),
+            workspace_id: workspace_id.clone(),
+            direction: direction.to_string(),
+            applied_paths: applied_paths.clone(),
+            failed_paths: failed_paths.clone(),
+            error: error.clone(),
+        },
+        O::Unsupported {
+            checkpoint_id,
+            reason,
+        } => codegg_protocol::dto::EditRestoreResultDto::Unsupported {
+            checkpoint_id: checkpoint_id.clone(),
+            reason: reason.clone(),
+        },
+    }
+}

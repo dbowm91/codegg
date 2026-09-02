@@ -160,6 +160,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 46 {
         migrate_and_record(pool, 46).await?;
     }
+    if current_version < 47 {
+        migrate_and_record(pool, 47).await?;
+    }
 
     Ok(())
 }
@@ -218,6 +221,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             44 => migrate_v44(pool).await?,
             45 => migrate_v45(pool).await?,
             46 => migrate_v46(pool).await?,
+            47 => migrate_v47(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2089,6 +2093,39 @@ async fn migrate_v45(pool: &SqlitePool) -> Result<(), StorageError> {
         "ALTER TABLE goal ADD COLUMN revision INTEGER NOT NULL DEFAULT 0".to_string(),
     )
     .await
+}
+
+/// M012: durable checked undo/reapply audit log.
+async fn migrate_v47(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS edit_restore_operation (
+            id TEXT PRIMARY KEY,
+            checkpoint_id TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            direction TEXT NOT NULL CHECK(direction IN ('undo','reapply')),
+            result TEXT NOT NULL,
+            conflict_paths TEXT NOT NULL DEFAULT '[]',
+            applied_paths TEXT NOT NULL DEFAULT '[]',
+            failed_paths TEXT NOT NULL DEFAULT '[]',
+            error_message TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (checkpoint_id) REFERENCES edit_checkpoint(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_workspace ON edit_restore_operation(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_session ON edit_restore_operation(session_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_checkpoint ON edit_restore_operation(checkpoint_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_created ON edit_restore_operation(created_at DESC)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// M011: durable edit checkpoints for mutation attribution.

@@ -5556,6 +5556,293 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::EditCheckpointList {
+                workspace_id,
+                session_id,
+                limit,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr.summaries_for_session(&session_id).await {
+                    Ok(mut summaries) => {
+                        if let Some(lim) = limit {
+                            summaries.truncate(lim);
+                        } else if summaries.len() > 100 {
+                            summaries.truncate(100);
+                        }
+                        let dtos = summaries
+                            .iter()
+                            .map(codegg_core::protocol_conversions::checkpoint_summary_to_dto)
+                            .collect();
+                        Ok(CoreResponse::EditCheckpointList { checkpoints: dtos })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_checkpoint_list_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
+            CoreRequest::EditCheckpointGet {
+                checkpoint_id,
+                workspace_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr.get(&checkpoint_id).await {
+                    Ok(Some(cp)) => {
+                        if cp.workspace_id != workspace_id {
+                            return Ok(CoreResponse::Error {
+                                code: "wrong_workspace".into(),
+                                message: format!(
+                                    "checkpoint workspace {} does not match requested {}",
+                                    cp.workspace_id, workspace_id
+                                ),
+                            });
+                        }
+                        let dto = codegg_core::protocol_conversions::checkpoint_to_detail_dto(&cp);
+                        Ok(CoreResponse::EditCheckpointDetail {
+                            checkpoint: Some(dto),
+                        })
+                    }
+                    Ok(None) => Ok(CoreResponse::EditCheckpointDetail { checkpoint: None }),
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_checkpoint_get_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
+            CoreRequest::EditCheckpointUndo {
+                checkpoint_id,
+                workspace_id,
+                session_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let lease = match self.workspace_services.acquire(&wid).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "workspace_not_active".into(),
+                            message: e.to_string(),
+                        })
+                    }
+                };
+                let _guard = lease
+                    .locks()
+                    .acquire_repository(&record.canonical_root)
+                    .await;
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr
+                    .checked_undo(&checkpoint_id, &workspace_id, Some(&session_id))
+                    .await
+                {
+                    Ok(outcome) => {
+                        let dto = codegg_core::protocol_conversions::checked_restore_outcome_to_dto(
+                            &outcome,
+                        );
+                        Ok(CoreResponse::EditCheckpointUndoResult { result: dto })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_undo_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
+            CoreRequest::EditCheckpointUndoLatest {
+                workspace_id,
+                session_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let lease = match self.workspace_services.acquire(&wid).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "workspace_not_active".into(),
+                            message: e.to_string(),
+                        })
+                    }
+                };
+                let _guard = lease
+                    .locks()
+                    .acquire_repository(&record.canonical_root)
+                    .await;
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr
+                    .undo_latest_for_session(&session_id, &workspace_id)
+                    .await
+                {
+                    Ok(outcome) => {
+                        let dto = codegg_core::protocol_conversions::checked_restore_outcome_to_dto(
+                            &outcome,
+                        );
+                        Ok(CoreResponse::EditCheckpointUndoResult { result: dto })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_undo_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
+            CoreRequest::EditCheckpointReapply {
+                checkpoint_id,
+                workspace_id,
+                session_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let lease = match self.workspace_services.acquire(&wid).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "workspace_not_active".into(),
+                            message: e.to_string(),
+                        })
+                    }
+                };
+                let _guard = lease
+                    .locks()
+                    .acquire_repository(&record.canonical_root)
+                    .await;
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr
+                    .checked_reapply(&checkpoint_id, &workspace_id, Some(&session_id))
+                    .await
+                {
+                    Ok(outcome) => {
+                        let dto = codegg_core::protocol_conversions::checked_restore_outcome_to_dto(
+                            &outcome,
+                        );
+                        Ok(CoreResponse::EditCheckpointReapplyResult { result: dto })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_reapply_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
+            CoreRequest::EditCheckpointReapplyLatest {
+                workspace_id,
+                session_id,
+            } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "no database pool".into(),
+                    });
+                };
+                let wid = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id.clone());
+                let Some(record) = self.workspaces.resolve(&wid).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", workspace_id),
+                    });
+                };
+                let lease = match self.workspace_services.acquire(&wid).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        return Ok(CoreResponse::Error {
+                            code: "workspace_not_active".into(),
+                            message: e.to_string(),
+                        })
+                    }
+                };
+                let _guard = lease
+                    .locks()
+                    .acquire_repository(&record.canonical_root)
+                    .await;
+                let mgr = codegg_core::snapshot::checkpoint::EditCheckpointManager::new(
+                    pool,
+                    record.canonical_root.clone(),
+                );
+                match mgr
+                    .reapply_latest_undone_for_session(&session_id, &workspace_id)
+                    .await
+                {
+                    Ok(outcome) => {
+                        let dto = codegg_core::protocol_conversions::checked_restore_outcome_to_dto(
+                            &outcome,
+                        );
+                        Ok(CoreResponse::EditCheckpointReapplyResult { result: dto })
+                    }
+                    Err(e) => Ok(CoreResponse::Error {
+                        code: "edit_reapply_failed".into(),
+                        message: e,
+                    }),
+                }
+            }
             CoreRequest::RunList {
                 workspace_id,
                 query,

@@ -500,6 +500,19 @@ pub enum CoreResponse {
         claim_owner: Option<String>,
         claim_lease_until: Option<i64>,
     },
+    // ── Runtime Safety M012: Checked Undo/Reapply ───────────────────────
+    EditCheckpointList {
+        checkpoints: Vec<crate::dto::EditCheckpointSummaryDto>,
+    },
+    EditCheckpointDetail {
+        checkpoint: Option<crate::dto::EditCheckpointDetailDto>,
+    },
+    EditCheckpointUndoResult {
+        result: crate::dto::EditRestoreResultDto,
+    },
+    EditCheckpointReapplyResult {
+        result: crate::dto::EditRestoreResultDto,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1086,6 +1099,35 @@ pub enum CoreRequest {
     ToolProgramRecoveryDebugInspect {
         session_id: String,
         notification_id: String,
+    },
+    // ── Runtime Safety M012: Checked Undo/Reapply ───────────────────────
+    EditCheckpointList {
+        workspace_id: String,
+        session_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    EditCheckpointGet {
+        checkpoint_id: String,
+        workspace_id: String,
+    },
+    EditCheckpointUndo {
+        checkpoint_id: String,
+        workspace_id: String,
+        session_id: String,
+    },
+    EditCheckpointUndoLatest {
+        workspace_id: String,
+        session_id: String,
+    },
+    EditCheckpointReapply {
+        checkpoint_id: String,
+        workspace_id: String,
+        session_id: String,
+    },
+    EditCheckpointReapplyLatest {
+        workspace_id: String,
+        session_id: String,
     },
 }
 

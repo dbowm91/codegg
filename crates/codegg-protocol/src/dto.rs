@@ -791,3 +791,93 @@ pub struct CancelResultDto {
     pub outcome: String,
     pub terminal: bool,
 }
+
+/// Bounded summary of an edit checkpoint for undo/reapply listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditCheckpointSummaryDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    pub batch_seq: i64,
+    pub created_at: i64,
+    pub file_count: usize,
+    pub paths: Vec<String>,
+    pub restorable: bool,
+}
+
+/// Detail view of a single edit checkpoint (bounded, no file bodies).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditCheckpointDetailDto {
+    pub id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    pub batch_seq: i64,
+    pub created_at: i64,
+    pub files: Vec<EditCheckpointFileSummaryDto>,
+}
+
+/// Per-file summary within a checkpoint detail (path + present/absent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditCheckpointFileSummaryDto {
+    pub path: String,
+    pub pre_present: bool,
+    pub post_present: bool,
+}
+
+/// Typed result of a checked undo/reapply operation (bounded, no file bodies).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditRestoreResultDto {
+    Applied {
+        checkpoint_id: String,
+        workspace_id: String,
+        session_id: String,
+        direction: String,
+        restored_paths: Vec<String>,
+    },
+    Conflict {
+        checkpoint_id: String,
+        workspace_id: String,
+        direction: String,
+        stale_paths: Vec<String>,
+    },
+    NotFound {
+        checkpoint_id: String,
+    },
+    WrongWorkspace {
+        checkpoint_id: String,
+        expected_workspace: String,
+        actual_workspace: String,
+    },
+    WrongSession {
+        checkpoint_id: String,
+        expected_session: String,
+        actual_session: String,
+    },
+    PathValidationFailed {
+        checkpoint_id: String,
+        invalid_paths: Vec<String>,
+        reason: String,
+    },
+    PermissionDenied {
+        checkpoint_id: String,
+        denied_paths: Vec<String>,
+        reason: String,
+    },
+    PartialFailure {
+        checkpoint_id: String,
+        workspace_id: String,
+        direction: String,
+        applied_paths: Vec<String>,
+        failed_paths: Vec<String>,
+        error: String,
+    },
+    Unsupported {
+        checkpoint_id: String,
+        reason: String,
+    },
+}

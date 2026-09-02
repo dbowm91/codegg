@@ -1,6 +1,6 @@
 # Runtime Safety — Checked Edit History Addendum
 
-Status: ready
+Status: closed
 
 Repository baseline reviewed: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 
@@ -141,20 +141,21 @@ Exit conditions (met):
 
 ### M012 — Checked Undo/Reapply
 
-Status: ready (unblocked by M011 closure)
+Status: closed
 
 Plan:
 
 - `plans/implementation/runtime-safety-resource-footprint/012-checked-undo-reapply.md`
+- Closure: `plans/closure/runtime-safety-resource-footprint/012-status.md`
 
 Class: capability
 
-Exit conditions:
+Exit conditions (met):
 
-- supported checkpoints can be undone/reapplied from the normal frontend/command surface;
-- stale current content blocks the whole operation before mutation;
-- restore respects normal workspace permission/path authority;
-- unsupported side effects are clearly identified and never falsely reported as reverted.
+- supported checkpoints can be undone/reapplied from the normal frontend/command surface (daemon `CoreRequest::EditCheckpoint*` + TUI `/edit-undo`/`/edit-reapply`/`/edit-checkpoints` via same core `EditCheckpointManager::checked_*` service);
+- stale current content blocks the whole operation before mutation (all-path hash compare, zero mutation, bounded `stale_paths`);
+- restore respects normal workspace permission/path authority (re-validates `is_safe_relative_path`, symlink, `O_NOFOLLOW`, canonical containment at execution time; workspace/session scoping);
+- unsupported side effects are clearly identified and never falsely reported as reverted (central `is_restorable_tool` gate, `PathValidationFailed`/`Unsupported`/`WrongWorkspace` typed outcomes, no file bodies in conflict output).
 
 ## 7. Security, concurrency, restart, and compatibility
 

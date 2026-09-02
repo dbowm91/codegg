@@ -40,15 +40,13 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Runtime safety — checked edit-history follow-up | ready | `plans/subsystems/runtime-safety-edit-history-addendum.md` | M011 closed; M012 ready | M012 ready (M011 closure `plans/closure/runtime-safety-resource-footprint/011-status.md` accepted). |
+| Runtime safety — checked edit-history follow-up | closed | `plans/subsystems/runtime-safety-edit-history-addendum.md` | M012 closed | `plans/closure/runtime-safety-resource-footprint/012-status.md`; M011+M012 both closed. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Plan | Why ready |
-|---|---|---|---|
-| Runtime safety — edit history | M012 | `plans/implementation/runtime-safety-resource-footprint/012-checked-undo-reapply.md` | M011 closed with complete workspace/session/turn mutation attribution and durable pre/post edit checkpoints (`plans/closure/runtime-safety-resource-footprint/011-status.md`); checked Undo/Reapply can now be built safely. |
+No dependency-ready implementation plan is currently queued. The checked edit-history follow-up (M012) was dependency-ready on M011 and is now closed (`plans/closure/runtime-safety-resource-footprint/012-status.md`).
 
 ## Closure work and dependencies
 
@@ -70,7 +68,7 @@ Verification remains deliberately light: the newly registered follow-ups require
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history follow-up unless implementation touches that sandbox path.
 
-No other registered plan is currently hard-blocked. Runtime safety M012 is now dependency-ready.
+No registered plan is currently hard-blocked. The historical supported-Linux Landlock evidence condition remains as the only conditional-closure carryover under the existing runtime-safety workstream; it does not block the independent edit-history follow-up which is now closed.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
@@ -78,7 +76,7 @@ No new work is registered for browser-specific security, generic hook-taxonomy e
 
 1. Agent-runtime goal-verification M012 is closed; its dependency audit found no registered downstream plan to unblock.
 2. Runtime-safety M011 is closed (`plans/closure/runtime-safety-resource-footprint/011-status.md`); its dependency audit moved M012 to ready. Runtime-assets M005 was independent ready work and is closed per its linked record.
-3. Runtime-safety M012 is now ready; it was unblocked by the accepted M011 closure record.
+3. Runtime-safety M012 is now closed (`plans/closure/runtime-safety-resource-footprint/012-status.md`); its dependency audit found no registered downstream plan to unblock. The checked edit-history addendum is closed.
 4. Runtime-assets M006 is closed through `plans/closure/runtime-assets/006-status.md`; its implementation consumed `ResolvedPluginActivationSet` rather than activation storage.
 5. These follow-ups must preserve the accepted closure history of their parent subsystems rather than rewriting prior milestones as incomplete.
 
@@ -139,6 +137,7 @@ Strict closure was accepted because all M011 acceptance criteria were met, no cr
 | Post-audit correctness, simplification, and footprint | C003 — daemon startup, shutdown, and process-lifecycle corrective pass | closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; implementation `0bb7d5b`; no registered future plan was unblocked. |
 | Runtime safety, resource control, and footprint | C002 | conditionally closed | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
 | Runtime safety — checked edit-history follow-up | M011 — mutation attribution and durable edit checkpoints | closed | `plans/closure/runtime-safety-resource-footprint/011-status.md` |
+| Runtime safety — checked edit-history follow-up | M012 — checked Undo/Reapply | closed | `plans/closure/runtime-safety-resource-footprint/012-status.md` |
 | Provider connections and Eggpool | M007 — conditional disposition (historical) | superseded by strict closure | `plans/closure/provider-connections/007-status.md`; the record's historical sections preserve the earlier conditional result and hosted Clippy failure `30681164263`; see the strict row below |
 | Programmatic tool execution and Tool Programs | M018 — runtime fixture correction (historical) | provisional implementation evidence retained; strict disposition owned by M019 | `plans/closure/tool-programs/018-status.md`; see the M019/M020 rows below |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
