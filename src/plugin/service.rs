@@ -608,7 +608,10 @@ pub enum PluginError {
 mod tests {
     use super::*;
     use crate::plugin::activation::{PluginActivationScope, PluginActivationStore};
-    use crate::plugin::manifest::{PluginCapability, PluginCommandSpec, PluginManifest};
+    use crate::plugin::hooks::HookType;
+    use crate::plugin::manifest::{
+        PluginCapability, PluginCommandSpec, PluginHookSpec, PluginManifest,
+    };
     use crate::plugin::registry::{PluginInfo, PluginSourceMetadata};
 
     fn info() -> PluginInfo {
@@ -617,13 +620,20 @@ mod tests {
             manifest: PluginManifest {
                 name: "demo".into(),
                 version: "1".into(),
-                capabilities: vec![PluginCapability::Command(PluginCommandSpec {
-                    name: "demo".into(),
-                    aliases: Vec::new(),
-                    description: None,
-                    handler: None,
-                    output: Vec::new(),
-                })],
+                capabilities: vec![
+                    PluginCapability::Command(PluginCommandSpec {
+                        name: "demo".into(),
+                        aliases: Vec::new(),
+                        description: None,
+                        handler: None,
+                        output: Vec::new(),
+                    }),
+                    PluginCapability::Hook(PluginHookSpec {
+                        hook_type: "event".into(),
+                        priority: 0,
+                        handler: None,
+                    }),
+                ],
                 ..Default::default()
             },
             enabled: true,
@@ -655,6 +665,22 @@ mod tests {
         let b = service.for_workspace("b").await.unwrap();
         assert!(a.pinned_activation().unwrap().is_active("plugin:demo"));
         assert!(!b.pinned_activation().unwrap().is_active("plugin:demo"));
+        let a_ids = a.pinned_activation().unwrap().active_plugin_ids();
+        let b_ids = b.pinned_activation().unwrap().active_plugin_ids();
+        assert!(a.registry().command_for_ids("demo", &a_ids).await.is_some());
+        assert!(b.registry().command_for_ids("demo", &b_ids).await.is_none());
+        assert_eq!(
+            a.registry()
+                .hooks_for_ids(HookType::Event, &a_ids)
+                .await
+                .len(),
+            1
+        );
+        assert!(b
+            .registry()
+            .hooks_for_ids(HookType::Event, &b_ids)
+            .await
+            .is_empty());
 
         store
             .set(&plugin, PluginActivationScope::Workspace("a".into()), false)
