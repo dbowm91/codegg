@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency Final Corrective Closure Addendum
 
-Status: active — M009 implementation complete; hosted closure evidence pending
+Status: closed — M009 accepted
 
 Repository baseline reviewed: `d08f089f7a72319eb343a070c93369cbb4fc50a4`
 

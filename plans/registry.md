@@ -33,7 +33,7 @@ Canonical direction remains in:
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
 | Agent runtime, model adaptation, and ACP | closed | `plans/subsystems/agent-runtime-model-adaptation-acp-corrective-closure-addendum.md` | M017 closed | — |
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
-| Agent runs, async delegation, and worktree concurrency | closing | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closing | Local implementation and verification are complete; hosted exact-head `CI / verify` evidence is pending in `plans/closure/agent-run-worktree-concurrency/009-status.md`. |
+| Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -49,7 +49,7 @@ Canonical direction remains in:
 
 ## Closure work and dependencies
 
-Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. M009 is now closing through the linked closure record.
+Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. M009 is now closed through the linked closure record.
 
 Historical closed control points remain:
 
@@ -65,7 +65,7 @@ Verification remains deliberately light: M009 uses focused completion-routing, i
 
 ## Blocked work
 
-M009 has no implementation blocker and is closing on hosted evidence. The downstream registry and future implementation plans were audited; no registered work was blocked on M009, so no additional plan became dependency-ready. No unrelated previously closed subsystem is reopened.
+M009 has no remaining blocker and is closed. The downstream registry and future implementation plans were audited; no registered work was blocked on M009, so no additional plan became dependency-ready. No unrelated previously closed subsystem is reopened.
 
 ## Agent-runtime correctness execution order
 

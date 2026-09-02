@@ -1,6 +1,6 @@
 # Agent Run, Async Delegation, and Worktree Concurrency M009 — Closure Status
 
-Status: conditionally closed
+Status: closed
 
 Source implementation plan:
 
@@ -14,11 +14,11 @@ Repository baseline reviewed: `d08f089f7a72319eb343a070c93369cbb4fc50a4`
 
 Implementation commits or pull requests:
 
-- Pending exact commit — root-turn completion routing, group projection reconciliation, invocation scoping, delegation identity separation, lint correction, and closure evidence.
+- `5a0d9b48df3c112d71037757947aaf4c4d545f22` — root-turn completion routing, group projection reconciliation, invocation scoping, delegation identity separation, lint correction, and closure evidence.
 
 ## 1. Executive finding
 
-M009's bounded corrective implementation is complete locally. Top-level completion now routes through an exact live `(session_id, turn_id)` endpoint, nested completion remains direct-parent run-owned, turn-owned groups use their persisted owner kind, member-terminal transitions publish authoritative group projections, model call identity is scoped by execution owner and provider-turn occurrence, and delegation identity is separated from request fingerprint validation. The exact existing hosted `CI / verify` run on the pushed final candidate remains outstanding at this record's initial publication.
+M009's bounded corrective implementation is complete and accepted. Top-level completion now routes through an exact live `(session_id, turn_id)` endpoint, nested completion remains direct-parent run-owned, turn-owned groups use their persisted owner kind, member-terminal transitions publish authoritative group projections, model call identity is scoped by execution owner and provider-turn occurrence, and delegation identity is separated from request fingerprint validation. The exact existing hosted `CI / verify` lane passed on the accepted candidate and reached Workspace tests.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -34,7 +34,7 @@ M009's bounded corrective implementation is complete locally. Top-level completi
 | Retry of one accepted model call remains stable | accepted-call ordinal identity regression | pass | The key is derived once for the accepted call and reused by the execution context. |
 | Same accepted spawn call with changed request conflicts | separated `delegation_key` and `spawn_request_fingerprint` in `src/tool/task.rs`; core agent-run conflict tests | pass | Request bodies no longer change delegation identity. |
 | Different accepted calls with identical requests remain distinct | invocation identity tests and TaskTool/subagent integration tests | pass | Call identity remains the namespace authority. |
-| Existing normal CI lane is lint-clean and reaches tests | exact local Clippy and full verification; hosted run pending | partial | Local verification is green; hosted evidence is the remaining condition for strict closure. |
+| Existing normal CI lane is lint-clean and reaches tests | hosted `CI / verify` run `33588719613`, job `100118138199`, on exact candidate `5a0d9b48df3c112d71037757947aaf4c4d545f22` | pass | Clippy and Workspace tests both passed. |
 
 ## 3. Production implementation evidence
 
@@ -80,7 +80,7 @@ rtk bash scripts/verify.sh full
 - Exact workspace formatting check: passed.
 - `verify.sh quick`: passed.
 - `verify.sh full`: passed. The default matrix included 4,322 root unit tests and all workspace/doc tests; the feature-gated `server,plugins,lsp-test-support` matrix also reached and passed the full Workspace tests and doc tests.
-- Hosted ordinary `CI / verify` on the exact pushed candidate: outstanding and required before changing this record to `closed`.
+- Hosted ordinary `CI / verify` on the exact pushed candidate: run `33588719613`, job `100118138199`, passed in 17m58s; Workspace Clippy and Workspace tests completed successfully.
 
 ## 5. Invariant review
 
@@ -133,11 +133,11 @@ Required static guards and generated-agent checks passed through `verify.sh quic
 | critical | None | — | None |
 | high | None | — | None |
 | medium | None | — | None |
-| low | Hosted exact-head evidence was not yet attached when this conditional record was authored | Strict closure cannot be finalized from local evidence alone | Attach the exact pushed candidate SHA and green `CI / verify` run/job, then mark this record closed. |
+| low | None | — | None |
 
 ## 11. Roadmap disposition
 
-Conditionally closed pending the named hosted `CI / verify` evidence. Once the ordinary lane is green on the exact accepted candidate and reaches Workspace tests, M009 and the final corrective addendum may be marked strictly closed.
+Milestone closed. The ordinary hosted lane is green on the exact accepted candidate and reached Workspace tests; M009 and the final corrective addendum are strictly closed.
 
 The downstream registry audit found no registered future plan blocked on M009, so no additional plan became dependency-ready.
 
