@@ -1,20 +1,33 @@
 # Snapshot Module
 
 The `snapshot` module provides file state capture and restore
-functionality for safety during tool execution.
+functionality for safety during tool execution. It owns three
+related but distinct capture contracts:
+
+- **Full safety snapshots** — full-project walks for explicit operator
+  restore (`SnapshotManager::capture`).
+- **Durable edit checkpoints** — exact pre/post file states for the
+  supported native file-mutating tool surface, scoped to
+  workspace/session/turn/batch (`EditCheckpointManager`).
+- **Observational `FileChanged` events** — UI/diff notification on
+  `GlobalEventBus`; not a durable provenance boundary.
 
 ## Purpose
 
 Capture the state of project files before modifications so they can
 be restored if needed. Supports both full-project captures and
-incremental captures of specific changed files.
+incremental per-file captures. Edit checkpoints provide the durable
+provenance needed for checked Undo/Reapply without relying on an
+unscoped global event stream.
 
 ## Where It Lives
 
 - **Core types & manager**: `crates/codegg-core/src/snapshot/mod.rs`
+- **Checkpoint types & manager**: `crates/codegg-core/src/snapshot/checkpoint.rs`
+- **Affected-path extraction**: `crates/codegg-core/src/snapshot/affected_paths.rs`
 - **Diff computation**: `crates/codegg-core/src/snapshot/diff.rs`
 - **DB schema**: `crates/codegg-core/src/session/schema.rs`
-  (migration v13)
+  (migration v13 for `snapshot`, v46 for `edit_checkpoint`)
 - **Python script snapshots**: `src/python_script/snapshot.rs`
   (separate, metadata-only)
 
@@ -30,12 +43,35 @@ than content. Do not confuse the two.
 depth-first stack, collecting file contents up to configured limits.
 Results are JSON-serialized into the `snapshot.data` column.
 
-### Incremental Capture
+### Incremental Capture (legacy)
 
 `SnapshotManager::capture_incremental()` accepts pre-collected
 `(path, old_content)` pairs. It validates paths are safe (no `..`,
 no absolute paths) and stores only valid entries. Returns `None` if
-no files are valid.
+no files are valid. This path remains for compatibility but is no
+longer the authority for durable edit history.
+
+### Durable Edit Checkpoints (canonical)
+
+`EditCheckpointManager` owns pre/post capture for supported native
+mutators. The canonical boundary is `ToolBatchExecutor` in
+`src/agent/tool_batch.rs`:
+
+```
+accepted native mutating batch
+  -> derive bounded affected-path set
+  -> capture pre-state for all paths
+  -> execute normal authorized tools (parallel, serialized if overlapping)
+  -> capture post-state for the same paths
+  -> persist EditCheckpoint with workspace/session/turn/batch identity
+```
+
+`FileChanged` remains published by file tools for UI diff
+notification, but durable checkpoint contents no longer depend on
+drained global events. A foreign workspace `FileChanged` event cannot
+enter another turn's checkpoint because the checkpoint's path set is
+derived from accepted structured tool arguments, not from the
+unscoped event stream.
 
 ### Restore
 
@@ -103,7 +139,7 @@ pub struct SnapshotView {
 | `new(pool, root)` | :59 | Default options |
 | `new_with_options(pool, root, opts)` | :67 | Custom options |
 | `capture(session_id, label)` | :92 | Full project capture |
-| `capture_incremental(sid, label, changes)` | :129 | Incremental capture |
+| `capture_incremental(sid, label, changes)` | :129 | Incremental capture (legacy) |
 | `get(id)` | :194 | Fetch by ID |
 | `list_for_session(sid)` | :218 | List all for session |
 | `latest(sid)` | :241 | Latest for session |
@@ -111,6 +147,68 @@ pub struct SnapshotView {
 | `restore_to_path(snapshot, target)` | :337 | Restore to custom path |
 | `delete_snapshot(id)` | :392 | Delete by ID |
 | `delete_all_for_session(sid)` | :401 | Delete all for session |
+
+### EditCheckpoint (`checkpoint.rs`)
+
+```rust
+pub enum FileState {
+    Absent,
+    Present { hash: String, content: String },
+}
+pub struct EditFileState {
+    pub path: String,
+    pub pre: FileState,
+    pub post: FileState,
+}
+pub struct EditCheckpoint {
+    pub id: String,
+    pub workspace_id: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub batch_seq: i64,
+    pub created_at: i64,
+    pub files: Vec<EditFileState>,
+}
+```
+
+`FileState::Absent` represents create/delete; `Present` carries
+SHA-256 hash and bounded content. Existing snapshot size/path/symlink
+limits are enforced.
+
+### EditCheckpointManager (`checkpoint.rs`)
+
+| Method | Description |
+|--------|-------------|
+| `new(pool, root)` / `new_with_options` | Same bounds as `SnapshotManager` |
+| `capture_file_state_sync(path)` | Read single relative path -> `FileState` (validates safe path, symlink, size, UTF-8) |
+| `capture_states(paths)` | Async bulk pre/post capture for a bounded path set |
+| `persist_checkpoint(cp)` | Validate and insert `edit_checkpoint` row (rejects unsafe/oversized, enforces total bytes) |
+| `get(id)` / `list_for_session` / `list_for_workspace` / `latest_for_session` | Durable retrieval; survives daemon restart |
+
+### Affected-Path Extraction (`affected_paths.rs`)
+
+Centralized derivation of the complete affected path set from accepted
+structured tool arguments:
+
+- `write`: one target path; pre may be absent/present; post present
+- `edit`: one existing path
+- `replace`: one existing path
+- `multiedit`: one existing path
+- `apply_patch update`: one existing path
+- `apply_patch create`: one target path (absent -> present)
+- `apply_patch delete`: one existing path (present -> absent)
+- `apply_patch move`: both source and destination (including destination pre-state)
+
+`extract_affected_paths(tool, input)` returns the raw paths for a
+single tool call; `extract_batch_affected_paths` aggregates a batch;
+`normalize_and_dedup` enforces safe relative containment, deduplicates,
+and rejects `..`/absolute escapes. Malformed move/create/delete
+arguments return `AffectedPathError` and mark the batch non-restorable
+rather than producing an incomplete checkpoint.
+
+`is_restorable_tool(name)` is the central eligibility predicate;
+checkpoint eligibility derives from it so new native mutators cannot
+silently bypass coverage.
 
 ### Diff Module (`crates/codegg-core/src/snapshot/diff.rs`)
 
@@ -139,26 +237,51 @@ CREATE TABLE IF NOT EXISTS snapshot (
     FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id);
+
+CREATE TABLE IF NOT EXISTS edit_checkpoint (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT,
+    batch_seq INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    data TEXT NOT NULL, -- JSON Vec<EditFileState>
+    FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_workspace ON edit_checkpoint(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_session ON edit_checkpoint(session_id, created_at DESC);
 ```
 
-Defined in migration v13 (`session/schema.rs:669`).
+Defined in migrations v13 and v46 (`session/schema.rs`). Both tables
+coexist; `edit_checkpoint` reuses the same file-state serialization
+and size limits as `snapshot` but adds explicit
+`workspace_id`/`turn_id`/`batch_seq` provenance. Legacy `snapshot`
+records remain readable after the v46 migration.
 
 ## Security
 
 ### Path Traversal Prevention
 
-- `is_safe_relative_path()` (:416) rejects `..`, root dir, Windows
+- `is_safe_relative_path()` rejects `..`, root dir, Windows
   prefixes, and empty paths.
-- `ensure_contained_parent()` (:435) validates parent directories
+- `ensure_contained_parent()` validates parent directories
   after `mkdir` but before writing, rejecting symlinks and checking
   canonical containment. This shrinks the TOCTOU window.
-- `capture_incremental()` rejects absolute paths and unsafe relative
-  paths before storing.
+- `capture_incremental()` and `capture_states()` reject absolute paths
+  and unsafe relative paths before storing.
 
 ### Atomic Write Pattern
 
 `restore()` and `restore_to_path()` write to a `.tmp` file first,
 then atomically rename. This prevents partial writes on interruption.
+
+### Content Bounds
+
+`SnapshotOptions` limits (`max_files`, `max_file_bytes`,
+`max_total_bytes`) are enforced for both `snapshot` and
+`edit_checkpoint`. Oversized or non-UTF-8 content causes the batch to
+be marked non-restorable rather than storing a partial checkpoint.
+Symlinks are rejected.
 
 ## Configuration Surface
 
@@ -173,26 +296,58 @@ then atomically rename. This prevents partial writes on interruption.
 }
 ```
 
+`snapshot: true` gates the expensive full-project walk. Edit
+checkpoints are lightweight per-file captures distinct from the full
+walk and are enabled whenever a pool is present so mutation
+attribution remains correct even when full snapshots are disabled.
+The same `snapshot_config` bounds apply to both.
+
 ## Invariants & Gotchas
 
 - **No automatic rollback**: Snapshots are captured for safety but
-  `restore()` is not called automatically on tool failure. This is a
-  planned enhancement.
+  `restore()` is not called automatically on tool failure.
+- **Durable checkpoints are workspace/session/turn/batch scoped**:
+  Paths are resolved relative to one explicit execution workspace;
+  no checkpoint may include a mutation from another session/workspace/turn.
+  Pre-state is captured before the first mutation; post-state from the
+  same bounded set after execution.
+- **Create/delete/move are Absent/Present**: Not empty-file equivalence.
+- **Observational vs durable**: `FileChanged` is retained for TUI diff
+  notification but is not the durable provenance source. Overlap within a
+  batch serializes (effective_max = 1) so checkpoint A's post cannot
+  ambiguously become checkpoint B's pre.
+- **Non-restorable is explicit**: Tools not in the checkpoint contract
+  (bash/shell, plugin/MCP writes, git mutations, binary content beyond
+  safe snapshot behavior, oversized) are never implicitly treated as
+  safely captured. Malformed move/create/delete args cannot produce
+  incomplete checkpoints.
 - Excluded directories: `.git`, `node_modules`, `target`, `.codegg`.
-- Binary files (non-UTF-8) are silently skipped during full capture.
+- Binary files (non-UTF-8) are rejected for checkpoint pre/post (batch
+  non-restorable) and silently skipped during full capture.
 - Empty files are captured with a hash of the empty string.
 - `capture()` uses `spawn_blocking` for the filesystem walk.
 - `restore()` also uses `spawn_blocking` with a oneshot channel to
   bridge sync/async.
-- The `snapshot` table FK cascades on session delete.
+- Both tables FK cascade on session delete; `edit_checkpoint` is indexed
+  by workspace_id for scoped retrieval.
 
 ## Testing
 
 ```bash
 cargo test -p codegg-core -- snapshot
+cargo test --test snapshot
+cargo test --test edit_checkpoint_integration
 ```
+
+Integration coverage includes write/edit/replace/multiedit and every
+`apply_patch` mode, failed/partial mutation, two-workspace isolation
+( same relative filename in different workspace roots remains isolated),
+concurrent-batch isolation, foreign `FileChanged` contamination
+regression, overlapping-path serialization, symlink/oversize rejection,
+and restart reload (recreating manager from same pool still reads
+persisted checkpoints).
 
 ## Related Docs
 
-- [agent.md](agent.md) — integration with agent loop
-- [tool.md](tool.md) — file-modifying tools
+- [agent.md](agent.md) — integration with agent loop and ToolBatchExecutor
+- [tool.md](tool.md) — file-modifying tools and mutation surface

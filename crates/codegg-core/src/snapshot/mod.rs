@@ -1,3 +1,5 @@
+pub mod affected_paths;
+pub mod checkpoint;
 pub mod diff;
 
 use serde::{Deserialize, Serialize};
@@ -531,7 +533,7 @@ fn sync_parent_dir(path: &Path) {
 /// Empty paths are also rejected. This is the first line of
 /// defence against snapshot paths escaping the project root
 /// during restore.
-fn is_safe_relative_path(path: &Path) -> bool {
+pub(crate) fn is_safe_relative_path(path: &Path) -> bool {
     if path.as_os_str().is_empty() {
         return false;
     }

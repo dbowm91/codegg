@@ -1,6 +1,6 @@
 # Runtime Safety Milestone 012 — Checked Undo and Reapply
 
-Status: blocked
+Status: ready (unblocked by M011 closure `plans/closure/runtime-safety-resource-footprint/011-status.md`)
 
 Repository baseline: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 

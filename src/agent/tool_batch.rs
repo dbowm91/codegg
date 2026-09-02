@@ -2,9 +2,8 @@
 
 use super::r#loop::{
     extract_bash_command, extract_git_subcommand, extract_path_from_tool_call,
-    is_file_modifying_tool, is_path_within_workspace, is_test_command, is_workspace_file_mutation,
-    parse_mcp_tool_name, truncate_test_event_preview, AgentLoop, ToolPermissionOutcome,
-    ToolTimeoutConfig,
+    is_path_within_workspace, is_test_command, is_workspace_file_mutation, parse_mcp_tool_name,
+    truncate_test_event_preview, AgentLoop, ToolPermissionOutcome, ToolTimeoutConfig,
 };
 use crate::agent::progress_recovery::ToolExecutionOutcome;
 use crate::bus::events::AppEvent;
@@ -473,24 +472,93 @@ impl AgentLoop {
             }
         }
 
-        // Capture snapshot before executing file-modifying tools
-        let has_file_modifying = allowed_tools
+        // --- Edit checkpoint: derive affected paths and capture pre-state ---
+        // Durable checkpoint capture is scoped to workspace/session/turn/batch and
+        // does not depend on unscoped global FileChanged draining.
+        let mut checkpoint_ctx: Option<(
+            Vec<String>,
+            std::collections::HashMap<String, crate::snapshot::checkpoint::FileState>,
+            String,
+            String,
+            Option<String>,
+            i64,
+        )> = None;
+        let mut checkpoint_serialize = false;
+        let has_restorable = allowed_tools
             .iter()
-            .any(|(_, tc, _)| is_file_modifying_tool(&tc.name));
-        if has_file_modifying {
-            // Clear stale file-change events so we only checkpoint this batch.
-            let _ = self.drain_file_change_events();
-            self.capture_snapshot_if_needed().await;
+            .any(|(_, tc, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name));
+        if has_restorable && self.checkpoint_manager.is_some() && self.workspace_id.is_some() {
+            let restorable_calls: Vec<(String, serde_json::Value)> = allowed_tools
+                .iter()
+                .filter(|(_, tc, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name))
+                .map(|(_, tc, _)| (tc.name.to_string(), tc.arguments.clone()))
+                .collect();
+            match crate::snapshot::affected_paths::extract_batch_affected_paths(&restorable_calls) {
+                Ok(Some(raw_paths)) => {
+                    let raw_len = raw_paths.len();
+                    match crate::snapshot::affected_paths::normalize_and_dedup(
+                        raw_paths,
+                        &self.workspace_root,
+                    ) {
+                        Ok(normalized) => {
+                            checkpoint_serialize =
+                                crate::snapshot::affected_paths::has_overlapping_paths(
+                                    raw_len,
+                                    normalized.len(),
+                                );
+                            if let Some(mgr) = &self.checkpoint_manager {
+                                match mgr.capture_states(&normalized).await {
+                                    Ok(pre_states) => {
+                                        let ws_id = self.workspace_id.as_ref().unwrap().to_string();
+                                        let sess_id = self.session_id.clone();
+                                        let turn = self.turn_id.clone();
+                                        let seq = self.checkpoint_batch_seq as i64;
+                                        self.checkpoint_batch_seq =
+                                            self.checkpoint_batch_seq.wrapping_add(1);
+                                        checkpoint_ctx = Some((
+                                            normalized, pre_states, ws_id, sess_id, turn, seq,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "checkpoint pre-state capture failed, batch non-restorable: {}",
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "checkpoint path normalization failed, batch non-restorable: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "checkpoint affected-path extraction failed, batch non-restorable: {}",
+                        e
+                    );
+                }
+            }
         }
+        // Clear stale FileChanged events for hygiene but do not use for durability.
+        let _ = self.drain_file_change_events();
 
         let _timeout_secs = self.tool_timeout();
         let max_parallel = self.max_parallel_tools();
         const MAX_PARALLEL_DEFAULT: usize = 100;
-        let effective_max = if max_parallel == usize::MAX {
+        let mut effective_max = if max_parallel == usize::MAX {
             MAX_PARALLEL_DEFAULT
         } else {
             max_parallel
         };
+        if checkpoint_serialize {
+            effective_max = 1;
+        }
         let regular_tool_count = allowed_tools.len();
         let registry = &self.tool_registry;
 
@@ -1196,9 +1264,70 @@ impl AgentLoop {
             tool_results.push((idx, id.to_string(), outcome));
         }
 
-        if has_file_modifying {
-            self.capture_incremental_snapshot_if_needed(Some("incremental-pre-change".to_string()))
-                .await;
+        // --- Edit checkpoint: capture post-state and persist ---
+        if let Some((normalized, pre_states, ws_id, sess_id, turn_id, batch_seq)) =
+            checkpoint_ctx.take()
+        {
+            if let Some(mgr) = &self.checkpoint_manager {
+                match mgr.capture_states(&normalized).await {
+                    Ok(post_states) => {
+                        let mut files = Vec::new();
+                        let mut has_change = false;
+                        for path in &normalized {
+                            let pre = pre_states
+                                .get(path)
+                                .cloned()
+                                .unwrap_or(crate::snapshot::checkpoint::FileState::Absent);
+                            let post = post_states
+                                .get(path)
+                                .cloned()
+                                .unwrap_or(crate::snapshot::checkpoint::FileState::Absent);
+                            if pre != post {
+                                has_change = true;
+                            }
+                            files.push(crate::snapshot::checkpoint::EditFileState {
+                                path: path.clone(),
+                                pre,
+                                post,
+                            });
+                        }
+                        // Persist only when the batch meaningfully represents a mutation
+                        // and does not exceed existing snapshot bounds. Oversized or
+                        // unsafe post-states would have already errored during capture.
+                        if has_change && !files.is_empty() {
+                            let checkpoint = crate::snapshot::checkpoint::EditCheckpoint {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                workspace_id: ws_id,
+                                session_id: sess_id,
+                                turn_id,
+                                batch_seq,
+                                created_at: chrono::Utc::now().timestamp_millis(),
+                                files,
+                            };
+                            if let Err(e) = mgr.persist_checkpoint(checkpoint).await {
+                                tracing::warn!("checkpoint persist failed: {}", e);
+                            } else {
+                                tracing::info!(
+                                    "edit checkpoint persisted for batch {} ({} files)",
+                                    batch_seq,
+                                    normalized.len()
+                                );
+                            }
+                        } else if !has_change {
+                            tracing::debug!(
+                                "checkpoint: no file state change for batch {}, skipping persist",
+                                batch_seq
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "checkpoint post-state capture failed, batch non-restorable: {}",
+                            e
+                        );
+                    }
+                }
+            }
         }
 
         if has_pending_question {

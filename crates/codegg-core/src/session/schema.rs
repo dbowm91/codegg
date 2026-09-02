@@ -157,6 +157,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 45 {
         migrate_and_record(pool, 45).await?;
     }
+    if current_version < 46 {
+        migrate_and_record(pool, 46).await?;
+    }
 
     Ok(())
 }
@@ -214,6 +217,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             43 => migrate_v43(pool).await?,
             44 => migrate_v44(pool).await?,
             45 => migrate_v45(pool).await?,
+            46 => migrate_v46(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2085,6 +2089,34 @@ async fn migrate_v45(pool: &SqlitePool) -> Result<(), StorageError> {
         "ALTER TABLE goal ADD COLUMN revision INTEGER NOT NULL DEFAULT 0".to_string(),
     )
     .await
+}
+
+/// M011: durable edit checkpoints for mutation attribution.
+async fn migrate_v46(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS edit_checkpoint (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            turn_id TEXT,
+            batch_seq INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            data TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_workspace ON edit_checkpoint(workspace_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_session ON edit_checkpoint(session_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_turn ON edit_checkpoint(turn_id)",
+        "CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_created ON edit_checkpoint(created_at DESC)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Session Projections Milestone 2: durable projection stream,

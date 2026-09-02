@@ -457,7 +457,11 @@ pub struct AgentLoop {
     pub(super) tool_def_cache: Option<ToolDefCache>,
     pub(super) deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
     pub(super) model_router: ModelRouter,
+    #[allow(dead_code)]
     pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
+    pub(super) checkpoint_manager: Option<crate::snapshot::checkpoint::EditCheckpointManager>,
+    pub(super) workspace_id: Option<codegg_core::workspace::WorkspaceId>,
+    pub(super) checkpoint_batch_seq: u64,
     pub(super) file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
     pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
     pub(super) security_service: crate::security::service::SecurityService,
@@ -639,9 +643,9 @@ impl AgentLoop {
                     })
                     .unwrap_or_default();
                 Some(crate::snapshot::SnapshotManager::new_with_options(
-                    pool,
+                    pool.clone(),
                     workspace_root.clone(),
-                    options,
+                    options.clone(),
                 ))
             } else {
                 None
@@ -649,6 +653,27 @@ impl AgentLoop {
         } else {
             None
         };
+
+        // Edit checkpoints are lightweight per-file captures distinct from the
+        // expensive full-project snapshot walk. They are enabled whenever a
+        // pool is present so mutation attribution remains correct even when
+        // full snapshots are disabled. The same size bounds are reused.
+        let checkpoint_manager = pool.clone().map(|p| {
+            let options = config
+                .snapshot_config
+                .as_ref()
+                .map(|c| crate::snapshot::SnapshotOptions {
+                    max_files: c.max_files,
+                    max_file_bytes: c.max_file_bytes,
+                    max_total_bytes: c.max_total_bytes,
+                })
+                .unwrap_or_default();
+            crate::snapshot::checkpoint::EditCheckpointManager::new_with_options(
+                p,
+                workspace_root.clone(),
+                options,
+            )
+        });
 
         let todo_pool = pool.clone();
 
@@ -726,6 +751,9 @@ impl AgentLoop {
             deferred_tool_definitions: Vec::new(),
             model_router,
             snapshot_manager,
+            checkpoint_manager,
+            workspace_id: None,
+            checkpoint_batch_seq: 0,
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
             usage_store,
             security_service,
@@ -1007,6 +1035,10 @@ impl AgentLoop {
 
     pub fn set_turn_id(&mut self, turn_id: Option<String>) {
         self.turn_id = turn_id;
+    }
+
+    pub fn set_workspace_id(&mut self, workspace_id: codegg_core::workspace::WorkspaceId) {
+        self.workspace_id = Some(workspace_id);
     }
 
     pub fn context_tracker(&mut self) -> &mut ContextTracker {
@@ -3213,6 +3245,7 @@ impl AgentLoop {
     }
 
     /// Capture a snapshot of the project state if snapshot_manager is configured
+    #[allow(dead_code)]
     pub(super) async fn capture_snapshot_if_needed(&mut self) {
         if let Some(ref mut snapshot_manager) = self.snapshot_manager {
             let session_id = self.session_id.clone();
@@ -3397,6 +3430,7 @@ impl AgentLoop {
         changes
     }
 
+    #[allow(dead_code)]
     pub(super) async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
         if self.snapshot_manager.is_none() {
             return;

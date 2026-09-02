@@ -66,7 +66,7 @@ TurnSubmit (daemon)
       9. ProviderTurnAdapter::stream_with_retry()
       10. EventProcessor accumulates streaming events
       11. Text repair (if adapter grammar configured)
-      12. ToolBatchExecutor: permission → snapshot → parallel execution → results
+       12. ToolBatchExecutor: permission → affected-path extraction → pre-state capture → parallel/serialized execution → post-state capture → checkpoint persist → results
       13. RecoveryController: progress/stall/fingerprint tracking
       14. Plan mode detection
       15. Post-turn hooks (AgentEnd)
@@ -108,6 +108,32 @@ builds a candidate outside the publication lock, and assigns a generation
 on publish. Failures retain the previous valid snapshot.
 `TurnRunInput::asset_snapshot` pins the published `Arc` for the whole
 turn. Refresh swaps affect subsequent turns only.
+
+### Durable Edit Checkpoints
+
+`ToolBatchExecutor` (`src/agent/tool_batch.rs`) is the canonical
+mutation boundary for the native file-edit surface. For each batch
+containing supported mutators (`write`, `edit`, `replace`, `multiedit`,
+`apply_patch` update/create/delete/move), it derives the complete
+bounded affected path set from accepted structured arguments via
+`crates/codegg-core/src/snapshot/affected_paths.rs`, captures
+`FileState::Absent` / `Present { hash, content }` pre-state before
+execution, executes tools (serializing overlapping paths within the
+batch to `effective_max = 1` so pre/post ordering is deterministic),
+captures post-state for the same path set after execution, and
+persists an `EditCheckpoint` with explicit
+`workspace_id`/`session_id`/`turn_id`/`batch_seq` provenance via
+`EditCheckpointManager`. A foreign workspace `FileChanged` event cannot
+contaminate another turn's checkpoint because durability no longer
+drains the unscoped global event stream. `FileChanged` remains an
+observational UI signal (`src/tui/file_diff.rs`, `projection`).
+
+Checkpoints reuse `SnapshotOptions` bounds and `is_safe_relative_path`
+validation; oversized/binary/symlink cases or malformed move args mark
+the batch non-restorable rather than storing a partial checkpoint.
+Non-restorable tools (bash, plugins/MCP, git) never produce a
+checkpoint. Daemon restart rehydrates checkpoints from SQLite;
+no broadcast receiver state is required.
 
 ### Durable run control
 

@@ -45,6 +45,7 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
         input.session_id,
     );
     agent_loop.set_turn_id(input.turn_id);
+    agent_loop.set_workspace_id(input.execution.workspace_id.clone());
     if let Some(spool) = input.subagent_pool {
         agent_loop.set_subagent_pool(spool);
     }

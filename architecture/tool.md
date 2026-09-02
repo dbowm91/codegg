@@ -87,6 +87,53 @@ src/tool/
 └── ...
 ```
 
+## Mutation Surface and Edit Checkpoints
+
+The durable restorable edit surface is the native file-mutating tool
+set handled by `ToolBatchExecutor` (`src/agent/tool_batch.rs`) and
+`crates/codegg-core/src/snapshot/affected_paths.rs`:
+
+- `write` — one target path; absent→present or present→present
+- `edit` — one existing path
+- `replace` — one existing path
+- `multiedit` — one existing path (multiple sequential edits)
+- `apply_patch update` — one existing path
+- `apply_patch create` — one target path (normally absent→present)
+- `apply_patch delete` — one existing path (present→absent)
+- `apply_patch move` — both source and destination (dest pre-state
+  included if replacement permitted)
+
+All other mutations (bash/shell arbitrary commands, plugin/MCP
+filesystem writes, git commits/branch ops, package-manager or DB side
+effects, binary content beyond safe snapshot UTF-8 handling) are
+**explicitly non-restorable** and are never implicitly treated as
+safely captured. A batch containing only non-restorable tools produces
+no edit checkpoint; a malformed move/create/delete that cannot be
+safely derived marks the batch non-restorable rather than persisting a
+partial checkpoint.
+
+Checkpoints distinguish `Absent` vs `Present { hash, content }` so
+create/delete/move are representable without empty-file equivalence.
+Every checkpoint is scoped to explicit
+`workspace_id`/`session_id`/`turn_id`/`batch_seq` and validated with
+the same `SnapshotOptions` bounds and `is_safe_relative_path`/symlink
+checks as snapshots. Oversized or unsafe paths fail the batch
+predictably and do not fabricate successful post-state.
+
+`ToolBatchExecutor` derives the complete affected path set from
+accepted structured arguments *before* execution, captures pre-state,
+executes tools (overlapping paths within a batch serialize to
+`effective_max = 1` so pre/post ordering is deterministic), captures
+post-state from the same path set after execution, and persists the
+checkpoint only when the resulting state meaningfully represents the
+mutation. Durable capture no longer depends on drained global
+`FileChanged` events; those events remain observational for TUI diff
+notification (`AppEvent::FileChanged` → TUI `file_diff.rs`).
+
+See `architecture/snapshot.md` for the `EditCheckpoint` storage
+contract and `architecture/agent.md` for the `ToolBatchExecutor`
+ownership.
+
 ## Tool Trait
 
 Defined in `src/tool/mod.rs:132-201`:

@@ -1,6 +1,6 @@
 # Runtime Safety Milestone 011 — Mutation Attribution and Durable Edit Checkpoints
 
-Status: ready for handoff
+Status: closed (closure: `plans/closure/runtime-safety-resource-footprint/011-status.md`)
 
 Repository baseline: `85c22de98d8282dd33c044a40908cfb77ed76c6a`
 

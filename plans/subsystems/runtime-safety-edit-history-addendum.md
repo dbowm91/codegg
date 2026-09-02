@@ -122,15 +122,16 @@ M012 checked Undo/Reapply capability
 
 ### M011 — Mutation attribution and durable edit checkpoint correctness
 
-Status: ready
+Status: closed
 
 Plan:
 
 - `plans/implementation/runtime-safety-resource-footprint/011-mutation-attribution-and-edit-checkpoints.md`
+- Closure: `plans/closure/runtime-safety-resource-footprint/011-status.md`
 
 Class: invariant/infrastructure
 
-Exit conditions:
+Exit conditions (met):
 
 - no durable incremental capture depends on unscoped `FileChanged` draining;
 - recognized native mutators have complete affected-path coverage or are explicitly marked non-restorable;
@@ -140,7 +141,7 @@ Exit conditions:
 
 ### M012 — Checked Undo/Reapply
 
-Status: blocked on M011
+Status: ready (unblocked by M011 closure)
 
 Plan:
 
