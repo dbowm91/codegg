@@ -1,6 +1,6 @@
 # Runtime Assets Milestone 007 — Plugin MCP Transport Alias Corrective Pass
 
-Status: ready
+Status: active
 
 Repository baseline: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 

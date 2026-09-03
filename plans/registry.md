@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions corrective follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 ready | M005/M006 remain historical closed evidence; no hard blocker. |
+| Runtime assets — plugin declarative contributions corrective follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 active | M005/M006 remain historical closed evidence; closure at `plans/closure/runtime-assets/007-status.md`. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
@@ -49,7 +49,6 @@ Canonical direction remains in:
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
 | Runtime safety — checked edit history | M013 | `plans/implementation/runtime-safety-resource-footprint/013-cross-session-checkpoint-atomicity-and-hosted-closure-corrective-pass.md` | Existing checkpoint, checked-restore, workspace-lock, and ToolBatch seams are sufficient; the corrective pass owns same-path inter-session attribution, mixed-batch restore eligibility, and the red exact-head Clippy result. |
-| Runtime assets — plugin contributions | M007 | `plans/implementation/runtime-assets/007-plugin-mcp-transport-alias-corrective-pass.md` | The defect is a bounded alias-translation mismatch between the existing contribution schema and `McpService`; no new dependency or runtime is required. |
 
 ## Closure work and dependencies
 
