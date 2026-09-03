@@ -2118,6 +2118,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, 49);
+
+        sqlx::query("DROP TABLE agent_convergence_cycle")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE agent_convergence")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE migration_version SET version = 48 WHERE id = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::session::schema::migrate(&pool).await.unwrap();
+        let migrated_tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('agent_convergence', 'agent_convergence_cycle')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(migrated_tables, 2);
     }
 
     #[test]
