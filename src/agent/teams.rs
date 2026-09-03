@@ -99,8 +99,11 @@ impl TeamManager {
         };
 
         if let Some(tx) = tx {
-            let _ = tx.send(());
-            info!("shutdown signal sent to team '{}'", name);
+            if tx.send(()).is_err() {
+                tracing::debug!("shutdown signal for team '{}' had no receiver", name);
+            } else {
+                info!("shutdown signal sent to team '{}'", name);
+            }
         }
 
         {
@@ -275,7 +278,9 @@ impl GracefulShutdown {
             team_name: team_name.to_string(),
             reason: "graceful shutdown".to_string(),
         };
-        let _ = self.shutdown_tx.send(signal);
+        if self.shutdown_tx.send(signal).is_err() {
+            tracing::debug!("team shutdown signal dropped for '{}'", team_name);
+        }
         self.teams.shutdown_team(team_name).await
     }
 }

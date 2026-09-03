@@ -401,6 +401,10 @@ impl WorkspaceStore for InMemoryWorkspaceStore {
 /// the single producer of [`WorkspaceId`] values. Once a workspace is
 /// registered, all subsequent reads come from the registry's in-memory
 /// index, not the store.
+/// Crash-consistency: `by_id`/`by_root` are in-memory indexes hydrated
+/// from the store on `load`; the store is authoritative. Multi-map updates
+/// hold `register_lock` but are not atomic across crashes — rebuild from
+/// the store on startup.
 pub struct WorkspaceRegistry {
     store: Arc<dyn WorkspaceStore>,
     by_id: DashMap<String, Arc<WorkspaceRecord>>,

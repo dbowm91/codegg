@@ -56,6 +56,7 @@ pub async fn find_command_files(base: &Path) -> Vec<Command> {
 
 // MSRV 1.81 is the project floor; this lint is noisy on stable when
 // the edition-2021 MSRV check fires on iterator trait methods.
+// Sync I/O is intentional: startup-only command scan, not a hot async path.
 #[allow(clippy::incompatible_msrv)]
 pub fn find_command_files_sync(base: &Path) -> Vec<Result<Command, String>> {
     let mut commands = Vec::new();

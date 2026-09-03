@@ -322,6 +322,12 @@ impl DaemonInstanceGuard {
 
     /// Read metadata from disk without holding the lock. Returns `None`
     /// when no metadata file is present or when the file is unreadable.
+    ///
+    /// Staleness contract: the file is written atomically (temp + rename)
+    /// so torn reads are avoided, but the record may describe a dead
+    /// process. Callers must re-validate liveness (PID check and/or lock
+    /// probe) before acting on the contents; never unlink or steal
+    /// resources based on metadata alone.
     pub fn read_metadata(metadata_path: &Path) -> Option<DaemonInstanceMetadata> {
         let raw = std::fs::read_to_string(metadata_path).ok()?;
         DaemonInstanceMetadata::from_json(&raw).ok()
@@ -739,9 +745,17 @@ fn try_flock_exclusive(file: &std::fs::File) -> Result<bool, AppError> {
 
 #[cfg(not(unix))]
 fn try_flock_exclusive(_file: &std::fs::File) -> Result<bool, AppError> {
-    Ok(true)
+    // Singleton enforcement requires flock; fail closed on non-Unix rather
+    // than allowing concurrent daemons (mirrors ExternalCommand disabled).
+    Err(AppError::Other(anyhow::anyhow!(
+        "daemon singleton lock is unsupported on non-Unix platforms"
+    )))
 }
 
+/// Probe whether the daemon lock is held. Best-effort hint only: the lock
+/// may change hands between this check and any caller action. Callers must
+/// treat `Ok(true)` as "do not unlink/steal" and re-validate under a held
+/// FD where correctness matters.
 #[cfg(unix)]
 #[allow(unsafe_code)]
 fn is_lock_held(lock_path: &Path) -> Result<bool, AppError> {
@@ -781,7 +795,11 @@ fn is_lock_held(lock_path: &Path) -> Result<bool, AppError> {
 
 #[cfg(not(unix))]
 fn is_lock_held(_lock_path: &Path) -> Result<bool, AppError> {
-    Ok(false)
+    // Fail closed: non-Unix cannot reliably probe the lock, so report an
+    // error instead of a misleading "not held".
+    Err(AppError::Other(anyhow::anyhow!(
+        "daemon singleton lock probe is unsupported on non-Unix platforms"
+    )))
 }
 
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), AppError> {

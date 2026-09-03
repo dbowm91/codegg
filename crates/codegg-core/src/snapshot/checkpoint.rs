@@ -448,8 +448,9 @@ impl EditCheckpointManager {
 
     /// Ensure the restore operation audit table exists (idempotent).
     async fn ensure_restore_log_table(&self) -> Result<(), String> {
-        // Best-effort creation for test pools lacking migration v47.
-        let _ = sqlx::query(
+        // Production callers require the table; propagate DDL failures
+        // instead of silently continuing (test pools must run migrations).
+        sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS edit_restore_operation (
                 id TEXT PRIMARY KEY,
@@ -469,22 +470,26 @@ impl EditCheckpointManager {
             "#,
         )
         .execute(&self.pool)
-        .await;
-        let _ = sqlx::query(
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_workspace ON edit_restore_operation(workspace_id)",
         )
         .execute(&self.pool)
-        .await;
-        let _ = sqlx::query(
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_session ON edit_restore_operation(session_id, created_at DESC)",
         )
         .execute(&self.pool)
-        .await;
-        let _ = sqlx::query(
+        .await
+        .map_err(|e| e.to_string())?;
+        sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_checkpoint ON edit_restore_operation(checkpoint_id)",
         )
         .execute(&self.pool)
-        .await;
+        .await
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -575,7 +580,7 @@ impl EditCheckpointManager {
                 Some(reason.clone()),
             ),
         };
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "INSERT INTO edit_restore_operation (id, checkpoint_id, workspace_id, session_id, turn_id, direction, result, conflict_paths, applied_paths, failed_paths, error_message, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
@@ -592,7 +597,14 @@ impl EditCheckpointManager {
         .bind(now)
         .execute(&self.pool)
         .await
-        .map_err(|e| e.to_string());
+        {
+            tracing::warn!(
+                checkpoint_id = %checkpoint.id,
+                %error,
+                "failed to persist restore audit record"
+            );
+            return Err(error.to_string());
+        }
         Ok(())
     }
 

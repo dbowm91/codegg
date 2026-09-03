@@ -163,6 +163,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 47 {
         migrate_and_record(pool, 47).await?;
     }
+    if current_version < 48 {
+        migrate_and_record(pool, 48).await?;
+    }
 
     Ok(())
 }
@@ -222,6 +225,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             45 => migrate_v45(pool).await?,
             46 => migrate_v46(pool).await?,
             47 => migrate_v47(pool).await?,
+            48 => migrate_v48(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -250,7 +254,14 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             Ok(())
         }
         Err(e) => {
-            let _ = sqlx::query("ROLLBACK").execute(pool).await;
+            if let Err(rollback_err) = sqlx::query("ROLLBACK").execute(pool).await {
+                tracing::warn!(
+                    migration_version = version,
+                    original_error = %e,
+                    rollback_error = %rollback_err,
+                    "migration failed and ROLLBACK also failed"
+                );
+            }
             Err(e)
         }
     }
@@ -1109,7 +1120,9 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_job_parent_attempt ON job(parent_attempt_id)",
         "CREATE INDEX IF NOT EXISTS idx_job_parent_call ON job(parent_call_id)",
     ] {
-        let _ = sqlx::query(idx).execute(pool).await;
+        if let Err(error) = sqlx::query(idx).execute(pool).await {
+            tracing::warn!(index = %idx, %error, "failed to create lineage index");
+        }
     }
 
     sqlx::query(
@@ -2096,6 +2109,24 @@ async fn migrate_v45(pool: &SqlitePool) -> Result<(), StorageError> {
 }
 
 /// M012: durable checked undo/reapply audit log.
+async fn migrate_v48(pool: &SqlitePool) -> Result<(), StorageError> {
+    // H11: hot query patterns — ORDER BY time_updated DESC (project-scoped
+    // listing/search) and per-session event/part scans. The single-column
+    // variants already exist (v4/v32/v1); this adds the composite used by
+    // list/search paths and re-asserts the others idempotently.
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_session_project_updated ON session(project_id, time_updated DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_session_events_session_created ON session_events(session_id, created_at)",
+        "CREATE INDEX IF NOT EXISTS part_session_idx ON part(session_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
 async fn migrate_v47(pool: &SqlitePool) -> Result<(), StorageError> {
     for statement in [
         r#"

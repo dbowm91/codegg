@@ -70,6 +70,10 @@ pub enum SubscriptionError {
     ResyncRequired,
 }
 
+/// Crash-consistency: `by_id` is primary; `by_client`/`by_stream` are
+/// secondary indexes rebuilt from `by_id` on startup. Multi-map mutations
+/// are not atomic — a crash between per-map updates may leave stale index
+/// entries, which are dropped on rebuild.
 pub struct SubscriptionRegistry {
     by_id: DashMap<ProjectionSubscriptionId, SubscriptionEntry>,
     by_client: DashMap<String, HashSet<String>>,

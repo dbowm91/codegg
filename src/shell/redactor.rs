@@ -59,36 +59,33 @@ impl RedactRule for AuthorizationRule {
     }
 
     fn redact(&self, text: &str) -> (String, usize) {
+        use std::borrow::Cow;
+        if text.is_empty() {
+            return (String::new(), 0);
+        }
         let mut count = 0usize;
-        let mut out = BEARER_RE
-            .replace_all(text, |caps: &regex::Captures| {
-                count += 1;
-                format!("{}[REDACTED:bearer-token]", &caps[1])
-            })
-            .into_owned();
+        // Use Cow to avoid allocating when a pattern does not match.
+        let bearer: Cow<str> = BEARER_RE.replace_all(text, |caps: &regex::Captures| {
+            count += 1;
+            format!("{}[REDACTED:bearer-token]", &caps[1])
+        });
+        let basic: Cow<str> = BASIC_RE.replace_all(&bearer, |caps: &regex::Captures| {
+            count += 1;
+            format!("{}[REDACTED:basic-creds]", &caps[1])
+        });
+        let out: Cow<str> = API_KEY_RE.replace_all(&basic, |caps: &regex::Captures| {
+            count += 1;
+            let prefix = &caps[1]; // e.g. "api_key=" or "X-Api-Key: "
+            let value = &caps[2];
+            if value.len() <= 4 {
+                // Too short to meaningfully redact — skip to avoid false positives
+                caps[0].to_string()
+            } else {
+                format!("{prefix}[REDACTED:api-key]")
+            }
+        });
 
-        out = BASIC_RE
-            .replace_all(&out, |caps: &regex::Captures| {
-                count += 1;
-                format!("{}[REDACTED:basic-creds]", &caps[1])
-            })
-            .into_owned();
-
-        out = API_KEY_RE
-            .replace_all(&out, |caps: &regex::Captures| {
-                count += 1;
-                let prefix = &caps[1]; // e.g. "api_key=" or "X-Api-Key: "
-                let value = &caps[2];
-                if value.len() <= 4 {
-                    // Too short to meaningfully redact — skip to avoid false positives
-                    caps[0].to_string()
-                } else {
-                    format!("{prefix}[REDACTED:api-key]")
-                }
-            })
-            .into_owned();
-
-        (out, count)
+        (out.into_owned(), count)
     }
 }
 

@@ -45,6 +45,14 @@ pub fn generate_slug(title: &Option<String>) -> String {
         .unwrap_or_else(|| "untitled".to_string())
 }
 
+/// Default cap for unbounded session queries to avoid OOM on large catalogs.
+/// Callers that need full scans (e.g. legacy imports) must paginate with
+/// explicit `limit` + `offset` instead of relying on `None`.
+pub const DEFAULT_SESSION_QUERY_LIMIT: i64 = 200;
+/// Bound for per-session scans (children, events, tags) where a single
+/// session/project is the scope.
+pub const DEFAULT_PER_SESSION_LIMIT: i64 = 500;
+
 pub struct SessionStore {
     pool: SqlitePool,
 }
@@ -449,20 +457,18 @@ impl SessionStore {
         &self,
         limit: Option<usize>,
     ) -> Result<Vec<Session>, StorageError> {
-        let mut sql = format!(
-            "SELECT {} FROM session WHERE time_deleted IS NULL ORDER BY time_updated DESC",
+        let capped = limit
+            .map(|l| l as i64)
+            .unwrap_or(DEFAULT_SESSION_QUERY_LIMIT);
+        let sql = format!(
+            "SELECT {} FROM session WHERE time_deleted IS NULL ORDER BY time_updated DESC LIMIT ?",
             SESSION_COLUMNS
         );
-        if limit.is_some() {
-            sql.push_str(" LIMIT ?");
-        }
-        let query = sqlx::query_as::<_, SessionRow>(&sql);
-        let rows = if let Some(limit) = limit {
-            query.bind(limit as i64).fetch_all(&self.pool).await
-        } else {
-            query.fetch_all(&self.pool).await
-        }
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = sqlx::query_as::<_, SessionRow>(&sql)
+            .bind(capped)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(rows.into_iter().map(|row| row.into()).collect())
     }
 
@@ -472,31 +478,21 @@ impl SessionStore {
         limit: Option<usize>,
         offset: usize,
     ) -> Result<Vec<Session>, StorageError> {
-        if let Some(limit) = limit {
-            let sql = format!(
-                "SELECT {} FROM session WHERE project_id = ? AND time_deleted IS NULL ORDER BY time_updated DESC LIMIT ? OFFSET ?",
-                SESSION_COLUMNS
-            );
-            sqlx::query_as::<_, SessionRow>(&sql)
-                .bind(project_id)
-                .bind(limit as i64)
-                .bind(offset as i64)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))
-                .map(|rows| rows.into_iter().map(|r| r.into()).collect())
-        } else {
-            let sql = format!(
-                "SELECT {} FROM session WHERE project_id = ? AND time_deleted IS NULL ORDER BY time_updated DESC",
-                SESSION_COLUMNS
-            );
-            sqlx::query_as::<_, SessionRow>(&sql)
-                .bind(project_id)
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| StorageError::Database(e.to_string()))
-                .map(|rows| rows.into_iter().map(|r| r.into()).collect())
-        }
+        let capped = limit
+            .map(|l| l as i64)
+            .unwrap_or(DEFAULT_SESSION_QUERY_LIMIT);
+        let sql = format!(
+            "SELECT {} FROM session WHERE project_id = ? AND time_deleted IS NULL ORDER BY time_updated DESC LIMIT ? OFFSET ?",
+            SESSION_COLUMNS
+        );
+        sqlx::query_as::<_, SessionRow>(&sql)
+            .bind(project_id)
+            .bind(capped)
+            .bind(offset as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StorageError::Database(e.to_string()))
+            .map(|rows| rows.into_iter().map(|r| r.into()).collect())
     }
 
     pub async fn search(
@@ -507,13 +503,14 @@ impl SessionStore {
         let escaped = escape_sql_like(query);
         let pattern = format!("%{}%", escaped);
         sqlx::query_as::<_, SessionRow>(&format!(
-            "SELECT {} FROM session WHERE project_id = ? AND (title LIKE ? OR slug LIKE ? OR directory LIKE ?) AND time_archived IS NULL AND time_deleted IS NULL ORDER BY time_updated DESC",
+            "SELECT {} FROM session WHERE project_id = ? AND (title LIKE ? OR slug LIKE ? OR directory LIKE ?) AND time_archived IS NULL AND time_deleted IS NULL ORDER BY time_updated DESC LIMIT ?",
             SESSION_COLUMNS
         ))
         .bind(project_id)
         .bind(&pattern)
         .bind(&pattern)
         .bind(&pattern)
+        .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))
@@ -528,7 +525,7 @@ impl SessionStore {
         let escaped = escape_sql_like(query);
         let pattern = format!("%{}%", escaped);
         sqlx::query_as::<_, SessionRow>(&format!(
-            "SELECT DISTINCT {} FROM session s LEFT JOIN message m ON s.id = m.session_id WHERE s.project_id = ? AND (s.title LIKE ? OR s.slug LIKE ? OR s.directory LIKE ? OR m.data LIKE ?) AND s.time_archived IS NULL AND s.time_deleted IS NULL ORDER BY s.time_updated DESC",
+            "SELECT DISTINCT {} FROM session s LEFT JOIN message m ON s.id = m.session_id WHERE s.project_id = ? AND (s.title LIKE ? OR s.slug LIKE ? OR s.directory LIKE ? OR m.data LIKE ?) AND s.time_archived IS NULL AND s.time_deleted IS NULL ORDER BY s.time_updated DESC LIMIT ?",
             SESSION_COLUMNS_QUALIFIED
         ))
         .bind(project_id)
@@ -536,6 +533,7 @@ impl SessionStore {
         .bind(&pattern)
         .bind(&pattern)
         .bind(&pattern)
+        .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))
@@ -550,11 +548,12 @@ impl SessionStore {
         let escaped = escape_sql_like(tag);
         let pattern = format!("%\"{}%\"", escaped);
         sqlx::query_as::<_, SessionRow>(&format!(
-            "SELECT {} FROM session WHERE project_id = ? AND tags LIKE ? AND time_archived IS NULL AND time_deleted IS NULL ORDER BY time_updated DESC",
+            "SELECT {} FROM session WHERE project_id = ? AND tags LIKE ? AND time_archived IS NULL AND time_deleted IS NULL ORDER BY time_updated DESC LIMIT ?",
             SESSION_COLUMNS
         ))
         .bind(project_id)
         .bind(&pattern)
+        .bind(DEFAULT_SESSION_QUERY_LIMIT)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))
@@ -563,7 +562,7 @@ impl SessionStore {
 
     pub async fn all_tags(&self, project_id: &str) -> Result<Vec<String>, StorageError> {
         let sessions = sqlx::query_as::<_, SessionRow>(
-            "SELECT id, tags FROM session WHERE project_id = ? AND tags IS NOT NULL AND time_archived IS NULL AND time_deleted IS NULL",
+            "SELECT id, tags FROM session WHERE project_id = ? AND tags IS NOT NULL AND time_archived IS NULL AND time_deleted IS NULL LIMIT 5000",
         )
         .bind(project_id)
         .fetch_all(&self.pool)
@@ -1140,6 +1139,7 @@ impl SessionStore {
             SELECT id, session_id, time_created, time_updated, data
             FROM message WHERE session_id = ?
             ORDER BY time_created ASC, id ASC
+            LIMIT 5000
             "#,
         )
         .bind(id)
@@ -1361,10 +1361,11 @@ impl SessionStore {
 
     pub async fn children(&self, id: &str) -> Result<Vec<Session>, StorageError> {
         sqlx::query_as::<_, SessionRow>(&format!(
-            "SELECT {} FROM session WHERE parent_id = ? AND time_deleted IS NULL ORDER BY time_created ASC",
+            "SELECT {} FROM session WHERE parent_id = ? AND time_deleted IS NULL ORDER BY time_created ASC LIMIT ?",
             SESSION_COLUMNS
         ))
         .bind(id)
+        .bind(DEFAULT_PER_SESSION_LIMIT)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| StorageError::Database(e.to_string()))
@@ -2735,6 +2736,7 @@ impl EventStore {
             SELECT payload_json FROM session_events
             WHERE session_id = ?
             ORDER BY created_at ASC, id ASC
+            LIMIT 5000
             "#,
         )
         .bind(session_id)

@@ -41,6 +41,7 @@ pub fn parse_candidate(
 ) -> Result<SkillCandidate, Diagnostic> {
     let location = skill_file.display().to_string();
 
+    // Sync I/O is intentional: startup-only skill discovery scan.
     let raw_content = std::fs::read_to_string(skill_file).map_err(|e| {
         Diagnostic::error(format!("failed to read skill file: {e}"), location.clone())
     })?;

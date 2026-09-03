@@ -317,13 +317,15 @@ impl PermissionStore {
         }
     }
 
+    /// Record a decision; returns `false` when persistence failed so the
+    /// caller can retry/notify (in-memory decision is still applied).
     pub fn add_decision(
         &mut self,
         tool: &str,
         path: Option<&str>,
         level: PermissionLevel,
         session_id: Option<&str>,
-    ) {
+    ) -> bool {
         let timestamp = chrono::Utc::now().timestamp();
 
         let signature = if let Some(key) = get_signature_key() {
@@ -346,7 +348,7 @@ impl PermissionStore {
                 && d.session_id == decision.session_id)
         });
         self.decisions.push(decision);
-        self.save();
+        self.save()
     }
 
     pub fn get_decision(
@@ -436,24 +438,27 @@ impl PermissionStore {
         })
     }
 
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self) -> bool {
         self.decisions.clear();
-        self.save();
+        self.save()
     }
 
-    fn save(&self) {
+    /// Persist decisions; returns `false` on failure (already logged) so
+    /// callers can surface retry/notify UI. Returns `true` when there is
+    /// nothing to persist or the write succeeded.
+    fn save(&self) -> bool {
         if let Some(ref path) = self.store_path {
             if let Some(parent) = path.parent() {
                 if let Err(e) = std::fs::create_dir_all(parent) {
                     tracing::warn!("failed to create permission store directory: {}", e);
-                    return;
+                    return false;
                 }
             }
             let json = match serde_json::to_string_pretty(&self.decisions) {
                 Ok(json) => json,
                 Err(e) => {
                     tracing::warn!("failed to serialize permission decisions: {}", e);
-                    return;
+                    return false;
                 }
             };
             // Atomic temp+rename so a crash mid-write cannot truncate
@@ -468,8 +473,10 @@ impl PermissionStore {
                     e
                 );
                 let _ = std::fs::remove_file(&tmp_path);
+                return false;
             }
         }
+        true
     }
 }
 

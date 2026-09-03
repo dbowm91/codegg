@@ -540,7 +540,9 @@ async fn run_inner(
     let stdout = join_output(stdout_task).await?;
     let stderr = join_output(stderr_task).await?;
     if let Some(task) = stdin_task {
-        let _ = tokio::time::timeout(TERMINATION_GRACE, task).await;
+        if let Err(error) = tokio::time::timeout(TERMINATION_GRACE, task).await {
+            tracing::debug!("stdin-drain task did not finish in grace period: {}", error);
+        }
     }
 
     let sandbox_status = if let Some(task) = status_task {
@@ -736,7 +738,11 @@ where
         let was_truncated = output.is_truncated();
         output.append(&buffer[..read], cap);
         if !was_truncated && output.is_truncated() && overflow_policy == OverflowPolicy::Terminate {
-            let _ = overflow_tx.try_send(stream);
+            // Cap enforcement does not depend on this send; termination is
+            // driven by the truncated flag. Log drops for observability.
+            if overflow_tx.try_send(stream).is_err() {
+                tracing::debug!("output-cap overflow notice dropped (no receiver)");
+            }
         }
     }
 }

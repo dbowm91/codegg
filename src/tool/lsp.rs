@@ -1326,6 +1326,8 @@ impl LspTool {
         target_line: Option<u32>,
         radius: u32,
     ) -> Result<(SourceExcerpt, bool), ToolError> {
+        // Sync read is intentional: callers invoke this from spawn_blocking
+        // or on small bounded excerpts; keep off the async executor.
         let content = std::fs::read_to_string(file).map_err(|e| {
             ToolError::Execution(format!(
                 "semanticContext: failed to read {}: {}",
@@ -4767,6 +4769,8 @@ fn collect_cache_file_hashes_for_request(
         path: &std::path::Path,
         allowed_root: &std::path::Path,
     ) -> Option<(std::path::PathBuf, String)> {
+        // Sync hash is intentional: preview-apply validation runs on small
+        // bounded files inside spawn_blocking; do not move onto the executor.
         let canonical = path.canonicalize().ok()?;
         let root_canonical = allowed_root
             .canonicalize()

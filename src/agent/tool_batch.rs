@@ -592,7 +592,11 @@ impl AgentLoop {
             );
         }
         // Clear stale FileChanged events for hygiene but do not use for durability.
-        let _ = self.drain_file_change_events();
+        // drain returns drained events (Vec); dropped count logged for watch-lag visibility.
+        let drained = self.drain_file_change_events();
+        if !drained.is_empty() {
+            tracing::debug!("drained {} stale file-change events", drained.len());
+        }
 
         let _timeout_secs = self.tool_timeout();
         let max_parallel = self.max_parallel_tools();

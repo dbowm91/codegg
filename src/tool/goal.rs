@@ -317,8 +317,15 @@ impl Tool for GoalRequestCompletionTool {
                     open_questions: vec![],
                 };
                 if let Some(ref cp_path) = updated_goal.checkpoint_path {
-                    let _ =
-                        crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await;
+                    if let Err(error) =
+                        crate::goal::checkpoint::append_checkpoint_update(cp_path, &update).await
+                    {
+                        tracing::warn!(
+                            goal_id = %goal.id,
+                            %error,
+                            "failed to persist goal checkpoint"
+                        );
+                    }
                 }
                 crate::bus::global::GlobalEventBus::publish(
                     crate::bus::events::AppEvent::GoalUpdated {

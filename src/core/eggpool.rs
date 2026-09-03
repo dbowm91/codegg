@@ -168,6 +168,9 @@ struct RotationSecret {
     expires_at: Instant,
 }
 
+/// Crash-consistency: per-connection maps are ephemeral caches; the SQL
+/// store is authoritative. Multi-map updates are not atomic — a crash
+/// between them only drops cached status, which is rebuilt on demand.
 #[derive(Clone)]
 pub struct EggpoolProvisioner {
     pool: sqlx::SqlitePool,

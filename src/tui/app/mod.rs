@@ -2092,6 +2092,11 @@ impl App {
     /// Synchronously read the persisted theme id (if any) and resolve it
     /// through the registry. Returns `None` if the user has no saved
     /// theme or the saved id is no longer in the registry.
+    ///
+    /// Requires a `multi_thread` runtime (`src/main.rs` guarantees this).
+    /// Must not be called from a `current_thread` runtime or outside a
+    /// Tokio context — `block_in_place` panics there. Prefer loading prefs
+    /// once at startup where possible.
     fn read_persisted_theme_id(&self) -> Option<String> {
         let prefs = self.preferences.as_ref()?;
         // Use the dedicated tokio runtime handle that already exists in
@@ -2112,6 +2117,8 @@ impl App {
     /// Synchronously read the persisted model id (if any). The caller is
     /// responsible for validating that the id is in the available
     /// `agent_state.models` list.
+    ///
+    /// Requires a `multi_thread` runtime; see `read_persisted_theme_id`.
     fn read_persisted_model_id(&self) -> Option<String> {
         let prefs = self.preferences.as_ref()?;
         match tokio::task::block_in_place(|| {

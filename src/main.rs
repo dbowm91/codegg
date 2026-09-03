@@ -2144,8 +2144,18 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
                                     "No daemon metadata found; unlinking stale lock and socket"
                                 );
                             }
-                            let _ = std::fs::remove_file(&paths.lock_path);
-                            let _ = std::fs::remove_file(&paths.socket_path);
+                            for stale in [&paths.lock_path, &paths.socket_path] {
+                                if let Err(error) = std::fs::remove_file(stale) {
+                                    if error.kind() != std::io::ErrorKind::NotFound {
+                                        eprintln!(
+                                            "Failed to unlink stale {}: {}; aborting force-take.",
+                                            stale.display(),
+                                            error
+                                        );
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
                             continue;
                         }
                         eprintln!(
@@ -2165,20 +2175,29 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
     };
 
     // Step 2: inspect any existing socket path before binding.
-    if paths.socket_path.exists() {
-        // Try a quick health probe. If it answers, treat as invariant
-        // violation — the lock said we own it, but a listener says
-        // otherwise. Refuse to unlink.
-        match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
-            Ok(_client) => {
-                eprintln!(
-                    "Existing socket {} responds to connection; refusing to unlink.",
-                    paths.socket_path.display()
-                );
-                std::process::exit(1);
-            }
-            Err(_) => {
-                let _ = std::fs::remove_file(&paths.socket_path);
+    // The flock is authoritative for singleton ownership; this probe only
+    // avoids unlinking a live listener. No existence pre-check is relied
+    // upon for correctness — bind failures below are handled explicitly.
+    match codegg::core::transport::SocketCoreClient::connect(&paths.endpoint_uri()).await {
+        Ok(_client) => {
+            eprintln!(
+                "Existing socket {} responds to connection; refusing to unlink.",
+                paths.socket_path.display()
+            );
+            std::process::exit(1);
+        }
+        Err(_) => {
+            // Stale or missing socket: best-effort cleanup, ignore NotFound.
+            match std::fs::remove_file(&paths.socket_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to remove stale socket {}: {}",
+                        paths.socket_path.display(),
+                        e
+                    );
+                }
             }
         }
     }
@@ -2259,11 +2278,12 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
 
     // Backward-compat: also write the legacy PID file at <socket>.pid.
     // New tooling should read daemon.json, but external scripts may rely
-    // on the pid file for `kill`.
+    // on the pid file for `kill`. Deprecated: authoritative identity is the
+    // lock + metadata record.
     let pid_file = paths.socket_path.with_extension("pid");
-    tokio::fs::write(&pid_file, std::process::id().to_string())
-        .await
-        .ok();
+    if let Err(error) = tokio::fs::write(&pid_file, std::process::id().to_string()).await {
+        tracing::warn!(pid_file = %pid_file.display(), %error, "failed to write legacy PID file");
+    }
 
     tracing::info!(
         "Starting core daemon (id={}, generation={}) on {}",
@@ -2318,10 +2338,11 @@ async fn run_daemon(endpoint: Option<String>, force_take_lock: bool) {
         )
         .await;
 
-    // Cleanup: drop socket, pid, metadata. Guard's Drop removes metadata;
-    // we explicitly remove the socket and pid file here.
-    let _ = std::fs::remove_file(&paths.socket_path);
+    // Cleanup: drop pid, socket, metadata (in that order so observers never
+    // see socket-gone + PID-present). Guard's Drop removes metadata; we
+    // explicitly remove the pid and socket files here while holding the lock.
     let _ = std::fs::remove_file(&pid_file);
+    let _ = std::fs::remove_file(&paths.socket_path);
     drop(guard);
     if let Err(e) = serve_result {
         eprintln!("Daemon error: {}", e);

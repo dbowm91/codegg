@@ -1493,7 +1493,7 @@ impl AgentLoop {
         let (Some(control), Some(run_id)) = (&self.run_control, &self.run_id) else {
             return;
         };
-        let _ = control
+        if let Err(error) = control
             .append(
                 run_id.clone(),
                 codegg_core::agent_run_control::AgentRunJournalEventKind::SafeBoundary,
@@ -1501,7 +1501,15 @@ impl AgentLoop {
                 None,
                 [("boundary".into(), boundary.into())],
             )
-            .await;
+            .await
+        {
+            tracing::warn!(
+                run_id = %run_id,
+                boundary,
+                %error,
+                "failed to journal run boundary"
+            );
+        }
     }
 
     fn apply_agent_config(&self, request: &mut ChatRequest) {

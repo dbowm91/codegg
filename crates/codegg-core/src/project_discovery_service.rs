@@ -89,7 +89,10 @@ impl DiscoveryRootRecord {
 pub fn roots_from_config(
     config: &DiscoveryConfig,
 ) -> Result<Vec<DiscoveryRootRecord>, Vec<String>> {
-    let mut errors = config.validate().err().unwrap_or_default();
+    let mut errors = match config.validate() {
+        Ok(()) => Vec::new(),
+        Err(errors) => errors,
+    };
     let mut roots = Vec::new();
     if errors.is_empty() {
         for (index, root) in config.roots().iter().enumerate() {

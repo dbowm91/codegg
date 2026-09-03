@@ -165,8 +165,10 @@ pub async fn migrate_legacy_project_database(
     let source_session_store = SessionStore::new(source_pool.clone());
     let source_msg_store = MessageStore::new(source_pool.clone());
 
+    // One-time legacy import: explicit large bound (global scan). Runtime
+    // query paths use the capped default (200) to avoid OOM.
     let sessions = source_session_store
-        .list_all_sessions(None)
+        .list_all_sessions(Some(100_000))
         .await
         .map_err(|e| StorageError::Database(format!("list source sessions: {}", e)))?;
 

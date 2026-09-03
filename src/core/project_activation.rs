@@ -217,6 +217,11 @@ pub struct ProjectActivation {
 }
 
 /// Daemon-owned project activation registry.
+///
+/// Crash-consistency: `active` is primary; `activation_locks` entries are
+/// lazily created and never required for correctness. Per-key locks
+/// serialize activation; a crash between map updates only leaks an idle
+/// lock entry, which is recreated on demand.
 pub struct ProjectActivationRegistry {
     workspace_services: Arc<WorkspaceServiceRegistry>,
     active: DashMap<ActivationKey, Arc<ActiveActivation>>,

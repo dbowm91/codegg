@@ -264,14 +264,22 @@ impl RunControlService {
                     .await
                     .map_err(|e| RunControlError::RunStore(e.to_string()))?;
                 if let Some(current) = current.filter(|run| run.status.is_terminal()) {
-                    let _ = self.dispatch_pending(&target, false).await;
+                    self.dispatch_pending(&target, false).await?;
                     return Ok(ControlOutcome::Terminal(current.status));
                 }
                 return Err(RunControlError::RunStore(error.to_string()));
             }
             if let Some(job_id) = run.job_id {
                 if let Some(scheduler) = self.scheduler.lock().await.clone() {
-                    let _ = scheduler.request_cancel(&job_id, "agent_run_control").await;
+                    if let Err(error) = scheduler.request_cancel(&job_id, "agent_run_control").await
+                    {
+                        tracing::warn!(
+                            run_id = %target,
+                            job_id = %job_id,
+                            %error,
+                            "scheduler cancel failed for agent run"
+                        );
+                    }
                 }
             }
             self.append(
@@ -407,7 +415,14 @@ impl RunControlService {
         );
         if let Some(parent) = run.parent_run_id {
             if let Some(handle) = self.live.lock().await.get(&parent).cloned() {
-                let _ = handle.follow_up_tx.try_send(notice.clone());
+                if let Err(error) = handle.follow_up_tx.try_send(notice.clone()) {
+                    tracing::warn!(
+                        run_id = %run_id,
+                        parent_run_id = %parent,
+                        %error,
+                        "child completion notice dropped (parent channel full/closed)"
+                    );
+                }
             }
         } else if let Some(task) = self
             .runs
@@ -421,7 +436,13 @@ impl RunControlService {
                     turn_id,
                 };
                 if let Some(follow_up_tx) = self.live_turns.lock().await.get(&owner).cloned() {
-                    let _ = follow_up_tx.try_send(notice);
+                    if let Err(error) = follow_up_tx.try_send(notice) {
+                        tracing::warn!(
+                            run_id = %run_id,
+                            %error,
+                            "child completion notice dropped (turn channel full/closed)"
+                        );
+                    }
                 }
             }
         }
@@ -470,7 +491,7 @@ impl RunControlService {
         {
             if run.status.is_terminal() {
                 for message in self.controls.pending(run_id).await? {
-                    let _ = self.controls.supersede(&message.message_id).await?;
+                    self.controls.supersede(&message.message_id).await?;
                 }
                 return Ok(());
             }
@@ -492,16 +513,13 @@ impl RunControlService {
                     handle.interrupt_flag.store(true, Ordering::SeqCst);
                     handle.steer_tx.try_send("Interrupt requested by the owning parent; reconsider before the next safe action.".into()).map_err(|_| ())
                 }
-                AgentRunControlKind::Cancel => {
-                    let _ = handle.cancel_tx.send(true);
-                    Ok(())
-                }
+                AgentRunControlKind::Cancel => handle.cancel_tx.send(true).map_err(|_| ()),
             };
             if sent.is_err() {
                 return Err(RunControlError::ChannelClosed);
             }
             self.controls.acknowledge(&delivered.message_id).await?;
-            let _ = self
+            if let Err(error) = self
                 .append(
                     run_id.clone(),
                     AgentRunJournalEventKind::ControlDelivered,
@@ -509,7 +527,15 @@ impl RunControlService {
                     None,
                     [("sequence".into(), delivered.sequence.to_string())],
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(
+                    run_id = %run_id,
+                    message_id = %delivered.message_id,
+                    %error,
+                    "failed to journal control delivery"
+                );
+            }
         }
         Ok(())
     }
@@ -522,7 +548,13 @@ impl RunControlService {
         match &summary.group.owner {
             codegg_core::agent_run_group::AgentRunGroupOwner::Run { run_id } => {
                 if let Some(handle) = self.live.lock().await.get(run_id).cloned() {
-                    let _ = handle.follow_up_tx.try_send(notice);
+                    if let Err(error) = handle.follow_up_tx.try_send(notice) {
+                        tracing::warn!(
+                            group_id = %summary.group.group_id,
+                            %error,
+                            "group completion notice dropped (run channel full/closed)"
+                        );
+                    }
                 }
             }
             codegg_core::agent_run_group::AgentRunGroupOwner::Turn {
@@ -534,7 +566,13 @@ impl RunControlService {
                     turn_id: turn_id.clone(),
                 };
                 if let Some(follow_up_tx) = self.live_turns.lock().await.get(&owner).cloned() {
-                    let _ = follow_up_tx.try_send(notice);
+                    if let Err(error) = follow_up_tx.try_send(notice) {
+                        tracing::warn!(
+                            group_id = %summary.group.group_id,
+                            %error,
+                            "group completion notice dropped (turn channel full/closed)"
+                        );
+                    }
                 }
             }
         }

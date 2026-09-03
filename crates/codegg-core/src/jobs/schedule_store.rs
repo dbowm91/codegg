@@ -265,7 +265,7 @@ impl ScheduleStore for InMemoryScheduleStore {
                 let guard = self.schedules.lock().await;
                 let r = guard
                     .get(sid_str)
-                    .expect("due schedule exists after collection");
+                    .ok_or_else(|| ScheduleError::ScheduleNotFound(sid_str.clone()))?;
                 (
                     r.kind.clone(),
                     r.missed_run_policy.clone(),

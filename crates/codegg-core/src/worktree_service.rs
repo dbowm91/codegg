@@ -978,7 +978,9 @@ impl WorktreeService {
             && record.state != ManagedWorktreeState::Removed
             && record.owner_run_id.is_none()
         {
-            let _ = transition(&mut record, ManagedWorktreeState::Orphaned);
+            if let Err(error) = transition(&mut record, ManagedWorktreeState::Orphaned) {
+                tracing::warn!(worktree_id = %record.worktree_id, %error, "failed to mark worktree orphaned");
+            }
         }
         self.store.save(record.clone()).await?;
         Ok(record)

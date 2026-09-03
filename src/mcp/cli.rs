@@ -337,7 +337,14 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                                                     println!("Connection successful!");
                                                     let tools = manager.discover_tools().await?;
                                                     println!("Server '{}' has {} tools", server_name, tools.len());
-                                                    let _ = manager.disconnect().await;
+                                                    if let Err(error) =
+                                                        manager.disconnect().await
+                                                    {
+                                                        tracing::debug!(
+                                                            "MCP disconnect after debug probe failed: {}",
+                                                            error
+                                                        );
+                                                    }
                                                     Ok::<(), AppError>(())
                                                 });
                                                 result?;
@@ -392,7 +399,9 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         )?;
                         manager.connect().await?;
                         println!("Connection to {} successful!", test_url);
-                        let _ = manager.disconnect().await;
+                        if let Err(error) = manager.disconnect().await {
+                            tracing::debug!("MCP disconnect after URL probe failed: {}", error);
+                        }
                         Ok::<(), AppError>(())
                     });
                     result?;
@@ -406,7 +415,12 @@ pub fn exec_mcp_command(cmd: McpCommand) -> Result<(), AppError> {
                         )?;
                         manager.connect().await?;
                         println!("Connection to {} successful!", test_url);
-                        let _ = manager.disconnect().await;
+                        if let Err(error) = manager.disconnect().await {
+                            tracing::debug!(
+                                "MCP disconnect after named URL probe failed: {}",
+                                error
+                            );
+                        }
                         Ok::<(), AppError>(())
                     });
                     result?;

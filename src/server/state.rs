@@ -159,13 +159,12 @@ impl WsRateLimiter {
         let now = Instant::now();
         let mut cache = self.cache.lock().await;
 
-        // Only the requested key needs pruning. Stale keys remain bounded by
-        // the hard cap and are eligible for deterministic oldest-entry
-        // eviction when a new key arrives.
-        cache
-            .entry(key.to_string())
-            .or_default()
-            .retain(|&t| now.duration_since(t) < self.window);
+        // Prune all stale keys (matches http.rs) so idle entries do not
+        // linger until eviction; per-key vectors stay small.
+        cache.retain(|_, requests| {
+            requests.retain(|&t| now.duration_since(t) < self.window);
+            !requests.is_empty()
+        });
 
         if cache.len() > MAX_WS_RATE_LIMITER_KEYS {
             if let Some(oldest_key) = cache

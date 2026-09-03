@@ -483,6 +483,7 @@ impl ThemeRegistry {
 
     /// Load every `*.toml` file in `dir`. Top-level files only. Subdirectories
     /// are ignored. Returns the number of files successfully loaded.
+    /// Sync I/O is intentional: startup-only theme scan.
     pub fn load_dir(&mut self, dir: &Path) -> Result<usize, ThemeError> {
         let entries = std::fs::read_dir(dir)?;
         let mut count = 0;

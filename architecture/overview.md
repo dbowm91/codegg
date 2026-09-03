@@ -84,7 +84,7 @@ A single user prompt flows through the system along this path:
    events into a frontend-neutral session projection; clients subscribe to
    scoped views and replay durable history ([projection.md](projection.md)).
 8. **Persistence** — Sessions, messages, todos, checkpoints, usage, goals,
-   research runs, jobs, and schedules persist in SQLite (52 tables across 35
+   research runs, jobs, and schedules persist in SQLite (63 tables across 48
    migrations) ([session.md](session.md), [storage.md](storage.md)). Command,
    script, and test outputs land in the RunStore artifact store
    ([run_store.md](run_store.md)).
@@ -182,7 +182,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
 | Session | SQLite session storage, message history, migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
-| Bus | Event bus publish/subscribe (45 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
+| Bus | Event bus publish/subscribe (51 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
 | Projection | Session projection contract — frontend-neutral derived view, deterministic canonical reducer, scoped subscriptions, durable replay (M1-M2) | `projection/` (codegg-protocol), `projection_replay/` (codegg-core) | [projection.md](projection.md) |
 | Project Catalog | Daemon-owned project catalog — list, get, register, archive, restore; path-independent identity, lifecycle management | `project_catalog.rs`, `project_storage.rs` (codegg-core) | [project_catalog.md](project_catalog.md) |
@@ -267,13 +267,13 @@ Counts below were re-verified against the current tree (see source column).
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
-| AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
+| AppEvent variants | 51 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in slash commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 9 | `assets/agents/*.toml` |
-| Database tables | 52 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 36 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
-| Integration test files | 164 | `tests/*.rs` |
-| Architecture docs | 73 | `architecture/` |
+| Database tables | 63 | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 48 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Integration test files | 167 | `tests/*.rs` |
+| Architecture docs | 72 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
 | Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
@@ -297,7 +297,7 @@ Counts below were re-verified against the current tree (see source column).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (54, STORAGE_LAYOUT_VERSION = 38)                          │
+│ Tables (63, STORAGE_LAYOUT_VERSION = 48)                          │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
@@ -501,12 +501,12 @@ codegg/
 │   ├── eggsentry/              # Security scanning
 │   ├── eggcontext/             # Token counting
 │   └── egglsp-test-server/     # Fake LSP server for tests (not a member)
-├── tests/                      # Integration tests (164 files)
+├── tests/                      # Integration tests (167 files)
 ├── assets/                     # Agent definitions, prompts, themes
 │   ├── agents/                 # 9 built-in agent TOML definitions
 │   └── prompts/                # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (73 docs)
+├── architecture/               # Architecture documentation (72 docs)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
 └── examples/plugins/           # Plugin SDKs and reference plugins

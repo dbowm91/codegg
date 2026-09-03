@@ -941,7 +941,11 @@ impl TaskTool {
                         .await
                 }
                 "cancel_group" => groups.cancel(&actor, group_id).await,
-                _ => unreachable!(),
+                other => {
+                    return Err(ToolError::Execution(format!(
+                        "unknown group action: {other}"
+                    )))
+                }
             };
             return match result {
                 Ok(summary) => {
@@ -987,7 +991,12 @@ impl TaskTool {
                     let kind = match action {
                         "message" => AgentRunControlKind::Message,
                         "interrupt" => AgentRunControlKind::Interrupt,
-                        _ => AgentRunControlKind::Cancel,
+                        "cancel" => AgentRunControlKind::Cancel,
+                        other => {
+                            return Err(ToolError::Execution(format!(
+                                "unknown run control action: {other}"
+                            )))
+                        }
                     };
                     let payload = input["message"].as_str().unwrap_or_default().to_string();
                     let key = input["idempotency_key"]
@@ -998,7 +1007,11 @@ impl TaskTool {
                         });
                     control.send(&actor, run_id, kind, payload, key).await
                 }
-                _ => unreachable!(),
+                other => {
+                    return Err(ToolError::Execution(format!(
+                        "unknown run control action: {other}"
+                    )))
+                }
             }
             .map_err(|e| ToolError::Execution(e.to_string()))?;
             return Ok(format_control_outcome(outcome));

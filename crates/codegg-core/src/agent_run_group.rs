@@ -763,7 +763,14 @@ impl AgentRunGroupService {
             cancelled.completed_at = Some(Utc::now().timestamp_millis());
             self.groups.update(cancelled.clone()).await?;
             for run_id in &group.member_run_ids {
-                let _ = self.runs.request_cancel(run_id).await;
+                if let Err(error) = self.runs.request_cancel(run_id).await {
+                    tracing::warn!(
+                        group_id = %group.group_id,
+                        run_id = %run_id,
+                        %error,
+                        "group member cancel failed"
+                    );
+                }
             }
             self.emit_notification(&cancelled, 0, group.member_run_ids.len())
                 .await?;
@@ -966,7 +973,14 @@ impl AgentRunGroupService {
                             if !member.status.is_terminal()
                                 && group.winner_run_id.as_ref() != Some(&member.run_id)
                             {
-                                let _ = self.runs.request_cancel(&member.run_id).await;
+                                if let Err(error) = self.runs.request_cancel(&member.run_id).await {
+                                    tracing::warn!(
+                                        group_id = %group.group_id,
+                                        run_id = %member.run_id,
+                                        %error,
+                                        "group winner-take-all cancel failed"
+                                    );
+                                }
                             }
                         }
                     }
@@ -997,14 +1011,23 @@ impl AgentRunGroupService {
         failed: usize,
     ) -> Result<bool, AgentRunGroupError> {
         if self.groups.claim_notification(&group.group_id).await? {
-            let _ = self.notifications.send(AgentRunGroupNotification {
-                group_id: group.group_id.clone(),
-                owner_run_id: group.owner_run_id.clone(),
-                status: group.status,
-                successful,
-                failed,
-                member_count: group.member_run_ids.len(),
-            });
+            if self
+                .notifications
+                .send(AgentRunGroupNotification {
+                    group_id: group.group_id.clone(),
+                    owner_run_id: group.owner_run_id.clone(),
+                    status: group.status,
+                    successful,
+                    failed,
+                    member_count: group.member_run_ids.len(),
+                })
+                .is_err()
+            {
+                tracing::warn!(
+                    group_id = %group.group_id,
+                    "group notification dropped (no subscribers)"
+                );
+            }
             return Ok(true);
         }
         Ok(false)
