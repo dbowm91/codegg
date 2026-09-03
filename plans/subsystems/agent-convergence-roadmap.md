@@ -1,6 +1,6 @@
 # Agent Convergence and Independent Verification Roadmap
 
-Status: active planning — M002 closing
+Status: active planning — M003 ready
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -400,7 +400,7 @@ Exit conditions:
 
 ### M002 — Independent verifier and explicit owner decision
 
-Status: closing
+Status: closed
 
 Class: capability/invariant
 
@@ -424,7 +424,7 @@ Exit conditions:
 
 ### M003 — Bounded repair/replan, safe result chaining, and orchestration policy
 
-Status: blocked on M002
+Status: ready
 
 Class: capability/reliability/polish
 

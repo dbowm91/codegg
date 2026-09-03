@@ -1,6 +1,6 @@
 # Agent Convergence M003 — Bounded Repair, Replan, and Model Gating
 
-Status: blocked on M002
+Status: ready
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
