@@ -66,7 +66,7 @@ Historical closed control points remain:
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 - Runtime-assets M005/M006, goal-verification M012, and runtime-safety M011/M012 remain immutable historical closure evidence. Their current strict subsystem dispositions are superseded only by the corrective milestones M007/M013/M013; goal-verification M013 is now closed.
 
-Verification remains deliberately light: Provider M009 requires focused direct-call request-context tests, retained M008 provider/header regression tests, and the repository's existing `scripts/verify.sh quick` posture. Existing historical closures retain their recorded evidence requirements. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
+Verification remains deliberately light: Provider M009 was accepted with focused direct-call request-context tests, retained M008 provider/header regression tests, and the repository's existing `scripts/verify.sh quick` posture. Existing historical closures retain their recorded evidence requirements. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 

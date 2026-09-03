@@ -189,6 +189,7 @@ mod tests {
     async fn structured_review_execution_preserves_tool_execution_session() {
         let workspace = tempfile::tempdir().expect("temporary workspace");
         let run_git = |args: &[&str]| {
+            // execution-ownership: test_only
             let status = std::process::Command::new("git")
                 .args(args)
                 .current_dir(workspace.path())
