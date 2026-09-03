@@ -1,6 +1,6 @@
 # Agent Convergence and Independent Verification Roadmap
 
-Status: closing — M003 closure in progress
+Status: closed
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -424,7 +424,7 @@ Exit conditions:
 
 ### M003 — Bounded repair/replan, safe result chaining, and orchestration policy
 
-Status: active
+Status: closed
 
 Class: capability/reliability/polish
 

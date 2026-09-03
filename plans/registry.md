@@ -35,7 +35,7 @@ Canonical direction remains in:
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
-| Agent convergence and independent verification | closing | `plans/subsystems/agent-convergence-roadmap.md` | M003 closing | M002 is closed in `plans/closure/agent-convergence/002-status.md`; M003 implementation landed and closure evidence is in progress. |
+| Agent convergence and independent verification | closed | `plans/subsystems/agent-convergence-roadmap.md` | M003 closed | `plans/closure/agent-convergence/003-status.md`; bounded repair/replan, explicit commit chaining, conservative model gating, and projection closure accepted. |
 | Memory-to-skill promotion | ready | `plans/subsystems/memory-skill-promotion-roadmap.md` | M001 ready | Current file-backed memory and closed runtime-assets/skill-registry work provide the required inputs. M002/M003 remain blocked on predecessor closure. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
@@ -53,8 +53,8 @@ Canonical direction remains in:
 
 ## Newly registered feature execution order
 
-1. Agent-convergence M001 and M002 are closed; M003 is ready to consume their accepted contracts.
-2. Agent-convergence M003 is ready; memory-to-skill M001 remains independent and may proceed in parallel.
+1. Agent-convergence M001–M003 are closed under their accepted closure records.
+2. Memory-to-skill M001 remains independent and may proceed in parallel.
 3. Memory-to-skill M002 remains blocked until its M001 closes; memory-to-skill M003 remains blocked until its M002 closes.
 4. Convergence must compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.
 5. Habit promotion must retain structural privacy bounds: no raw shell/tool output/arguments in automatic habit fingerprints, no automatic model drafting, and no skill publication without explicit user approval.
@@ -147,6 +147,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed historical evidence; corrective disposition accepted by M013 | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; M013 owns the later exact-goal provenance and criterion-classification findings. |
 | Agent runtime — goal verification | M013 — goal evidence provenance and criterion corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`; exact-goal durable provenance and conservative criterion semantics accepted; no future registered plan was unblocked. |
 | Agent convergence and independent verification | M002 — independent verifier and explicit owner decision | closed | `plans/closure/agent-convergence/002-status.md`; implementation `28008ddd`; M003 moved to ready. |
+| Agent convergence and independent verification | M003 — bounded repair/replan and model gating | closed | `plans/closure/agent-convergence/003-status.md`; implementation `33ec0376`; no future registered plan was unblocked. |
 | Agent runtime correctness, autonomy, and simplification | M001-M008 | closed | Individual records under `plans/closure/agent-runtime-correctness-autonomy-simplification/` |
 | Agent runs, async delegation, and worktree concurrency | M002 — run mailbox, journal, and async control | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/002-status.md`; implementation commit `36e19e6`; authorization/call-identity composition is now owned by M007–M009. |
 | Agent runs, async delegation, and worktree concurrency | M003 — durable worktree service and leases | closed historical evidence | `plans/closure/agent-run-worktree-concurrency/003-status.md`; implementation commit `0f3d75bf`; nested context/base composition remains accepted after M007. |
