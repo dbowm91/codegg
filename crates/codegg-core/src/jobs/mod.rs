@@ -953,6 +953,8 @@ pub enum JobPayload {
     Subagent {
         prompt: String,
         agent: String,
+        #[serde(default)]
+        model: Option<String>,
         parent_id: Option<String>,
         denied_tools: Vec<String>,
         allowed_paths: Vec<String>,
@@ -965,6 +967,8 @@ pub enum JobPayload {
     SubagentRun {
         prompt: String,
         agent: String,
+        #[serde(default)]
+        model: Option<String>,
         parent_id: Option<String>,
         denied_tools: Vec<String>,
         allowed_paths: Vec<String>,

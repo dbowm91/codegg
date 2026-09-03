@@ -311,6 +311,7 @@ impl JobTemplate {
             payload: JobPayload::Subagent {
                 prompt,
                 agent,
+                model: None,
                 parent_id: session_id,
                 denied_tools: Vec::new(),
                 allowed_paths: Vec::new(),

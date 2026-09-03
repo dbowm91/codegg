@@ -282,7 +282,8 @@ pub(crate) fn core_event_metadata(
         | CoreEvent::AgentRunTerminal { session_id, .. }
         | CoreEvent::AgentRunControlUpdated { session_id, .. }
         | CoreEvent::WorktreeUpserted { session_id, .. }
-        | CoreEvent::AgentRunGroupUpserted { session_id, .. } => (Some(session_id.clone()), None),
+        | CoreEvent::AgentRunGroupUpserted { session_id, .. }
+        | CoreEvent::ConvergenceUpserted { session_id, .. } => (Some(session_id.clone()), None),
         CoreEvent::PluginUiEffect { envelope } => (envelope.session_id.clone(), None),
         CoreEvent::ToolProgramCompleted { session_id, .. }
         | CoreEvent::ToolProgramFailed { session_id, .. }
@@ -391,6 +392,7 @@ pub fn core_event_type(event: &crate::protocol::core::CoreEvent) -> &'static str
         CoreEvent::AgentRunControlUpdated { .. } => "agent_run_control_updated",
         CoreEvent::WorktreeUpserted { .. } => "worktree_upserted",
         CoreEvent::AgentRunGroupUpserted { .. } => "agent_run_group_upserted",
+        CoreEvent::ConvergenceUpserted { .. } => "convergence_upserted",
         CoreEvent::ToolProgramCompleted { .. } => "tool_program_completed",
         CoreEvent::ToolProgramFailed { .. } => "tool_program_failed",
         CoreEvent::ToolProgramUpdated { .. } => "tool_program_updated",
@@ -585,6 +587,13 @@ pub(crate) fn map_app_event_to_core_event(
         crate::bus::events::AppEvent::AgentRunGroupUpdated { session_id, group } => {
             Some(CoreEvent::AgentRunGroupUpserted { session_id, group })
         }
+        crate::bus::events::AppEvent::ConvergenceUpdated {
+            session_id,
+            convergence,
+        } => Some(CoreEvent::ConvergenceUpserted {
+            session_id,
+            convergence,
+        }),
         crate::bus::events::AppEvent::PluginUiEffect {
             session_id,
             plugin_id,

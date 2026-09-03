@@ -79,6 +79,9 @@ pub const MAX_PROJECTION_WORKTREES: usize = 32;
 /// projection.
 pub const MAX_PROJECTION_RUN_GROUPS: usize = 32;
 
+/// Maximum number of convergence summaries retained in one session.
+pub const MAX_PROJECTION_CONVERGENCES: usize = 32;
+
 /// Maximum number of diagnostic / projection error records retained
 /// per snapshot.
 pub const MAX_PROJECTION_DIAGNOSTICS: usize = 32;

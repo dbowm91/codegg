@@ -81,6 +81,7 @@ fn build_subagent_spec(workspace: &WorkspaceId) -> NewJob {
         payload: JobPayload::Subagent {
             prompt: "do something".into(),
             agent: "general".into(),
+            model: None,
             parent_id: None,
             denied_tools: vec![],
             allowed_paths: vec![],

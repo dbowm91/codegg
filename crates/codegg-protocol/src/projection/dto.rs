@@ -603,6 +603,59 @@ pub struct AgentRunGroupSummaryProjection {
 
 pub type RunGroupSummaryProjection = AgentRunGroupSummaryProjection;
 
+/// Bounded, frontend-neutral convergence summary. Detailed verdict findings
+/// and run results remain behind their existing durable handles.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConvergenceSummaryProjection {
+    pub convergence_id: String,
+    pub owner_summary: String,
+    pub status: String,
+    pub cycle_ordinal: u8,
+    pub max_cycles: u8,
+    pub producer_run_ids: Vec<String>,
+    pub producer_completed: usize,
+    pub producer_failed: usize,
+    pub producer_cancelled: usize,
+    pub producer_active: usize,
+    pub verifier_run_id: Option<String>,
+    pub verdict_kind: Option<String>,
+    pub verdict_summary: Option<String>,
+    pub awaiting_decision: bool,
+    pub terminal_reason_class: Option<String>,
+}
+
+impl ConvergenceSummaryProjection {
+    pub fn normalise(&mut self) {
+        self.convergence_id =
+            truncate_str(&self.convergence_id, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.owner_summary =
+            truncate_str(&self.owner_summary, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.status = truncate_str(&self.status, MAX_PROJECTION_STRING_BYTES).into_owned();
+        self.producer_run_ids = self
+            .producer_run_ids
+            .drain(..)
+            .take(crate::projection::limits::MAX_PROJECTION_AGENT_RUNS)
+            .map(|value| truncate_str(&value, MAX_PROJECTION_STRING_BYTES).into_owned())
+            .collect();
+        self.verifier_run_id = self
+            .verifier_run_id
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.verdict_kind = self
+            .verdict_kind
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.verdict_summary = self
+            .verdict_summary
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
+        self.terminal_reason_class = self
+            .terminal_reason_class
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+    }
+}
+
 impl AgentRunGroupSummaryProjection {
     pub fn normalise(&mut self) {
         self.group_id = truncate_str(&self.group_id, MAX_PROJECTION_STRING_BYTES).into_owned();

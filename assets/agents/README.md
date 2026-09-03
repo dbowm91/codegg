@@ -1,6 +1,6 @@
 # Built-in Agent Definitions
 
-This directory contains TOML definitions for all 9 compiled built-in agents.
+This directory contains TOML definitions for all 10 compiled built-in agents.
 
 Each file defines one agent's metadata and permissions. Prompt text lives in
 `../prompts/agents/` as Markdown files (referenced by `prompt_file` or by
@@ -22,6 +22,7 @@ re-run `python3 scripts/generate_builtin_agents.py` to regenerate.
 | compaction | Subagent | Yes | Context compaction agent |
 | security-review | Subagent | No | Defensive security review |
 | research | All | No | Long-horizon research agent |
+| verifier | Subagent | Yes | Independent read-only semantic verifier |
 
 ## Schema
 

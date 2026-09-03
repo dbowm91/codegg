@@ -689,6 +689,7 @@ mod tests {
         subagent_spec.payload = JobPayload::Subagent {
             prompt: "inspect".into(),
             agent: "reviewer".into(),
+            model: None,
             parent_id: Some("session-1".into()),
             denied_tools: Vec::new(),
             allowed_paths: Vec::new(),

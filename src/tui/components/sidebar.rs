@@ -21,6 +21,7 @@ pub enum SidebarSection {
     FileChanges,
     ToolPrograms,
     AgentRuns,
+    Convergences,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,20 @@ pub struct SidebarAgentRun {
     pub attention_required: bool,
 }
 
+/// Compact bounded convergence state for the sidebar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarConvergence {
+    pub convergence_id: String,
+    pub status: String,
+    pub cycle_ordinal: u8,
+    pub max_cycles: u8,
+    pub producer_completed: usize,
+    pub producer_active: usize,
+    pub verifier_run_id: Option<String>,
+    pub verdict_kind: Option<String>,
+    pub awaiting_decision: bool,
+}
+
 pub struct SidebarWidget {
     pub theme: Arc<Theme>,
     pub session: Option<Session>,
@@ -85,6 +100,7 @@ pub struct SidebarWidget {
     /// Active and recently completed background tool programs.
     pub tool_programs: Vec<SidebarToolProgram>,
     pub agent_runs: Vec<SidebarAgentRun>,
+    pub convergences: Vec<SidebarConvergence>,
     scroll_offset: usize,
     goal_collapsed: bool,
     plan_collapsed: bool,
@@ -92,6 +108,7 @@ pub struct SidebarWidget {
     file_changes_collapsed: bool,
     tool_programs_collapsed: bool,
     agent_runs_collapsed: bool,
+    convergences_collapsed: bool,
     hovered_element: HoveredElement,
     tooltip_text: String,
 }
@@ -120,6 +137,7 @@ impl SidebarWidget {
             plan: None,
             tool_programs: Vec::new(),
             agent_runs: Vec::new(),
+            convergences: Vec::new(),
             scroll_offset: 0,
             goal_collapsed: false,
             plan_collapsed: false,
@@ -127,6 +145,7 @@ impl SidebarWidget {
             file_changes_collapsed: false,
             tool_programs_collapsed: false,
             agent_runs_collapsed: false,
+            convergences_collapsed: false,
             hovered_element: HoveredElement::None,
             tooltip_text: String::new(),
         }
@@ -192,6 +211,10 @@ impl SidebarWidget {
         self.agent_runs = runs;
     }
 
+    pub fn set_convergences(&mut self, convergences: Vec<SidebarConvergence>) {
+        self.convergences = convergences;
+    }
+
     pub fn toggle_focused(&mut self) {}
 
     pub fn focus_next(&mut self) {}
@@ -227,6 +250,9 @@ impl SidebarWidget {
             }
             SidebarSection::AgentRuns => {
                 self.agent_runs_collapsed = !self.agent_runs_collapsed;
+            }
+            SidebarSection::Convergences => {
+                self.convergences_collapsed = !self.convergences_collapsed;
             }
         }
         true
@@ -383,6 +409,16 @@ impl SidebarWidget {
             targets.push(HoveredElement::Section(SidebarSection::AgentRuns));
             if !self.agent_runs_collapsed {
                 for _ in &self.agent_runs {
+                    targets.push(HoveredElement::None);
+                }
+            }
+        }
+
+        if !self.convergences.is_empty() {
+            targets.push(HoveredElement::None);
+            targets.push(HoveredElement::Section(SidebarSection::Convergences));
+            if !self.convergences_collapsed {
+                for _ in &self.convergences {
                     targets.push(HoveredElement::None);
                 }
             }
@@ -726,6 +762,54 @@ impl SidebarWidget {
             }
         }
 
+        if !self.convergences.is_empty() {
+            lines.push(Line::from(""));
+            lines.push(self.collapsible_header(
+                &format!(" Convergences ({}) ", self.convergences.len()),
+                self.convergences_collapsed,
+            ));
+            if !self.convergences_collapsed {
+                for convergence in &self.convergences {
+                    let awaiting = convergence.awaiting_decision;
+                    let terminal = matches!(
+                        convergence.status.as_str(),
+                        "completed" | "failed" | "cancelled" | "exhausted"
+                    );
+                    let icon = if awaiting {
+                        "?"
+                    } else if terminal {
+                        "✓"
+                    } else {
+                        "●"
+                    };
+                    let style = if awaiting {
+                        Style::default().fg(self.theme.warning)
+                    } else {
+                        Style::default().fg(self.theme.muted)
+                    };
+                    let id: String = convergence.convergence_id.chars().take(8).collect();
+                    let verdict = convergence
+                        .verdict_kind
+                        .as_deref()
+                        .or(convergence.verifier_run_id.as_deref())
+                        .unwrap_or("pending");
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {icon} "), style),
+                        Span::styled(id, Style::default().fg(self.theme.muted)),
+                        Span::raw(format!(
+                            " {} (cycle {}/{}) P:{}/{} V:{}",
+                            convergence.status,
+                            convergence.cycle_ordinal + 1,
+                            convergence.max_cycles,
+                            convergence.producer_completed,
+                            convergence.producer_completed + convergence.producer_active,
+                            clean_inline_text(verdict, width.saturating_sub(35)),
+                        )),
+                    ]));
+                }
+            }
+        }
+
         lines
     }
 
@@ -742,6 +826,9 @@ impl SidebarWidget {
                     "Click to collapse/expand tool programs".to_string()
                 }
                 SidebarSection::AgentRuns => "Click to collapse/expand agent runs".to_string(),
+                SidebarSection::Convergences => {
+                    "Click to collapse/expand convergence runs".to_string()
+                }
             },
             HoveredElement::Todo(idx) => self
                 .todos

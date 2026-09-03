@@ -109,6 +109,7 @@ pub fn snapshot_from_snapshot_session(
         agent_runs: Vec::new().into(),
         worktrees: Vec::new().into(),
         run_groups: Vec::new().into(),
+        convergences: Vec::new().into(),
         diagnostics: Vec::new().into(),
     };
 
@@ -559,6 +560,11 @@ pub fn projection_events_from_core(env: &EventEnvelope<CoreEvent>) -> Vec<Projec
             let mut group = group.clone();
             group.normalise();
             events.push(ProjectionEvent::AgentRunGroupUpserted { group });
+        }
+        CoreEvent::ConvergenceUpserted { convergence, .. } => {
+            let mut convergence = convergence.clone();
+            convergence.normalise();
+            events.push(ProjectionEvent::ConvergenceUpserted { convergence });
         }
         CoreEvent::FileChanged { path, action } => {
             let change = match action.as_str() {

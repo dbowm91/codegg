@@ -3581,7 +3581,9 @@ impl App {
 
         // Populate tool programs from projection snapshot
         if let Some((_, snapshot)) = self.projection_client.active_snapshot() {
-            use super::components::sidebar::{SidebarAgentRun, SidebarToolProgram};
+            use super::components::sidebar::{
+                SidebarAgentRun, SidebarConvergence, SidebarToolProgram,
+            };
             self.sidebar.set_tool_programs(
                 snapshot
                     .tool_programs
@@ -3610,9 +3612,27 @@ impl App {
                     })
                     .collect(),
             );
+            self.sidebar.set_convergences(
+                snapshot
+                    .convergences
+                    .iter()
+                    .map(|convergence| SidebarConvergence {
+                        convergence_id: convergence.convergence_id.clone(),
+                        status: convergence.status.clone(),
+                        cycle_ordinal: convergence.cycle_ordinal,
+                        max_cycles: convergence.max_cycles,
+                        producer_completed: convergence.producer_completed,
+                        producer_active: convergence.producer_active,
+                        verifier_run_id: convergence.verifier_run_id.clone(),
+                        verdict_kind: convergence.verdict_kind.clone(),
+                        awaiting_decision: convergence.awaiting_decision,
+                    })
+                    .collect(),
+            );
         } else {
             self.sidebar.set_tool_programs(Vec::new());
             self.sidebar.set_agent_runs(Vec::new());
+            self.sidebar.set_convergences(Vec::new());
         }
 
         frame.render_widget(&self.sidebar, area);

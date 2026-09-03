@@ -10,8 +10,8 @@ use std::collections::VecDeque;
 
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
-    AgentRunGroupSummaryProjection, AgentRunSummary, JobProjection, RunProjection,
-    SessionSummaryProjection, ToolProgramSummary, WorkspaceSummaryProjection,
+    AgentRunGroupSummaryProjection, AgentRunSummary, ConvergenceSummaryProjection, JobProjection,
+    RunProjection, SessionSummaryProjection, ToolProgramSummary, WorkspaceSummaryProjection,
     WorktreeSummaryProjection,
 };
 use crate::projection::limits::{
@@ -69,6 +69,9 @@ pub struct SessionProjectionSnapshot {
     /// Durable run-group summaries.
     #[serde(default)]
     pub run_groups: VecDeque<AgentRunGroupSummaryProjection>,
+    /// Durable bounded convergence summaries.
+    #[serde(default)]
+    pub convergences: VecDeque<ConvergenceSummaryProjection>,
     /// Bounded diagnostic list emitted by the reducer.
     pub diagnostics: VecDeque<ProjectionDiagnostic>,
 }
@@ -125,6 +128,7 @@ impl SessionProjectionSnapshot {
             agent_runs: VecDeque::new(),
             worktrees: VecDeque::new(),
             run_groups: VecDeque::new(),
+            convergences: VecDeque::new(),
             diagnostics: VecDeque::new(),
         }
     }
@@ -216,6 +220,22 @@ impl SessionProjectionSnapshot {
             self.run_groups.pop_front();
         }
         self.run_groups.push_back(group);
+    }
+
+    pub fn upsert_convergence(&mut self, mut convergence: ConvergenceSummaryProjection) {
+        convergence.normalise();
+        if let Some(slot) = self
+            .convergences
+            .iter_mut()
+            .find(|item| item.convergence_id == convergence.convergence_id)
+        {
+            *slot = convergence;
+            return;
+        }
+        if self.convergences.len() >= crate::projection::limits::MAX_PROJECTION_CONVERGENCES {
+            self.convergences.pop_front();
+        }
+        self.convergences.push_back(convergence);
     }
 }
 

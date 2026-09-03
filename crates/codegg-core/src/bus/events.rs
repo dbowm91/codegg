@@ -291,6 +291,11 @@ pub enum AppEvent {
         session_id: String,
         group: codegg_protocol::projection::dto::AgentRunGroupSummaryProjection,
     },
+    /// Durable bounded convergence summary for session projections.
+    ConvergenceUpdated {
+        session_id: String,
+        convergence: codegg_protocol::projection::dto::ConvergenceSummaryProjection,
+    },
     /// A supervised test run started.
     TestRunStarted {
         session_id: String,
@@ -370,6 +375,7 @@ impl AppEvent {
             AppEvent::AgentRunControlUpdated { .. } => "agent_run:control_updated",
             AppEvent::WorktreeUpdated { .. } => "worktree:updated",
             AppEvent::AgentRunGroupUpdated { .. } => "agent_run_group:updated",
+            AppEvent::ConvergenceUpdated { .. } => "convergence:updated",
             AppEvent::TestRunStarted { .. } => "test_run:started",
             AppEvent::TestRunProgress { .. } => "test_run:progress",
             AppEvent::TestRunCompleted { .. } => "test_run:completed",

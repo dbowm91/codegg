@@ -330,6 +330,20 @@ mod tests {
     }
 
     #[test]
+    fn semantic_evidence_cannot_override_failed_host_test() {
+        let evidence = GoalEvidenceContext {
+            executions: vec![GoalExecutionEvidence {
+                id: "job-1".into(),
+                source: "test".into(),
+                status: HostEvidenceStatus::Failed,
+            }],
+            todos: Vec::new(),
+        };
+        let verdict = GoalVerificationService.verify(&goal(Vec::new()), &proposal(), &evidence);
+        assert!(matches!(verdict, GoalVerificationVerdict::NotMet { .. }));
+    }
+
+    #[test]
     fn claims_without_host_evidence_do_not_complete() {
         let verdict = GoalVerificationService.verify(
             &goal(Vec::new()),

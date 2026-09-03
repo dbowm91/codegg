@@ -10,8 +10,10 @@ use tokio::sync::Mutex;
 
 use crate::agent::run_control::{ControlActor, ControlOutcome, RunControlService};
 use crate::agent::worker::{SubAgentRequest, SubAgentSpawner};
+use crate::bus::global::GlobalEventBus;
 use crate::error::ToolError;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
+use codegg_core::agent_convergence::ConvergenceStore;
 use codegg_core::agent_run::{AgentRunBudget, AgentRunStore, NewAgentRun, NewAgentTask};
 use codegg_core::agent_run_control::AgentRunControlKind;
 use codegg_core::agent_run_group::{
@@ -376,6 +378,7 @@ impl Default for TaskStore {
     }
 }
 
+#[derive(Clone)]
 pub struct TaskTool {
     store: Arc<Mutex<TaskStore>>,
     spawner: Option<SubAgentSpawner>,
@@ -396,6 +399,7 @@ pub struct TaskTool {
     run_groups: Option<Arc<AgentRunGroupService>>,
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
+    convergence_store: Option<Arc<dyn ConvergenceStore>>,
 }
 
 /// Explicit owner of orchestration operations. A root turn owns its direct
@@ -466,6 +470,37 @@ impl TaskTool {
         );
     }
 
+    pub(crate) fn publish_convergence_projection(
+        &self,
+        summary: &codegg_core::agent_convergence::ConvergenceSummary,
+    ) {
+        let Some(session_id) = self.parent_session_id.clone() else {
+            return;
+        };
+        let counts = &summary.producer_status_counts;
+        let projection = codegg_protocol::projection::dto::ConvergenceSummaryProjection {
+            convergence_id: summary.convergence_id.clone(),
+            owner_summary: summary.owner_summary.clone(),
+            status: summary.status.as_str().to_string(),
+            cycle_ordinal: summary.cycle_ordinal,
+            max_cycles: summary.max_cycles,
+            producer_run_ids: summary.producer_run_ids.clone(),
+            producer_completed: counts.completed,
+            producer_failed: counts.failed,
+            producer_cancelled: counts.cancelled,
+            producer_active: counts.active,
+            verifier_run_id: summary.verifier_run_id.clone(),
+            verdict_kind: summary.verdict_kind.clone(),
+            verdict_summary: summary.verdict_summary.clone(),
+            awaiting_decision: summary.awaiting_decision,
+            terminal_reason_class: summary.terminal_reason_class.clone(),
+        };
+        GlobalEventBus::publish(crate::bus::events::AppEvent::ConvergenceUpdated {
+            session_id,
+            convergence: projection,
+        });
+    }
+
     pub fn new(
         store: Arc<Mutex<TaskStore>>,
         spawner: Option<SubAgentSpawner>,
@@ -492,6 +527,7 @@ impl TaskTool {
             run_groups: None,
             orchestration_owner: None,
             max_depth: 3,
+            convergence_store: None,
         }
     }
 
@@ -520,6 +556,7 @@ impl TaskTool {
             run_groups: None,
             orchestration_owner: None,
             max_depth: 3,
+            convergence_store: None,
         }
     }
 
@@ -590,6 +627,55 @@ impl TaskTool {
     pub fn with_run_group_service(mut self, service: Option<Arc<AgentRunGroupService>>) -> Self {
         self.run_groups = service;
         self
+    }
+
+    pub fn with_convergence_store(mut self, store: Option<Arc<dyn ConvergenceStore>>) -> Self {
+        self.convergence_store = store;
+        self
+    }
+
+    pub(crate) fn with_additional_denied_tools(mut self, tools: &[&str]) -> Self {
+        self.denied_tools
+            .extend(tools.iter().map(|tool| (*tool).to_string()));
+        self.denied_tools.sort();
+        self.denied_tools.dedup();
+        self
+    }
+
+    pub(crate) fn control_actor(&self) -> ControlActor {
+        ControlActor {
+            session_id: self.parent_session_id.clone(),
+            run_id: self.parent_run_id.clone(),
+            turn_id: self.parent_turn_id.clone(),
+        }
+    }
+
+    pub(crate) fn agent_run_store(&self) -> Option<Arc<dyn AgentRunStore>> {
+        self.agent_runs.clone()
+    }
+
+    pub(crate) fn run_control(&self) -> Option<Arc<RunControlService>> {
+        self.run_control.clone()
+    }
+
+    pub(crate) fn convergence_coordinator(
+        &self,
+    ) -> Option<crate::agent::convergence::ConvergenceCoordinator> {
+        self.convergence_store.as_ref().map(|store| {
+            crate::agent::convergence::ConvergenceCoordinator::new(store.clone(), self.clone())
+        })
+    }
+
+    pub(crate) async fn execute_convergence_child(
+        &self,
+        input: serde_json::Value,
+        call_identity: String,
+    ) -> Result<String, ToolError> {
+        Box::pin(self.execute_impl(input, None, call_identity)).await
+    }
+
+    pub(crate) fn orchestration_owner(&self) -> Option<AgentOrchestrationOwner> {
+        self.orchestration_owner.clone()
     }
 
     pub fn with_project_context(
@@ -668,9 +754,17 @@ impl Tool for TaskTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Action: spawn, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group",
-                    "enum": ["spawn", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group"]
+                    "description": "Action: spawn, converge, convergence_status, convergence_decide, convergence_cancel, spawn_many, create_group, status (get alias), message, interrupt, wait, cancel, status_group, wait_group, or cancel_group",
+                    "enum": ["spawn", "converge", "convergence_status", "convergence_decide", "convergence_cancel", "spawn_many", "create_group", "status", "get", "message", "interrupt", "wait", "cancel", "status_group", "wait_group", "cancel_group"]
                 },
+                "objective": { "type": "string", "description": "Bounded convergence objective (action=converge)" },
+                "criteria": { "type": "array", "maxItems": 32, "items": { "type": "string" }, "description": "Bounded acceptance criteria (action=converge)" },
+                "producer": { "type": "object", "description": "Exactly one producer request (action=converge)" },
+                "verifier_agent": { "type": "string", "description": "Read-only verifier agent (action=converge)" },
+                "verifier_model": { "type": "string", "description": "Optional verifier model override" },
+                "max_cycles": { "type": "integer", "description": "Must be 1 for M002" },
+                "convergence_id": { "type": "string", "description": "Durable convergence id" },
+                "decision": { "type": "string", "enum": ["accept", "stop", "escalate", "repair", "replan"] },
                 "description": {
                     "type": "string",
                     "description": "Description of the task for the subagent (action=spawn)"
@@ -682,6 +776,10 @@ impl Tool for TaskTool {
                 "agent": {
                     "type": "string",
                     "description": "Agent to use (default: general, action=spawn)"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional model override for the child"
                 },
                 "allowed_paths": {
                     "type": "array",
@@ -767,6 +865,22 @@ impl TaskTool {
         call_identity: String,
     ) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
+
+        if matches!(
+            action,
+            "converge" | "convergence_status" | "convergence_decide" | "convergence_cancel"
+        ) {
+            let coordinator = self
+                .convergence_coordinator()
+                .ok_or_else(|| ToolError::Execution("durable convergence is unavailable".into()))?;
+            return match action {
+                "converge" => coordinator.start(input, call_identity).await,
+                "convergence_status" => coordinator.status(&input).await,
+                "convergence_decide" => coordinator.decide(&input).await,
+                "convergence_cancel" => coordinator.cancel(&input).await,
+                _ => unreachable!(),
+            };
+        }
 
         if matches!(
             action,
@@ -1073,6 +1187,10 @@ impl TaskTool {
                 .to_string();
 
             let agent = input["agent"].as_str().unwrap_or("general").to_string();
+            let child_model = input["model"]
+                .as_str()
+                .map(ToOwned::to_owned)
+                .or_else(|| self.parent_model.clone());
 
             let denied_tools = self.denied_tools.clone();
 
@@ -1112,8 +1230,7 @@ impl TaskTool {
                 let durable = if let Some(agent_runs) = self.agent_runs.clone() {
                     let delegation_key = delegation_key(&call_identity);
                     let project_id = self.project_id.clone().unwrap_or_default();
-                    let provider = self
-                        .parent_model
+                    let provider = child_model
                         .as_deref()
                         .and_then(|model| model.split('/').next())
                         .unwrap_or("unknown")
@@ -1174,7 +1291,7 @@ impl TaskTool {
                                 agent_name: agent.clone(),
                                 agent_digest: None,
                                 provider,
-                                model: self.parent_model.clone().unwrap_or_default(),
+                                model: child_model.clone().unwrap_or_default(),
                                 authority_digest,
                                 budget: AgentRunBudget {
                                     max_depth: Some(self.max_depth),
@@ -1255,6 +1372,7 @@ impl TaskTool {
                                 codegg_core::jobs::JobPayload::SubagentRun {
                                     prompt,
                                     agent,
+                                    model: child_model.clone(),
                                     parent_id: self.parent_session_id.clone(),
                                     denied_tools: denied_tools.clone(),
                                     allowed_paths: if allowed_paths.is_empty() {
@@ -1271,6 +1389,7 @@ impl TaskTool {
                                 codegg_core::jobs::JobPayload::Subagent {
                                     prompt,
                                     agent,
+                                    model: child_model.clone(),
                                     parent_id: self.parent_session_id.clone(),
                                     denied_tools: denied_tools.clone(),
                                     allowed_paths: if allowed_paths.is_empty() {
@@ -1397,7 +1516,7 @@ impl TaskTool {
                     allowed_paths,
                     depth: self.depth + 1,
                     max_tool_calls: None,
-                    parent_model: self.parent_model.clone(),
+                    parent_model: child_model,
                     workspace_root: self.workspace_root.clone(),
                     workspace_locks: self.workspace_locks.clone(),
                 };

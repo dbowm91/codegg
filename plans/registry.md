@@ -35,7 +35,7 @@ Canonical direction remains in:
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
-| Agent convergence and independent verification | active | `plans/subsystems/agent-convergence-roadmap.md` | M002 active | M002 implementation and closure are in progress at `plans/implementation/agent-convergence/002-independent-verifier-and-owner-decision.md`; M003 remains blocked on M002. |
+| Agent convergence and independent verification | active | `plans/subsystems/agent-convergence-roadmap.md` | M002 closing | M002 implementation has landed; closure evidence is being finalized at `plans/closure/agent-convergence/002-status.md`; M003 remains blocked until acceptance. |
 | Memory-to-skill promotion | ready | `plans/subsystems/memory-skill-promotion-roadmap.md` | M001 ready | Current file-backed memory and closed runtime-assets/skill-registry work provide the required inputs. M002/M003 remain blocked on predecessor closure. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
@@ -53,7 +53,7 @@ Canonical direction remains in:
 
 ## Newly registered feature execution order
 
-1. Agent-convergence M001 is closed; M002 is ready and may consume its accepted durable contract.
+1. Agent-convergence M001 is closed; M002 is in closure after consuming its accepted durable contract.
 2. Agent-convergence M003 remains blocked until M002 closes; memory-to-skill M001 remains independent and may proceed in parallel.
 3. Memory-to-skill M002 remains blocked until its M001 closes; M003 remains blocked until M002 closes.
 4. Convergence must compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.

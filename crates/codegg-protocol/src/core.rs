@@ -1303,6 +1303,10 @@ pub enum CoreEvent {
         session_id: String,
         group: crate::projection::dto::AgentRunGroupSummaryProjection,
     },
+    ConvergenceUpserted {
+        session_id: String,
+        convergence: crate::projection::dto::ConvergenceSummaryProjection,
+    },
     /// A supervised test run started.
     TestRunStarted {
         session_id: String,

@@ -3411,6 +3411,7 @@ impl AgentLoop {
                     payload: codegg_core::jobs::JobPayload::Subagent {
                         prompt,
                         agent,
+                        model: None,
                         parent_id: Some(session_id),
                         denied_tools: Vec::new(),
                         allowed_paths: vec![workspace_root.to_string_lossy().into_owned()],

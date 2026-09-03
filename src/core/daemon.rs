@@ -2753,6 +2753,7 @@ impl CoreDaemon {
                     submission: self.deps.submission.clone(),
                     workspace_service_lease: Some(workspace_service_lease),
                     agent_run_store: self.deps.agent_run_store.clone(),
+                    convergence_store: self.deps.convergence_store.clone(),
                     run_control: self.deps.run_control.clone(),
                     run_group_service: self.deps.run_group_service.clone(),
                     project_id: codegg_core::identity::ProjectId::parse(&runtime.project_id).ok(),

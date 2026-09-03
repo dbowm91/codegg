@@ -343,6 +343,7 @@ fn subagent_payload(agent: &str) -> JobPayload {
     JobPayload::Subagent {
         prompt: "do something".into(),
         agent: agent.into(),
+        model: None,
         parent_id: None,
         denied_tools: vec![],
         allowed_paths: vec![],

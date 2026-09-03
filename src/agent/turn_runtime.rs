@@ -132,6 +132,7 @@ pub struct TurnRunInput {
     /// Durable ownership store shared by daemon TaskTool instances and the
     /// scheduler's subagent executor.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
+    pub convergence_store: Arc<dyn codegg_core::agent_convergence::ConvergenceStore>,
     pub run_control: Arc<crate::agent::run_control::RunControlService>,
     pub run_group_service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
     pub project_id: Option<codegg_core::identity::ProjectId>,
@@ -204,6 +205,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             submission,
             workspace_service_lease,
             agent_run_store,
+            convergence_store,
             run_control,
             run_group_service,
             project_id,
@@ -266,6 +268,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 agent_run_store: Some(agent_run_store.clone()),
                 run_control: Some(run_control.clone()),
                 run_group_service: Some(run_group_service.clone()),
+                convergence_store: Some(convergence_store.clone()),
                 project_id,
                 repository_id,
                 turn_id: Some(turn_id.clone()),

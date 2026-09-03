@@ -213,6 +213,22 @@ pub struct ToolResult {
 
 ## Built-in Tools
 
+### Convergence actions
+
+`TaskTool` owns the convergence action family so convergence uses the normal
+durable task and scheduler boundary. `converge` accepts one bounded producer
+request and an M002 single-cycle spec. Producer completion is read from the
+authoritative `AgentRunStore`; only a successful structured result can create
+the independent read-only `verifier` child. The verifier's host-enforced deny
+ceiling covers mutation, shell, Git integration, delegation, permission
+responses, and goal completion even when its declarative agent is overridden.
+
+`convergence_status` exposes bounded state, `convergence_cancel` targets only
+the referenced active runs through run control, and `convergence_decide` is
+owner-authorized and limited to `accept`, `stop`, and `escalate` in M002.
+Semantic verification is advisory: it never integrates a worktree or changes
+deterministic goal-verification semantics.
+
 The default registry contains product built-in tools; the exact visible
 set varies with configuration and optional features. Use the registry
 and `tool_search` documentation as the source of truth rather than a

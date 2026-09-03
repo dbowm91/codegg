@@ -79,6 +79,7 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::ToolProgramFailed { .. } => SafePublicationClass::Safe,
         CoreEvent::ToolProgramUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::QuestionPending { .. } => SafePublicationClass::Safe,
+        CoreEvent::ConvergenceUpserted { .. } => SafePublicationClass::Safe,
     }
 }
 
@@ -128,6 +129,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::ToolProgramCompleted { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramFailed { session_id, .. } => session_id.is_some(),
         CoreEvent::ToolProgramUpdated { session_id, .. } => session_id.is_some(),
+        CoreEvent::ConvergenceUpserted { session_id, .. } => !session_id.is_empty(),
         _ => false,
     }
 }

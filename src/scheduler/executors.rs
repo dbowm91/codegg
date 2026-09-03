@@ -513,50 +513,62 @@ impl JobExecutor for SubagentJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let (prompt, agent, parent_id, denied_tools, mut allowed_paths, max_tool_calls, run_id) =
-            match &ctx.job.payload {
-                JobPayload::Subagent {
-                    prompt,
-                    agent,
-                    parent_id,
-                    denied_tools,
-                    allowed_paths,
-                    max_tool_calls,
-                } => (
-                    prompt.clone(),
-                    agent.clone(),
-                    parent_id.clone(),
-                    denied_tools.clone(),
-                    allowed_paths.clone(),
-                    *max_tool_calls,
-                    None,
-                ),
-                JobPayload::SubagentRun {
-                    prompt,
-                    agent,
-                    parent_id,
-                    denied_tools,
-                    allowed_paths,
-                    max_tool_calls,
-                    run_id,
-                    ..
-                } => (
-                    prompt.clone(),
-                    agent.clone(),
-                    parent_id.clone(),
-                    denied_tools.clone(),
-                    allowed_paths.clone(),
-                    *max_tool_calls,
-                    Some(run_id.clone()),
-                ),
-                _ => {
-                    return failure_completion(
-                        started,
-                        ExecutorStatus::Failed,
-                        "unsupported payload".into(),
-                    );
-                }
-            };
+        let (
+            prompt,
+            agent,
+            model,
+            parent_id,
+            denied_tools,
+            mut allowed_paths,
+            max_tool_calls,
+            run_id,
+        ) = match &ctx.job.payload {
+            JobPayload::Subagent {
+                prompt,
+                agent,
+                model,
+                parent_id,
+                denied_tools,
+                allowed_paths,
+                max_tool_calls,
+            } => (
+                prompt.clone(),
+                agent.clone(),
+                model.clone(),
+                parent_id.clone(),
+                denied_tools.clone(),
+                allowed_paths.clone(),
+                *max_tool_calls,
+                None,
+            ),
+            JobPayload::SubagentRun {
+                prompt,
+                agent,
+                model,
+                parent_id,
+                denied_tools,
+                allowed_paths,
+                max_tool_calls,
+                run_id,
+                ..
+            } => (
+                prompt.clone(),
+                agent.clone(),
+                model.clone(),
+                parent_id.clone(),
+                denied_tools.clone(),
+                allowed_paths.clone(),
+                *max_tool_calls,
+                Some(run_id.clone()),
+            ),
+            _ => {
+                return failure_completion(
+                    started,
+                    ExecutorStatus::Failed,
+                    "unsupported payload".into(),
+                );
+            }
+        };
 
         let task_id = ctx
             .job
@@ -825,7 +837,7 @@ impl JobExecutor for SubagentJobExecutor {
                 .map(|context| context.depth as usize)
                 .unwrap_or(1),
             max_tool_calls: max_tool_calls.map(|m| m as usize),
-            parent_model: None,
+            parent_model: model,
             workspace_root,
             workspace_locks: None,
         };

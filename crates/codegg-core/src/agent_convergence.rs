@@ -36,6 +36,9 @@ pub const MAX_EVIDENCE_REFS: usize = 64;
 pub const MAX_REPAIR_REQUESTS: usize = 32;
 pub const MAX_VERIFIER_PACKET_BYTES: usize = 1024 * 1024;
 pub const MAX_CONVERGENCE_LIST: usize = 100;
+/// Delimiter required around the verifier's host-owned structured result.
+/// Plain prose is never interpreted as a semantic pass.
+pub const VERDICT_MARKER: &str = "convergence_verdict";
 
 /// A service-local durable convergence handle.  It is not interchangeable
 /// with an agent run, run group, job, turn, or goal identity.
@@ -469,6 +472,37 @@ impl SemanticVerificationVerdict {
                     .collect(),
             },
         }
+    }
+
+    /// Parse the verifier's explicit structured result. The verifier must
+    /// return exactly one marked JSON object; arbitrary final prose is not a
+    /// verdict and therefore cannot accidentally become `Pass`.
+    pub fn parse_marked(input: &str) -> Result<Self, ConvergenceError> {
+        let trimmed = input.trim();
+        let prefix = format!("<{VERDICT_MARKER}>");
+        let suffix = format!("</{VERDICT_MARKER}>");
+        let payload = trimmed
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(&suffix))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ConvergenceError::InvalidInput(
+                    "verifier output must contain one marked convergence verdict".into(),
+                )
+            })?;
+        let verdict: Self = serde_json::from_str(payload).map_err(|error| {
+            ConvergenceError::Serialization(format!("invalid verifier verdict: {error}"))
+        })?;
+        let verdict = verdict.bounded();
+        let encoded = serde_json::to_vec(&verdict)
+            .map_err(|error| ConvergenceError::Serialization(error.to_string()))?;
+        if encoded.len() > MAX_SPEC_BYTES {
+            return Err(ConvergenceError::LimitExceeded(
+                "verifier verdict exceeds its envelope bound".into(),
+            ));
+        }
+        Ok(verdict)
     }
 }
 
@@ -1986,6 +2020,31 @@ mod tests {
         assert!(
             validate_transition(ConvergenceStatus::Producing, ConvergenceStatus::Pending).is_err()
         );
+    }
+
+    #[test]
+    fn marked_verdict_parser_is_strict_and_fails_closed() {
+        let parsed = SemanticVerificationVerdict::parse_marked(
+            "<convergence_verdict>{\"kind\":\"pass\",\"summary\":\"ok\",\"evidence_refs\":[\"run:1\"]}</convergence_verdict>",
+        )
+        .unwrap();
+        assert!(matches!(parsed, SemanticVerificationVerdict::Pass { .. }));
+        assert!(SemanticVerificationVerdict::parse_marked("pass").is_err());
+        assert!(SemanticVerificationVerdict::parse_marked(
+            "<convergence_verdict>{\"kind\":\"pass\",\"summary\":\"ok\",\"evidence_refs\":[]}</convergence_verdict> trailing"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn verifier_packet_contains_only_bounded_run_result_evidence() {
+        let packet =
+            assemble_verifier_evidence(&spec(), &[result(AgentRunResultStatus::Succeeded)])
+                .unwrap();
+        let encoded = packet.encode_bounded().unwrap();
+        assert!(encoded.contains("bounded result"));
+        assert!(!encoded.contains("transcript"));
+        assert!(!encoded.contains("reasoning"));
     }
 
     #[test]

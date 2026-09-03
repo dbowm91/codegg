@@ -971,6 +971,10 @@ impl ProjectionReducer {
                 snapshot.upsert_run_group(group.clone());
                 ApplyOutcome::Applied
             }
+            ProjectionEvent::ConvergenceUpserted { convergence } => {
+                snapshot.upsert_convergence(convergence.clone());
+                ApplyOutcome::Applied
+            }
             ProjectionEvent::FileChanged { change, at } => {
                 let mut change = change.clone();
                 change.normalise();

@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use crate::projection::caps::PROJECTION_PROTOCOL_VERSION;
 use crate::projection::dto::{
     AgentRunGroupSummaryProjection, AgentRunSummary, AgentTreeNodeProjection,
-    ArtifactHandleProjection, FileChangeProjection, JobProjection, MessageProjection,
-    PermissionProjection, PermissionStatus, QuestionProjection, RunProjection,
+    ArtifactHandleProjection, ConvergenceSummaryProjection, FileChangeProjection, JobProjection,
+    MessageProjection, PermissionProjection, PermissionStatus, QuestionProjection, RunProjection,
     SessionSummaryProjection, ToolArgumentProjection, ToolOutputProjection, ToolProjection,
     ToolStatus, TurnProjection, VisibilityClass, WorktreeSummaryProjection,
 };
@@ -235,6 +235,10 @@ pub enum ProjectionEvent {
     AgentRunGroupUpserted {
         group: AgentRunGroupSummaryProjection,
     },
+    /// Current bounded state of a produce/verify convergence operation.
+    ConvergenceUpserted {
+        convergence: ConvergenceSummaryProjection,
+    },
     /// A file change occurred (workspace-aware, summary only).
     FileChanged {
         change: FileChangeProjection,
@@ -385,6 +389,7 @@ impl ProjectionEvent {
             ProjectionEvent::AgentRunControlUpdated { .. } => false,
             ProjectionEvent::WorktreeUpserted { .. } => false,
             ProjectionEvent::AgentRunGroupUpserted { .. } => false,
+            ProjectionEvent::ConvergenceUpserted { .. } => false,
             ProjectionEvent::FileChanged { .. } => false,
             ProjectionEvent::RunStarted { .. } => false,
             ProjectionEvent::RunProgress { .. } => false,
@@ -428,6 +433,7 @@ impl ProjectionEvent {
             ProjectionEvent::AgentRunControlUpdated { .. } => VisibilityClass::Public,
             ProjectionEvent::WorktreeUpserted { .. } => VisibilityClass::Public,
             ProjectionEvent::AgentRunGroupUpserted { .. } => VisibilityClass::Public,
+            ProjectionEvent::ConvergenceUpserted { .. } => VisibilityClass::Public,
             ProjectionEvent::JobUpserted { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::JobRemoved { .. } => VisibilityClass::ClientLocal,
             ProjectionEvent::ToolProgramSubmitted { .. } => VisibilityClass::ClientLocal,

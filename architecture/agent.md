@@ -511,6 +511,24 @@ normal path.
 
 ## Testing
 
+### Convergence coordinator (`src/agent/convergence.rs`)
+
+The convergence vertical slice is application-owned and composes the durable
+`ConvergenceStore` with `TaskTool`, `AgentRunStore`, and the existing event bus.
+`task` actions `converge`, `convergence_status`, `convergence_decide`, and
+`convergence_cancel` create one producer, wait for its authoritative terminal
+result, then submit one fresh `verifier` run. The coordinator advances only
+after durable state is persisted; terminal notifications are wake-ups and
+reconciliation remains safe to repeat.
+
+The verifier receives a bounded `VerifierEvidencePacket` assembled from
+`AgentRunResult`, never producer transcript or hidden reasoning. Its host-side
+denied-tool ceiling is intersected into the child request, so project agent
+overrides cannot grant mutation, shell, delegation, permission, or goal
+completion authority. A marked `Pass | Revise | Inconclusive` result is persisted
+as semantic evidence only. The exact turn/run owner must explicitly choose
+`accept`, `stop`, or `escalate`; accepting does not merge Git or complete a goal.
+
 - Unit tests: `src/agent/mod.rs::tests`, `src/agent/registry.rs::tests`
 - Integration: `tests/agent_loop_harness.rs` (extensive harness)
 - Compaction: `tests/compaction.rs`

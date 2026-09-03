@@ -52,6 +52,12 @@ crates/codegg-core/src/goal/
    verifier. Only a deterministic `Met` verdict can transition the goal to
    `Complete`; model prose and claimed file/test lists are not authority.
 
+Convergence stores its semantic `Pass | Revise | Inconclusive` verdict
+separately from goal verification. A semantic pass is explanatory evidence and
+cannot satisfy a goal, override a failed or missing host-recorded test, mutate
+`GoalStatus`, or grant completion authority. Goal completion continues through
+`GoalVerificationService` and its deterministic host evidence rules.
+
 Supervised Test and Subagent jobs created by the daemon while a goal is
 active carry the host-written reserved `goal_id` label. Completion evidence
 is eligible only when that durable label matches the exact goal being

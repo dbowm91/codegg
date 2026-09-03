@@ -267,12 +267,12 @@ Counts below were re-verified against the current tree (see source column).
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
 | LSP servers | 39 | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
-| AppEvent variants | 51 | `crates/codegg-core/src/bus/events.rs` |
+| AppEvent variants | 52 | `crates/codegg-core/src/bus/events.rs` |
 | Built-in slash commands | 108 | `src/tui/command.rs` |
-| Built-in agents | 9 | `assets/agents/*.toml` |
+| Built-in agents | 10 | `assets/agents/*.toml` |
 | Database tables | 63 | `crates/codegg-core/src/session/schema.rs` |
 | Storage layout version | 48 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
-| Integration test files | 167 | `tests/*.rs` |
+| Integration test files | 168 | `tests/*.rs` |
 | Architecture docs | 72 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |

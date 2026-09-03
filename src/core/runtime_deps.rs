@@ -61,6 +61,8 @@ pub struct CoreRuntimeDeps {
     pub run_control: Arc<crate::agent::run_control::RunControlService>,
     /// Durable bounded run-group coordination over the canonical run store.
     pub run_group_service: Arc<codegg_core::agent_run_group::AgentRunGroupService>,
+    /// Durable convergence records and bounded cycle state.
+    pub convergence_store: Arc<dyn codegg_core::agent_convergence::ConvergenceStore>,
     /// The turn runtime that owns tool registry, permission checker,
     /// agent loop construction, and turn execution.
     ///
@@ -119,6 +121,7 @@ impl Clone for CoreRuntimeDeps {
             agent_run_store: Arc::clone(&self.agent_run_store),
             run_control: Arc::clone(&self.run_control),
             run_group_service: Arc::clone(&self.run_group_service),
+            convergence_store: Arc::clone(&self.convergence_store),
             turn_runtime: Arc::clone(&self.turn_runtime),
             lsp_service: self.lsp_service.clone(),
             workspace_services: self.workspace_services.clone(),
@@ -152,6 +155,8 @@ impl CoreRuntimeDeps {
             crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
         let run_group_service =
             codegg_core::agent_run_group::AgentRunGroupService::in_memory(agent_run_store.clone());
+        let convergence_store: Arc<dyn codegg_core::agent_convergence::ConvergenceStore> =
+            Arc::new(codegg_core::agent_convergence::InMemoryConvergenceStore::new());
         run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool,
@@ -160,6 +165,7 @@ impl CoreRuntimeDeps {
             agent_run_store,
             run_control,
             run_group_service,
+            convergence_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
@@ -194,6 +200,8 @@ impl CoreRuntimeDeps {
             crate::agent::run_control::RunControlService::in_memory(agent_run_store.clone());
         let run_group_service =
             codegg_core::agent_run_group::AgentRunGroupService::in_memory(agent_run_store.clone());
+        let convergence_store: Arc<dyn codegg_core::agent_convergence::ConvergenceStore> =
+            Arc::new(codegg_core::agent_convergence::InMemoryConvergenceStore::new());
         run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool,
@@ -202,6 +210,7 @@ impl CoreRuntimeDeps {
             agent_run_store,
             run_control,
             run_group_service,
+            convergence_store,
             turn_runtime,
             lsp_service: None,
             workspace_services: None,
@@ -246,6 +255,9 @@ impl CoreRuntimeDeps {
             agent_run_store.clone(),
             pool.clone(),
         );
+        let convergence_store: Arc<dyn codegg_core::agent_convergence::ConvergenceStore> = Arc::new(
+            codegg_core::agent_convergence::SqliteConvergenceStore::new(pool.clone()),
+        );
         run_control.set_group_service_sync(run_group_service.clone());
         Self {
             pool: Some(pool.clone()),
@@ -254,6 +266,7 @@ impl CoreRuntimeDeps {
             agent_run_store: agent_run_store.clone(),
             run_control,
             run_group_service,
+            convergence_store,
             turn_runtime: Arc::new(crate::agent::turn_runtime::DefaultTurnRuntime),
             lsp_service: None,
             workspace_services: None,
