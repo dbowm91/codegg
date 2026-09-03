@@ -1,6 +1,6 @@
 # Agent Convergence and Independent Verification Roadmap
 
-Status: active planning — M003 ready
+Status: active planning — M003 active
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -424,7 +424,7 @@ Exit conditions:
 
 ### M003 — Bounded repair/replan, safe result chaining, and orchestration policy
 
-Status: ready
+Status: active
 
 Class: capability/reliability/polish
 
