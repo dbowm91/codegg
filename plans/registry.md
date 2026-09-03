@@ -27,7 +27,6 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions corrective follow-up | closing | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 closure review | Production implementation `eb9c4d9`; closure at `plans/closure/runtime-assets/007-status.md`. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
@@ -71,15 +70,17 @@ Verification remains deliberately light: the newly registered follow-ups require
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history corrective follow-up unless implementation touches that sandbox path.
 
-No newly registered corrective plan is hard-blocked. Runtime-safety M013 and runtime-assets M007 remain independent and dependency-ready; goal-verification M013 is closed.
+No newly registered corrective plan is hard-blocked. Runtime-safety M013 remains
+dependency-ready; runtime-assets M007 is closed and goal-verification M013 is
+closed.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
 ## New corrective execution order
 
-1. Runtime-safety M013 and runtime-assets M007 remain independent and dependency-ready; goal-verification M013 is closed.
+1. Runtime-safety M013 remains dependency-ready; runtime-assets M007 and goal-verification M013 are closed.
 2. Runtime-safety M013 must preserve M011/M012 checkpoint/Undo architecture while correcting same-path cross-session atomicity, mixed unknown-side-effect restore eligibility, and hosted Clippy closure evidence.
-3. Runtime-assets M007 must preserve M005/M006 plugin/MCP ownership while making every validated transport alias executable through the existing `McpService` path.
+3. Runtime-assets M007 preserved M005/M006 plugin/MCP ownership while making every validated transport alias executable through the existing `McpService` path; its closure is recorded at `plans/closure/runtime-assets/007-status.md`.
 4. Goal-verification M013 preserved M012 host-owned terminal authority while adding exact goal provenance and conservative deterministic criterion semantics; it is now closed.
 5. Prior closure records are not rewritten; each corrective milestone receives a new closure record and becomes the current strict disposition for its narrow line of work.
 
@@ -127,6 +128,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/010-status.md`; implementation `58dd05de`; no registered future plan was unblocked. |
 | Runtime assets and harness interoperability | M005 — durable context-aware plugin activation | closed | `plans/closure/runtime-assets/005-status.md`; durable scoped activation and immutable context resolution; M006 moved to ready. |
 | Runtime assets — plugin declarative contributions | M006 — passive asset and MCP contribution bridge | closed historical evidence; current compatibility disposition owned by M007 | `plans/closure/runtime-assets/006-status.md`; implementation `35cf6f5`; M007 owns the later-discovered `stdio`/`http` transport alias mismatch. |
+| Runtime assets — plugin declarative contributions corrective follow-up | M007 — plugin MCP transport alias corrective pass | closed | `plans/closure/runtime-assets/007-status.md`; implementation `eb9c4d9`; no registered future plan was unblocked. |
 | Agent runtime correctness, autonomy, and simplification | M010 — recovery-state strict closure corrective pass | conditionally closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/010-status.md`; structural correction retained; strict closure transferred to M011 after hosted run `31521674076` failed Clippy and typed-result review found incomplete propagation |
 | Agent runtime correctness, autonomy, and simplification | M011 — typed tool outcome and hosted closure corrective pass | closed | `plans/closure/agent-runtime-correctness-autonomy-simplification/011-status.md`; exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests |
 | Agent runtime — host-owned goal verification | M012 — host-owned completion verification | closed historical evidence; corrective disposition accepted by M013 | `plans/closure/agent-runtime-correctness-autonomy-simplification/012-status.md`; implementations `25b85b7c`, `004f136c`; M013 owns the later exact-goal provenance and criterion-classification findings. |

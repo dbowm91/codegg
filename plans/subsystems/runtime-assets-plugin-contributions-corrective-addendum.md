@@ -1,6 +1,6 @@
 # Runtime Assets — Plugin Contributions Corrective Addendum
 
-Status: closing — M007 closure review
+Status: closed
 
 Repository baseline reviewed: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 
@@ -50,7 +50,7 @@ The existing M006 test suite did not catch this because its `stdio` fixture exer
 
 ### M007 — Plugin MCP transport alias corrective pass
 
-Status: implemented
+Status: closed
 
 Plan:
 
