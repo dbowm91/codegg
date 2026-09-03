@@ -238,6 +238,16 @@ pub enum TuiCommand {
     MemoryForget {
         id: String,
     },
+    HabitList {
+        ready_only: bool,
+    },
+    HabitDismiss {
+        id: String,
+    },
+    HabitResult {
+        toast_message: String,
+        is_error: bool,
+    },
     CompactSession,
     OpenDiffDialog {
         old_content: Box<str>,
@@ -6201,6 +6211,30 @@ impl App {
             }
             "/memory-consolidate" => {
                 self.handle_memory_command(Some(("consolidate", "")));
+            }
+            "/habits" => {
+                let ready_only = self.dialog_state.command_palette.query.trim() == "ready";
+                if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::HabitList { ready_only });
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("Habit store unavailable");
+                }
+            }
+            "/habit-dismiss" => {
+                let id = self.dialog_state.command_palette.query.trim().to_string();
+                if id.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /habit-dismiss <id> (use /habits)");
+                } else if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(tx, TuiCommand::HabitDismiss { id });
+                } else {
+                    self.messages_state
+                        .toasts
+                        .warning("Habit store unavailable");
+                }
             }
             "/goal" => {
                 let query = self.dialog_state.command_palette.query.trim().to_string();

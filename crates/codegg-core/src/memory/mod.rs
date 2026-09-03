@@ -2,6 +2,7 @@
 //!
 //! Session-to-session learning storing and retrieving context across sessions.
 
+pub mod habit;
 pub mod patterns;
 
 use chrono::Utc;

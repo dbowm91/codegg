@@ -17,8 +17,8 @@ use super::super::commands::goals::{
 };
 #[allow(unused_imports)]
 use super::super::commands::memory::{
-    apply_memory_result, start_memory_forget, start_memory_remember, start_memory_search,
-    start_memory_summary,
+    apply_habit_result, apply_memory_result, start_habit_dismiss, start_habit_list,
+    start_memory_forget, start_memory_remember, start_memory_search, start_memory_summary,
 };
 #[allow(unused_imports)]
 use super::super::commands::plugins::{
@@ -187,6 +187,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::MemoryForget { id } => {
             start_memory_forget(app, id);
+        }
+        TuiCommand::HabitList { ready_only } => {
+            start_habit_list(app, ready_only);
+        }
+        TuiCommand::HabitDismiss { id } => {
+            start_habit_dismiss(app, id);
         }
         TuiCommand::CompactSession => {
             handle_compact_session(app);
@@ -393,6 +399,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             is_error,
         } => {
             apply_memory_result(app, toast_message, is_error);
+        }
+        TuiCommand::HabitResult {
+            toast_message,
+            is_error,
+        } => {
+            apply_habit_result(app, toast_message, is_error);
         }
         TuiCommand::DoctorResult { summary, is_error } => {
             apply_doctor_result(app, summary, is_error);

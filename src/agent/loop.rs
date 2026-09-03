@@ -519,6 +519,13 @@ pub struct AgentLoop {
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     pub(super) run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
+    /// Host-owned habit observation state. Only allowlisted structural action
+    /// metadata reaches this collector; raw calls/results remain in the
+    /// ordinary model execution path and are never persisted here.
+    pub(super) habit_store: Option<Arc<codegg_core::memory::habit::HabitStore>>,
+    pub(super) habit_project_namespace: String,
+    pub(super) habit_actions: Vec<codegg_core::memory::habit::WorkflowAction>,
+    pub(super) habit_had_failure: bool,
 }
 
 impl AgentLoop {
@@ -722,6 +729,16 @@ impl AgentLoop {
                 .with_artifact_store(artifact_store.clone()),
         );
 
+        let habit_store = match codegg_core::memory::habit::HabitStore::new() {
+            Ok(store) => Some(Arc::new(store)),
+            Err(error) => {
+                tracing::debug!(error = %error, "habit observation store unavailable");
+                None
+            }
+        };
+        let habit_project_namespace =
+            codegg_core::memory::project_namespace(&workspace_root.to_string_lossy());
+
         Self {
             agents: map,
             state: AgentLoopState {
@@ -804,6 +821,10 @@ impl AgentLoop {
             notification_service: None,
             run_control: None,
             run_id: None,
+            habit_store,
+            habit_project_namespace,
+            habit_actions: Vec::new(),
+            habit_had_failure: false,
         }
     }
 
@@ -1249,7 +1270,145 @@ impl AgentLoop {
         }
     }
 
-    fn publish_agent_finished(&self, events: &[ChatEvent]) {
+    fn habit_action_for_tool(
+        &self,
+        tool_call: &ToolCall,
+    ) -> Option<codegg_core::memory::habit::WorkflowAction> {
+        use crate::tool::contract::ToolEffectClass;
+        use codegg_core::memory::habit::{WorkflowAction, WorkflowActionKind, WorkflowEffectClass};
+
+        let tool_name = tool_call.name.as_str();
+        let (kind, variant) = match tool_name {
+            "read" => (WorkflowActionKind::FileRead, None),
+            "glob" | "grep" | "list" | "diff" | "codesearch" | "repo_search" | "repo_map"
+            | "security_search" | "websearch" | "webfetch" => (WorkflowActionKind::Search, None),
+            "edit" | "write" | "replace" | "multiedit" => (WorkflowActionKind::Edit, None),
+            "apply_patch" => (WorkflowActionKind::Patch, None),
+            "test" => (WorkflowActionKind::Test, None),
+            "git" => {
+                let subcommand = tool_call
+                    .arguments
+                    .get("subcommand")
+                    .and_then(serde_json::Value::as_str);
+                match subcommand {
+                    Some(
+                        subcommand @ ("status" | "diff" | "show" | "log" | "blame"
+                        | "changed-files" | "branch" | "tag" | "remote" | "worktree"
+                        | "stash"),
+                    ) => (WorkflowActionKind::GitRead, Some(subcommand.to_string())),
+                    Some(
+                        subcommand @ ("add" | "commit" | "reset" | "checkout" | "merge" | "rebase"
+                        | "fetch" | "pull" | "push" | "clean"),
+                    ) => (WorkflowActionKind::GitWrite, Some(subcommand.to_string())),
+                    _ => (WorkflowActionKind::GitWrite, None),
+                }
+            }
+            "lsp" => (WorkflowActionKind::LspRead, None),
+            "skill" => (WorkflowActionKind::SkillActivate, None),
+            "task" => (WorkflowActionKind::Delegate, None),
+            "bash" | "terminal" => (WorkflowActionKind::ShellExec, None),
+            name if matches!(
+                name,
+                "text_equal"
+                    | "text_diff_explain"
+                    | "text_replace_check"
+                    | "validate_json"
+                    | "validate_toml"
+                    | "command_preflight"
+                    | "path_normalize"
+                    | "text_security_inspect"
+            ) =>
+            {
+                (
+                    WorkflowActionKind::DeterministicValidate,
+                    Some(name.to_string()),
+                )
+            }
+            _ => return None,
+        };
+
+        let effect = if kind == WorkflowActionKind::GitRead {
+            WorkflowEffectClass::ReadOnly
+        } else {
+            self.tool_registry
+                .get(tool_name)
+                .map(|tool| tool.contract(tool_name, tool.parameters()).effect_class)
+                .map(|class| match class {
+                    ToolEffectClass::ReadOnly => WorkflowEffectClass::ReadOnly,
+                    ToolEffectClass::ReadValidate => WorkflowEffectClass::ReadValidate,
+                    ToolEffectClass::SafeRepeat => WorkflowEffectClass::SafeRepeat,
+                    ToolEffectClass::IdempotentMutating | ToolEffectClass::NonIdempotent => {
+                        WorkflowEffectClass::Mutating
+                    }
+                    ToolEffectClass::ProcessExec => WorkflowEffectClass::ProcessExec,
+                })
+                .unwrap_or_else(|| match tool_name {
+                    "read" | "glob" | "grep" | "list" | "diff" => WorkflowEffectClass::ReadOnly,
+                    "bash" | "terminal" | "test" => WorkflowEffectClass::ProcessExec,
+                    _ => WorkflowEffectClass::Mutating,
+                })
+        };
+
+        Some(WorkflowAction::new(kind, variant, effect))
+    }
+
+    /// Collect safe action metadata for one completed tool batch. This is the
+    /// sole observation adapter; individual tools never know about the habit
+    /// store. Failed results invalidate the enclosing occurrence.
+    fn record_habit_tool_results(
+        &mut self,
+        tool_calls: &[ToolCall],
+        tool_results: &[(String, ToolExecutionOutcome)],
+    ) {
+        for tool_call in tool_calls {
+            let Some((_, outcome)) = tool_results
+                .iter()
+                .find(|(id, _)| id == tool_call.id.as_ref())
+            else {
+                self.habit_had_failure = true;
+                continue;
+            };
+            if !tool_outcome_is_success(outcome) {
+                self.habit_had_failure = true;
+                continue;
+            }
+            if let Some(action) = self.habit_action_for_tool(tool_call) {
+                if self.habit_actions.len() < codegg_core::memory::habit::MAX_WORKFLOW_ACTIONS * 2 {
+                    self.habit_actions.push(action);
+                }
+            }
+        }
+    }
+
+    fn finalize_habit_observation(&mut self, events: &[ChatEvent]) {
+        let explicit_success = events.iter().rev().find_map(|event| match event {
+            ChatEvent::Finish { stop_reason, .. } => {
+                Some(is_soft_stop_reason(Some(stop_reason.as_str())))
+            }
+            _ => None,
+        }) == Some(true);
+        if !explicit_success || self.habit_had_failure || self.habit_actions.is_empty() {
+            return;
+        }
+        let Some(store) = self.habit_store.clone() else {
+            return;
+        };
+        let occurrence = codegg_core::memory::habit::WorkflowOccurrence {
+            project_namespace: self.habit_project_namespace.clone(),
+            session_id: self.session_id.clone(),
+            turn_id: self.turn_id.clone(),
+            root_or_run_id: self.run_id.as_ref().map(ToString::to_string),
+            actions: self.habit_actions.clone(),
+            outcome: codegg_core::memory::habit::WorkflowOutcome::Succeeded,
+            occurred_at: chrono::Utc::now().timestamp_millis(),
+        };
+        if let Err(error) = store.observe(occurrence) {
+            tracing::warn!(error = %error, "failed to persist habit observation");
+        }
+    }
+
+    fn publish_agent_finished(&mut self, events: &[ChatEvent]) {
+        self.finalize_habit_observation(events);
         let last_finish = events.iter().rev().find_map(|event| {
             if let ChatEvent::Finish { stop_reason, usage } = event {
                 Some((stop_reason, usage))
@@ -2346,6 +2505,8 @@ impl AgentLoop {
         self.context_policy_runtime = ContextPolicyRuntimeState::default();
         self.progress_recovery = RecoveryController::default();
         self.recovery_parallel_limit = None;
+        self.habit_actions.clear();
+        self.habit_had_failure = false;
         // Gated effective-cost driven tool palette reduction (prototype). Applies only to
         // the per-request payload (request.tools), never to ToolRegistry. Decision may reduce
         // before the InitialRequest observe so diagnostics reflect the sent palette.
@@ -2870,6 +3031,7 @@ impl AgentLoop {
                 .execute(&tool_calls)
                 .await?;
             just_executed_tools = !tool_results.is_empty();
+            self.record_habit_tool_results(&tool_calls, &tool_results);
             // The file-change bus is the observable state transition fact for
             // mutating tools. A successful mutation with no emitted change is
             // not progress merely because its display text changed.
@@ -3692,6 +3854,7 @@ impl AgentLoop {
                     }
                 };
                 just_executed_tools = !tool_results.is_empty();
+                self.record_habit_tool_results(&tool_calls, &tool_results);
 
                 // Push assistant message BEFORE tool results (fix Packet 2)
                 if let Some(msg) = processor.to_assistant_message() {

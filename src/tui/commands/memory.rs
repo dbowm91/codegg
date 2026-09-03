@@ -619,3 +619,114 @@ pub(crate) fn apply_memory_result(app: &mut App, toast_message: String, is_error
         }
     }
 }
+
+pub(crate) fn start_habit_list(app: &mut App, ready_only: bool) {
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Memory,
+        "habit_list",
+        async move {
+            let result = (|| {
+                let store = crate::memory::habit::HabitStore::new()
+                    .map_err(|error| format!("Habit store unavailable: {error}"))?;
+                let status =
+                    ready_only.then_some(crate::memory::habit::HabitCandidateStatus::Ready);
+                let candidates = store
+                    .list(&project_dir, status, 32)
+                    .map_err(|error| format!("Failed to load habit candidates: {error}"))?;
+                if candidates.is_empty() {
+                    return Ok(if ready_only {
+                        "No ready habit candidates.".to_string()
+                    } else {
+                        "No habit candidates yet.".to_string()
+                    });
+                }
+                let mut lines = vec![format!("Workflow habit candidates ({}):", candidates.len())];
+                for candidate in candidates {
+                    let id = candidate.id.as_str().chars().take(8).collect::<String>();
+                    let status = format!("{:?}", candidate.status).to_lowercase();
+                    lines.push(format!(
+                        "- [{}] {} — {} ({} successes, {} sessions)",
+                        id,
+                        status,
+                        candidate.summary(),
+                        candidate.successful_occurrences,
+                        candidate.distinct_sessions
+                    ));
+                }
+                lines.push("Dismiss with /habit-dismiss <id>. Ready candidates are eligible for a later skill proposal.".to_string());
+                Ok(lines.join("\n"))
+            })();
+            Some(match result {
+                Ok(message) => TuiCommand::HabitResult {
+                    toast_message: message,
+                    is_error: false,
+                },
+                Err(message) => TuiCommand::HabitResult {
+                    toast_message: message,
+                    is_error: true,
+                },
+            })
+        },
+    );
+}
+
+pub(crate) fn start_habit_dismiss(app: &mut App, id: String) {
+    let Some(id) = crate::memory::habit::HabitId::parse(&id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid habit candidate ID");
+        return;
+    };
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Memory,
+        "habit_dismiss",
+        async move {
+            let result = (|| {
+                let store = crate::memory::habit::HabitStore::new()
+                    .map_err(|error| format!("Habit store unavailable: {error}"))?;
+                let dismissed = store
+                    .dismiss(&project_dir, &id)
+                    .map_err(|error| format!("Failed to dismiss habit candidate: {error}"))?;
+                Ok(if dismissed {
+                    "Habit candidate dismissed.".to_string()
+                } else {
+                    "Habit candidate not found or already finalized.".to_string()
+                })
+            })();
+            Some(match result {
+                Ok(message) => TuiCommand::HabitResult {
+                    toast_message: message,
+                    is_error: false,
+                },
+                Err(message) => TuiCommand::HabitResult {
+                    toast_message: message,
+                    is_error: true,
+                },
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_habit_result(app: &mut App, message: String, is_error: bool) {
+    if is_error {
+        app.messages_state.toasts.error(&message);
+    } else {
+        let lines: Vec<String> = message.lines().map(str::to_string).collect();
+        if lines.len() > 3 {
+            app.open_info_dialog(
+                crate::tui::components::dialogs::info::InfoType::MemoryResults,
+                lines,
+            );
+        } else {
+            app.messages_state.toasts.info(&message);
+        }
+    }
+}

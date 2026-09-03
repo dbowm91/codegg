@@ -194,6 +194,10 @@ impl CommandRegistry {
                 .with_description("Forget a memory (args: id)"),
             Command::new("/memory-consolidate", CommandCategory::Session, None)
                 .with_description("Consolidate session into memories"),
+            Command::new("/habits", CommandCategory::Session, None)
+                .with_description("Inspect workflow habit candidates (args: ready)"),
+            Command::new("/habit-dismiss", CommandCategory::Session, None)
+                .with_description("Dismiss a workflow habit candidate (args: id)"),
             Command::new("/checkpoint", CommandCategory::Session, None)
                 .with_description("Create a checkpoint of current session"),
             Command::new("/goal", CommandCategory::Session, None)

@@ -13,6 +13,7 @@ re-discovering them each session.
 ## Where It Lives
 
 - **Core types & store**: `crates/codegg-core/src/memory/mod.rs`
+- **Habit observation & candidate store**: `crates/codegg-core/src/memory/habit.rs`
 - **Pattern detection**: `crates/codegg-core/src/memory/patterns.rs`
 - **TUI commands**: `src/tui/commands/` (slash commands like
   `/memory`, `/memory-remember`, etc.)
@@ -160,6 +161,43 @@ base score, not used as a replacement. "don't use eval" → 8 + (-3) = 5.
 
 Auto-consolidation runs on `AgentFinished` when enabled.
 
+## Workflow habit candidates
+
+Habit candidates are a separate, host-owned evidence store. The AgentLoop
+collects completed tool calls through one adapter and retains only a fixed
+allowlist of structural action kinds, bounded safe variants, effect classes,
+session/turn provenance, and timestamps. Raw commands, executable arguments,
+tool arguments/results, prompts, environment data, paths, and hidden reasoning
+never enter the habit record. Generic `bash` and `terminal` calls are recorded
+only as `shell_exec`.
+
+At the explicit successful provider terminal (`stop` or `end_turn`), the
+bounded action sequence is normalized: immediate identical actions are
+collapsed, the sequence is capped at 32 actions, and at least two distinct
+actions are required. A domain-separated SHA-256 fingerprint includes the
+project memory namespace and workflow version. Failed, cancelled, timed-out,
+stalled, or incomplete turns do not create successful occurrences. Duplicate
+turn delivery is idempotent.
+
+Candidates are stored as JSON under the same config/memory ownership tree:
+
+```
+~/.config/codegg/memory/habits/project/{sha256_namespace}.json
+```
+
+The store uses a per-project advisory lock, bounded reads, complete temp-file
+writes, `sync_all`, and atomic rename. It retains at most 128 candidates and
+64 session IDs per candidate. Readiness is deterministic at three successful
+occurrences across at least two sessions. Dismissed candidates do not reopen
+automatically; promoted and superseded transitions are host-only APIs reserved
+for later promotion milestones.
+
+Habit candidates are not merged into `Memory`, included in text-memory
+consolidation, or injected into the system prompt. They are inspectable through
+`/habits` and `/habits ready`; `/habit-dismiss <id>` suppresses a candidate
+explicitly. Ready state means only “eligible for a later skill proposal”; M001
+does not draft or write skills and does not refresh runtime assets.
+
 ## TUI Commands
 
 | Command | Description |
@@ -170,6 +208,8 @@ Auto-consolidation runs on `AgentFinished` when enabled.
 | `/memory-remember <text>` | Remember something mid-session |
 | `/memory-forget <id>` | Delete a specific memory |
 | `/memory-consolidate` | Extract patterns from current session |
+| `/habits [ready]` | Inspect bounded workflow habit candidates |
+| `/habit-dismiss <id>` | Dismiss a habit candidate |
 
 ## Invariants & Gotchas
 
