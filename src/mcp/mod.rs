@@ -386,10 +386,17 @@ impl McpService {
             }
 
             let declaration = &server.declaration;
+            let Some(server_type) = declaration.canonical_server_type() else {
+                report.failed.push(format!(
+                    "MCP server '{}' from plugin '{}' has unsupported type '{}'",
+                    server.canonical_name, server.plugin_id, declaration.server_type
+                ));
+                continue;
+            };
             let result = self
                 .connect_from_config(
                     &server.canonical_name,
-                    &declaration.server_type,
+                    server_type,
                     declaration.command.as_deref(),
                     Some(&declaration.args),
                     Some(declaration.env.clone()),

@@ -117,7 +117,7 @@ Central registry holding `HashMap<String, McpServer>` and an
 |--------|-------------|
 | `connect_stdio` | Spawn local server via stdio |
 | `connect_http` | Connect to remote server via HTTP |
-| `connect_from_config` | Dispatch to `stdio`/`http` based on `server_type` |
+| `connect_from_config` | Dispatch canonical `local`/`remote` config types to stdio/HTTP |
 | `disconnect` | Gracefully disconnect one server |
 | `shutdown_all` | Disconnect all servers |
 | `call_tool` | String-only tool call |
@@ -300,6 +300,9 @@ Note: The JSON key is `"type"` (via `#[serde(rename = "type")]` on
   may be stale.
 - **Plugin contributions**: `McpService::reconcile_plugin_servers` translates
   active declarative plugin declarations into the normal stdio/http lifecycle.
+  Plugin `type` aliases `local`/`stdio` and `remote`/`http` are canonicalized
+  at the plugin contribution boundary; configured MCP parsing continues to use
+  its existing `local`/`remote` vocabulary.
   Plugin server names are `plugin:<plugin-name>:<declared-name>` and carry
   `McpServerOrigin::Plugin`. Reconciliation removes only stale plugin-owned
   servers and reports configured/other-plugin collisions; it never overwrites

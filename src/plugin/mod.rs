@@ -46,9 +46,9 @@ pub use loader::{load_plugin, LoadedPlugin};
 pub use manifest::{
     FilesystemPermission, LegacyHookSpec, LegacyManifest, PluginCapability, PluginCommandSpec,
     PluginContributions, PluginDiagnostic, PluginDiagnosticLevel, PluginEventSubscriptionSpec,
-    PluginHookSpec, PluginManifest, PluginMcpServerContribution, PluginOutputSurface,
-    PluginPanelContribution, PluginPermissionSet, PluginRuntimeSpec, PluginStatusContribution,
-    PluginTrustClass,
+    PluginHookSpec, PluginManifest, PluginMcpServerContribution, PluginMcpTransport,
+    PluginOutputSurface, PluginPanelContribution, PluginPermissionSet, PluginRuntimeSpec,
+    PluginStatusContribution, PluginTrustClass,
 };
 pub use permission::{
     check_invocation_allowed, check_lifecycle_hook_allowed, check_secret_access_allowed,

@@ -290,7 +290,10 @@ Controlled via `cargo build --features plugins`.
   declarations. They are resolved from the immutable workspace activation
   view; discovery never invokes a plugin runtime. Asset inputs flow through
   `ProjectAssetSnapshotBuilder`, MCP inputs through `McpService`, and each
-  identity is namespaced with `plugin:<plugin-name>:`.
+  identity is namespaced with `plugin:<plugin-name>:`. MCP contribution types
+  accept `local`/`stdio` for the existing local stdio transport and
+  `remote`/`http` for the existing remote HTTP transport; aliases are
+  canonicalized before `McpService` handles the connection.
 - **Origin and inspection**: MCP servers retain configured/plugin origin and
   reconciliation removes only the owning plugin's servers. Management info
   and doctor expose counts and validation diagnostics without bodies or

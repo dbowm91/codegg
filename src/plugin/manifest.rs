@@ -119,6 +119,51 @@ pub struct PluginMcpServerContribution {
     pub timeout: Option<u64>,
 }
 
+/// Transport vocabulary accepted by plugin MCP contributions.
+///
+/// The plugin manifest keeps the compatibility spellings used by existing
+/// configuration files, while [`McpService`](crate::mcp::McpService) keeps
+/// ownership of the actual transport implementations. This type is the
+/// single translation boundary between those two vocabularies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginMcpTransport {
+    Local,
+    Remote,
+}
+
+impl PluginMcpTransport {
+    pub fn parse(server_type: &str) -> Option<Self> {
+        match server_type {
+            "local" | "stdio" => Some(Self::Local),
+            "remote" | "http" => Some(Self::Remote),
+            _ => None,
+        }
+    }
+
+    pub const fn canonical_server_type(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+
+    pub const fn requires_command(self) -> bool {
+        matches!(self, Self::Local)
+    }
+}
+
+impl PluginMcpServerContribution {
+    pub fn transport(&self) -> Option<PluginMcpTransport> {
+        PluginMcpTransport::parse(&self.server_type)
+    }
+
+    /// Return the server type understood by [`McpService`](crate::mcp::McpService).
+    pub fn canonical_server_type(&self) -> Option<&'static str> {
+        self.transport()
+            .map(PluginMcpTransport::canonical_server_type)
+    }
+}
+
 impl PluginContributions {
     pub const MAX_PATHS: usize = 64;
     pub const MAX_MCP_SERVERS: usize = 32;
@@ -156,16 +201,13 @@ impl PluginContributions {
             if server.name.is_empty() || server.name.len() > Self::MAX_NAME_LENGTH {
                 return Err(format!("invalid MCP contribution name '{}'", server.name));
             }
-            if !matches!(
-                server.server_type.as_str(),
-                "local" | "stdio" | "remote" | "http"
-            ) {
-                return Err(format!(
+            let transport = server.transport().ok_or_else(|| {
+                format!(
                     "MCP contribution '{}' has unsupported type '{}'",
                     server.name, server.server_type
-                ));
-            }
-            let local = matches!(server.server_type.as_str(), "local" | "stdio");
+                )
+            })?;
+            let local = transport.requires_command();
             if local != server.command.is_some() || (!local) != server.url.is_some() {
                 return Err(format!(
                     "MCP contribution '{}' has incomplete {} configuration",
@@ -730,6 +772,99 @@ type = "tool.execute.after"
             PluginTrustClass::from_runtime_kind("pyo3"),
             PluginTrustClass::TrustedLocal
         );
+    }
+
+    #[test]
+    fn mcp_transport_aliases_use_one_canonical_vocabulary() {
+        for (server_type, canonical) in [
+            ("local", "local"),
+            ("stdio", "local"),
+            ("remote", "remote"),
+            ("http", "remote"),
+        ] {
+            let declaration = PluginMcpServerContribution {
+                name: "fixture".into(),
+                server_type: server_type.into(),
+                ..Default::default()
+            };
+            assert_eq!(declaration.canonical_server_type(), Some(canonical));
+        }
+
+        assert_eq!(PluginMcpTransport::parse("websocket"), None);
+    }
+
+    #[test]
+    fn mcp_transport_aliases_share_validation_field_requirements() {
+        for server_type in ["local", "stdio"] {
+            let valid = PluginMcpServerContribution {
+                name: "fixture".into(),
+                server_type: server_type.into(),
+                command: Some("fixture".into()),
+                ..Default::default()
+            };
+            assert!(PluginContributions {
+                mcp_servers: vec![valid],
+                ..Default::default()
+            }
+            .validate()
+            .is_ok());
+
+            let url_only = PluginMcpServerContribution {
+                name: "fixture".into(),
+                server_type: server_type.into(),
+                url: Some("https://example.test/mcp".into()),
+                ..Default::default()
+            };
+            assert!(PluginContributions {
+                mcp_servers: vec![url_only],
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
+
+        for server_type in ["remote", "http"] {
+            let valid = PluginMcpServerContribution {
+                name: "fixture".into(),
+                server_type: server_type.into(),
+                url: Some("https://example.test/mcp".into()),
+                ..Default::default()
+            };
+            assert!(PluginContributions {
+                mcp_servers: vec![valid],
+                ..Default::default()
+            }
+            .validate()
+            .is_ok());
+
+            let command_only = PluginMcpServerContribution {
+                name: "fixture".into(),
+                server_type: server_type.into(),
+                command: Some("fixture".into()),
+                ..Default::default()
+            };
+            assert!(PluginContributions {
+                mcp_servers: vec![command_only],
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
+
+        let unsupported = PluginMcpServerContribution {
+            name: "fixture".into(),
+            server_type: "websocket".into(),
+            command: Some("fixture".into()),
+            ..Default::default()
+        };
+        let error = PluginContributions {
+            mcp_servers: vec![unsupported],
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(error.contains("unsupported type"));
+        assert!(error.len() < 256);
     }
 
     #[test]

@@ -274,10 +274,130 @@ async fn mcp_reconciliation_removes_only_plugin_origin_and_rejects_config_collis
     };
     let report = service.reconcile_plugin_servers(&[desired]).await;
     assert_eq!(report.collisions.len(), 1);
+    assert_eq!(report.removed, vec!["plugin:alpha:owned"]);
     assert!(service.server_tools().contains_key("configured"));
     assert!(!service.server_tools().contains_key("plugin:alpha:owned"));
     assert!(matches!(
         service.server_origin("configured"),
         Some(McpServerOrigin::Configured)
     ));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_reconciliation_connects_stdio_alias_through_local_lifecycle() {
+    let mut service = McpService::new();
+    let fixture = r#"
+while IFS= read -r request; do
+    case "$request" in
+        *'"method":"initialize"'*)
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"fixture","version":"1"}}}'
+            ;;
+        *'"method":"tools/list"'*)
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"fixture_tool","description":"fixture","inputSchema":{"type":"object","properties":{}}}]}}'
+            ;;
+    esac
+done
+"#;
+    let desired = ResolvedPluginMcpServer {
+        plugin_id: "plugin:fixture".into(),
+        plugin_version: "1".into(),
+        canonical_name: "plugin:fixture:stdio".into(),
+        declaration: PluginMcpServerContribution {
+            name: "stdio".into(),
+            server_type: "stdio".into(),
+            command: Some("/bin/sh".into()),
+            args: vec!["-c".into(), fixture.into()],
+            timeout: Some(5_000),
+            ..Default::default()
+        },
+    };
+
+    let report = service.reconcile_plugin_servers(&[desired]).await;
+    assert_eq!(report.connected, vec!["plugin:fixture:stdio"]);
+    assert!(
+        report.failed.is_empty(),
+        "unexpected failures: {:?}",
+        report.failed
+    );
+    assert_eq!(
+        service.server_tools()["plugin:fixture:stdio"][0].name,
+        "fixture_tool"
+    );
+    assert_eq!(
+        service.server_origin("plugin:fixture:stdio"),
+        Some(McpServerOrigin::Plugin {
+            plugin_id: "plugin:fixture".into(),
+            plugin_version: "1".into(),
+        })
+    );
+
+    service.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn mcp_reconciliation_routes_http_alias_to_remote_validation_path() {
+    let mut service = McpService::new();
+    let desired = ResolvedPluginMcpServer {
+        plugin_id: "plugin:fixture".into(),
+        plugin_version: "1".into(),
+        canonical_name: "plugin:fixture:http".into(),
+        declaration: PluginMcpServerContribution {
+            name: "http".into(),
+            server_type: "http".into(),
+            url: Some("not a valid URL".into()),
+            ..Default::default()
+        },
+    };
+
+    let report = service.reconcile_plugin_servers(&[desired]).await;
+    assert_eq!(report.connected, Vec::<String>::new());
+    assert_eq!(report.failed.len(), 1);
+    assert!(!report.failed[0].contains("unknown server type"));
+    assert!(!service.server_tools().contains_key("plugin:fixture:http"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inactive_plugin_mcp_contributions_do_not_resolve_or_materialize() {
+    let root = tempfile::tempdir().unwrap();
+    let plugin = PluginInfo {
+        id: "plugin:fixture".into(),
+        manifest: PluginManifest {
+            name: "fixture".into(),
+            version: "1.0.0".into(),
+            contributions: PluginContributions {
+                mcp_servers: vec![PluginMcpServerContribution {
+                    name: "stdio".into(),
+                    server_type: "stdio".into(),
+                    command: Some("/bin/sh".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        enabled: true,
+        trust: PluginTrustClass::TrustedLocal,
+        diagnostics: Vec::new(),
+        source: Some(PluginSourceMetadata::registry_loaded(
+            root.path().to_path_buf(),
+        )),
+    };
+    let store = PluginActivationStore::in_memory();
+    store
+        .set(
+            &plugin,
+            PluginActivationScope::Workspace("workspace-a".into()),
+            false,
+        )
+        .await
+        .unwrap();
+    let activation = store
+        .resolve(std::slice::from_ref(&plugin), Some("workspace-a"))
+        .await;
+    assert!(!activation.is_active("plugin:fixture"));
+
+    let contributions =
+        ResolvedPluginContributionSet::resolve(std::slice::from_ref(&plugin), &activation);
+    assert!(contributions.mcp_servers().next().is_none());
 }

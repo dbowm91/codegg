@@ -98,6 +98,12 @@ command = "docs-mcp"
 args = ["--stdio"]
 ```
 
+MCP contribution types accept `local` and `stdio` as equivalent spellings for
+the local stdio transport, and `remote` and `http` as equivalent spellings for
+the remote HTTP transport. CodeGG canonicalizes these aliases before passing
+the declaration to `McpService`, which remains the sole owner of MCP
+connections and transport security.
+
 Only CodeGG-compatible agent files and existing skill formats are accepted.
 Every path is relative to the installed plugin root and is checked for
 containment, symlink escapes, and size/count limits before being read. Passive
