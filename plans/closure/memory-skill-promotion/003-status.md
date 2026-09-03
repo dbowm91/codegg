@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion M003 — Closure Status
 
-Status: closing
+Status: closed
 
 Source implementation plan:
 
@@ -30,8 +30,8 @@ hazards, records proposal/habit provenance, and invokes the existing daemon
 asset refresh path. Refresh retains immutable active-turn snapshots and
 previous generations on failure.
 
-The closure review has no unresolved critical, high, or medium finding in
-M003 scope. The final close transition is pending this record's acceptance.
+The closure review found no unresolved critical, high, or medium finding in
+M003 scope. This record is the accepted strict closure gate.
 
 ## 2. Requirement-to-evidence matrix
 
@@ -130,6 +130,7 @@ boundaries are all implemented and covered by the evidence above.
 
 ## 7. Final disposition
 
-Pending final registry acceptance, this is a strict closure: M003 has no
-unresolved in-scope critical/high/medium defect, its hard M002 dependency is
-strictly closed, and the subsystem can move to `closed` with this record.
+This is a strict closure: M003 has no unresolved in-scope
+critical/high/medium defect, its hard M002 dependency is strictly closed,
+and the memory-to-skill promotion roadmap is closed. No future registered
+plan was unblocked by this closure.

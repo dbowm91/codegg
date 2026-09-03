@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion M003 — Approved Publication and Asset Refresh
 
-Status: closing
+Status: implemented — closed in `plans/closure/memory-skill-promotion/003-status.md`
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

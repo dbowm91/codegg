@@ -36,7 +36,7 @@ Canonical direction remains in:
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Agent convergence and independent verification | closed | `plans/subsystems/agent-convergence-roadmap.md` | M003 closed | `plans/closure/agent-convergence/003-status.md`; bounded repair/replan, explicit commit chaining, conservative model gating, and projection closure accepted. |
-| Memory-to-skill promotion | closing | `plans/subsystems/memory-skill-promotion-roadmap.md` | M003 closure review | M003 implementation `081ae51`; closure evidence is being finalized in `plans/closure/memory-skill-promotion/003-status.md`. |
+| Memory-to-skill promotion | closed | `plans/subsystems/memory-skill-promotion-roadmap.md` | M003 closed | `plans/closure/memory-skill-promotion/003-status.md`; explicit publication, provenance, reconciliation, and refresh semantics accepted. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -51,23 +51,11 @@ Canonical direction remains in:
 |---|---|---|---|
 | None | — | — | — |
 
-## Active implementation plans
-
-| Subsystem | Milestone | Plan | Dependencies / status |
-|---|---|---|---|
-| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/implementation/memory-skill-promotion/003-approved-skill-publication-and-refresh.md` | Production implementation landed in `081ae51`; closure review in progress. |
-
-## Active closure work
-
-| Subsystem | Milestone | Closure record | Status |
-|---|---|---|---|
-| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/closure/memory-skill-promotion/003-status.md` | closing |
-
 ## Newly registered feature execution order
 
 1. Agent-convergence M001–M003 are closed under their accepted closure records.
 2. Memory-to-skill M001 is closed; its accepted candidate store unblocked M002.
-3. Memory-to-skill M002 is closed; memory-to-skill M003 is ready now that its M002 dependency is strictly closed.
+3. Memory-to-skill M002 is closed; memory-to-skill M003 is now strictly closed under its accepted closure record.
 4. Convergence must compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.
 5. Habit promotion must retain structural privacy bounds: no raw shell/tool output/arguments in automatic habit fingerprints, no automatic model drafting, and no skill publication without explicit user approval.
 6. No new ADR is required by the current plans because scheduler/authorization/foreign-asset ownership remain unchanged. If implementation discovers a need to change those boundaries, work stops for an ADR/follow-up rather than widening the milestone.
@@ -95,7 +83,7 @@ Verification remains deliberately light: Provider M009 was accepted with focused
 ## Blocked work
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent newly registered feature work.
-- Memory-to-skill M003 implementation is landed and under closure review; no memory-skill-promotion milestone remains blocked.
+- Memory-to-skill M003 is strictly closed under `plans/closure/memory-skill-promotion/003-status.md`; no memory-skill-promotion milestone remains blocked.
 
 No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 
@@ -191,6 +179,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Development verification and release | M007 — minimal verification contract and final closure | closed | `plans/closure/development-verification-release/007-status.md`; accepted revision `c85980e2`; boundary guard fail-open correction; no registered plan was left blocked |
 | Memory-to-skill promotion | M001 — habit observation and candidate store | closed | `plans/closure/memory-skill-promotion/001-status.md`; implementation `2f029d8d`; M002 moved to ready. |
 | Memory-to-skill promotion | M002 — user-triggered skill draft and preview | closed | `plans/closure/memory-skill-promotion/002-status.md`; implementation `583c2702`; M003 moved to ready. |
+| Memory-to-skill promotion | M003 — approved publication and asset refresh | closed | `plans/closure/memory-skill-promotion/003-status.md`; implementation `081ae51`; no future registered plan was unblocked. |
 
 Detailed predecessor history is intentionally not duplicated here. Use the source subsystem roadmaps, corrective addenda, and `plans/closure/` records for older milestones.
 
