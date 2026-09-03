@@ -391,4 +391,35 @@ mod tests {
         assert!(report.summary.contains("1 high"));
         assert!(report.summary.contains("1 critical"));
     }
+
+    #[test]
+    fn finding_id_covers_all_categories() {
+        // Exercises the serde_json::to_string(category) path in
+        // make_finding_id/deterministic_id for every variant so a
+        // serialization regression fails `cargo test`, not production.
+        let categories = [
+            super::SecurityCategory::SecretExposure,
+            super::SecurityCategory::DangerousCommand,
+            super::SecurityCategory::DestructiveFilesystem,
+            super::SecurityCategory::NetworkExfiltration,
+            super::SecurityCategory::RemoteCodeExecution,
+            super::SecurityCategory::DependencyVulnerability,
+            super::SecurityCategory::DependencyRisk,
+            super::SecurityCategory::UnsafeCode,
+            super::SecurityCategory::PathTraversal,
+            super::SecurityCategory::InsecureTls,
+            super::SecurityCategory::SsrfRisk,
+            super::SecurityCategory::AuthzRisk,
+            super::SecurityCategory::SandboxEscapeRisk,
+            super::SecurityCategory::SupplyChainRisk,
+            super::SecurityCategory::ConfigRisk,
+            super::SecurityCategory::Unknown,
+        ];
+        for category in &categories {
+            let id = super::make_finding_id("test", category, "evidence");
+            assert!(!id.is_empty());
+            let det = super::SecurityFinding::deterministic_id("file", category, "ctx", 1);
+            assert!(!det.is_empty());
+        }
+    }
 }

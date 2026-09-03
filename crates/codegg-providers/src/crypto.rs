@@ -38,18 +38,19 @@ fn derive_key_argon2id(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], Cry
     Ok(key)
 }
 
-fn derive_key_legacy(password: &str, salt: &[u8]) -> [u8; KEY_LEN] {
+fn derive_key_legacy(password: &str, salt: &[u8]) -> Result<[u8; KEY_LEN], CryptoError> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
-    let mut hmac = <HmacSha256 as Mac>::new_from_slice(salt).expect("fixed-size salt is valid");
+    let mut hmac =
+        <HmacSha256 as Mac>::new_from_slice(salt).map_err(|_| CryptoError::KeyDerivationFailed)?;
     hmac.update(password.as_bytes());
     let result = hmac.finalize();
     let bytes = result.into_bytes();
     let mut key = [0u8; KEY_LEN];
     key.copy_from_slice(&bytes[..KEY_LEN]);
-    key
+    Ok(key)
 }
 
 pub fn encrypt(plaintext: &str, password: &str) -> Result<EncryptedData, CryptoError> {
@@ -157,7 +158,7 @@ fn decrypt_legacy(encrypted: &EncryptedData, password: &str) -> Result<String, C
         return Err(CryptoError::InvalidFormat);
     }
 
-    let key = derive_key_legacy(password, &encrypted.salt);
+    let key = derive_key_legacy(password, &encrypted.salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
 

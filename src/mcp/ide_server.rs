@@ -241,15 +241,19 @@ impl IdeServer {
                 let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-                if let Some(handler) = self.tools.get(name) {
-                    match handler(arguments) {
-                        Ok(result) => json!({
+                if let Some(handler) = self.tools.get(name).cloned() {
+                    // The handler is synchronous and may block up to 30s
+                    // (child process wait); run it off the Tokio worker.
+                    let blocking_result =
+                        tokio::task::spawn_blocking(move || handler(arguments)).await;
+                    match blocking_result {
+                        Ok(Ok(result)) => json!({
                             "content": [{
                                 "type": "text",
                                 "text": result.to_string()
                             }]
                         }),
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             return JsonRpcResponse {
                                 jsonrpc: "2.0".to_string(),
                                 id,
@@ -257,6 +261,18 @@ impl IdeServer {
                                 error: Some(JsonRpcError {
                                     code: -32603,
                                     message: e,
+                                    data: None,
+                                }),
+                            };
+                        }
+                        Err(join_error) => {
+                            return JsonRpcResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32603,
+                                    message: format!("blocking task failed: {join_error}"),
                                     data: None,
                                 }),
                             };

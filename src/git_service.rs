@@ -366,7 +366,7 @@ impl GitExecutionService {
                         .iter()
                         .map(|f| ChangedFilePayload {
                             path: f.path.clone(),
-                            kind: format!("{:?}", f.kind).to_lowercase(),
+                            kind: f.kind.as_str().to_string(),
                         })
                         .collect(),
                 }),
@@ -527,7 +527,7 @@ impl GitExecutionService {
                     .iter()
                     .map(|f| ChangedFilePayload {
                         path: f.path.clone(),
-                        kind: format!("{:?}", f.kind).to_lowercase(),
+                        kind: f.kind.as_str().to_string(),
                     })
                     .collect::<Vec<_>>(),
             ),

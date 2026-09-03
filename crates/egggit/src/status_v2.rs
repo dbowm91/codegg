@@ -78,21 +78,25 @@ pub struct StatusEntry {
 /// Active operation state detected from `.git/` sentinel files.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum OperationState {
-    Merge { head: String },
-    Rebase { head: String },
-    CherryPick { head: String },
-    Revert { head: String },
+    Merge { head: Option<String> },
+    Rebase { head: Option<String> },
+    CherryPick { head: Option<String> },
+    Revert { head: Option<String> },
     Bisect,
+}
+
+fn read_head_file(path: std::path::PathBuf) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn detect_operation_state(root: &Path) -> Option<OperationState> {
     let git_dir = root.join(".git");
 
     if git_dir.join("MERGE_HEAD").exists() {
-        let head = std::fs::read_to_string(git_dir.join("MERGE_HEAD"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        let head = read_head_file(git_dir.join("MERGE_HEAD"));
         return Some(OperationState::Merge { head });
     }
 
@@ -101,32 +105,20 @@ fn detect_operation_state(root: &Path) -> Option<OperationState> {
         || git_dir.join("rebase-apply").exists()
     {
         let head = if git_dir.join("REBASE_HEAD").exists() {
-            std::fs::read_to_string(git_dir.join("REBASE_HEAD"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default()
+            read_head_file(git_dir.join("REBASE_HEAD"))
         } else {
-            std::fs::read_to_string(git_dir.join("rebase-merge").join("head-name"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default()
+            read_head_file(git_dir.join("rebase-merge").join("head-name"))
         };
         return Some(OperationState::Rebase { head });
     }
 
     if git_dir.join("CHERRY_PICK_HEAD").exists() {
-        let head = std::fs::read_to_string(git_dir.join("CHERRY_PICK_HEAD"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        let head = read_head_file(git_dir.join("CHERRY_PICK_HEAD"));
         return Some(OperationState::CherryPick { head });
     }
 
     if git_dir.join("REVERT_HEAD").exists() {
-        let head = std::fs::read_to_string(git_dir.join("REVERT_HEAD"))
-            .ok()
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default();
+        let head = read_head_file(git_dir.join("REVERT_HEAD"));
         return Some(OperationState::Revert { head });
     }
 
@@ -770,7 +762,7 @@ mod tests {
         assert_eq!(
             state,
             Some(OperationState::Merge {
-                head: "abc123".to_string()
+                head: Some("abc123".to_string())
             })
         );
     }
@@ -784,7 +776,7 @@ mod tests {
         assert_eq!(
             state,
             Some(OperationState::Rebase {
-                head: "def456".to_string()
+                head: Some("def456".to_string())
             })
         );
     }

@@ -218,6 +218,18 @@ pub enum Confidence {
     High,
 }
 
+impl Confidence {
+    /// Stable wire/model string. Do not derive payloads from `Debug`
+    /// formatting so variant renames cannot silently change output.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Confidence::Low => "low",
+            Confidence::Medium => "medium",
+            Confidence::High => "high",
+        }
+    }
+}
+
 // -- Contradictions --
 
 /// A contradiction detected between two or more claims.
@@ -477,5 +489,13 @@ mod tests {
             let decoded: ResearchMode = serde_json::from_str(&json).unwrap();
             assert_eq!(&decoded, mode);
         }
+    }
+
+    #[test]
+    fn confidence_wire_strings_are_stable() {
+        // Golden test: payload strings must not change with Debug formatting.
+        assert_eq!(Confidence::Low.as_str(), "low");
+        assert_eq!(Confidence::Medium.as_str(), "medium");
+        assert_eq!(Confidence::High.as_str(), "high");
     }
 }

@@ -2257,7 +2257,13 @@ async fn update_tui_session_info(
     id: String,
     model: String,
 ) {
-    let raw_delivery_gate = state.lock().await.raw_delivery_gate.clone();
+    // Global lock order: `raw_delivery_gate` before `TuiSessionState`.
+    // Never hold `state` while acquiring the gate: clone the gate Arc,
+    // drop the state guard, then lock gate, then re-lock state.
+    let raw_delivery_gate = {
+        let session = state.lock().await;
+        session.raw_delivery_gate.clone()
+    };
     let _raw_delivery_guard = raw_delivery_gate.lock().await;
     let mut state_guard = state.lock().await;
     let normalized_session_id = normalize_tui_session_id(id);
@@ -2332,7 +2338,11 @@ where
             ws_tx.send(message).await
         }
         OutboundRoute::Raw { generation } => {
-            let raw_delivery_gate = session_state.lock().await.raw_delivery_gate.clone();
+            // Global lock order: gate before state (see update_tui_session_info).
+            let raw_delivery_gate = {
+                let session = session_state.lock().await;
+                session.raw_delivery_gate.clone()
+            };
             // This gate is deliberately separate from the session-state lock:
             // it linearizes a route/mode commit against the final check while
             // allowing the WebSocket send itself to proceed without holding

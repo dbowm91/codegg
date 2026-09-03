@@ -1570,7 +1570,13 @@ impl RunStore for FsRunStore {
             .await?;
 
         let _lock = self.lock.lock().await;
-        let mut entries = self.load_index().await.unwrap_or_default();
+        let mut entries = self.load_index().await.map_err(|error| {
+            tracing::error!(
+                ?error,
+                "run-store index load failed; refusing to rewrite index"
+            );
+            error
+        })?;
         if let Some(entry) = entries.iter_mut().find(|e| e.run_id == manifest.run_id) {
             entry.status = manifest.status.clone();
             entry.completed_at = manifest.completed_at;

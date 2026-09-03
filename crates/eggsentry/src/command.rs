@@ -1092,4 +1092,59 @@ mod tests {
         let c = classify_bash_command("pnpm add lodash");
         assert_eq!(c.risk, CommandRisk::Medium);
     }
+
+    #[test]
+    fn all_static_regexes_compile() {
+        // Forces LazyLock init in tests so a regex typo fails `cargo test`,
+        // not production (see M1).
+        std::sync::LazyLock::force(&super::CRITICAL_RM_RE);
+        std::sync::LazyLock::force(&super::FORK_BOMB_RE);
+        std::sync::LazyLock::force(&super::MKFS_RE);
+        std::sync::LazyLock::force(&super::DD_DEV_RE);
+        std::sync::LazyLock::force(&super::SHUTDOWN_RE);
+        std::sync::LazyLock::force(&super::CHMOD_777_ROOT_RE);
+        std::sync::LazyLock::force(&super::CURL_PIPE_SH_RE);
+        std::sync::LazyLock::force(&super::BASH_CURL_RE);
+        std::sync::LazyLock::force(&super::SH_CURL_RE);
+        std::sync::LazyLock::force(&super::GIT_FORCE_PUSH_RE);
+        std::sync::LazyLock::force(&super::GIT_RESET_HARD_RE);
+        std::sync::LazyLock::force(&super::GIT_CLEAN_FDX_RE);
+        std::sync::LazyLock::force(&super::DOCKER_PRIVILEGED_RE);
+        std::sync::LazyLock::force(&super::DOCKER_MOUNT_ROOT_RE);
+        std::sync::LazyLock::force(&super::DOCKER_NET_HOST_RE);
+        std::sync::LazyLock::force(&super::DOCKER_SOCK_RE);
+        std::sync::LazyLock::force(&super::KUBECTL_APPLY_RE);
+        std::sync::LazyLock::force(&super::TERRAFORM_APPLY_RE);
+        std::sync::LazyLock::force(&super::ANSIBLE_RE);
+        std::sync::LazyLock::force(&super::SCP_RSYNC_RE);
+        std::sync::LazyLock::force(&super::NETCAT_RE);
+        std::sync::LazyLock::force(&super::FTP_SFTP_RE);
+        std::sync::LazyLock::force(&super::SSH_CMD_RE);
+        std::sync::LazyLock::force(&super::ENV_EXFIL_RE);
+        std::sync::LazyLock::force(&super::ENV_REDIRECT_RE);
+        std::sync::LazyLock::force(&super::SECRET_PIPE_RE);
+        std::sync::LazyLock::force(&super::RM_GENERAL_RE);
+        std::sync::LazyLock::force(&super::MV_GENERAL_RE);
+        std::sync::LazyLock::force(&super::CP_GENERAL_RE);
+        std::sync::LazyLock::force(&super::NPM_INSTALL_RE);
+        std::sync::LazyLock::force(&super::PIP_INSTALL_RE);
+        std::sync::LazyLock::force(&super::CARGO_INSTALL_RE);
+        std::sync::LazyLock::force(&super::YARN_ADD_RE);
+        std::sync::LazyLock::force(&super::PNPM_ADD_RE);
+        std::sync::LazyLock::force(&super::BREW_INSTALL_RE);
+        std::sync::LazyLock::force(&super::APT_INSTALL_RE);
+        std::sync::LazyLock::force(&super::YUM_INSTALL_RE);
+        std::sync::LazyLock::force(&super::DNF_INSTALL_RE);
+        std::sync::LazyLock::force(&super::PACMAN_RE);
+        std::sync::LazyLock::force(&super::ENV_DUMP_RE);
+        std::sync::LazyLock::force(&super::CHMOD_RE);
+        std::sync::LazyLock::force(&super::SED_INPLACE_RE);
+        std::sync::LazyLock::force(&super::PERL_INPLACE_RE);
+        std::sync::LazyLock::force(&super::GIT_PUSH_RE);
+        std::sync::LazyLock::force(&super::CARGO_TEST_RE);
+        std::sync::LazyLock::force(&super::GIT_READONLY_RE);
+        std::sync::LazyLock::force(&super::SYSTEM_PATH_RE);
+        std::sync::LazyLock::force(&super::FILE_URL_RE);
+        std::sync::LazyLock::force(&super::JS_URL_RE);
+    }
 }

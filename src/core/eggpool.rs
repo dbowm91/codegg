@@ -247,9 +247,12 @@ impl EggpoolProvisioner {
                     if connection.state != ProviderConnectionState::Active {
                         continue;
                     }
-                    let _ = provisioner
+                    if let Err(error) = provisioner
                         .refresh(&connection.id, connection.revision)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(?error, connection_id = %connection.id, "eggpool background refresh failed");
+                    }
                 }
             }
         });
@@ -345,13 +348,16 @@ impl EggpoolProvisioner {
             )
             .await;
         self.operations.remove(&operation_id);
-        let _ = store
+        if let Err(error) = store
             .remove_reference(
                 &connection_id,
                 codegg_core::provider_connections::ProviderConnectionReferenceKind::ProvisioningOperation,
                 &operation_id,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(?error, %operation_id, "eggpool provisioning reference cleanup failed");
+        }
         result
     }
 
@@ -546,25 +552,33 @@ impl EggpoolProvisioner {
         store: &codegg_providers::CredentialStore,
         failure_code: Option<&str>,
     ) {
-        let _ = store.remove("eggpool", Some(account_id));
+        if let Err(error) = store.remove("eggpool", Some(account_id)) {
+            tracing::warn!(?error, %operation_id, "eggpool compensate credential removal failed");
+        }
         let (state, code) =
             failure_code.map_or(("cancelled", "cancelled"), |code| ("failed", code));
-        let _ = sqlx::query("UPDATE provider_provisioning SET state = ?, failure_code = ?, time_updated = ? WHERE operation_id = ? AND state <> 'committed'")
+        if let Err(error) = sqlx::query("UPDATE provider_provisioning SET state = ?, failure_code = ?, time_updated = ? WHERE operation_id = ? AND state <> 'committed'")
             .bind(state)
             .bind(code)
             .bind(now_millis())
             .bind(operation_id)
             .execute(&self.pool)
-            .await;
+            .await
+        {
+            tracing::error!(?error, %operation_id, "eggpool compensate state transition failed");
+        }
     }
 
     async fn fail(&self, operation_id: &str, code: &str) {
-        let _ = sqlx::query("UPDATE provider_provisioning SET state = 'failed', failure_code = ?, time_updated = ? WHERE operation_id = ?")
+        if let Err(error) = sqlx::query("UPDATE provider_provisioning SET state = 'failed', failure_code = ?, time_updated = ? WHERE operation_id = ?")
             .bind(code)
             .bind(now_millis())
             .bind(operation_id)
             .execute(&self.pool)
-            .await;
+            .await
+        {
+            tracing::error!(?error, %operation_id, "eggpool fail state transition failed");
+        }
     }
 
     pub fn cancel(&self, operation_id: &str) -> bool {
@@ -760,12 +774,15 @@ impl EggpoolProvisioner {
                 cancel,
             )
             .await;
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "DELETE FROM provider_connection_lifecycle WHERE connection_id = ? AND state = 'provisioning_rotating'",
         )
         .bind(connection_id.as_str())
         .execute(&self.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(?error, connection_id = %connection_id, "eggpool rotate lifecycle cleanup failed");
+        }
         result
     }
 
@@ -899,7 +916,11 @@ impl EggpoolProvisioner {
             Ok(result) => result,
             Err(error) => {
                 if staged_secret.is_some() {
-                    let _ = credential_store.remove("eggpool", Some(&binding.account_ref));
+                    if let Err(error) =
+                        credential_store.remove("eggpool", Some(&binding.account_ref))
+                    {
+                        tracing::warn!(?error, "eggpool staged credential cleanup failed");
+                    }
                 }
                 return Err(error);
             }
@@ -1003,7 +1024,9 @@ impl EggpoolProvisioner {
 
         if staged_secret.is_some() && delete_previous_on_commit {
             if let Some(old) = old_binding {
-                let _ = credential_store.remove("eggpool", Some(&old.account_ref));
+                if let Err(error) = credential_store.remove("eggpool", Some(&old.account_ref)) {
+                    tracing::warn!(?error, "eggpool previous credential cleanup failed");
+                }
             }
         }
         Ok(ConnectionRotateStatusDto {
@@ -1098,7 +1121,7 @@ impl EggpoolProvisioner {
                         + Duration::from_millis(exponential.saturating_add(jitter).min(3_600_000)),
                 );
             }
-            let _ = sqlx::query(
+            if let Err(db_error) = sqlx::query(
                 "UPDATE provider_connection_health SET status = 'unhealthy', reason_code = ?, checked_at = ? WHERE connection_id = ? AND revision = ?",
             )
             .bind(refresh_error_code(error))
@@ -1106,7 +1129,10 @@ impl EggpoolProvisioner {
             .bind(connection_id.as_str())
             .bind(expected_revision as i64)
             .execute(&self.pool)
-            .await;
+            .await
+            {
+                tracing::warn!(?db_error, connection_id = %connection_id, "eggpool health write failed");
+            }
         }
         if result.is_ok() {
             self.refresh_failures.remove(connection_id);
@@ -1170,7 +1196,14 @@ impl EggpoolProvisioner {
             codegg_core::provider_connections::PurgeOutcome::Purged
         ) {
             if let (Some(binding), Some(credentials)) = (binding, self.credential_store.clone()) {
-                let _ = credentials.remove(&binding.provider_ref, Some(&binding.account_ref));
+                if let Err(error) =
+                    credentials.remove(&binding.provider_ref, Some(&binding.account_ref))
+                {
+                    tracing::warn!(
+                        ?error,
+                        "eggpool purge credential cleanup failed; reconciliation will retry"
+                    );
+                }
             }
         }
         Ok(outcome)
@@ -1366,11 +1399,14 @@ impl EggpoolProvisioner {
         if self.reconciled.load(Ordering::Acquire) {
             return;
         }
-        let _ = sqlx::query(
+        if let Err(error) = sqlx::query(
             "DELETE FROM provider_connection_references WHERE reference_kind = 'provisioning_operation' AND reference_id NOT IN (SELECT operation_id FROM provider_provisioning WHERE state IN ('staged', 'probing'))",
         )
         .execute(&self.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(?error, "eggpool reconcile orphan reference cleanup failed");
+        }
         let rows = match sqlx::query_as::<_, (String, String, String)>(
             "SELECT operation_id, secret_provider_ref, secret_account_ref FROM provider_provisioning WHERE state IN ('staged', 'probing')",
         )
@@ -1388,12 +1424,17 @@ impl EggpoolProvisioner {
             return;
         };
         for (operation_id, provider, account) in rows {
-            let _ = store.remove(&provider, Some(&account));
-            let _ = sqlx::query("UPDATE provider_provisioning SET state = 'failed', failure_code = 'daemon_restarted', time_updated = ? WHERE operation_id = ?")
+            if let Err(error) = store.remove(&provider, Some(&account)) {
+                tracing::warn!(?error, %operation_id, "eggpool reconcile credential cleanup failed");
+            }
+            if let Err(error) = sqlx::query("UPDATE provider_provisioning SET state = 'failed', failure_code = 'daemon_restarted', time_updated = ? WHERE operation_id = ?")
                 .bind(now_millis())
-                .bind(operation_id)
+                .bind(operation_id.clone())
                 .execute(&self.pool)
-                .await;
+                .await
+            {
+                tracing::error!(?error, %operation_id, "eggpool reconcile state transition failed");
+            }
         }
         self.reconciled.store(true, Ordering::Release);
     }

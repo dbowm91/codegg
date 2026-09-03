@@ -5,6 +5,20 @@ use crate::tui::app::TuiCommand;
 use crate::tui::async_cmd::spawn_registered_tui_task;
 use crate::tui::task_lifecycle::TuiTaskKind;
 
+/// Render `items` as a newline-joined `"  - {item}"` bullet list without
+/// the intermediate `Vec<String>` allocation of `collect().join()`.
+fn bullet_list(items: &[String]) -> String {
+    let mut out = String::new();
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str("  - ");
+        out.push_str(item);
+    }
+    out
+}
+
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_research_list_runs(app: &mut App) {
@@ -75,11 +89,11 @@ pub(crate) async fn handle_research_load_section(app: &mut App, run_id: String, 
                     let content = format!(
                         "Scope: {}\n\nComparison Axes:\n{}\n\nSource Classes:\n{}\n\nExclusion Criteria:\n{}\n\nStopping Conditions:\n{}\n\nExpected Outputs:\n{}",
                         plan.scope,
-                        plan.comparison_axes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                        plan.source_classes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                        plan.exclusion_criteria.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                        plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                        plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                        bullet_list(&plan.comparison_axes),
+                        bullet_list(&plan.source_classes),
+                        bullet_list(&plan.exclusion_criteria),
+                        bullet_list(&plan.stopping_conditions),
+                        bullet_list(&plan.expected_outputs),
                     );
                     Some((
                         crate::tui::components::dialogs::research::ReportSection::Report,
@@ -348,11 +362,11 @@ pub(crate) fn start_research_load_section(app: &mut App, run_id: String, section
                             let content = format!(
                             "Scope: {}\n\nComparison Axes:\n{}\n\nSource Classes:\n{}\n\nExclusion Criteria:\n{}\n\nStopping Conditions:\n{}\n\nExpected Outputs:\n{}",
                             plan.scope,
-                            plan.comparison_axes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                            plan.source_classes.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                            plan.exclusion_criteria.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                            plan.stopping_conditions.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
-                            plan.expected_outputs.iter().map(|s| format!("  - {}", s)).collect::<Vec<_>>().join("\n"),
+                            bullet_list(&plan.comparison_axes),
+                            bullet_list(&plan.source_classes),
+                            bullet_list(&plan.exclusion_criteria),
+                            bullet_list(&plan.stopping_conditions),
+                            bullet_list(&plan.expected_outputs),
                         );
                             Some((
                                 crate::tui::components::dialogs::research::ReportSection::Report,

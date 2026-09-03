@@ -626,4 +626,17 @@ mod tests {
         let a = resolve_adapter(Some("local"), "poolside/Laguna-base");
         assert_ne!(a.adapter_id, "poolside-laguna-agentic");
     }
+
+    #[test]
+    fn all_builtin_adapter_definitions_parse() {
+        // Fail-fast in tests so a TOML typo cannot become a daemon
+        // panic on first model-profile lookup (see M2).
+        for (id, source) in BUILTIN_ADAPTER_SOURCES {
+            let definition: AdapterDefinition =
+                toml::from_str(source).expect("invalid built-in adapter definition");
+            assert_eq!(&definition.adapter.id, id, "adapter id mismatch");
+        }
+        // Also force the cached definitions() init path.
+        assert!(!definitions().is_empty());
+    }
 }

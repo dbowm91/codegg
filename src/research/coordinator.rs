@@ -531,18 +531,10 @@ impl ResearchCoordinator {
         let original = self.store.load_run_bundle(original_run_id).await?;
 
         // Create a new request based on the original
-        let new_request = ResearchRequest {
+        let new_request = crate::research::types::ResearchRequest {
             id: uuid::Uuid::new_v4().to_string(),
-            question: original.request.question.clone(),
-            mode: original.request.mode.clone(),
-            audience: original.request.audience.clone(),
-            depth: original.request.depth.clone(),
-            output_profiles: original.request.output_profiles.clone(),
-            constraints: original.request.constraints.clone(),
-            sources: original.request.sources.clone(),
-            existing_context_refs: original.request.existing_context_refs.clone(),
-            budget: original.request.budget.clone(),
             created_at: Utc::now(),
+            ..original.request.clone()
         };
 
         // Run the full pipeline with the new request

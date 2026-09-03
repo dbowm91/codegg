@@ -80,10 +80,13 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
 
-    // Get current branch name
+    // Get current branch name. A failed command is a real I/O/git error
+    // and must not be conflated with a legitimately empty (detached HEAD)
+    // result, so propagate Err instead of defaulting to "".
     let current = capture_stdout(root, &["branch", "--show-current"])
-        .await
-        .unwrap_or_default();
+        .await?
+        .trim()
+        .to_string();
 
     // Check if detached
     let rev_parse = capture_stdout(root, &["rev-parse", "--verify", "HEAD"]).await;
@@ -172,7 +175,17 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
 
     // If detached, add a synthetic entry
     if is_detached && !branches.iter().any(|b| b.is_current) {
-        let sha = rev_parse.unwrap_or_default().trim().to_string();
+        let sha = match rev_parse {
+            Ok(output) => {
+                let trimmed = output.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(_) => None,
+        };
         branches.insert(
             0,
             BranchInfo {
@@ -182,7 +195,7 @@ pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::Egggit
                 upstream: None,
                 ahead: None,
                 behind: None,
-                head: if sha.is_empty() { None } else { Some(sha) },
+                head: sha,
             },
         );
     }

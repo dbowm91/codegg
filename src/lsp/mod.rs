@@ -68,7 +68,28 @@ pub use egglsp::lsp_types;
 
 pub fn config_lsp_to_egglsp(c: crate::config::schema::LspConfig) -> egglsp::LspConfig {
     // The shapes are intentionally identical; serde round-trips both.
-    serde_json::from_value(serde_json::to_value(c).unwrap_or_default()).unwrap_or_default()
+    // Log loudly on mismatch instead of silently returning a default
+    // (which would look like "LSP just doesn't work").
+    let value = match serde_json::to_value(&c) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                "LSP config serialize failed; falling back to default"
+            );
+            return egglsp::LspConfig::default();
+        }
+    };
+    match serde_json::from_value(value) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                "LSP config conversion failed; falling back to default"
+            );
+            egglsp::LspConfig::default()
+        }
+    }
 }
 
 pub struct Lsp {
@@ -129,5 +150,19 @@ impl Lsp {
 
     pub async fn shutdown(&self) {
         self.service.shutdown_all().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_lsp_to_egglsp;
+
+    #[test]
+    fn lsp_config_conversion_round_trips_default() {
+        let input = crate::config::schema::LspConfig::default();
+        let expected = serde_json::to_value(&input).expect("default LspConfig serializes");
+        let converted = config_lsp_to_egglsp(input);
+        let actual = serde_json::to_value(&converted).expect("converted LspConfig serializes");
+        assert_eq!(actual, expected);
     }
 }

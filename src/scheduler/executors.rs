@@ -597,7 +597,7 @@ impl JobExecutor for SubagentJobExecutor {
             }
             if needs_isolation {
                 let Some(worktree_service) = self.worktree_service.as_ref() else {
-                    let _ = store
+                    if let Err(error) = store
                         .finish(
                             run_id,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
@@ -607,7 +607,10 @@ impl JobExecutor for SubagentJobExecutor {
                                 "mutating delegated run requires managed worktree isolation".into(),
                             ),
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (isolation unavailable)");
+                    }
                     return failure_completion(
                         started,
                         ExecutorStatus::Failed,
@@ -650,7 +653,7 @@ impl JobExecutor for SubagentJobExecutor {
                 };
                 let Some(repository_id) = task.repository_id else {
                     let message = "mutating delegated run has no repository identity";
-                    let _ = store
+                    if let Err(error) = store
                         .finish(
                             run_id,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
@@ -658,12 +661,15 @@ impl JobExecutor for SubagentJobExecutor {
                             Some("isolation_unavailable".into()),
                             Some(message.into()),
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository identity)");
+                    }
                     return failure_completion(started, ExecutorStatus::Failed, message.into());
                 };
                 let Some(repository_root) = workspace_root.clone() else {
                     let message = "mutating delegated run has no repository root";
-                    let _ = store
+                    if let Err(error) = store
                         .finish(
                             run_id,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
@@ -671,7 +677,10 @@ impl JobExecutor for SubagentJobExecutor {
                             Some("isolation_unavailable".into()),
                             Some(message.into()),
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (missing repository root)");
+                    }
                     return failure_completion(started, ExecutorStatus::Failed, message.into());
                 };
                 let request = codegg_core::worktree_service::CreateWorktreeRequest {
@@ -687,7 +696,7 @@ impl JobExecutor for SubagentJobExecutor {
                 let (record, lease) = match worktree_service.create(&request).await {
                     Ok(value) => value,
                     Err(error) => {
-                        let _ = store
+                        if let Err(finish_error) = store
                             .finish(
                                 run_id,
                                 codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
@@ -695,7 +704,10 @@ impl JobExecutor for SubagentJobExecutor {
                                 Some("worktree_create_failed".into()),
                                 Some(error.to_string()),
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::error!(?finish_error, run_id = ?run_id, "agent run finish failed (worktree create failed)");
+                        }
                         return failure_completion(
                             started,
                             ExecutorStatus::Failed,
@@ -721,7 +733,7 @@ impl JobExecutor for SubagentJobExecutor {
                 owned_worktree = Some((record, lease));
             }
             if let Some(control) = &self.run_control {
-                let _ = control
+                if let Err(error) = control
                     .append(
                         run_id.clone(),
                         codegg_core::agent_run_control::AgentRunJournalEventKind::RunStarted,
@@ -729,7 +741,10 @@ impl JobExecutor for SubagentJobExecutor {
                         None,
                         [("attempt_id".into(), ctx.attempt_id.to_string())],
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(?error, run_id = ?run_id, "agent run journal append failed (RunStarted)");
+                }
             }
             if let Err(error) = store
                 .transition(run_id, codegg_core::agent_run::AgentRunStatus::Running)
@@ -860,7 +875,9 @@ impl JobExecutor for SubagentJobExecutor {
                         cancelled: ctx.cancellation.is_cancelled(),
                     })
                     .await;
-                    let _ = store.save_result(structured).await;
+                    if let Err(error) = store.save_result(structured).await {
+                        tracing::error!(?error, run_id = ?run_id, "agent run save_result failed (success path)");
+                    }
                     let outcome = match status {
                         ExecutorStatus::Completed => {
                             codegg_core::agent_run::AgentRunTerminalOutcome::Completed
@@ -870,7 +887,7 @@ impl JobExecutor for SubagentJobExecutor {
                         }
                         _ => codegg_core::agent_run::AgentRunTerminalOutcome::Failed,
                     };
-                    let _ = store
+                    if let Err(error) = store
                         .finish(
                             run_id,
                             outcome,
@@ -878,14 +895,20 @@ impl JobExecutor for SubagentJobExecutor {
                             (status != ExecutorStatus::Completed).then(|| "executor".into()),
                             (status != ExecutorStatus::Completed).then(|| result.result.clone()),
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (success path)");
+                    }
                     if let Some(control) = &self.run_control {
-                        let _ = control.record_terminal(run_id.clone(), match outcome {
+                        if let Err(error) = control.record_terminal(run_id.clone(), match outcome {
                             codegg_core::agent_run::AgentRunTerminalOutcome::Completed => codegg_core::agent_run::AgentRunStatus::Completed,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Failed => codegg_core::agent_run::AgentRunStatus::Failed,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Interrupted => codegg_core::agent_run::AgentRunStatus::Interrupted,
                             codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled => codegg_core::agent_run::AgentRunStatus::Cancelled,
-                        }, &result.result).await;
+                        }, &result.result).await
+                        {
+                            tracing::error!(?error, run_id = ?run_id, "agent run record_terminal failed (success path)");
+                        }
                     }
                 }
                 if let Some(run_id) = run_id_for_lifecycle.as_ref() {
@@ -930,15 +953,20 @@ impl JobExecutor for SubagentJobExecutor {
                         cancelled: ctx.cancellation.is_cancelled(),
                     })
                     .await;
-                    let _ = store.save_result(structured).await;
+                    if let Err(error) = store.save_result(structured).await {
+                        tracing::error!(?error, run_id = ?run_id, "agent run save_result failed (error path)");
+                    }
                     let outcome = if ctx.cancellation.is_cancelled() {
                         codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
                     } else {
                         codegg_core::agent_run::AgentRunTerminalOutcome::Failed
                     };
-                    let _ = store
+                    if let Err(error) = store
                         .finish(run_id, outcome, None, Some("pool".into()), Some(e.clone()))
-                        .await;
+                        .await
+                    {
+                        tracing::error!(?error, run_id = ?run_id, "agent run finish failed (error path)");
+                    }
                     if let Some(control) = &self.run_control {
                         let status = if outcome
                             == codegg_core::agent_run::AgentRunTerminalOutcome::Cancelled
@@ -947,7 +975,11 @@ impl JobExecutor for SubagentJobExecutor {
                         } else {
                             codegg_core::agent_run::AgentRunStatus::Failed
                         };
-                        let _ = control.record_terminal(run_id.clone(), status, &e).await;
+                        if let Err(error) =
+                            control.record_terminal(run_id.clone(), status, &e).await
+                        {
+                            tracing::error!(?error, run_id = ?run_id, "agent run record_terminal failed (error path)");
+                        }
                     }
                     self.publish_run_projection(run_id).await;
                 }

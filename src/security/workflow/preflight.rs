@@ -1,7 +1,7 @@
 use std::path::Path;
+use std::sync::LazyLock;
 
 use super::types::*;
-
 // ---------------------------------------------------------------------------
 // Preflight checks
 // ---------------------------------------------------------------------------
@@ -26,6 +26,13 @@ const UNSAFE_PATTERNS: &[&str] = &[
     "raw pointer",
 ];
 
+// Lowercased once: `name` is already lowered per file, so comparing
+// against pre-lowered patterns avoids reallocating per target file.
+static SECRET_PATTERNS_LOWER: LazyLock<Vec<String>> =
+    LazyLock::new(|| SECRET_PATTERNS.iter().map(|s| s.to_lowercase()).collect());
+static UNSAFE_PATTERNS_LOWER: LazyLock<Vec<String>> =
+    LazyLock::new(|| UNSAFE_PATTERNS.iter().map(|s| s.to_lowercase()).collect());
+
 /// Run deterministic preflight checks against target file paths.
 ///
 /// These checks inspect **file names only**, not file contents.  Check names
@@ -43,9 +50,7 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            SECRET_PATTERNS
-                .iter()
-                .any(|pat| name.contains(&pat.to_lowercase()))
+            SECRET_PATTERNS_LOWER.iter().any(|pat| name.contains(pat))
         })
         .map(|t| format!("{}: file name matches secret hint", t.file_path.display()))
         .collect();
@@ -67,10 +72,7 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if SECRET_PATTERNS
-                .iter()
-                .any(|pat| name.contains(&pat.to_lowercase()))
-            {
+            if SECRET_PATTERNS_LOWER.iter().any(|pat| name.contains(pat)) {
                 structured_secret_fn.push(SecurityPreflightEvidence {
                     file_path: t.file_path.clone(),
                     line: None,
@@ -98,9 +100,7 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            UNSAFE_PATTERNS
-                .iter()
-                .any(|pat| name.contains(&pat.to_lowercase()))
+            UNSAFE_PATTERNS_LOWER.iter().any(|pat| name.contains(pat))
         })
         .map(|t| format!("{}: file name matches unsafe hint", t.file_path.display()))
         .collect();
@@ -122,10 +122,7 @@ pub fn run_preflight_checks(targets: &[SecurityReviewTarget]) -> Vec<SecurityPre
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if UNSAFE_PATTERNS
-                .iter()
-                .any(|pat| name.contains(&pat.to_lowercase()))
-            {
+            if UNSAFE_PATTERNS_LOWER.iter().any(|pat| name.contains(pat)) {
                 structured_unsafe_fn.push(SecurityPreflightEvidence {
                     file_path: t.file_path.clone(),
                     line: None,

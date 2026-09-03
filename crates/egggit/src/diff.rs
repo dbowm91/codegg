@@ -20,6 +20,21 @@ pub enum ChangeKind {
     Other,
 }
 
+impl ChangeKind {
+    /// Stable wire/model string. Do not derive payloads from `Debug`
+    /// formatting so variant renames cannot silently change output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Modified => "modified",
+            ChangeKind::Deleted => "deleted",
+            ChangeKind::Renamed => "renamed",
+            ChangeKind::Copied => "copied",
+            ChangeKind::Other => "other",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DiffSummary {
     pub files_changed: usize,
@@ -531,5 +546,16 @@ mod tests {
             !text.contains("b.txt"),
             "staged diff should not include b.txt"
         );
+    }
+
+    #[test]
+    fn change_kind_wire_strings_are_stable() {
+        // Golden test: payload strings must not change with Debug formatting.
+        assert_eq!(ChangeKind::Added.as_str(), "added");
+        assert_eq!(ChangeKind::Modified.as_str(), "modified");
+        assert_eq!(ChangeKind::Deleted.as_str(), "deleted");
+        assert_eq!(ChangeKind::Renamed.as_str(), "renamed");
+        assert_eq!(ChangeKind::Copied.as_str(), "copied");
+        assert_eq!(ChangeKind::Other.as_str(), "other");
     }
 }

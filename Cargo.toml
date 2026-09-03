@@ -219,4 +219,6 @@ codegen-units = 16
 [profile.test]
 opt-level = 0
 codegen-units = 16
+# Intentionally strips debuginfo for size; when triaging a test failure
+# locally, restore backtraces with: RUSTFLAGS=-C debuginfo=2 cargo test ...
 strip = "debuginfo"

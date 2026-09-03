@@ -854,4 +854,30 @@ MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHA..."#;
         assert!(categories.contains(&&SecurityCategory::ConfigRisk));
         assert!(categories.contains(&&SecurityCategory::SecretExposure));
     }
+
+    #[test]
+    fn all_static_regexes_compile() {
+        // Forces LazyLock init in tests so a regex typo fails `cargo test`,
+        // not production (see M1).
+        std::sync::LazyLock::force(&super::AWS_KEY_RE);
+        std::sync::LazyLock::force(&super::GITHUB_TOKEN_RE);
+        std::sync::LazyLock::force(&super::SLACK_TOKEN_RE);
+        std::sync::LazyLock::force(&super::NPM_TOKEN_RE);
+        std::sync::LazyLock::force(&super::PYPI_TOKEN_RE);
+        std::sync::LazyLock::force(&super::GCP_SERVICE_ACCOUNT_RE);
+        std::sync::LazyLock::force(&super::OPENAI_KEY_RE);
+        std::sync::LazyLock::force(&super::PRIVATE_KEY_RE);
+        std::sync::LazyLock::force(&super::PASSWORD_RE);
+        std::sync::LazyLock::force(&super::API_KEY_RE);
+        std::sync::LazyLock::force(&super::SECRET_RE);
+        std::sync::LazyLock::force(&super::UNSAFE_BLOCK_RE);
+        std::sync::LazyLock::force(&super::UNSAFE_FN_RE);
+        std::sync::LazyLock::force(&super::DANGER_ACCEPT_RE);
+        std::sync::LazyLock::force(&super::COMMAND_NEW_SH_RE);
+        std::sync::LazyLock::force(&super::CORS_WILDCARD_RE);
+        std::sync::LazyLock::force(&super::BIND_ALL_RE);
+        std::sync::LazyLock::force(&super::SECRET_RULES);
+        std::sync::LazyLock::force(&super::RUST_RULES);
+        std::sync::LazyLock::force(&super::WEB_RULES);
+    }
 }

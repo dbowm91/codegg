@@ -92,7 +92,7 @@ pub async fn unstage_all(
     let op = GitOperation::Reset {
         mode: ResetMode::Mixed,
         paths: None,
-        rev: Some(RevisionExpr::new("HEAD").expect("HEAD is non-empty")),
+        rev: Some(RevisionExpr::new("HEAD").map_err(|e| GitMutationError::Ref(e.to_string()))?),
     };
     run_raw_mutation(exec, repo_root, op, &argv).await
 }
@@ -263,7 +263,7 @@ pub async fn detach_at(
         rev.as_str().to_string(),
     ];
     let op = GitOperation::Switch {
-        branch: BranchName::new("HEAD").expect("HEAD is valid"),
+        branch: BranchName::new("HEAD").map_err(|e| GitMutationError::Ref(e.to_string()))?,
         create: false,
         force: false,
         detach: true,

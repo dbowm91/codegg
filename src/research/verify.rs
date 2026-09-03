@@ -167,7 +167,7 @@ async fn verify_claim_batch(
                 "claim_id": c.id,
                 "claim_text": c.text,
                 "claim_type": c.claim_type.as_str(),
-                "confidence": format!("{:?}", c.confidence).to_lowercase(),
+                "confidence": c.confidence.as_str(),
                 "cited_evidence": cited_evidence,
             })
         })
