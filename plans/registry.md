@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | active | `plans/subsystems/provider-opencode-session-affinity-corrective-addendum.md` | Milestone 008 active | Operational priority: OpenCode Go may reject requests missing `x-opencode-session` beginning 2026-09-06; closure evidence in progress. |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-opencode-session-affinity-corrective-addendum.md` | Milestone 008 closed | `plans/closure/provider-connections/008-status.md`; stable session affinity and static header transport defects closed. |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -45,9 +45,10 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
+No implementation plans are currently dependency-ready; M008 is closed.
+
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Provider connections and Eggpool | M008 — OpenCode Go stable session header corrective pass | `plans/implementation/provider-connections/008-opencode-go-session-header-corrective-pass.md` | Active implementation; canonical CodeGG session identity and the OpenAI-compatible transport seam already exist. |
 
 ## Closure work and dependencies
 
@@ -57,28 +58,28 @@ Historical closed control points remain:
 
 - Agent-run/worktree M006 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/006-status.md` (reviewed implementation `7bc39c28`). Its evidence remains preserved; M007–M009 own later corrective disposition.
 - Agent-run/worktree M008 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/008-status.md` (implementation `5ced31bf`). Its local evidence remains preserved, including the later-observed exact-head hosted Clippy failure; M009 owns the accepted final closure.
-- Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record. M008 does not rewrite this history; it is the sole active corrective owner for the later-discovered OpenCode Go session-affinity and generic `extra_headers` transport defects.
+- Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record. M008 does not rewrite this history; its accepted closure now owns the later-discovered OpenCode Go session-affinity and generic `extra_headers` transport defects.
 - Tool Programs M019 independent strict review: `plans/closure/tool-programs/019-status.md`. `018-status.md` remains provisional implementation-authored historical evidence.
 - Tool Programs M020 corrective disposition (child-artifact recovery): `plans/closure/tool-programs/020-status.md`.
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 - Runtime-assets M005/M006, goal-verification M012, and runtime-safety M011/M012 remain immutable historical closure evidence. Their current strict subsystem dispositions are superseded only by the corrective milestones M007/M013/M013; goal-verification M013 is now closed.
 
-Verification remains deliberately light: Provider M008 requires focused provider/turn-runtime request-context and wire-header tests plus the repository's existing `scripts/verify.sh quick` posture. Existing historical closures retain their recorded evidence requirements. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
+Verification remains deliberately light: Provider M008 closed with focused provider/turn-runtime request-context and wire-header tests plus the repository's existing `scripts/verify.sh quick` posture. Existing historical closures retain their recorded evidence requirements. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history corrective follow-up unless implementation touches that sandbox path.
 
-No newly registered corrective plan is hard-blocked. Provider M008 is dependency-ready; runtime-safety M013, runtime-assets M007, and goal-verification M013 are closed.
+No newly registered corrective plan is hard-blocked. Provider M008, runtime-safety M013, runtime-assets M007, and goal-verification M013 are closed.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
 ## New corrective execution order
 
-1. Provider M008 is the only dependency-ready corrective handoff currently registered. It preserves Provider M007 historical closure while correcting stable OpenCode Go session affinity and the adjacent dead `extra_headers` transport surface.
-2. M008 must carry canonical CodeGG session identity through typed provider request context; it must not implement random-per-request IDs or arbitrary inbound header passthrough.
-3. M008 verification remains focused and local: real-wire header assertions, request-context propagation, relevant provider tests, and `scripts/verify.sh quick`; the provider's 2026-09-06 enforcement notice is an operational priority, not a reason to add new CI machinery.
+1. Provider M008 is closed through `plans/closure/provider-connections/008-status.md`. It preserves Provider M007 historical closure while correcting stable OpenCode Go session affinity and the adjacent dead `extra_headers` transport surface.
+2. M008 carries canonical CodeGG session identity through typed provider request context; it does not implement random-per-request IDs or arbitrary inbound header passthrough.
+3. M008 verification remained focused and local: real-wire header assertions, request-context propagation, relevant provider tests, and `scripts/verify.sh quick`; the provider's 2026-09-06 enforcement notice did not require new CI machinery.
 4. Runtime-safety M013, runtime-assets M007, and goal-verification M013 remain closed with their existing accepted evidence and are not reopened by M008.
 5. Prior closure records are not rewritten; each corrective milestone receives a new closure record and becomes the current strict disposition only for its narrow line of work.
 
@@ -155,6 +156,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Search and eggsearch integration | M004 — deep-research structured-consumption corrective pass | historical closed implementation evidence; current strict disposition superseded by M005 | `plans/closure/search-eggsearch-integration/004-status.md`; implementation `6f1fa20a`; exact hosted run `31930352527` / job `95124064959` later failed on M004 Clippy and M005 owns remaining SourceCard/workflow fidelity |
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity corrective pass | closed | `plans/closure/search-eggsearch-integration/005-status.md`; implementation/final candidate `75ccc70e`; hosted run `32047863303` / job `95439829669` passed through Workspace tests |
 | Provider connections and Eggpool | M007 — independent closure ratification and governance reconciliation | closed (strict) | `plans/closure/provider-connections/007-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` passed on attempt 3; earlier conditional record retained as historical evidence |
+| Provider connections and Eggpool | M008 — OpenCode Go stable session header corrective pass | closed (strict) | `plans/closure/provider-connections/008-status.md`; implementation `328c26cb`; focused wire/provider/agent evidence and `scripts/verify.sh quick` passed; no registered future plan was unblocked |
 | Programmatic tool execution and Tool Programs | M019 — independent strict closure and evidence ratification | closed | `plans/closure/tool-programs/019-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` |
 | Programmatic tool execution and Tool Programs | M020 — canonical child-artifact recovery corrective closure | closed | `plans/closure/tool-programs/020-status.md`; implementation `c85980e2`; covered by the same green hosted run |
 | Development verification and release | M007 — minimal verification contract and final closure | closed | `plans/closure/development-verification-release/007-status.md`; accepted revision `c85980e2`; boundary guard fail-open correction; no registered plan was left blocked |

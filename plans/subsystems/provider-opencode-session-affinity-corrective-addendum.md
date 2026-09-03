@@ -1,6 +1,6 @@
 # Provider Connections — OpenCode Go Session Affinity Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `fca5b5278873c12ea5f2d5ca15a24247d4bf019b`
 
@@ -68,7 +68,7 @@ Existing OpenAI-compatible tests focus primarily on request bodies, response str
 
 ### M008 — OpenCode Go stable session-header propagation and OpenAI-compatible header correctness
 
-Status: active
+Status: closed
 
 Implementation plan:
 
@@ -132,6 +132,6 @@ M008 does not add or redesign:
 
 ## 8. Closure disposition
 
-Provider M007 remains immutable historical strict closure for its reviewed scope. Until M008 receives an accepted closure record, the direct OpenCode Go request-compatibility claim is not strictly closed.
+Provider M007 remains immutable historical strict closure for its reviewed scope. M008's accepted closure record is the current strict disposition for the direct OpenCode Go request-compatibility claim.
 
-M008 is the sole active corrective owner for stable `x-opencode-session` propagation and the adjacent `extra_headers` transport defect. A future closure record must identify the exact implementation revision, wire-capture evidence, missing-session behavior, non-OpenCode negative evidence, and quick-verification result.
+M008 is closed for stable `x-opencode-session` propagation and the adjacent `extra_headers` transport defect. Evidence is recorded in `plans/closure/provider-connections/008-status.md`.
