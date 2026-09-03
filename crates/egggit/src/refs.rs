@@ -74,6 +74,28 @@ async fn capture_stdout(root: &Path, args: &[&str]) -> Result<String, EgggitErro
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Resolve an immutable commit object in the supplied repository.
+/// Revision expressions are deliberately not accepted: callers that use this
+/// as provenance must provide a full object id and receive the canonical id
+/// back from Git.
+pub async fn resolve_commit(root: &Path, commit: &str) -> Result<String, EgggitError> {
+    if commit.is_empty()
+        || (commit.len() != 40 && commit.len() != 64)
+        || !commit.chars().all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Err(EgggitError::InvalidBaseRef(commit.to_owned()));
+    }
+    let expression = format!("{commit}^{{commit}}");
+    let resolved = capture_stdout(root, &["rev-parse", "--verify", &expression]).await?;
+    let resolved = resolved.trim();
+    if resolved != commit {
+        return Err(EgggitError::InvalidBaseRef(format!(
+            "commit resolved to a different object: {resolved}"
+        )));
+    }
+    Ok(resolved.to_owned())
+}
+
 /// List all branches with upstream info.
 pub async fn list_branches(root: &Path) -> Result<Vec<BranchInfo>, crate::EgggitError> {
     if !root.exists() {

@@ -15,6 +15,7 @@ use codegg_core::agent_convergence::{
 };
 use codegg_core::agent_run::AgentRunStatus;
 use codegg_core::agent_run_control::AgentRunControlKind;
+use codegg_core::run_result::{AgentRunResult, AgentRunResultStatus, RepositoryState};
 use serde_json::json;
 
 use crate::bus::events::AppEvent;
@@ -23,6 +24,7 @@ use crate::error::ToolError;
 use crate::tool::task::TaskTool;
 
 const VERIFIER_AGENT: &str = "verifier";
+const MAX_PRODUCERS_PER_CYCLE: usize = 3;
 const VERIFIER_DENIED_TOOLS: &[&str] = &[
     "write",
     "edit",
@@ -123,14 +125,55 @@ impl ConvergenceCoordinator {
             })
             .transpose()?
             .unwrap_or_default();
-        let max_cycles = input
-            .get("max_cycles")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(1);
-        if max_cycles != 1 {
+        let max_cycles = match input.get("max_cycles").and_then(|value| value.as_u64()) {
+            Some(value) if value <= u64::from(codegg_core::agent_convergence::MAX_CYCLES) => {
+                value as u8
+            }
+            Some(_) => {
+                return Err(ToolError::Execution(
+                    "max_cycles must be between 1 and 4".into(),
+                ))
+            }
+            None => self
+                .task_tool
+                .orchestration_config()
+                .default_max_cycles
+                .clamp(1, codegg_core::agent_convergence::MAX_CYCLES),
+        };
+        if max_cycles == 0 || max_cycles > codegg_core::agent_convergence::MAX_CYCLES {
             return Err(ToolError::Execution(
-                "M002 converge requires max_cycles to be exactly 1".into(),
+                "max_cycles must be between 1 and 4".into(),
             ));
+        }
+        let strategy = input
+            .get("strategy")
+            .and_then(|value| value.as_str())
+            .unwrap_or("single");
+        if strategy != "single" {
+            return Err(ToolError::Execution(
+                "M003 currently supports only the bounded single producer strategy".into(),
+            ));
+        }
+        if self
+            .task_tool
+            .orchestration_config()
+            .max_producers_per_cycle
+            .min(MAX_PRODUCERS_PER_CYCLE as u8)
+            == 0
+        {
+            return Err(ToolError::Execution(
+                "producer width must be at least one".into(),
+            ));
+        }
+        if let Some(requested) = input
+            .get("max_producers_per_cycle")
+            .and_then(|value| value.as_u64())
+        {
+            if requested == 0 || requested > MAX_PRODUCERS_PER_CYCLE as u64 {
+                return Err(ToolError::Execution(
+                    "max_producers_per_cycle must be between 1 and 3".into(),
+                ));
+            }
         }
         let owner = self.owner()?;
         let spec = ConvergenceSpec::new(objective, criteria)
@@ -141,7 +184,7 @@ impl ConvergenceCoordinator {
                 id: ConvergenceId::new(),
                 owner,
                 spec,
-                max_cycles: 1,
+                max_cycles,
                 idempotency_key: call_identity.clone(),
             })
             .await
@@ -242,19 +285,68 @@ impl ConvergenceCoordinator {
             .ok_or_else(|| ToolError::Execution(format!("convergence '{id}' not found")))?;
         self.authorize(&record.owner)?;
         let decision = parse_decision(input.get("decision").and_then(|value| value.as_str()))?;
-        if matches!(
-            decision,
-            ConvergenceDecision::Repair | ConvergenceDecision::Replan
-        ) {
+        let replan_base = input
+            .get("replan_base")
+            .and_then(|value| value.as_str())
+            .unwrap_or("original");
+        if replan_base != "original" && replan_base != "last_clean_result" {
             return Err(ToolError::Execution(
-                "repair and replan are not available until M003".into(),
+                "replan_base must be original or last_clean_result".into(),
             ));
         }
+        let selected_replan_base =
+            if decision == ConvergenceDecision::Replan && replan_base == "last_clean_result" {
+                let cycle = self
+                    .store
+                    .get_cycle(&id, record.current_cycle)
+                    .await
+                    .map_err(to_tool_error)?
+                    .ok_or_else(|| ToolError::Execution("replan source cycle is missing".into()))?;
+                let run_id = cycle.producer_run_ids.first().ok_or_else(|| {
+                    ToolError::Execution("replan source producer is missing".into())
+                })?;
+                Some(
+                    self.load_repairable_result(run_id)
+                        .await?
+                        .result_commit
+                        .ok_or_else(|| {
+                            ToolError::Execution("replan source has no result commit".into())
+                        })?,
+                )
+            } else {
+                None
+            };
         let updated = self
             .store
             .set_decision(&id, record.current_cycle, record.revision, decision)
             .await
             .map_err(to_tool_error)?;
+        if let Some(base_commit) = selected_replan_base {
+            let cycle = match self
+                .store
+                .get_cycle(&id, updated.current_cycle)
+                .await
+                .map_err(to_tool_error)?
+            {
+                Some(cycle) => cycle,
+                None => self
+                    .store
+                    .create_cycle(&id, updated.current_cycle)
+                    .await
+                    .map_err(to_tool_error)?,
+            };
+            self.store
+                .set_cycle_commits(&id, cycle.ordinal, Some(base_commit), None)
+                .await
+                .map_err(to_tool_error)?;
+        }
+        if matches!(
+            decision,
+            ConvergenceDecision::Repair | ConvergenceDecision::Replan
+        ) {
+            self.advance(&id).await?;
+            self.spawn_watcher(id.clone());
+        }
         self.publish(&id).await;
         Ok(format!(
             "Convergence {}: {} (decision: {})",
@@ -399,7 +491,19 @@ impl ConvergenceCoordinator {
         let Some(record) = self.store.get(id).await.map_err(to_tool_error)? else {
             return Ok(false);
         };
-        if record.status.is_terminal() || record.status == ConvergenceStatus::AwaitingDecision {
+        if record.status.is_terminal() {
+            return Ok(false);
+        }
+        if self.deadline_exceeded(&record) {
+            let exhausted = self
+                .store
+                .transition(id, record.revision, ConvergenceStatus::Exhausted)
+                .await
+                .map_err(to_tool_error)?;
+            self.publish(&exhausted.id).await;
+            return Ok(true);
+        }
+        if record.status == ConvergenceStatus::AwaitingDecision {
             return Ok(false);
         }
         let Some(cycle) = self
@@ -413,9 +517,244 @@ impl ConvergenceCoordinator {
         match record.status {
             ConvergenceStatus::Producing => self.advance_producer(&record, &cycle).await,
             ConvergenceStatus::Verifying => self.advance_verifier(&record, &cycle).await,
+            ConvergenceStatus::Repairing => self.advance_next_cycle(&record, true).await,
+            ConvergenceStatus::Replanning => self.advance_next_cycle(&record, false).await,
             ConvergenceStatus::Pending => Ok(false),
             _ => Ok(false),
         }
+    }
+
+    async fn advance_next_cycle(
+        &self,
+        record: &codegg_core::agent_convergence::ConvergenceRecord,
+        repair: bool,
+    ) -> Result<bool, ToolError> {
+        if record.current_cycle >= record.max_cycles {
+            let exhausted = self
+                .store
+                .transition(&record.id, record.revision, ConvergenceStatus::Exhausted)
+                .await
+                .map_err(to_tool_error)?;
+            self.publish(&exhausted.id).await;
+            return Ok(true);
+        }
+        if record.current_cycle >= 2 {
+            let previous = self
+                .store
+                .get_cycle(&record.id, record.current_cycle - 1)
+                .await
+                .map_err(to_tool_error)?;
+            let before = self
+                .store
+                .get_cycle(&record.id, record.current_cycle - 2)
+                .await
+                .map_err(to_tool_error)?;
+            if previous.as_ref().is_some_and(|previous| {
+                before
+                    .as_ref()
+                    .is_some_and(|before| cycle_fingerprint(previous) == cycle_fingerprint(before))
+            }) {
+                let exhausted = self
+                    .store
+                    .transition(&record.id, record.revision, ConvergenceStatus::Exhausted)
+                    .await
+                    .map_err(to_tool_error)?;
+                self.publish(&exhausted.id).await;
+                return Ok(true);
+            }
+        }
+        let ordinal = record.current_cycle;
+        let cycle = match self
+            .store
+            .get_cycle(&record.id, ordinal)
+            .await
+            .map_err(to_tool_error)?
+        {
+            Some(cycle) => cycle,
+            None => match self.store.create_cycle(&record.id, ordinal).await {
+                Ok(cycle) => cycle,
+                Err(ConvergenceError::CycleConflict) => self
+                    .store
+                    .get_cycle(&record.id, ordinal)
+                    .await
+                    .map_err(to_tool_error)?
+                    .ok_or_else(|| {
+                        ToolError::Execution("next convergence cycle disappeared".into())
+                    })?,
+                Err(error) => return Err(to_tool_error(error)),
+            },
+        };
+        if !cycle.producer_run_ids.is_empty() {
+            return Ok(false);
+        }
+        let (base_commit, prior_result, prior_verdict) = if repair {
+            let prior = self
+                .store
+                .get_cycle(&record.id, ordinal.saturating_sub(1))
+                .await
+                .map_err(to_tool_error)?
+                .ok_or_else(|| {
+                    ToolError::Execution("CannotRepairFromResult: prior cycle missing".into())
+                })?;
+            let run_id = prior.producer_run_ids.first().ok_or_else(|| {
+                ToolError::Execution("CannotRepairFromResult: producer missing".into())
+            })?;
+            let result = self.load_repairable_result(run_id).await?;
+            let commit = result.result_commit.clone().ok_or_else(|| {
+                ToolError::Execution("CannotRepairFromResult: producer has no result commit".into())
+            })?;
+            (commit, Some(result), prior.verdict)
+        } else {
+            let source = cycle.source_base_commit.or(self
+                .store
+                .get_cycle(&record.id, 0)
+                .await
+                .map_err(to_tool_error)?
+                .and_then(|cycle| cycle.source_base_commit));
+            let commit = source.ok_or_else(|| {
+                ToolError::Execution(
+                    "NeedsAttention: original convergence base is not recorded".into(),
+                )
+            })?;
+            self.validate_commit(&commit).await?;
+            let prior_verdict = self
+                .store
+                .get_cycle(&record.id, ordinal.saturating_sub(1))
+                .await
+                .map_err(to_tool_error)?
+                .and_then(|cycle| cycle.verdict);
+            (commit, None, prior_verdict)
+        };
+        self.store
+            .set_cycle_commits(&record.id, ordinal, Some(base_commit.clone()), None)
+            .await
+            .map_err(to_tool_error)?;
+        let prompt = if repair {
+            repair_prompt(
+                record,
+                prior_result.as_ref(),
+                prior_verdict.as_ref(),
+                &base_commit,
+            )
+        } else {
+            replan_prompt(record, prior_verdict.as_ref(), &base_commit)
+        };
+        let child_input = json!({
+            "action": "spawn",
+            "description": if repair { "Convergence repair producer" } else { "Convergence replanned producer" },
+            "prompt": prompt,
+            "agent": "general",
+        });
+        let output = self
+            .task_tool
+            .execute_convergence_child_from_base(
+                child_input,
+                format!(
+                    "{}:{}:{}",
+                    record.id,
+                    if repair { "repair" } else { "replan" },
+                    ordinal
+                ),
+                base_commit,
+            )
+            .await?;
+        let run_id = parse_run_id(&output).ok_or_else(|| {
+            ToolError::Execution(
+                "convergence continuation did not return a durable run handle".into(),
+            )
+        })?;
+        self.store
+            .set_producer_references(&record.id, ordinal, None, vec![run_id])
+            .await
+            .map_err(to_tool_error)?;
+        self.store
+            .transition(&record.id, record.revision, ConvergenceStatus::Producing)
+            .await
+            .map_err(to_tool_error)?;
+        self.publish(&record.id).await;
+        Ok(true)
+    }
+
+    fn deadline_exceeded(
+        &self,
+        record: &codegg_core::agent_convergence::ConvergenceRecord,
+    ) -> bool {
+        let max_wall_clock_ms = self
+            .task_tool
+            .orchestration_config()
+            .max_wall_clock_ms
+            .unwrap_or(codegg_config::schema::OrchestrationConfig::HARD_MAX_WALL_CLOCK_MS);
+        let elapsed = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(record.created_at);
+        elapsed >= i64::try_from(max_wall_clock_ms).unwrap_or(i64::MAX)
+    }
+
+    async fn load_repairable_result(
+        &self,
+        run_id: &codegg_core::identity::AgentRunId,
+    ) -> Result<AgentRunResult, ToolError> {
+        let store = self.task_tool.agent_run_store().ok_or_else(|| {
+            ToolError::Execution("CannotRepairFromResult: durable run store unavailable".into())
+        })?;
+        let run = store
+            .get_run(run_id)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .ok_or_else(|| {
+                ToolError::Execution("CannotRepairFromResult: prior run missing".into())
+            })?;
+        if !run.status.is_terminal() {
+            return Err(ToolError::Execution(
+                "CannotRepairFromResult: prior run is not terminal".into(),
+            ));
+        }
+        let task = store
+            .get_task(&run.task_id)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .ok_or_else(|| {
+                ToolError::Execution("CannotRepairFromResult: prior task missing".into())
+            })?;
+        if task.repository_id != self.task_tool.repository_id() {
+            return Err(ToolError::Execution(
+                "CannotRepairFromResult: repository identity differs".into(),
+            ));
+        }
+        let result = store
+            .get_result(run_id)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?
+            .ok_or_else(|| {
+                ToolError::Execution("CannotRepairFromResult: structured result missing".into())
+            })?;
+        if result.status != AgentRunResultStatus::Succeeded
+            || result.repository_state != RepositoryState::Clean
+            || result.result_commit.is_none()
+            || result.worktree_id.is_none()
+            || run.worktree_id != result.worktree_id
+        {
+            return Err(ToolError::Execution(
+                "CannotRepairFromResult: result provenance is not clean and complete".into(),
+            ));
+        }
+        self.validate_commit(result.result_commit.as_deref().unwrap())
+            .await?;
+        Ok(result)
+    }
+
+    async fn validate_commit(&self, commit: &str) -> Result<(), ToolError> {
+        let root = self.task_tool.workspace_root().ok_or_else(|| {
+            ToolError::Execution("CannotRepairFromResult: workspace root unavailable".into())
+        })?;
+        egggit::resolve_commit(&root, commit)
+            .await
+            .map(|_| ())
+            .map_err(|error| {
+                ToolError::Execution(format!(
+                    "CannotRepairFromResult: commit is not resolvable: {error}"
+                ))
+            })
     }
 
     async fn advance_producer(
@@ -467,6 +806,23 @@ impl ConvergenceCoordinator {
             self.fail(record, "producer has no reviewable successful result")
                 .await?;
             return Ok(true);
+        }
+        if result.repository_state != RepositoryState::Clean
+            || result.result_commit.is_none()
+            || result.worktree_id.is_none()
+            || run.worktree_id != result.worktree_id
+            || (cycle.source_base_commit.is_some()
+                && cycle.source_base_commit != result.base_commit)
+        {
+            self.fail(
+                record,
+                "producer result is not clean or has invalid worktree provenance",
+            )
+            .await?;
+            return Ok(true);
+        }
+        if let Some(result_commit) = result.result_commit.as_deref() {
+            self.validate_commit(result_commit).await?;
         }
         let packet = assemble_verifier_evidence(&record.spec, std::slice::from_ref(&result))
             .map_err(to_tool_error)?;
@@ -676,6 +1032,65 @@ fn verifier_prompt(packet: &VerifierEvidencePacket) -> Result<String, ToolError>
     ))
 }
 
+fn cycle_fingerprint(cycle: &codegg_core::agent_convergence::ConvergenceCycleRecord) -> String {
+    let verdict = cycle
+        .verdict
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default();
+    format!(
+        "{}:{}",
+        cycle.result_commit.as_deref().unwrap_or_default(),
+        verdict
+    )
+}
+
+fn repair_prompt(
+    record: &codegg_core::agent_convergence::ConvergenceRecord,
+    result: Option<&AgentRunResult>,
+    verdict: Option<&SemanticVerificationVerdict>,
+    base_commit: &str,
+) -> String {
+    let (summary, paths) = result
+        .map(|result| {
+            (
+                result.summary.clone(),
+                result
+                    .changed_paths
+                    .iter()
+                    .take(64)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "Repair the prior implementation against the original bounded objective and criteria. Start from exact Git base commit {base_commit}; do not use another checkout or the parent HEAD. Apply the independent verifier's actionable requests, then produce a durable clean result. Objective: {}. Criteria: {}. Verifier findings: {}. Prior producer summary: {}. Prior changed paths: {}",
+        record.spec.objective,
+        record.spec.criteria.join("; "),
+        verdict
+            .and_then(|verdict| serde_json::to_string(verdict).ok())
+            .unwrap_or_else(|| "no structured verifier findings".into()),
+        summary,
+        paths.join(", ")
+    )
+}
+
+fn replan_prompt(
+    record: &codegg_core::agent_convergence::ConvergenceRecord,
+    verdict: Option<&SemanticVerificationVerdict>,
+    base_commit: &str,
+) -> String {
+    format!(
+        "Replan the implementation from exact Git base commit {base_commit}. Reconsider the approach in light of the prior independent verification rather than applying a narrow blind patch. Objective: {}. Criteria: {}. Prior verifier lessons: {}.",
+        record.spec.objective,
+        record.spec.criteria.join("; "),
+        verdict
+            .and_then(|verdict| serde_json::to_string(verdict).ok())
+            .unwrap_or_else(|| "no structured verifier lessons".into())
+    )
+}
+
 fn parse_run_id(output: &str) -> Option<codegg_core::identity::AgentRunId> {
     output.lines().find_map(|line| {
         line.strip_prefix("Run: ")
@@ -694,7 +1109,7 @@ fn parse_decision(value: Option<&str>) -> Result<ConvergenceDecision, ToolError>
             ConvergenceDecision::Replan
         }),
         _ => Err(ToolError::Execution(
-            "decision must be accept, stop, or escalate in M002".into(),
+            "decision must be accept, stop, escalate, repair, or replan".into(),
         )),
     }
 }

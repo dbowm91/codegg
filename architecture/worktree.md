@@ -114,7 +114,9 @@ Nested allocation keeps the durable `RepositoryId` and resolves linked
 worktrees back to the repository's common root for lifecycle identity. The
 effective base is read from the owning checkout (or an explicitly supplied
 base commit), so a grandchild continues from its parent's current checkout
-without sharing its write path.
+without sharing its write path. Convergence repair/replan children always
+supply the host-selected immutable base commit and therefore receive a new
+managed worktree; the prior child worktree is never reused or copied.
 
 Durable delegated-run projections expose only bounded worktree identity, owner
 run, branch, base commit, lifecycle/health, dirty/conflicted state, and the

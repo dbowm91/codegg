@@ -522,6 +522,7 @@ impl JobExecutor for SubagentJobExecutor {
             mut allowed_paths,
             max_tool_calls,
             run_id,
+            base_commit,
         ) = match &ctx.job.payload {
             JobPayload::Subagent {
                 prompt,
@@ -540,6 +541,7 @@ impl JobExecutor for SubagentJobExecutor {
                 allowed_paths.clone(),
                 *max_tool_calls,
                 None,
+                None,
             ),
             JobPayload::SubagentRun {
                 prompt,
@@ -550,6 +552,7 @@ impl JobExecutor for SubagentJobExecutor {
                 allowed_paths,
                 max_tool_calls,
                 run_id,
+                base_commit,
                 ..
             } => (
                 prompt.clone(),
@@ -560,6 +563,7 @@ impl JobExecutor for SubagentJobExecutor {
                 allowed_paths.clone(),
                 *max_tool_calls,
                 Some(run_id.clone()),
+                base_commit.clone(),
             ),
             _ => {
                 return failure_completion(
@@ -701,7 +705,7 @@ impl JobExecutor for SubagentJobExecutor {
                     workspace_id: task.workspace_id,
                     node_id: None,
                     repository_root: repository_root.clone(),
-                    base_commit: None,
+                    base_commit,
                     base_path: Some(repository_root.clone()),
                     owner_run_id: run_id.clone(),
                 };

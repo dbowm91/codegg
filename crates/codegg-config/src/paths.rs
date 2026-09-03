@@ -202,7 +202,8 @@ pub fn merge_configs(configs: &[Config]) -> Config {
             catalog,
             context,
             context_packer,
-            context_policy
+            context_policy,
+            orchestration
         );
         if let Some(ref discovery) = config.discovery {
             match &mut merged.discovery {
@@ -302,6 +303,16 @@ pub fn merge_configs(configs: &[Config]) -> Config {
                     }
                 }
                 None => merged.agent = Some(agents.clone()),
+            }
+        }
+        if let Some(ref profiles) = config.model_profile {
+            match &mut merged.model_profile {
+                Some(existing) => {
+                    for (name, profile) in profiles {
+                        existing.insert(name.clone(), profile.clone());
+                    }
+                }
+                None => merged.model_profile = Some(profiles.clone()),
             }
         }
         if let Some(ref mcp) = config.mcp {
@@ -453,6 +464,45 @@ mod tests {
         let merged = merge_configs(&[c1, c2]);
         assert_eq!(merged.log_level, Some("debug".to_string()));
         assert_eq!(merged.model, Some("provider/model1".to_string()));
+    }
+
+    #[test]
+    fn test_merge_configs_merges_model_profiles_and_orchestration() {
+        let first = Config {
+            model_profile: Some(std::collections::HashMap::from([(
+                "fixture/model".into(),
+                crate::schema::ModelProfileConfig {
+                    prompt_profile: Some(crate::schema::PromptProfileKind::Reviewer),
+                    ..Default::default()
+                },
+            )])),
+            orchestration: Some(crate::schema::OrchestrationConfig {
+                auto_convergence: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let second = Config {
+            model_profile: Some(std::collections::HashMap::from([(
+                "fixture/model".into(),
+                crate::schema::ModelProfileConfig {
+                    orchestration_tier: Some(crate::schema::OrchestrationTier::ConvergenceCapable),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        let merged = merge_configs(&[first, second]);
+        assert_eq!(
+            merged
+                .model_profile
+                .unwrap()
+                .get("fixture/model")
+                .unwrap()
+                .orchestration_tier,
+            Some(crate::schema::OrchestrationTier::ConvergenceCapable)
+        );
+        assert!(merged.orchestration.unwrap().auto_convergence);
     }
 
     #[test]

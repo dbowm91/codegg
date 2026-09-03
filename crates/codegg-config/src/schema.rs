@@ -95,6 +95,17 @@ pub enum ReliabilityTier {
     High,
 }
 
+/// Coarse, repository-owned model capability policy for orchestration.
+/// Unknown and absent values must never imply automatic convergence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OrchestrationTier {
+    #[default]
+    SoloPreferred,
+    DelegationCapable,
+    ConvergenceCapable,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelProfileConfig {
@@ -107,6 +118,7 @@ pub struct ModelProfileConfig {
     pub tool_call_reliability: Option<ReliabilityTier>,
     pub instruction_adherence: Option<ReliabilityTier>,
     pub patch_reliability: Option<ReliabilityTier>,
+    pub orchestration_tier: Option<OrchestrationTier>,
 
     pub supports_late_system_messages: Option<bool>,
     pub prefers_user_control_messages: Option<bool>,
@@ -279,6 +291,47 @@ pub struct Config {
     pub preflight: Option<PreflightConfig>,
     /// Command intent classification and routing configuration.
     pub command_intent: Option<CommandIntentConfig>,
+    /// Conservative, opt-in policy for bounded produce/verify convergence.
+    pub orchestration: Option<OrchestrationConfig>,
+}
+
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[serde(default)]
+pub struct OrchestrationConfig {
+    pub auto_convergence: bool,
+    pub default_max_cycles: u8,
+    pub max_producers_per_cycle: u8,
+    pub max_wall_clock_ms: Option<u64>,
+}
+
+impl Default for OrchestrationConfig {
+    fn default() -> Self {
+        Self {
+            auto_convergence: false,
+            default_max_cycles: 2,
+            max_producers_per_cycle: 1,
+            max_wall_clock_ms: None,
+        }
+    }
+}
+
+impl OrchestrationConfig {
+    pub const HARD_MAX_CYCLES: u8 = 4;
+    pub const HARD_MAX_PRODUCERS_PER_CYCLE: u8 = 3;
+    pub const HARD_MAX_WALL_CLOCK_MS: u64 = 24 * 60 * 60 * 1_000;
+
+    pub fn bounded(&self) -> Self {
+        Self {
+            auto_convergence: self.auto_convergence,
+            default_max_cycles: self.default_max_cycles.clamp(1, Self::HARD_MAX_CYCLES),
+            max_producers_per_cycle: self
+                .max_producers_per_cycle
+                .clamp(1, Self::HARD_MAX_PRODUCERS_PER_CYCLE),
+            max_wall_clock_ms: self
+                .max_wall_clock_ms
+                .map(|value| value.clamp(1, Self::HARD_MAX_WALL_CLOCK_MS)),
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]

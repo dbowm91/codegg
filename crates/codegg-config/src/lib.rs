@@ -15,7 +15,7 @@ pub use paths::{
 };
 pub use schema::{
     AuthConfig, Config, DiscoveryConfig, DiscoveryMode, DiscoveryRootConfig, ModelProfileConfig,
-    SchedulerConfig, SchedulerFairnessConfig, SchedulerQueueConfig, SchedulerResourceConfig,
-    SchedulerRolloutConfig, SymlinkPolicy,
+    OrchestrationConfig, OrchestrationTier, SchedulerConfig, SchedulerFairnessConfig,
+    SchedulerQueueConfig, SchedulerResourceConfig, SchedulerRolloutConfig, SymlinkPolicy,
 };
 pub use watcher::ConfigWatcher;

@@ -3621,11 +3621,15 @@ impl App {
                         status: convergence.status.clone(),
                         cycle_ordinal: convergence.cycle_ordinal,
                         max_cycles: convergence.max_cycles,
+                        remaining_cycles: convergence.remaining_cycles,
                         producer_completed: convergence.producer_completed,
                         producer_active: convergence.producer_active,
                         verifier_run_id: convergence.verifier_run_id.clone(),
                         verdict_kind: convergence.verdict_kind.clone(),
                         awaiting_decision: convergence.awaiting_decision,
+                        selected_run_id: convergence.selected_run_id.clone(),
+                        selected_result_commit: convergence.selected_result_commit.clone(),
+                        last_finding_count: convergence.last_finding_count,
                     })
                     .collect(),
             );

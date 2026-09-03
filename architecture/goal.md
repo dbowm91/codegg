@@ -57,6 +57,9 @@ separately from goal verification. A semantic pass is explanatory evidence and
 cannot satisfy a goal, override a failed or missing host-recorded test, mutate
 `GoalStatus`, or grant completion authority. Goal completion continues through
 `GoalVerificationService` and its deterministic host evidence rules.
+Repair and replan are bounded owner decisions only. Their resulting producer
+commit remains an explicit integration handoff; parent cleanliness/base
+revalidation and deterministic goal verification are still required.
 
 Supervised Test and Subagent jobs created by the daemon while a goal is
 active carry the host-written reserved `goal_id` label. Completion evidence

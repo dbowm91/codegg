@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 pub use codegg_config::schema::{
-    CompletedTodoExposure, ModelProfileConfig, PromptProfileKind, ReliabilityTier,
-    SubagentTodoAccess, TaskStatePolicyConfig, TodoMode, TodoUpdateFrequency,
+    CompletedTodoExposure, ModelProfileConfig, OrchestrationTier, PromptProfileKind,
+    ReliabilityTier, SubagentTodoAccess, TaskStatePolicyConfig, TodoMode, TodoUpdateFrequency,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -17,6 +17,7 @@ pub struct ResolvedModelProfile {
     pub tool_call_reliability: ReliabilityTier,
     pub instruction_adherence: ReliabilityTier,
     pub patch_reliability: ReliabilityTier,
+    pub orchestration_tier: OrchestrationTier,
 
     pub supports_late_system_messages: bool,
     pub prefers_user_control_messages: bool,

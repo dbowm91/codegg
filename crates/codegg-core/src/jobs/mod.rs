@@ -976,6 +976,9 @@ pub enum JobPayload {
         task_id: crate::identity::AgentTaskId,
         run_id: crate::identity::AgentRunId,
         delegation_key: String,
+        /// Host-validated immutable Git base for a convergence child.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base_commit: Option<String>,
     },
     Test {
         command: String,

@@ -612,6 +612,8 @@ pub struct ConvergenceSummaryProjection {
     pub status: String,
     pub cycle_ordinal: u8,
     pub max_cycles: u8,
+    #[serde(default)]
+    pub remaining_cycles: u8,
     pub producer_run_ids: Vec<String>,
     pub producer_completed: usize,
     pub producer_failed: usize,
@@ -622,6 +624,12 @@ pub struct ConvergenceSummaryProjection {
     pub verdict_summary: Option<String>,
     pub awaiting_decision: bool,
     pub terminal_reason_class: Option<String>,
+    #[serde(default)]
+    pub selected_run_id: Option<String>,
+    #[serde(default)]
+    pub selected_result_commit: Option<String>,
+    #[serde(default)]
+    pub last_finding_count: usize,
 }
 
 impl ConvergenceSummaryProjection {
@@ -651,6 +659,14 @@ impl ConvergenceSummaryProjection {
             .map(|value| truncate_str(value, MAX_PROJECTION_RUN_SUMMARY_BYTES).into_owned());
         self.terminal_reason_class = self
             .terminal_reason_class
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.selected_run_id = self
+            .selected_run_id
+            .as_deref()
+            .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
+        self.selected_result_commit = self
+            .selected_result_commit
             .as_deref()
             .map(|value| truncate_str(value, MAX_PROJECTION_STRING_BYTES).into_owned());
     }

@@ -144,6 +144,7 @@ pub fn build_session_tool_registry(
             Vec::new(),
         )
         .with_parent_model(parent_model)
+        .with_orchestration_config(config.orchestration.clone())
         .with_workspace_locks(workspace_locks)
         .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())
         .with_max_depth(

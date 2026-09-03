@@ -31,7 +31,9 @@ pub use operation_state::{
     MergeState, OperationFamily, RebaseState, RecoveryAction, RepositoryOperationState,
     SequenceState, SequencerState, UnknownOperationState,
 };
-pub use refs::{list_branches, list_remotes, list_tags, BranchInfo, RemoteInfo, TagInfo};
+pub use refs::{
+    list_branches, list_remotes, list_tags, resolve_commit, BranchInfo, RemoteInfo, TagInfo,
+};
 pub use status::RepoStatus;
 pub use status_v2::{DirtySummary, OperationState, RichRepoStatus, StatusEntry};
 pub use worktree::WorktreeInfo;

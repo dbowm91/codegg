@@ -1,5 +1,6 @@
 use crate::model_profile::types::{
-    ModelProfileConfig, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
+    ModelProfileConfig, OrchestrationTier, PromptProfileKind, ReliabilityTier,
+    ResolvedModelProfile, TaskStatePolicy,
 };
 use codegg_config::schema::Config;
 
@@ -84,6 +85,9 @@ pub fn apply_config_override(
     if let Some(v) = cfg.patch_reliability {
         base.patch_reliability = v;
     }
+    if let Some(v) = cfg.orchestration_tier {
+        base.orchestration_tier = v;
+    }
     if let Some(v) = cfg.supports_late_system_messages {
         base.supports_late_system_messages = v;
     }
@@ -134,6 +138,7 @@ pub fn default_profile(model: &str) -> ResolvedModelProfile {
         tool_call_reliability: ReliabilityTier::Medium,
         instruction_adherence: ReliabilityTier::Medium,
         patch_reliability: ReliabilityTier::Medium,
+        orchestration_tier: OrchestrationTier::SoloPreferred,
         supports_late_system_messages: true,
         prefers_user_control_messages: false,
         prefers_small_patches: false,
@@ -192,6 +197,29 @@ mod tests {
         let resolver = ModelProfileResolver::new(&config);
         let profile = resolver.resolve("minimax/minimax-2.7");
         assert!(profile.supports_late_system_messages);
+    }
+
+    #[test]
+    fn orchestration_tier_defaults_conservative_and_allows_explicit_override() {
+        let unknown = infer_builtin_profile("unknown/provider-model");
+        assert_eq!(unknown.orchestration_tier, OrchestrationTier::SoloPreferred);
+
+        let config = Config {
+            model_profile: Some(std::collections::HashMap::from([(
+                "unknown/provider-model".into(),
+                ModelProfileConfig {
+                    orchestration_tier: Some(OrchestrationTier::ConvergenceCapable),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(
+            ModelProfileResolver::new(&config)
+                .resolve("unknown/provider-model")
+                .orchestration_tier,
+            OrchestrationTier::ConvergenceCapable
+        );
     }
 
     #[test]

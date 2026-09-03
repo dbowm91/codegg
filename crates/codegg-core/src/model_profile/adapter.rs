@@ -1,4 +1,6 @@
-use super::types::{PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy};
+use super::types::{
+    OrchestrationTier, PromptProfileKind, ReliabilityTier, ResolvedModelProfile, TaskStatePolicy,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -57,6 +59,7 @@ pub struct AdapterProfile {
     pub tool_call_reliability: Option<String>,
     pub instruction_adherence: Option<String>,
     pub patch_reliability: Option<String>,
+    pub orchestration_tier: Option<String>,
     pub supports_late_system_messages: Option<bool>,
     pub prefers_user_control_messages: Option<bool>,
     pub prefers_small_patches: Option<bool>,
@@ -301,6 +304,10 @@ fn parse_reliability(name: Option<&str>, default: ReliabilityTier) -> Reliabilit
     name.and_then(|x| serde_json::from_value(serde_json::Value::String(x.to_string())).ok())
         .unwrap_or(default)
 }
+fn parse_orchestration(name: Option<&str>, default: OrchestrationTier) -> OrchestrationTier {
+    name.and_then(|value| serde_json::from_value(serde_json::Value::String(value.to_owned())).ok())
+        .unwrap_or(default)
+}
 fn effective_profile(model: &str, a: &AdapterDefinition) -> ResolvedModelProfile {
     let p = &a.profile;
     let conservative = super::resolve::default_profile(model);
@@ -324,6 +331,10 @@ fn effective_profile(model: &str, a: &AdapterDefinition) -> ResolvedModelProfile
         patch_reliability: parse_reliability(
             p.patch_reliability.as_deref(),
             conservative.patch_reliability,
+        ),
+        orchestration_tier: parse_orchestration(
+            p.orchestration_tier.as_deref(),
+            conservative.orchestration_tier,
         ),
         supports_late_system_messages: p
             .supports_late_system_messages
@@ -380,6 +391,7 @@ fn merge_adapter(base: &AdapterDefinition, overlay: &AdapterDefinition) -> Adapt
     inherit!(tool_call_reliability);
     inherit!(instruction_adherence);
     inherit!(patch_reliability);
+    inherit!(orchestration_tier);
     inherit!(supports_late_system_messages);
     inherit!(prefers_user_control_messages);
     inherit!(prefers_small_patches);

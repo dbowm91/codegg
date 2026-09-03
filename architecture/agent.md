@@ -527,7 +527,23 @@ denied-tool ceiling is intersected into the child request, so project agent
 overrides cannot grant mutation, shell, delegation, permission, or goal
 completion authority. A marked `Pass | Revise | Inconclusive` result is persisted
 as semantic evidence only. The exact turn/run owner must explicitly choose
-`accept`, `stop`, or `escalate`; accepting does not merge Git or complete a goal.
+`accept`, `stop`, `escalate`, `repair`, or `replan`. Repair requires a terminal
+successful clean result with complete same-repository worktree provenance and
+seeds a new scheduler-owned run/worktree from its immutable result commit.
+Replan uses the recorded original base or an owner-selected validated
+last-clean result base. Both decisions advance one bounded cycle, remain
+restart-safe through idempotency, and receive a fresh verifier. Accepting does
+not merge Git or complete a goal.
+
+M003 convergence defaults to two cycles, with a hard maximum of four and a
+producer width ceiling of three (the current strategy is deliberately the
+single-producer strategy). Creation-time wall-clock checks and repeated
+result/verdict fingerprints exhaust rather than permit retry loops. Unknown
+models remain `SoloPreferred`; `auto_convergence` is false by default and only
+a configured `ConvergenceCapable` root model receives optional guidance. The
+projection exposes remaining budget, selected terminal result, and finding
+count; the result remains an explicit integration handoff and host goal
+verification remains authoritative.
 
 - Unit tests: `src/agent/mod.rs::tests`, `src/agent/registry.rs::tests`
 - Integration: `tests/agent_loop_harness.rs` (extensive harness)

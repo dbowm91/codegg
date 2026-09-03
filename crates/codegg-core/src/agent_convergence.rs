@@ -310,7 +310,7 @@ pub fn validate_transition(
         ),
         ConvergenceStatus::Repairing => matches!(
             to,
-            ConvergenceStatus::Verifying
+            ConvergenceStatus::Producing
                 | ConvergenceStatus::Failed
                 | ConvergenceStatus::Cancelled
                 | ConvergenceStatus::Exhausted
@@ -795,6 +795,7 @@ pub struct ConvergenceSummary {
     pub status: ConvergenceStatus,
     pub cycle_ordinal: u8,
     pub max_cycles: u8,
+    pub remaining_cycles: u8,
     pub producer_run_ids: Vec<String>,
     pub producer_status_counts: ProducerStatusCounts,
     pub verifier_run_id: Option<String>,
@@ -802,6 +803,9 @@ pub struct ConvergenceSummary {
     pub verdict_summary: Option<String>,
     pub awaiting_decision: bool,
     pub terminal_reason_class: Option<String>,
+    pub selected_run_id: Option<String>,
+    pub selected_result_commit: Option<String>,
+    pub last_finding_count: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -839,7 +843,15 @@ impl ConvergenceRecord {
             }
             AgentOrchestrationOwner::Run { run_id } => format!("run:{run_id}"),
         };
-        let (producer_run_ids, verifier_run_id, verdict_kind, verdict_summary) = cycle
+        let (
+            producer_run_ids,
+            verifier_run_id,
+            verdict_kind,
+            verdict_summary,
+            selected_run_id,
+            selected_result_commit,
+            last_finding_count,
+        ) = cycle
             .map(|cycle| {
                 let (kind, summary) = cycle.verdict.as_ref().map_or((None, None), |verdict| {
                     let summary = match verdict {
@@ -860,15 +872,34 @@ impl ConvergenceRecord {
                     cycle.verifier_run_id.as_ref().map(ToString::to_string),
                     kind,
                     summary,
+                    (self.status == ConvergenceStatus::Completed)
+                        .then(|| cycle.producer_run_ids.first().map(ToString::to_string))
+                        .flatten(),
+                    (self.status == ConvergenceStatus::Completed)
+                        .then(|| cycle.result_commit.clone())
+                        .flatten(),
+                    cycle
+                        .verdict
+                        .as_ref()
+                        .map(|verdict| match verdict {
+                            SemanticVerificationVerdict::Revise { findings, .. } => findings.len(),
+                            _ => 0,
+                        })
+                        .unwrap_or_default(),
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or((Vec::new(), None, None, None, None, None, 0));
         ConvergenceSummary {
             convergence_id: self.id.to_string(),
             owner_summary,
             status: self.status,
             cycle_ordinal: self.current_cycle,
             max_cycles: self.max_cycles,
+            remaining_cycles: if self.status.is_terminal() {
+                0
+            } else {
+                self.max_cycles.saturating_sub(self.current_cycle + 1)
+            },
             producer_run_ids,
             producer_status_counts: counts,
             verifier_run_id,
@@ -879,6 +910,9 @@ impl ConvergenceRecord {
                 .status
                 .is_terminal()
                 .then(|| self.status.as_str().to_owned()),
+            selected_run_id,
+            selected_result_commit,
+            last_finding_count,
         }
     }
 }
@@ -1216,10 +1250,12 @@ impl ConvergenceStore for InMemoryConvergenceStore {
             ));
         }
         record.status = next;
-        record.current_cycle = record.current_cycle.saturating_add(u8::from(matches!(
+        if matches!(
             next,
             ConvergenceStatus::Repairing | ConvergenceStatus::Replanning
-        )));
+        ) {
+            record.current_cycle = record.current_cycle.saturating_add(1);
+        }
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now().timestamp_millis();
         record.terminal_at = next.is_terminal().then_some(record.updated_at);
@@ -1413,6 +1449,12 @@ impl ConvergenceStore for InMemoryConvergenceStore {
             .get_mut(id)
             .ok_or_else(|| ConvergenceError::NotFound(id.to_string()))?;
         record.status = next;
+        if matches!(
+            next,
+            ConvergenceStatus::Repairing | ConvergenceStatus::Replanning
+        ) {
+            record.current_cycle = record.current_cycle.saturating_add(1);
+        }
         record.revision = record.revision.saturating_add(1);
         record.updated_at = Utc::now().timestamp_millis();
         record.terminal_at = next.is_terminal().then_some(record.updated_at);
@@ -1841,7 +1883,11 @@ impl ConvergenceStore for SqliteConvergenceStore {
             tx.rollback().await.map_err(sqlite_error)?;
             return Err(ConvergenceError::RevisionConflict);
         }
-        let record_update = sqlx::query("UPDATE agent_convergence SET status = ?, updated_at = ?, terminal_at = ?, revision = revision + 1 WHERE id = ? AND revision = ? AND status = 'awaiting_decision'").bind(next.as_str()).bind(now).bind(next.is_terminal().then_some(now)).bind(id.as_str()).bind(expected_revision as i64).execute(&mut *tx).await.map_err(sqlite_error)?;
+        let cycle_increment = i64::from(matches!(
+            next,
+            ConvergenceStatus::Repairing | ConvergenceStatus::Replanning
+        ));
+        let record_update = sqlx::query("UPDATE agent_convergence SET status = ?, current_cycle = current_cycle + ?, updated_at = ?, terminal_at = ?, revision = revision + 1 WHERE id = ? AND revision = ? AND status = 'awaiting_decision'").bind(next.as_str()).bind(cycle_increment).bind(now).bind(next.is_terminal().then_some(now)).bind(id.as_str()).bind(expected_revision as i64).execute(&mut *tx).await.map_err(sqlite_error)?;
         if record_update.rows_affected() == 0 {
             tx.rollback().await.map_err(sqlite_error)?;
             return Err(ConvergenceError::RevisionConflict);
@@ -1993,7 +2039,7 @@ mod tests {
             (
                 ConvergenceStatus::Repairing,
                 vec![
-                    ConvergenceStatus::Verifying,
+                    ConvergenceStatus::Producing,
                     ConvergenceStatus::Failed,
                     ConvergenceStatus::Cancelled,
                     ConvergenceStatus::Exhausted,
@@ -2095,6 +2141,66 @@ mod tests {
         assert_eq!(cycle.producer_run_ids.len(), 1);
         assert!(store.create_cycle(&first.id, 0).await.is_err());
         assert_eq!(producing.revision, 1);
+    }
+
+    #[tokio::test]
+    async fn repair_decision_advances_exactly_one_cycle() {
+        let store = InMemoryConvergenceStore::new();
+        let created = store.create_or_get(input()).await.unwrap();
+        let producing = store
+            .transition(&created.id, created.revision, ConvergenceStatus::Producing)
+            .await
+            .unwrap();
+        store.create_cycle(&created.id, 0).await.unwrap();
+        let verifying = store
+            .transition(
+                &created.id,
+                producing.revision,
+                ConvergenceStatus::Verifying,
+            )
+            .await
+            .unwrap();
+        let awaiting = store
+            .transition(
+                &created.id,
+                verifying.revision,
+                ConvergenceStatus::AwaitingDecision,
+            )
+            .await
+            .unwrap();
+        store
+            .set_verdict(
+                &created.id,
+                0,
+                SemanticVerificationVerdict::Revise {
+                    findings: vec![],
+                    repair_requests: vec!["fix it".into()],
+                },
+            )
+            .await
+            .unwrap();
+        let repairing = store
+            .set_decision(
+                &created.id,
+                0,
+                awaiting.revision,
+                ConvergenceDecision::Repair,
+            )
+            .await
+            .unwrap();
+        assert_eq!(repairing.status, ConvergenceStatus::Repairing);
+        assert_eq!(repairing.current_cycle, 1);
+        assert_eq!(repairing.revision, awaiting.revision + 1);
+        store.create_cycle(&created.id, 1).await.unwrap();
+        let producing_again = store
+            .transition(
+                &created.id,
+                repairing.revision,
+                ConvergenceStatus::Producing,
+            )
+            .await
+            .unwrap();
+        assert_eq!(producing_again.current_cycle, 1);
     }
 
     #[tokio::test]

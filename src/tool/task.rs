@@ -400,6 +400,7 @@ pub struct TaskTool {
     orchestration_owner: Option<AgentOrchestrationOwner>,
     max_depth: u32,
     convergence_store: Option<Arc<dyn ConvergenceStore>>,
+    orchestration_config: crate::config::schema::OrchestrationConfig,
 }
 
 /// Explicit owner of orchestration operations. A root turn owns its direct
@@ -484,6 +485,7 @@ impl TaskTool {
             status: summary.status.as_str().to_string(),
             cycle_ordinal: summary.cycle_ordinal,
             max_cycles: summary.max_cycles,
+            remaining_cycles: summary.remaining_cycles,
             producer_run_ids: summary.producer_run_ids.clone(),
             producer_completed: counts.completed,
             producer_failed: counts.failed,
@@ -494,6 +496,9 @@ impl TaskTool {
             verdict_summary: summary.verdict_summary.clone(),
             awaiting_decision: summary.awaiting_decision,
             terminal_reason_class: summary.terminal_reason_class.clone(),
+            selected_run_id: summary.selected_run_id.clone(),
+            selected_result_commit: summary.selected_result_commit.clone(),
+            last_finding_count: summary.last_finding_count,
         };
         GlobalEventBus::publish(crate::bus::events::AppEvent::ConvergenceUpdated {
             session_id,
@@ -528,6 +533,7 @@ impl TaskTool {
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
+            orchestration_config: Default::default(),
         }
     }
 
@@ -557,6 +563,7 @@ impl TaskTool {
             orchestration_owner: None,
             max_depth: 3,
             convergence_store: None,
+            orchestration_config: Default::default(),
         }
     }
 
@@ -634,6 +641,14 @@ impl TaskTool {
         self
     }
 
+    pub fn with_orchestration_config(
+        mut self,
+        config: Option<crate::config::schema::OrchestrationConfig>,
+    ) -> Self {
+        self.orchestration_config = config.unwrap_or_default().bounded();
+        self
+    }
+
     pub(crate) fn with_additional_denied_tools(mut self, tools: &[&str]) -> Self {
         self.denied_tools
             .extend(tools.iter().map(|tool| (*tool).to_string()));
@@ -671,11 +686,32 @@ impl TaskTool {
         input: serde_json::Value,
         call_identity: String,
     ) -> Result<String, ToolError> {
-        Box::pin(self.execute_impl(input, None, call_identity)).await
+        Box::pin(self.execute_impl(input, None, call_identity, None)).await
+    }
+
+    pub(crate) async fn execute_convergence_child_from_base(
+        &self,
+        input: serde_json::Value,
+        call_identity: String,
+        base_commit: String,
+    ) -> Result<String, ToolError> {
+        Box::pin(self.execute_impl(input, None, call_identity, Some(base_commit))).await
     }
 
     pub(crate) fn orchestration_owner(&self) -> Option<AgentOrchestrationOwner> {
         self.orchestration_owner.clone()
+    }
+
+    pub(crate) fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.workspace_root.clone()
+    }
+
+    pub(crate) fn repository_id(&self) -> Option<RepositoryId> {
+        self.repository_id.clone()
+    }
+
+    pub(crate) fn orchestration_config(&self) -> &crate::config::schema::OrchestrationConfig {
+        &self.orchestration_config
     }
 
     pub fn with_project_context(
@@ -723,7 +759,7 @@ impl TaskTool {
         ctx: Option<&ToolExecutionContext>,
     ) -> Result<String, ToolError> {
         let call_identity = resolve_call_identity(&input, ctx);
-        self.execute_impl(input, ctx, call_identity).await
+        self.execute_impl(input, ctx, call_identity, None).await
     }
 }
 
@@ -762,7 +798,10 @@ impl Tool for TaskTool {
                 "producer": { "type": "object", "description": "Exactly one producer request (action=converge)" },
                 "verifier_agent": { "type": "string", "description": "Read-only verifier agent (action=converge)" },
                 "verifier_model": { "type": "string", "description": "Optional verifier model override" },
-                "max_cycles": { "type": "integer", "description": "Must be 1 for M002" },
+                "max_cycles": { "type": "integer", "minimum": 1, "maximum": 4, "description": "Bounded convergence cycles (default: configured 2)" },
+                "max_producers_per_cycle": { "type": "integer", "minimum": 1, "maximum": 3, "description": "Host-enforced producer width; single strategy currently uses one" },
+                "strategy": { "type": "string", "enum": ["single"], "description": "Bounded convergence producer strategy" },
+                "replan_base": { "type": "string", "enum": ["original", "last_clean_result"], "description": "Owner-selected validated replan base" },
                 "convergence_id": { "type": "string", "description": "Durable convergence id" },
                 "decision": { "type": "string", "enum": ["accept", "stop", "escalate", "repair", "replan"] },
                 "description": {
@@ -863,6 +902,7 @@ impl TaskTool {
         input: serde_json::Value,
         ctx: Option<&ToolExecutionContext>,
         call_identity: String,
+        explicit_base_commit: Option<String>,
     ) -> Result<String, ToolError> {
         let action = input["action"].as_str().unwrap_or("spawn");
 
@@ -939,7 +979,7 @@ impl TaskTool {
                         })?;
                         object.insert("action".into(), serde_json::Value::String("spawn".into()));
                         let member_identity = format!("{call_identity}/member/{index}");
-                        match Box::pin(self.execute_impl(child, ctx, member_identity)).await {
+                        match Box::pin(self.execute_impl(child, ctx, member_identity, None)).await {
                             Ok(output) => {
                                 if let Some(run_id) = output.lines().find_map(|line| {
                                     line.strip_prefix("Run: ")
@@ -1384,6 +1424,7 @@ impl TaskTool {
                                     task_id,
                                     run_id,
                                     delegation_key,
+                                    base_commit: explicit_base_commit.clone(),
                                 }
                             } else {
                                 codegg_core::jobs::JobPayload::Subagent {

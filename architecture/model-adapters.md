@@ -72,7 +72,10 @@ precedence; base fields fill in missing values.
 `ModelProfileResolver::resolve_adapter()` applies user config overrides
 (`[model_profile.<model>]`) on top of the declarative adapter. This
 enables per-model tweaks (context window, disabled tools, text tool
-repair) without editing adapter TOML.
+repair, and the conservative `orchestration_tier`) without editing adapter
+TOML. The tier defaults to `SoloPreferred`; unknown models and adapters are
+never promoted to `ConvergenceCapable` by inference. A project or user
+profile may explicitly override the tier.
 
 ## Key Types & APIs
 
@@ -174,6 +177,7 @@ tool-call parsers, reasoning parsers, or auto-tool-choice settings.
 | `model_profile.<model>.text_tool_repair` | Enable textual tool-call repair |
 | `model_profile.<model>.disabled_tools` | Remove specific tools for a model |
 | `model_profile.<model>.preferred_tools` | Preferred tool ordering |
+| `model_profile.<model>.orchestration_tier` | `solo_preferred`, `delegation_capable`, or `convergence_capable` |
 
 ## Invariants & Gotchas
 

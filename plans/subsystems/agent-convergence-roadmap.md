@@ -1,6 +1,6 @@
 # Agent Convergence and Independent Verification Roadmap
 
-Status: active planning — M003 active
+Status: closing — M003 closure in progress
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

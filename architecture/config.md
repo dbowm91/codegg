@@ -50,7 +50,7 @@ Different strategies per field type:
 - **Field-by-field**: `provider` (via `ProviderConfig::merge()`),
   `server` (via `ServerConfig::merge()`), `watcher`, `search`,
   `discovery`
-- **Key replacement**: `agent`, `mcp`, `commands`, `mode` (insert
+- **Key replacement**: `agent`, `mcp`, `commands`, `mode`, `model_profile` (insert
   overwrites existing keys)
 - **Concatenation**: `instructions` (appended to list)
 - **Simple override** (via `merge_option!`): all other fields including
@@ -62,9 +62,9 @@ Different strategies per field type:
   `enterprise`, `experimental`, `keybinds`, `vim_mode`, `hooks`,
   `notifications`, `catalog`, `context`, `context_packer`,
   `context_policy`, `daemon`, `scheduler`, `tool_deferral`,
-  `model_profile`, `security`, `research`, `theme`, `tool_backends`,
+  `security`, `research`, `theme`, `tool_backends`,
   `human_shell`, `shell`, `deterministic_tools`, `preflight`,
-  `command_intent`
+  `command_intent`, `orchestration`
 
 ### ProviderConfig Merge (`schema.rs:774`)
 
@@ -299,7 +299,13 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 - `daemon` / `scheduler` — daemon and scheduler settings
 - `discovery` — project discovery configuration
 - `model_profile` — per-model tuning profiles
+- `orchestration` — opt-in bounded convergence defaults and aggregate deadline
 - `tool_backends` — per-domain tool backend selection
+
+`orchestration.auto_convergence` defaults to `false`. The host clamps
+`default_max_cycles` to 1–4, `max_producers_per_cycle` to 1–3, and
+`max_wall_clock_ms` to at most 24 hours. Explicit convergence calls remain
+available when automatic guidance is disabled.
 
 ## Validation
 

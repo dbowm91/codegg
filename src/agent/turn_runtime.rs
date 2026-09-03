@@ -509,6 +509,23 @@ impl TurnRuntime for DefaultTurnRuntime {
             ));
         }
 
+        let orchestration = config
+            .orchestration
+            .as_ref()
+            .map(codegg_config::schema::OrchestrationConfig::bounded)
+            .unwrap_or_default();
+        if orchestration.auto_convergence
+            && model_profile.orchestration_tier
+                == codegg_config::schema::OrchestrationTier::ConvergenceCapable
+            && available_tools.iter().any(|tool| tool == "task")
+        {
+            runtime_blocks.push(crate::agent::prompt::PromptBlock::optional(
+                crate::agent::prompt::PromptBlockKind::CapabilityContract,
+                "capability:auto-convergence",
+                "Bounded convergence guidance: for substantial, ambiguous, or high-risk delegated implementation work, you may explicitly use task action=converge for independent verification and a bounded repair/replan cycle. This is opt-in per request; the host enforces cycle, producer, permission, and integration limits. A semantic pass never completes a goal or merges code.",
+            ));
+        }
+
         if let Some(ref svc) = lsp_service {
             let root = execution.workspace_root.clone();
             if let Some(lsp_ctx) =

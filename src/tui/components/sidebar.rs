@@ -70,11 +70,15 @@ pub struct SidebarConvergence {
     pub status: String,
     pub cycle_ordinal: u8,
     pub max_cycles: u8,
+    pub remaining_cycles: u8,
     pub producer_completed: usize,
     pub producer_active: usize,
     pub verifier_run_id: Option<String>,
     pub verdict_kind: Option<String>,
     pub awaiting_decision: bool,
+    pub selected_run_id: Option<String>,
+    pub selected_result_commit: Option<String>,
+    pub last_finding_count: usize,
 }
 
 pub struct SidebarWidget {
@@ -797,13 +801,15 @@ impl SidebarWidget {
                         Span::styled(format!("  {icon} "), style),
                         Span::styled(id, Style::default().fg(self.theme.muted)),
                         Span::raw(format!(
-                            " {} (cycle {}/{}) P:{}/{} V:{}",
+                            " {} (cycle {}/{}, {} left) P:{}/{} V:{} F:{}",
                             convergence.status,
                             convergence.cycle_ordinal + 1,
                             convergence.max_cycles,
+                            convergence.remaining_cycles,
                             convergence.producer_completed,
                             convergence.producer_completed + convergence.producer_active,
                             clean_inline_text(verdict, width.saturating_sub(35)),
+                            convergence.last_finding_count,
                         )),
                     ]));
                 }
