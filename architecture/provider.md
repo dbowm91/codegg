@@ -160,6 +160,13 @@ runtime validates and attaches the existing CodeGG session identity; retries,
 continuations, and fallback providers pass it through unchanged. It is not a
 free-form header map.
 
+Direct provider callers remain responsible for projecting the identity of
+their owning logical operation before calling `Provider::stream()`: nested
+agent tools use `ToolExecutionContext.session_id`, research reuses one
+run-scoped value, and standalone operations create one invocation-scoped
+value at their boundary. Providers consume this context but never generate
+or persist it.
+
 ### Message (`provider_core.rs:186`)
 
 Tagged enum (`#[serde(tag = "role")]`): `System`, `User` (Vec<ContentPart>),

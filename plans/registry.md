@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | ready | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | Milestone 009 ready | M008 transport is closed; later audit found direct provider callers that can reach OpenCode Go with empty request context. |
+| Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | Milestone 009 closed | Direct production provider callers now receive owning session/run context; M008 transport/header behavior remains preserved. |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -47,11 +47,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Provider connections and Eggpool | M009 — direct provider session-context closure corrective pass | `plans/implementation/provider-connections/009-direct-provider-session-context-corrective-pass.md` | M008 already supplies typed provider request context and required OpenCode transport behavior; research run identity and tool execution session context already exist at the owning call sites. |
+| — | — | — | No dependency-ready implementation plans remain for this provider corrective scope. |
 
 ## Closure work and dependencies
 
-Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. M009 is now closed through the linked closure record.
+Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. Provider M009 is now closed through `plans/closure/provider-connections/009-status.md`.
 
 Historical closed control points remain:
 
@@ -59,6 +59,7 @@ Historical closed control points remain:
 - Agent-run/worktree M008 strict closure (historical/superseded disposition): `plans/closure/agent-run-worktree-concurrency/008-status.md` (implementation `5ced31bf`). Its local evidence remains preserved, including the later-observed exact-head hosted Clippy failure; M009 owns the accepted final closure.
 - Provider M007 strict closure: `plans/closure/provider-connections/007-status.md` (hosted run `30931979689`, job `92084050226`, revision `c85980e2`). The earlier conditional disposition and hosted Clippy failure (`30681164263`) are preserved as historical evidence inside the record.
 - Provider M008 strict closure (historical for accepted transport scope): `plans/closure/provider-connections/008-status.md` (implementation `328c26cb`). Its typed request-context, OpenCode Go affinity policy, and static-header transport remain accepted; M009 owns the later-discovered incomplete classification of direct production provider callers.
+- Provider M009 direct-call session-context corrective closure: `plans/closure/provider-connections/009-status.md`.
 - Tool Programs M019 independent strict review: `plans/closure/tool-programs/019-status.md`. `018-status.md` remains provisional implementation-authored historical evidence.
 - Tool Programs M020 corrective disposition (child-artifact recovery): `plans/closure/tool-programs/020-status.md`.
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
@@ -71,17 +72,17 @@ Verification remains deliberately light: Provider M009 requires focused direct-c
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent provider direct-call corrective follow-up.
 
-No newly registered corrective plan is hard-blocked. Provider M009 is dependency-ready; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
+No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
 ## New corrective execution order
 
-1. Provider M009 is the only dependency-ready corrective handoff currently registered. It preserves the accepted M008 transport implementation while correcting direct provider callers that still drop required session/run context.
-2. Research model-backed phases must reuse one stable research-run affinity value; they must not create a new value for each extraction/claim/verification call.
-3. Agent-invoked ReviewTool and CommitTool must consume the already-existing `ToolExecutionContext.session_id` for nested provider requests; standalone invocation requires one invocation-scoped identity only when needed.
-4. Async LLM compaction and every remaining production direct `Provider::stream()` call must receive an explicit reachability/identity disposition rather than being mechanically assigned `Default::default()`.
-5. Verification remains focused and local: direct-call propagation tests, retained M008 header tests, and `scripts/verify.sh quick`; prior closure records remain immutable historical evidence.
+1. Provider M009 is closed and preserves the accepted M008 transport implementation while correcting direct provider callers that dropped required session/run context.
+2. Research model-backed phases reuse one stable research-run affinity value across extraction, claim, and verification calls.
+3. Agent-invoked ReviewTool and CommitTool consume the existing `ToolExecutionContext.session_id`; standalone invocation uses one invocation-scoped identity when a provider request is made.
+4. Async LLM compaction and every remaining production direct `Provider::stream()` call have an explicit reachability/identity disposition.
+5. Focused direct-call propagation tests, retained M008 header tests, and `scripts/verify.sh quick` passed; prior closure records remain immutable historical evidence.
 
 ## Agent-runtime correctness execution order
 
@@ -157,6 +158,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity corrective pass | closed | `plans/closure/search-eggsearch-integration/005-status.md`; implementation/final candidate `75ccc70e`; hosted run `32047863303` / job `95439829669` passed through Workspace tests |
 | Provider connections and Eggpool | M007 — independent closure ratification and governance reconciliation | closed (strict) | `plans/closure/provider-connections/007-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` passed on attempt 3; earlier conditional record retained as historical evidence |
 | Provider connections and Eggpool | M008 — OpenCode Go stable session header corrective pass | closed historical evidence; current direct-call disposition owned by M009 | `plans/closure/provider-connections/008-status.md`; implementation `328c26cb`; typed transport/header behavior remains accepted, but later audit found OpenCode-capable direct callers with empty request context |
+| Provider connections and Eggpool | M009 — direct provider session-context closure corrective pass | closed | `plans/closure/provider-connections/009-status.md`; direct research, nested tool, compaction, and remaining provider call sites classified and corrected; no registered future plan was unblocked |
 | Programmatic tool execution and Tool Programs | M019 — independent strict closure and evidence ratification | closed | `plans/closure/tool-programs/019-status.md`; accepted revision `c85980e2`; shared hosted run `30931979689` / job `92084050226` |
 | Programmatic tool execution and Tool Programs | M020 — canonical child-artifact recovery corrective closure | closed | `plans/closure/tool-programs/020-status.md`; implementation `c85980e2`; covered by the same green hosted run |
 | Development verification and release | M007 — minimal verification contract and final closure | closed | `plans/closure/development-verification-release/007-status.md`; accepted revision `c85980e2`; boundary guard fail-open correction; no registered plan was left blocked |

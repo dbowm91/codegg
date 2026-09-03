@@ -4,8 +4,8 @@ mod tests {
         auto_compact, compact_messages, detect_overflow, prune_tool_outputs, CompactionStrategy,
         ContextTracker,
     };
-    use codegg::provider::{ContentPart, Message};
-    use std::sync::Arc;
+    use codegg::provider::{ContentPart, Message, ProviderRequestContext};
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_compaction_trigger_under_threshold() {
@@ -250,8 +250,49 @@ mod tests {
             },
         ];
 
-        let result = auto_compact_async(&messages, 128_000, 0.85, false, None, None).await;
+        let result = auto_compact_async(
+            &messages,
+            128_000,
+            0.85,
+            false,
+            None,
+            None,
+            ProviderRequestContext::default(),
+        )
+        .await;
         assert_eq!(result.len(), messages.len());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn llm_compaction_uses_supplied_session_context() {
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let provider = ContextCaptureProvider {
+            contexts: contexts.clone(),
+        };
+        let messages = (0..8)
+            .map(|index| Message::User {
+                content: vec![ContentPart::Text {
+                    text: Arc::new(format!("message {index}")),
+                }],
+            })
+            .collect::<Vec<_>>();
+
+        let summary = codegg::agent::compaction::llm_summarize(
+            &messages,
+            &provider,
+            "test-model",
+            ProviderRequestContext {
+                session_id: Some(Arc::from("session-compaction")),
+            },
+        )
+        .await
+        .expect("capture provider should return a summary");
+
+        assert_eq!(summary, "summary");
+        assert_eq!(
+            contexts.lock().unwrap().as_slice(),
+            &[Some("session-compaction".to_string())]
+        );
     }
 
     #[test]
@@ -795,7 +836,9 @@ mod tests {
             active_model: None,
         };
 
-        let result = compact_with_policy(input, None).await.unwrap();
+        let result = compact_with_policy(input, None, ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
         assert!(result.tokens_before > 0);
     }
@@ -842,7 +885,9 @@ mod tests {
             active_model: None,
         };
 
-        let result = compact_with_policy(input, None).await.unwrap();
+        let result = compact_with_policy(input, None, ProviderRequestContext::default())
+            .await
+            .unwrap();
 
         // Validate invariants
         assert!(validate_message_invariants(&result.messages).is_ok());
@@ -1230,6 +1275,46 @@ mod tests {
         }
     }
 
+    struct ContextCaptureProvider {
+        contexts: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl codegg::provider::Provider for ContextCaptureProvider {
+        fn id(&self) -> &str {
+            "context-capture"
+        }
+
+        fn name(&self) -> &str {
+            "Context Capture"
+        }
+
+        fn clone_box(&self) -> Box<dyn codegg::provider::Provider> {
+            Box::new(Self {
+                contexts: self.contexts.clone(),
+            })
+        }
+
+        async fn stream(
+            &self,
+            request: &codegg::provider::ChatRequest,
+        ) -> Result<codegg::provider::EventStream, codegg::provider::ProviderError> {
+            self.contexts
+                .lock()
+                .unwrap()
+                .push(request.context.session_id.as_deref().map(ToOwned::to_owned));
+            Ok(Box::pin(futures_util::stream::iter(vec![Ok(
+                codegg::provider::ChatEvent::TextDelta(Arc::new("summary".to_string())),
+            )])))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<codegg::provider::ModelInfo>, codegg::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
     // --- Hybrid Mode Tests ---
 
     #[tokio::test(flavor = "current_thread")]
@@ -1266,7 +1351,9 @@ mod tests {
             active_model: None,
         };
 
-        let result = compact_with_policy(input, Some(&provider)).await.unwrap();
+        let result = compact_with_policy(input, Some(&provider), ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
         assert!(result.frame.is_some());
         let frame = result.frame.unwrap();
@@ -1331,7 +1418,9 @@ mod tests {
         };
 
         // Should not fail - falls back to programmatic
-        let result = compact_with_policy(input, Some(&provider)).await.unwrap();
+        let result = compact_with_policy(input, Some(&provider), ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
     }
 
@@ -1361,7 +1450,9 @@ mod tests {
         };
 
         // No provider needed since no model is set
-        let result = compact_with_policy(input, None).await.unwrap();
+        let result = compact_with_policy(input, None, ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
     }
 
@@ -1401,7 +1492,9 @@ mod tests {
             active_model: None,
         };
 
-        let result = compact_with_policy(input, Some(&provider)).await.unwrap();
+        let result = compact_with_policy(input, Some(&provider), ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
     }
 
@@ -1431,7 +1524,9 @@ mod tests {
         };
 
         // No provider - should fall back to programmatic
-        let result = compact_with_policy(input, None).await.unwrap();
+        let result = compact_with_policy(input, None, ProviderRequestContext::default())
+            .await
+            .unwrap();
         assert!(!result.messages.is_empty());
     }
 
@@ -1476,7 +1571,9 @@ mod tests {
             active_model: None,
         };
 
-        let result = compact_with_policy(input, None).await.unwrap();
+        let result = compact_with_policy(input, None, ProviderRequestContext::default())
+            .await
+            .unwrap();
         // Should still produce valid output
         assert!(validate_message_invariants(&result.messages).is_ok());
     }

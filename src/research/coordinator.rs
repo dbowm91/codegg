@@ -75,6 +75,7 @@ impl ResearchCoordinator {
 
     pub async fn run(&self, request: ResearchRequest) -> Result<ResearchRunResult> {
         let run_id = request.id.clone();
+        let provider_context = crate::research::llm::provider_context_for_run(&run_id);
 
         // Phase 0: Create run
         self.store.create_run(&request).await?;
@@ -107,6 +108,7 @@ impl ResearchCoordinator {
                 &request.budget,
                 Some(provider.as_ref()),
                 Some(model.as_str()),
+                provider_context.clone(),
                 &request.question,
             )
             .await
@@ -129,6 +131,7 @@ impl ResearchCoordinator {
                 &sources,
                 provider.as_ref(),
                 model,
+                provider_context.clone(),
                 &request.question,
             )
             .await
@@ -182,6 +185,7 @@ impl ResearchCoordinator {
             let semantic_results = verify::verify_semantic(
                 provider.as_ref(),
                 model,
+                provider_context,
                 &request.question,
                 &claims,
                 &evidence,

@@ -1,4 +1,4 @@
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderRequestContext};
 use crate::research::llm;
 use crate::research::templates;
 use crate::research::types::*;
@@ -73,6 +73,7 @@ pub async fn build_claims_with_model(
     sources: &[SourceRecord],
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
     question: &str,
 ) -> Vec<ClaimRecord> {
     if evidence.is_empty() {
@@ -100,12 +101,13 @@ pub async fn build_claims_with_model(
         .replace("{question}", question)
         .replace("{evidence_json}", &evidence_json);
 
-    let json_val = match llm::call_llm_json(provider, model, None, &prompt, Some(4096)).await {
-        Ok(v) => v,
-        Err(_) => {
-            return deterministic_claims(run_id, evidence, sources);
-        }
-    };
+    let json_val =
+        match llm::call_llm_json(provider, model, context, None, &prompt, Some(4096)).await {
+            Ok(v) => v,
+            Err(_) => {
+                return deterministic_claims(run_id, evidence, sources);
+            }
+        };
 
     let items: Vec<ModelClaimItem> = match serde_json::from_value(json_val) {
         Ok(v) => v,

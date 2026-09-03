@@ -1,6 +1,6 @@
 # Provider Connections — Direct Provider Session Context Corrective Addendum
 
-Status: ready
+Status: closed
 
 Repository baseline reviewed: `3628434ef67b520fd3eeba65d75130d79e459d7f`
 
@@ -10,6 +10,7 @@ Parent provider planning and historical closure:
 - `plans/subsystems/provider-opencode-session-affinity-corrective-addendum.md`
 - Provider M007 closure: `plans/closure/provider-connections/007-status.md`
 - Provider M008 closure: `plans/closure/provider-connections/008-status.md`
+- Provider M009 closure: `plans/closure/provider-connections/009-status.md`
 
 Long-term references:
 
@@ -56,7 +57,7 @@ If reachable from a conversation, it must receive the conversation's stable prov
 
 ### M009 — Direct provider session-context closure corrective pass
 
-Status: ready
+Status: closed
 
 Implementation plan:
 
@@ -88,9 +89,14 @@ Exit conditions:
 
 Provider M008 remains immutable historical closure for the transport implementation it accepted. M009 records the later-discovered incomplete production-path classification rather than editing M008 evidence retroactively.
 
-Until M009 closes, Provider Connections should be shown as `ready`, with M009 as the current corrective milestone. M008 remains listed in recently closed control points as historical strict closure for its accepted scope, while M009 becomes the current strict disposition for direct-call request-context compatibility after implementation and closure.
+M009 is closed by `plans/closure/provider-connections/009-status.md`. Provider
+Connections remains closed for this corrective scope; M008 remains immutable
+historical strict closure for its accepted transport/header scope, while M009 is
+the current strict disposition for direct-call request-context compatibility.
 
-No other provider roadmap milestone is unblocked or reopened by this registration.
+The post-closure dependency audit found no registered provider roadmap
+milestone blocked on M009, so no future provider plan was unblocked or
+reopened.
 
 ## 5. Verification posture
 

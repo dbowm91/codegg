@@ -299,6 +299,12 @@ parses JSON response.
 Used by `extract_evidence_with_model`, `build_claims_with_model`, and
 `verify_semantic`.
 
+All model-backed phases in one research run receive the same
+`ProviderRequestContext`, projected from the run ID. Valid bounded run IDs
+are used directly; malformed or oversized IDs receive a deterministic,
+bounded projection created once for the run. The context is transport-only
+and is not included in research prompts or persisted as a second identity.
+
 ## Testing
 
 ```bash

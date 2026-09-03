@@ -1,6 +1,6 @@
 use chrono::Utc;
 
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderRequestContext};
 use crate::research::llm;
 use crate::research::templates;
 use crate::research::types::*;
@@ -258,6 +258,7 @@ pub fn extract_evidence(
 async fn model_evidence_for_chunk(
     provider: &dyn Provider,
     model: &str,
+    context: &ProviderRequestContext,
     question: &str,
     source: &SourceRecord,
     chunk_text: &str,
@@ -290,9 +291,16 @@ async fn model_evidence_for_chunk(
 
     let user_msg = format!("{}\n\n--- Source Content ---\n{}", prompt, truncated_chunk);
 
-    let json_val = llm::call_llm_json(provider, model, None, &user_msg, Some(2048))
-        .await
-        .ok()?;
+    let json_val = llm::call_llm_json(
+        provider,
+        model,
+        context.clone(),
+        None,
+        &user_msg,
+        Some(2048),
+    )
+    .await
+    .ok()?;
 
     let items: Vec<ModelEvidenceItem> = serde_json::from_value(json_val).ok()?;
 
@@ -322,6 +330,7 @@ pub async fn extract_evidence_with_model(
     budget: &ResearchBudget,
     provider: Option<&dyn Provider>,
     model: Option<&str>,
+    context: ProviderRequestContext,
     question: &str,
 ) -> Vec<EvidenceSpan> {
     let Some(provider) = provider else {
@@ -346,6 +355,7 @@ pub async fn extract_evidence_with_model(
             if let Some(items) = model_evidence_for_chunk(
                 provider,
                 model,
+                &context,
                 question,
                 source,
                 chunk_text,

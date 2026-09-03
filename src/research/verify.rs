@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderRequestContext};
 use crate::research::llm;
 use crate::research::templates;
 use crate::research::types::*;
@@ -114,6 +114,7 @@ pub fn verify_structural(
 pub async fn verify_semantic(
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
     question: &str,
     claims: &[ClaimRecord],
     evidence: &[EvidenceSpan],
@@ -127,8 +128,10 @@ pub async fn verify_semantic(
 
     // Process claims in batches of 5 to avoid overwhelming the model
     for chunk in claims.chunks(5) {
-        let batch_results =
-            verify_claim_batch(provider, model, question, chunk, evidence, sources).await;
+        let batch_results = verify_claim_batch(
+            provider, model, &context, question, chunk, evidence, sources,
+        )
+        .await;
         results.extend(batch_results);
     }
 
@@ -138,6 +141,7 @@ pub async fn verify_semantic(
 async fn verify_claim_batch(
     provider: &dyn Provider,
     model: &str,
+    context: &ProviderRequestContext,
     question: &str,
     claims: &[ClaimRecord],
     evidence: &[EvidenceSpan],
@@ -181,7 +185,16 @@ async fn verify_claim_batch(
         question, claims_json, prompt
     );
 
-    let json_val = match llm::call_llm_json(provider, model, None, &user_msg, Some(4096)).await {
+    let json_val = match llm::call_llm_json(
+        provider,
+        model,
+        context.clone(),
+        None,
+        &user_msg,
+        Some(4096),
+    )
+    .await
+    {
         Ok(v) => v,
         Err(_) => {
             return claims

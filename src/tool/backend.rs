@@ -15,8 +15,11 @@
 //! model is identical to what `execute()` would have returned.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+
+use crate::provider::ProviderRequestContext;
 
 /// The kind of backend that produced a tool result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,6 +150,23 @@ impl ToolExecutionContext {
             decision_revoked_at: None,
             program_contract_snapshot: None,
         }
+    }
+}
+
+/// Project the owning tool invocation's identity into provider request
+/// context. Legacy callers without a session receive one identity for the
+/// whole invocation; callers must not generate a value per provider request.
+pub(crate) fn provider_request_context(
+    context: Option<&ToolExecutionContext>,
+) -> ProviderRequestContext {
+    let session_id = context
+        .and_then(|context| context.session_id.as_deref())
+        .filter(|session_id| !session_id.is_empty())
+        .map(Arc::<str>::from)
+        .unwrap_or_else(|| Arc::<str>::from(uuid::Uuid::new_v4().to_string()));
+
+    ProviderRequestContext {
+        session_id: Some(session_id),
     }
 }
 
@@ -1079,5 +1099,22 @@ mod report_tests {
             .find(|r| r.tool == "deterministic")
             .unwrap();
         assert_eq!(det.status, "disabled");
+    }
+
+    #[test]
+    fn provider_context_prefers_session_and_generates_stable_invocation_value() {
+        let mut context = ToolExecutionContext::with_backend(ToolBackendKind::Native);
+        context.session_id = Some("session-1".to_string());
+        assert_eq!(
+            provider_request_context(Some(&context))
+                .session_id
+                .as_deref(),
+            Some("session-1")
+        );
+
+        let first = provider_request_context(None).session_id.unwrap();
+        let second = provider_request_context(None).session_id.unwrap();
+        assert!(!first.is_empty());
+        assert_ne!(first, second);
     }
 }

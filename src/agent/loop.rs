@@ -33,7 +33,9 @@ use crate::model_profile::policy::push_control_instruction;
 use crate::permission::{PermissionChecker, PermissionDecisionReceipt};
 use crate::plugin::hooks::{HookContext, HookResult, HookType};
 use crate::provider::text_tool_parser::repair_text_as_tool_calls;
-use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ToolCall};
+use crate::provider::{
+    ChatEvent, ChatRequest, ContentPart, Message, ProviderRequestContext, ToolCall,
+};
 
 /// Bounded public output collected from one ordinary agent-loop execution.
 /// Reasoning deltas are intentionally excluded from this type.
@@ -2091,7 +2093,16 @@ impl AgentLoop {
                     active_model,
                 };
 
-                match compact_with_policy(input, Some(self.provider.as_ref())).await {
+                let compaction_context = ProviderRequestContext {
+                    session_id: Some(Arc::from(self.session_id.as_str())),
+                };
+                match compact_with_policy(
+                    input,
+                    Some(self.provider.as_ref()),
+                    compaction_context.clone(),
+                )
+                .await
+                {
                     Ok(output) => {
                         *messages = output.messages;
                         tracing::info!(
@@ -2116,6 +2127,7 @@ impl AgentLoop {
                             prune,
                             Some(self.provider.as_ref()),
                             model,
+                            compaction_context,
                         )
                         .await;
                         *messages = compacted;
@@ -2138,6 +2150,9 @@ impl AgentLoop {
                         prune,
                         Some(self.provider.as_ref()),
                         model,
+                        ProviderRequestContext {
+                            session_id: Some(Arc::from(self.session_id.as_str())),
+                        },
                     )
                     .await;
                     *messages = compacted;

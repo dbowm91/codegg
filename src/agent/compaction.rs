@@ -1,4 +1,4 @@
-use crate::provider::{ChatRequest, ContentPart, Message, Provider};
+use crate::provider::{ChatRequest, ContentPart, Message, Provider, ProviderRequestContext};
 use eggcontext::estimate_tokens_sync as egg_estimate_tokens_sync;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -247,6 +247,7 @@ pub async fn compact_messages_async(
     strategy: CompactionStrategy,
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
 ) -> Vec<Message> {
     if messages.len() <= 2 {
         return messages;
@@ -266,7 +267,7 @@ pub async fn compact_messages_async(
     let compacted = match strategy {
         CompactionStrategy::TruncateToolOutputs => truncate_tool_outputs(non_system),
         CompactionStrategy::SummarizeOldTurns => {
-            summarize_old_turns(non_system, provider, model).await
+            summarize_old_turns(non_system, provider, model, context).await
         }
         CompactionStrategy::DropMiddleMessages => drop_middle_messages(non_system),
     };
@@ -306,6 +307,7 @@ async fn summarize_old_turns(
     messages: Vec<Message>,
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
 ) -> Vec<Message> {
     if messages.len() <= 6 {
         return messages;
@@ -314,7 +316,7 @@ async fn summarize_old_turns(
     let keep_count = 4;
     let mut result = Vec::new();
 
-    let summary = match llm_summarize(&messages, provider, model).await {
+    let summary = match llm_summarize(&messages, provider, model, context).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("LLM summarization failed, using fallback: {}", e);
@@ -334,6 +336,7 @@ pub async fn llm_summarize(
     messages: &[Message],
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
 ) -> Result<String, crate::error::AppError> {
     let messages_to_summarize: Vec<Message> = messages
         .iter()
@@ -416,7 +419,7 @@ pub async fn llm_summarize(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
-        context: Default::default(),
+        context,
     };
 
     let events = tokio::time::timeout(
@@ -628,6 +631,7 @@ pub async fn auto_compact_async(
     prune: bool,
     provider: Option<&dyn Provider>,
     model: Option<&str>,
+    context: ProviderRequestContext,
 ) -> Vec<Message> {
     let mut tracker = ContextTracker::new(context_limit, threshold);
     tracker.add_messages(messages);
@@ -652,7 +656,7 @@ pub async fn auto_compact_async(
         if strategy == CompactionStrategy::SummarizeOldTurns {
             if let Some(p) = provider {
                 let model = model.unwrap_or("gpt-4o-mini");
-                result = compact_messages_async(result, strategy, p, model).await;
+                result = compact_messages_async(result, strategy, p, model, context).await;
             } else {
                 result = compact_messages_sync(result, CompactionStrategy::DropMiddleMessages);
             }
@@ -918,6 +922,7 @@ pub async fn semantic_checkpoint(
     provider: &dyn crate::provider::Provider,
     model: &str,
     max_summary_tokens: usize,
+    context: ProviderRequestContext,
 ) -> Result<crate::agent::context_frame::ContextFrame, crate::error::AppError> {
     use crate::provider::{ChatRequest, ContentPart, Message};
 
@@ -1045,7 +1050,7 @@ pub async fn semantic_checkpoint(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
-        context: Default::default(),
+        context,
     };
 
     let events = tokio::time::timeout(
@@ -2003,6 +2008,7 @@ pub fn compile_hybrid_messages(
 async fn compact_agent_only(
     input: CompactionInput<'_>,
     provider: Option<&dyn crate::provider::Provider>,
+    context: ProviderRequestContext,
 ) -> Result<Vec<Message>, crate::error::AppError> {
     if let Some(provider) = provider {
         if let Some(model) = input.config.compaction_model.as_deref() {
@@ -2013,6 +2019,7 @@ async fn compact_agent_only(
                 provider,
                 model,
                 input.config.max_summary_tokens,
+                context.clone(),
             )
             .await
             {
@@ -2057,6 +2064,7 @@ async fn compact_agent_only(
 pub async fn compact_with_policy(
     input: CompactionInput<'_>,
     provider: Option<&dyn crate::provider::Provider>,
+    context: ProviderRequestContext,
 ) -> Result<CompactionOutput, crate::error::AppError> {
     let tracker =
         ContextTracker::new(usize::MAX, 0.0).with_model(input.active_model.map(|s| s.to_string()));
@@ -2075,7 +2083,7 @@ pub async fn compact_with_policy(
         CompactionMode::Programmatic => {
             compile_programmatic_messages(messages_ref, &programmatic, &input.config)
         }
-        CompactionMode::Agent => compact_agent_only(input, provider).await?,
+        CompactionMode::Agent => compact_agent_only(input, provider, context.clone()).await?,
         CompactionMode::Hybrid => {
             let mut frame = programmatic.frame.clone();
             if let (Some(provider), Some(model)) =
@@ -2087,6 +2095,7 @@ pub async fn compact_with_policy(
                     provider,
                     model,
                     input.config.max_summary_tokens,
+                    context,
                 )
                 .await
                 {

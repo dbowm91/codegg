@@ -8,21 +8,32 @@ use crate::config::schema::Config;
 use crate::error::ToolError;
 use crate::git_service::{DiffFilePayload, DiffResultPayload, GitExecutionService, GitPayload};
 use crate::provider::{
-    register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, ProviderRegistry,
+    register_builtin_with_config, ChatEvent, ChatRequest, ContentPart, Message, Provider,
+    ProviderRegistry, ProviderRequestContext,
 };
-use crate::tool::{Tool, ToolCategory};
+use crate::tool::backend::provider_request_context;
+use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
 use codegg_git::GitOperation;
 
 pub struct ReviewTool {
     workdir: std::path::PathBuf,
+    provider: Option<std::sync::Arc<dyn Provider>>,
 }
 
 impl ReviewTool {
     pub fn new() -> Self {
         Self {
             workdir: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            provider: None,
         }
+    }
+
+    /// Override provider selection for callers that already own a provider
+    /// and for focused nested-request tests.
+    pub fn with_provider(mut self, provider: std::sync::Arc<dyn Provider>) -> Self {
+        self.provider = Some(provider);
+        self
     }
 
     async fn get_diff(&self, staged: bool) -> Result<String, ToolError> {
@@ -72,23 +83,112 @@ impl ReviewTool {
         Ok(text)
     }
 
-    async fn analyze_diff(&self, diff: &str) -> Result<String, ToolError> {
+    async fn analyze_diff_with_context(
+        &self,
+        diff: &str,
+        context: ProviderRequestContext,
+    ) -> Result<String, ToolError> {
         let config = Config::load_or_default();
-        let mut registry = ProviderRegistry::new();
-        register_builtin_with_config(&mut registry, &config);
-
         let model = config
             .model
             .clone()
             .unwrap_or_else(|| EMERGENCY_DEFAULT_MODEL.to_string());
 
+        if let Some(provider) = self.provider.as_deref() {
+            return analyze_diff_with_provider(diff, provider, &model, context).await;
+        }
+
+        let mut registry = ProviderRegistry::new();
+        register_builtin_with_config(&mut registry, &config);
         let provider = registry
             .get(&model)
             .or_else(|| registry.list().first().copied())
             .ok_or_else(|| ToolError::Execution("no provider available".to_string()))?;
 
-        let prompt = format!(
-            "Review the following git diff and provide structured feedback. \
+        analyze_diff_with_provider(diff, provider, &model, context).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct ContextCaptureProvider {
+        contexts: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl Provider for ContextCaptureProvider {
+        fn id(&self) -> &str {
+            "context-capture"
+        }
+
+        fn name(&self) -> &str {
+            "Context Capture"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self {
+                contexts: self.contexts.clone(),
+            })
+        }
+
+        async fn stream(
+            &self,
+            request: &ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            self.contexts
+                .lock()
+                .unwrap()
+                .push(request.context.session_id.as_deref().map(ToOwned::to_owned));
+            Ok(Box::pin(futures_util::stream::iter(vec![Ok(
+                ChatEvent::TextDelta(Arc::new("review".to_string())),
+            )])))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_review_request_uses_tool_execution_session() {
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ContextCaptureProvider {
+            contexts: contexts.clone(),
+        });
+        let mut execution =
+            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        execution.session_id = Some("session-review".to_string());
+        let tool = ReviewTool::new().with_provider(provider);
+
+        let result = tool
+            .analyze_diff_with_context(
+                "diff --git a/src/lib.rs b/src/lib.rs",
+                provider_request_context(Some(&execution)),
+            )
+            .await
+            .expect("capture provider should return a review");
+
+        assert_eq!(result, "review");
+        assert_eq!(
+            contexts.lock().unwrap().as_slice(),
+            &[Some("session-review".to_string())]
+        );
+    }
+}
+
+async fn analyze_diff_with_provider(
+    diff: &str,
+    provider: &dyn Provider,
+    model: &str,
+    context: ProviderRequestContext,
+) -> Result<String, ToolError> {
+    let prompt = format!(
+        "Review the following git diff and provide structured feedback. \
              Identify potential bugs, performance issues, style violations, and improvements. \
              Use the following emoji categories:\n\
              🐛 Bug: for functional issues\n\
@@ -96,14 +196,14 @@ impl ReviewTool {
              🎨 Style: for readability and convention issues\n\
              💡 Suggestion: for general improvements\n\n\
              Diff:\n{}",
-            diff
-        );
+        diff
+    );
 
-        let request = ChatRequest {
+    let request = ChatRequest {
             messages: vec![Message::User {
                 content: vec![ContentPart::Text { text: prompt.into() }],
             }],
-            model: model.clone(),
+            model: model.to_string(),
             tools: None,
             system: Some("You are a professional code reviewer. Provide constructive, concise feedback using emojis.".to_string()),
             temperature: Some(0.3),
@@ -112,35 +212,34 @@ impl ReviewTool {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
-            context: Default::default(),
+            context,
         };
 
-        let mut stream = provider
-            .stream(&request)
-            .await
-            .map_err(|e| ToolError::Execution(format!("LLM request failed: {}", e)))?;
+    let mut stream = provider
+        .stream(&request)
+        .await
+        .map_err(|e| ToolError::Execution(format!("LLM request failed: {}", e)))?;
 
-        let mut review = String::new();
-        while let Some(event) = stream.next().await {
-            match event {
-                Ok(ChatEvent::TextDelta(delta)) => review.push_str(&delta),
-                Ok(ChatEvent::Finish { .. }) => break,
-                Ok(ChatEvent::Error(e)) => {
-                    return Err(ToolError::Execution(format!("LLM error: {}", e)))
-                }
-                _ => {}
+    let mut review = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ChatEvent::TextDelta(delta)) => review.push_str(&delta),
+            Ok(ChatEvent::Finish { .. }) => break,
+            Ok(ChatEvent::Error(e)) => {
+                return Err(ToolError::Execution(format!("LLM error: {}", e)))
             }
+            _ => {}
         }
-
-        let review = review.trim();
-        if review.is_empty() {
-            return Err(ToolError::Execution(
-                "LLM generated empty review".to_string(),
-            ));
-        }
-
-        Ok(review.to_string())
     }
+
+    let review = review.trim();
+    if review.is_empty() {
+        return Err(ToolError::Execution(
+            "LLM generated empty review".to_string(),
+        ));
+    }
+
+    Ok(review.to_string())
 }
 
 impl Default for ReviewTool {
@@ -193,9 +292,31 @@ impl Tool for ReviewTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        self.execute_with_context(input, None).await
+    }
+
+    async fn execute_structured(
+        &self,
+        input: serde_json::Value,
+        context: Option<ToolExecutionContext>,
+    ) -> Result<StructuredToolResult, ToolError> {
+        let output = self.execute_with_context(input, context.as_ref()).await?;
+        Ok(StructuredToolResult::legacy(self.name(), output))
+    }
+}
+
+impl ReviewTool {
+    async fn execute_with_context(
+        &self,
+        input: serde_json::Value,
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<String, ToolError> {
         let staged = input["staged"].as_bool().unwrap_or(true);
         let diff = self.get_diff(staged).await?;
-        let review = self.analyze_diff(&diff).await?;
+        let provider_context = provider_request_context(context);
+        let review = self
+            .analyze_diff_with_context(&diff, provider_context)
+            .await?;
         Ok(format!("## Code Review Results\n\n{}", review))
     }
 }

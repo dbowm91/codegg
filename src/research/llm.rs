@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 
-use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, Provider};
+use crate::provider::{
+    ChatEvent, ChatRequest, ContentPart, Message, Provider, ProviderRequestContext,
+};
 
 use crate::research::error::{ResearchError, Result};
 
@@ -19,6 +21,7 @@ use crate::research::error::{ResearchError, Result};
 pub async fn call_llm(
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
     system: Option<&str>,
     user_message: &str,
     max_tokens: Option<usize>,
@@ -48,7 +51,7 @@ pub async fn call_llm(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
-        context: Default::default(),
+        context,
     };
 
     let events = tokio::time::timeout(
@@ -84,11 +87,12 @@ pub async fn call_llm(
 pub async fn call_llm_json(
     provider: &dyn Provider,
     model: &str,
+    context: ProviderRequestContext,
     system: Option<&str>,
     user_message: &str,
     max_tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
-    let text = call_llm(provider, model, system, user_message, max_tokens).await?;
+    let text = call_llm(provider, model, context, system, user_message, max_tokens).await?;
     let trimmed = text.trim();
 
     // Strip markdown code fences if present
@@ -118,8 +122,29 @@ pub async fn call_llm_json(
     })
 }
 
+/// Project a research run identity into the provider transport context.
+///
+/// Normal research IDs are already bounded, opaque session-compatible values.
+/// A caller may nevertheless construct a `ResearchRequest` with an arbitrary
+/// ID, so invalid values receive a deterministic bounded projection. The
+/// projection is derived once by the coordinator and reused for every model
+/// phase in that run.
+pub fn provider_context_for_run(run_id: &str) -> ProviderRequestContext {
+    let session_id = codegg_core::context::SessionId::parse(run_id)
+        .map(|id| id.as_str().to_owned())
+        .unwrap_or_else(|_| {
+            use sha2::Digest;
+            format!("research-{:x}", sha2::Sha256::digest(run_id.as_bytes()))
+        });
+
+    ProviderRequestContext {
+        session_id: Some(session_id.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::provider_context_for_run;
     #[test]
     fn strip_json_fences_basic() {
         let input = "```json\n{\"key\": \"value\"}\n```";
@@ -145,5 +170,24 @@ mod tests {
         let trimmed = input.trim();
         let v: serde_json::Value = serde_json::from_str(trimmed).expect("fixture JSON must parse");
         assert_eq!(v["key"], "value");
+    }
+
+    #[test]
+    fn research_context_is_stable_per_run_and_distinct_between_runs() {
+        let first = provider_context_for_run("run-1");
+        let first_again = provider_context_for_run("run-1");
+        let second = provider_context_for_run("run-2");
+
+        assert_eq!(first.session_id, first_again.session_id);
+        assert_ne!(first.session_id, second.session_id);
+    }
+
+    #[test]
+    fn invalid_research_id_gets_bounded_deterministic_context() {
+        let id = "x".repeat(129);
+        let context = provider_context_for_run(&id);
+        let value = context.session_id.expect("projected context");
+        assert!(value.len() <= codegg_core::context::MAX_SESSION_ID_LENGTH);
+        assert_eq!(value, provider_context_for_run(&id).session_id.unwrap());
     }
 }
