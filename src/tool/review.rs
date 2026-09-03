@@ -29,6 +29,11 @@ impl ReviewTool {
         }
     }
 
+    pub fn with_workdir(mut self, dir: std::path::PathBuf) -> Self {
+        self.workdir = dir;
+        self
+    }
+
     /// Override provider selection for callers that already own a provider
     /// and for focused nested-request tests.
     pub fn with_provider(mut self, provider: std::sync::Arc<dyn Provider>) -> Self {
@@ -177,6 +182,43 @@ mod tests {
         assert_eq!(
             contexts.lock().unwrap().as_slice(),
             &[Some("session-review".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_review_execution_preserves_tool_execution_session() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let run_git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git should be installed");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        std::fs::write(workspace.path().join("lib.rs"), "pub fn test() {}\n")
+            .expect("write staged file");
+        run_git(&["add", "lib.rs"]);
+
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ContextCaptureProvider {
+            contexts: contexts.clone(),
+        });
+        let mut execution =
+            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        execution.session_id = Some("session-review-structured".to_string());
+        let tool = ReviewTool::new()
+            .with_workdir(workspace.path().to_path_buf())
+            .with_provider(provider);
+
+        tool.execute_structured(json!({"staged": true}), Some(execution))
+            .await
+            .expect("structured review should succeed");
+
+        assert_eq!(
+            contexts.lock().unwrap().as_slice(),
+            &[Some("session-review-structured".to_string())]
         );
     }
 }
