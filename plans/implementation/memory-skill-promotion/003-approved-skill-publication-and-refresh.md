@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion M003 — Approved Publication and Asset Refresh
 
-Status: blocked on M002
+Status: ready for handoff
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

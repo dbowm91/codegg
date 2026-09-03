@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Roadmap
 
-Status: active planning — M002 ready
+Status: active planning — M002 closed, M003 ready
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -398,11 +398,15 @@ Exit conditions:
 
 ### M002 — User-triggered skill draft and preview
 
-Status: ready
+Status: closed
 
 Plan:
 
 - `plans/implementation/memory-skill-promotion/002-user-triggered-skill-draft-and-preview.md`
+
+Closure:
+
+- `plans/closure/memory-skill-promotion/002-status.md`
 
 Objective:
 
@@ -419,7 +423,7 @@ Exit conditions:
 
 ### M003 — Explicit approved publication and asset refresh
 
-Status: blocked on M002
+Status: ready
 
 Plan:
 
