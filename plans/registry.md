@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Runtime assets — plugin declarative contributions corrective follow-up | active | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 active | M005/M006 remain historical closed evidence; closure at `plans/closure/runtime-assets/007-status.md`. |
+| Runtime assets — plugin declarative contributions corrective follow-up | closing | `plans/subsystems/runtime-assets-plugin-contributions-corrective-addendum.md` | M007 closure review | Production implementation `eb9c4d9`; closure at `plans/closure/runtime-assets/007-status.md`. |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-tool-dvr-independent-closure-ratification-addendum.md` | Milestone 007 closed | — |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
