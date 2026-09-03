@@ -35,6 +35,8 @@ Canonical direction remains in:
 | Agent runtime correctness, autonomy, and simplification | closed | `plans/subsystems/agent-runtime-correctness-autonomy-simplification-corrective-closure-addendum.md` | M011 closed | Exact candidate `e3b671ad`; hosted run `31525206176` / job `93891703941` passed through Workspace tests. |
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
+| Agent convergence and independent verification | ready | `plans/subsystems/agent-convergence-roadmap.md` | M001 ready | Closed agent-run/worktree M009 and goal-verification M013 provide the required durable ownership and host-verification boundaries. M002/M003 remain blocked on predecessor closure. |
+| Memory-to-skill promotion | ready | `plans/subsystems/memory-skill-promotion-roadmap.md` | M001 ready | Current file-backed memory and closed runtime-assets/skill-registry work provide the required inputs. M002/M003 remain blocked on predecessor closure. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -47,7 +49,18 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| — | — | — | No dependency-ready implementation plans remain for this provider corrective scope. |
+| Agent convergence and independent verification | M001 — durable convergence cycle foundation | `plans/implementation/agent-convergence/001-durable-convergence-cycle-foundation.md` | Durable AgentRun/group/worktree ownership and host-owned goal verification are already strictly closed. M001 is a non-executing state/store/evidence layer and does not require a new scheduler or authority boundary. |
+| Memory-to-skill promotion | M001 — habit observation and candidate store | `plans/implementation/memory-skill-promotion/001-habit-observation-and-candidate-store.md` | Existing memory persistence and typed runtime metadata can supply safe observations; closed skill-registry/runtime-assets work supplies the later validation target. M001 performs no model drafting or skill write. |
+
+## Newly registered feature execution order
+
+1. Agent-convergence M001 and memory-to-skill M001 are independent and may be implemented in parallel.
+2. Agent-convergence M002 remains blocked until M001 has an accepted closure record; M003 remains blocked until M002 closes.
+3. Memory-to-skill M002 remains blocked until its M001 closes; M003 remains blocked until M002 closes.
+4. Convergence must compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.
+5. Habit promotion must retain structural privacy bounds: no raw shell/tool output/arguments in automatic habit fingerprints, no automatic model drafting, and no skill publication without explicit user approval.
+6. No new ADR is required by the current plans because scheduler/authorization/foreign-asset ownership remain unchanged. If implementation discovers a need to change those boundaries, work stops for an ADR/follow-up rather than widening the milestone.
+7. Verification remains focused and local through milestone-specific tests plus `scripts/verify.sh quick`; no new CI lane, benchmark gate, scanner, or release automation is introduced.
 
 ## Closure work and dependencies
 
@@ -70,7 +83,8 @@ Verification remains deliberately light: Provider M009 was accepted with focused
 
 ## Blocked work
 
-- The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent provider direct-call corrective follow-up.
+- The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent newly registered feature work.
+- Agent-convergence M002/M003 and memory-to-skill M002/M003 are intentionally dependency-blocked on their preceding milestones; this is sequencing, not an external blocker.
 
 No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 
