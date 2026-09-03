@@ -1328,6 +1328,7 @@ async fn execute_agent_task(
         .as_ref()
         .map(|parent_id| format!("{}-sub-{}", parent_id, request.task_id))
         .unwrap_or_else(|| format!("subagent-{}", request.task_id));
+    let subagent_session_id_for_context = subagent_session_id.clone();
     let workspace_root = request
         .workspace_root
         .clone()
@@ -1446,6 +1447,11 @@ async fn execute_agent_task(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: crate::provider::ProviderRequestContext {
+            session_id: Some(std::sync::Arc::from(
+                subagent_session_id_for_context.as_str(),
+            )),
+        },
     };
 
     let events = agent_loop.run(request).await;

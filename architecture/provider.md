@@ -142,8 +142,23 @@ pub struct ChatRequest {
     pub response_format: Option<ResponseFormat>,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
+    pub context: ProviderRequestContext,
 }
 ```
+
+`ProviderRequestContext` is a bounded transport projection of the owning
+runtime's canonical session identity:
+
+```rust
+pub struct ProviderRequestContext {
+    pub session_id: Option<Arc<str>>,
+}
+```
+
+It is not model input and is never serialized into the request body. The turn
+runtime validates and attaches the existing CodeGG session identity; retries,
+continuations, and fallback providers pass it through unchanged. It is not a
+free-form header map.
 
 ### Message (`provider_core.rs:186`)
 
@@ -319,7 +334,13 @@ SAP AI Core, Zenmux, Kilo, Vercel AI Gateway — require explicit
 Generic provider. `OpenAiCompatibleConfig` holds `Credential` (not raw API
 key). Factory methods: `simple()` (wraps key in `Credential::api_key`),
 `simple_with_credential()` (preserves `CredentialKind` and `expires_at`).
-30-second chunk timeout. Dynamic model discovery via `/models`.
+Configured `extra_headers` are validated and emitted on chat requests, but may
+not collide with transport-owned authentication, content-type, or session
+affinity headers. 30-second chunk timeout. Dynamic model discovery via
+`/models`. OpenCode Go explicitly enables a required `x-opencode-session`
+affinity policy; it reads only `ChatRequest.context.session_id`, so missing or
+invalid context fails before network I/O. Other OpenAI-compatible providers do
+not emit this header by default.
 
 ### Additional Factories (`additional.rs`)
 

@@ -169,6 +169,15 @@ impl ProviderCapabilities {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ProviderRequestContext {
+    /// Canonical conversation identity projected by the owning runtime.
+    ///
+    /// This is deliberately narrower than a header map: providers may use it
+    /// only for an explicitly configured transport policy.
+    pub session_id: Option<Arc<str>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatRequest {
     pub messages: Vec<Message>,
@@ -181,6 +190,7 @@ pub struct ChatRequest {
     pub response_format: Option<ResponseFormat>,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
+    pub context: ProviderRequestContext,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1133,6 +1143,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
         assert_eq!(req.model, "test/model");
     }

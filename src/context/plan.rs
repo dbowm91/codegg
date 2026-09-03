@@ -345,6 +345,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         }
     }
 

@@ -673,6 +673,7 @@ fn make_chat_request(prompt: &str) -> ChatRequest {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     }
 }
 
@@ -894,6 +895,7 @@ async fn test_agent_loop_harness_smoke_test() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -1227,6 +1229,7 @@ async fn test_agent_loop_harness_records_requests() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let _: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;
@@ -1236,6 +1239,9 @@ async fn test_agent_loop_harness_records_requests() {
         requests.len() >= 2,
         "Should record at least two provider requests"
     );
+    assert!(requests
+        .iter()
+        .all(|request| { request.context.session_id.as_deref() == Some("test-session") }));
 
     assert!(
         !requests[0].messages.is_empty(),
@@ -1334,6 +1340,7 @@ async fn test_agent_loop_harness_fails_without_second_call() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result: Result<Vec<ChatEvent>, _> = agent_loop.run(request).await;

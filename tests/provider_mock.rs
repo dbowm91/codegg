@@ -269,6 +269,7 @@ async fn test_mock_provider_streams_text() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let mut stream = provider.stream(&request).await.unwrap();
@@ -310,6 +311,7 @@ async fn test_mock_provider_error_stream() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let mut stream = provider.stream(&request).await.unwrap();
@@ -398,6 +400,7 @@ async fn test_mock_provider_with_tool_call_events() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let mut stream = provider.stream(&request).await.unwrap();
@@ -466,6 +469,7 @@ async fn test_mock_provider_reasoning_delta() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let mut stream = provider.stream(&request).await.unwrap();
@@ -504,6 +508,7 @@ async fn test_rate_limit_provider_blocks_after_limit() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result1 = provider.stream(&request).await;
@@ -536,6 +541,7 @@ async fn test_auth_error_provider_returns_auth_error() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result = provider.stream(&request).await;
@@ -571,6 +577,7 @@ async fn test_retryable_provider_retries_then_succeeds() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result1 = provider.stream(&request).await;
@@ -619,6 +626,7 @@ async fn test_timeout_provider_returns_timeout_error() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result = tokio::time::timeout(
@@ -645,6 +653,7 @@ async fn test_mock_provider_rate_limit_error() {
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let result = provider.stream(&request).await;

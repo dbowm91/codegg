@@ -1,6 +1,6 @@
 # Provider Connections Milestone 008 — OpenCode Go Stable Session Header Corrective Pass
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `fca5b5278873c12ea5f2d5ca15a24247d4bf019b`
 

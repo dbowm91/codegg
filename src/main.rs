@@ -1469,6 +1469,7 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
         response_format: None,
         thinking_budget: safe_agent.thinking_budget,
         reasoning_effort: safe_agent.reasoning_effort,
+        context: provider::ProviderRequestContext::default(),
     };
 
     let events = agent_loop.run(request).await?;

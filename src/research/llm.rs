@@ -48,6 +48,7 @@ pub async fn call_llm(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let events = tokio::time::timeout(

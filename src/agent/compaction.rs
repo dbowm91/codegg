@@ -416,6 +416,7 @@ pub async fn llm_summarize(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let events = tokio::time::timeout(
@@ -1044,6 +1045,7 @@ pub async fn semantic_checkpoint(
         response_format: None,
         thinking_budget: None,
         reasoning_effort: None,
+        context: Default::default(),
     };
 
     let events = tokio::time::timeout(

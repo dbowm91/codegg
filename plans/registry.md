@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
-| Provider connections and Eggpool | ready | `plans/subsystems/provider-opencode-session-affinity-corrective-addendum.md` | Milestone 008 ready | Operational priority: OpenCode Go may reject requests missing `x-opencode-session` beginning 2026-09-06; no hard implementation blocker. |
+| Provider connections and Eggpool | active | `plans/subsystems/provider-opencode-session-affinity-corrective-addendum.md` | Milestone 008 active | Operational priority: OpenCode Go may reject requests missing `x-opencode-session` beginning 2026-09-06; closure evidence in progress. |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001–004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -47,7 +47,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Provider connections and Eggpool | M008 — OpenCode Go stable session header corrective pass | `plans/implementation/provider-connections/008-opencode-go-session-header-corrective-pass.md` | Canonical CodeGG session identity and the OpenAI-compatible transport seam already exist; the defect is bounded request-context/header propagation with no hard dependency. |
+| Provider connections and Eggpool | M008 — OpenCode Go stable session header corrective pass | `plans/implementation/provider-connections/008-opencode-go-session-header-corrective-pass.md` | Active implementation; canonical CodeGG session identity and the OpenAI-compatible transport seam already exist. |
 
 ## Closure work and dependencies
 

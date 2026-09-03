@@ -217,6 +217,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         let result = fallback.stream(&request).await;
@@ -258,6 +259,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         let result = fallback.stream(&request).await;

@@ -1,6 +1,6 @@
 # Provider Connections — OpenCode Go Session Affinity Corrective Addendum
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `fca5b5278873c12ea5f2d5ca15a24247d4bf019b`
 
@@ -68,7 +68,7 @@ Existing OpenAI-compatible tests focus primarily on request bodies, response str
 
 ### M008 — OpenCode Go stable session-header propagation and OpenAI-compatible header correctness
 
-Status: ready
+Status: active
 
 Implementation plan:
 

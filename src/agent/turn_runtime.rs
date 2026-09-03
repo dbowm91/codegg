@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 
 use crate::config::schema::Config;
 use crate::error::AppError;
-use crate::provider::{ChatRequest, ResponseFormat};
+use crate::provider::{ChatRequest, ProviderRequestContext, ResponseFormat};
 
 /// Task-aware metadata for assembling LSP context for a single turn.
 ///
@@ -211,6 +211,13 @@ impl TurnRuntime for DefaultTurnRuntime {
             asset_snapshot,
             asset_pin,
         } = input;
+
+        let canonical_session_id = codegg_core::context::SessionId::parse(&session_id)
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
+        let session_id = canonical_session_id.as_str().to_owned();
+        let provider_context = ProviderRequestContext {
+            session_id: Some(Arc::from(canonical_session_id.as_str())),
+        };
 
         let notification_service = Arc::new(match pool.clone() {
             Some(pool) => crate::scheduler::tool_program_notifications::ToolProgramNotificationService::with_pool(pool),
@@ -619,6 +626,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 }),
             thinking_budget: None,
             reasoning_effort: None,
+            context: provider_context,
         };
 
         // ── Cancel / steer channels ──────────────────────────────────

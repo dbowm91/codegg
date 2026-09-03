@@ -2232,6 +2232,13 @@ impl AgentLoop {
     }
 
     async fn run_inner(&mut self, mut request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+        let canonical_session_id = codegg_core::context::SessionId::parse(&self.session_id)
+            .map_err(|error| AppError::Agent(AgentError::Invalid(error.to_string())))?;
+        // AgentLoop is also used directly by exec, CLI, and test harnesses.
+        // Re-project the loop's canonical identity here so body/history
+        // transformations and every continuation retain the same metadata.
+        request.context.session_id = Some(canonical_session_id.as_str().into());
+
         let session_start_ctx = crate::hooks::HookContext {
             event: crate::hooks::HookEvent::SessionStart,
             session_id: Some(self.session_id.clone()),
@@ -3830,6 +3837,7 @@ impl AgentLoop {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         self.run(request).await
@@ -4029,6 +4037,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         assert_eq!(AgentLoop::latest_user_prompt(&request), "Read src/main.rs");
@@ -4418,6 +4427,7 @@ Current session context: [old frame here that would have been clobbered]";
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         let original_system_content = original_system_text.to_string();
@@ -4526,6 +4536,7 @@ Current session context: [old frame here that would have been clobbered]";
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         // Simulate what observe would do (it calls compute which calls build_packer_candidates).
@@ -4614,6 +4625,7 @@ Current session context: [old frame here that would have been clobbered]";
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
 
         // Build candidates exactly as the helper does for "initial".

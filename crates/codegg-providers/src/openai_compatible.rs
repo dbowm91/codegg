@@ -9,6 +9,7 @@ use crate::{
 use async_trait::async_trait;
 use futures_util::stream::unfold;
 use futures_util::StreamExt;
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
 use std::time::Duration;
@@ -76,6 +77,7 @@ pub struct OpenAiCompatibleProvider {
     pub id: String,
     pub name: String,
     pub config: OpenAiCompatibleConfig,
+    session_affinity_header: Option<HeaderName>,
     client: reqwest::Client,
 }
 
@@ -85,6 +87,7 @@ impl OpenAiCompatibleProvider {
             id: id.to_string(),
             name: name.to_string(),
             config,
+            session_affinity_header: None,
             client: create_http_client(),
         }
     }
@@ -117,6 +120,86 @@ impl OpenAiCompatibleProvider {
                 tool_choice: ToolChoice::Auto,
             },
         )
+    }
+
+    /// Require one request-context session identity under a provider-owned
+    /// transport header. The name is configuration, never caller input.
+    pub fn with_session_affinity_header(mut self, name: &str) -> Result<Self, ProviderError> {
+        self.session_affinity_header =
+            Some(HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                ProviderError::api("invalid_header", "session-affinity header name is invalid")
+            })?);
+        Ok(self)
+    }
+
+    fn request_builder(
+        &self,
+        request: &ChatRequest,
+        url: &str,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let auth_name =
+            HeaderName::from_bytes(self.config.auth_header.as_bytes()).map_err(|_| {
+                ProviderError::api(
+                    "invalid_header",
+                    "configured authentication header is invalid",
+                )
+            })?;
+        let auth_value = HeaderValue::from_str(
+            &self.config.credential.authorization_header_value(),
+        )
+        .map_err(|_| {
+            ProviderError::api(
+                "invalid_header",
+                "configured authentication value is invalid",
+            )
+        })?;
+
+        let mut reserved = vec![auth_name.clone(), HeaderName::from_static("content-type")];
+        if let Some(name) = &self.session_affinity_header {
+            reserved.push(name.clone());
+        }
+
+        let mut builder = self.client.post(url).header(auth_name, auth_value).header(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        );
+
+        let mut extra_names = Vec::with_capacity(self.config.extra_headers.len());
+        for (name, value) in &self.config.extra_headers {
+            let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+                ProviderError::api("invalid_header", "configured extra header name is invalid")
+            })?;
+            let header_value = HeaderValue::from_str(value).map_err(|_| {
+                ProviderError::api("invalid_header", "configured extra header value is invalid")
+            })?;
+            if reserved.contains(&header_name) || extra_names.contains(&header_name) {
+                return Err(ProviderError::api(
+                    "reserved_header_collision",
+                    "configured extra header collides with a transport-owned header",
+                ));
+            }
+            extra_names.push(header_name.clone());
+            builder = builder.header(header_name, header_value);
+        }
+
+        if let Some(session_header) = &self.session_affinity_header {
+            let session_id = request.context.session_id.as_deref().ok_or_else(|| {
+                ProviderError::api(
+                    "missing_session_context",
+                    "provider requires a canonical session context",
+                )
+            })?;
+            let session_value = HeaderValue::from_str(session_id).map_err(|_| {
+                ProviderError::api(
+                    "invalid_session_context",
+                    "session context is not a valid HTTP header value",
+                )
+            })?;
+            builder = builder.header(session_header.clone(), session_value);
+        }
+
+        Ok(builder.json(body))
     }
 
     pub fn build_body(&self, request: &ChatRequest) -> serde_json::Value {
@@ -442,14 +525,7 @@ impl Provider for OpenAiCompatibleProvider {
                 self.config.auth_header,
                 request.model
             );
-            self.client
-                .post(&url)
-                .header(
-                    &self.config.auth_header,
-                    self.config.credential.authorization_header_value(),
-                )
-                .header("Content-Type", "application/json")
-                .json(&body)
+            self.request_builder(request, &url, &body)?
                 .send()
                 .await
                 .map_err(ProviderError::from)?
@@ -618,6 +694,119 @@ impl Provider for OpenAiCompatibleProvider {
 mod tests {
     use super::*;
     use crate::auth_types::CredentialKind;
+    use crate::{ContentPart, Message, ProviderRequestContext};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+
+    struct CapturedRequest {
+        headers: Vec<(String, String)>,
+        body: String,
+    }
+
+    fn spawn_capture_server(
+        expected_requests: usize,
+    ) -> (
+        String,
+        mpsc::Receiver<CapturedRequest>,
+        thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind capture server");
+        let address = listener.local_addr().expect("capture server address");
+        let (tx, rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            for _ in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept provider request");
+                let request = read_request(&mut stream);
+                tx.send(request).expect("send captured request");
+                let response_body =
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_body.len()
+                )
+                .expect("write capture response headers");
+                stream
+                    .write_all(response_body)
+                    .expect("write capture response body");
+            }
+        });
+        (format!("http://{address}/v1"), rx, handle)
+    }
+
+    fn read_request(stream: &mut TcpStream) -> CapturedRequest {
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set capture timeout");
+        let mut raw = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 4096];
+            let count = stream.read(&mut chunk).expect("read provider request");
+            assert!(count > 0, "provider closed before sending request");
+            raw.extend_from_slice(&chunk[..count]);
+            if let Some(index) = raw.windows(4).position(|window| window == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let header_text = String::from_utf8_lossy(&raw[..header_end]).into_owned();
+        let content_length = header_text
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("Content-Length:")
+                    .or_else(|| line.strip_prefix("content-length:"))
+            })
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .unwrap_or(0);
+        while raw.len() - header_end < content_length {
+            let mut chunk = [0u8; 4096];
+            let count = stream.read(&mut chunk).expect("read provider request body");
+            assert!(count > 0, "provider closed before sending request body");
+            raw.extend_from_slice(&chunk[..count]);
+        }
+        let mut headers = Vec::new();
+        for line in header_text.lines().skip(1) {
+            if let Some((name, value)) = line.split_once(':') {
+                headers.push((name.to_ascii_lowercase(), value.trim().to_string()));
+            }
+        }
+        CapturedRequest {
+            headers,
+            body: String::from_utf8_lossy(&raw[header_end..header_end + content_length]).into(),
+        }
+    }
+
+    fn request(session_id: Option<&str>) -> ChatRequest {
+        ChatRequest {
+            messages: vec![Message::User {
+                content: vec![ContentPart::Text {
+                    text: "hello".to_string().into(),
+                }],
+            }],
+            model: "test-model".to_string(),
+            tools: None,
+            system: None,
+            temperature: None,
+            top_p: None,
+            max_tokens: None,
+            response_format: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            context: ProviderRequestContext {
+                session_id: session_id.map(Arc::from),
+            },
+        }
+    }
+
+    fn header_values<'a>(request: &'a CapturedRequest, name: &str) -> Vec<&'a str> {
+        request
+            .headers
+            .iter()
+            .filter(|(header_name, _)| header_name == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
+    }
 
     #[test]
     fn simple_with_credential_preserves_bearer_kind() {
@@ -659,5 +848,155 @@ mod tests {
             OpenAiCompatibleProvider::simple("xai", "xAI", "sk-x", "https://api.x.ai/v1");
         assert_eq!(provider.config.credential.kind, CredentialKind::ApiKey);
         assert_eq!(provider.config.credential.secret, "sk-x");
+    }
+
+    #[tokio::test]
+    async fn session_affinity_is_stable_isolated_and_not_in_body() {
+        let (base_url, rx, server) = spawn_capture_server(3);
+        let provider =
+            OpenAiCompatibleProvider::simple("opencode_go", "OpenCode Go", "test-key", &base_url)
+                .with_session_affinity_header("x-opencode-session")
+                .expect("test session header name is valid");
+
+        let _stream = provider
+            .stream(&request(Some("S1")))
+            .await
+            .expect("request 1");
+        let _stream = provider
+            .stream(&request(Some("S1")))
+            .await
+            .expect("request 2");
+        let _stream = provider
+            .stream(&request(Some("S2")))
+            .await
+            .expect("request 3");
+
+        let captured: Vec<_> = (0..3)
+            .map(|_| rx.recv().expect("captured request"))
+            .collect();
+        server.join().expect("capture server");
+        assert_eq!(
+            header_values(&captured[0], "x-opencode-session"),
+            vec!["S1"]
+        );
+        assert_eq!(
+            header_values(&captured[1], "x-opencode-session"),
+            vec!["S1"]
+        );
+        assert_eq!(
+            header_values(&captured[2], "x-opencode-session"),
+            vec!["S2"]
+        );
+        assert!(!captured
+            .iter()
+            .any(|request| request.body.contains("S1") || request.body.contains("S2")));
+    }
+
+    #[tokio::test]
+    async fn required_session_context_fails_before_network_io() {
+        let (base_url, rx, server) = spawn_capture_server(0);
+        let provider =
+            OpenAiCompatibleProvider::simple("opencode_go", "OpenCode Go", "test-key", &base_url)
+                .with_session_affinity_header("x-opencode-session")
+                .expect("test session header name is valid");
+
+        let error = match provider.stream(&request(None)).await {
+            Ok(_) => panic!("missing context must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ProviderError::Api { ref code, .. } if code == "missing_session_context")
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "missing context sent a network request"
+        );
+        server.join().expect("capture server");
+    }
+
+    #[tokio::test]
+    async fn session_context_is_not_global_header_leak() {
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let provider = OpenAiCompatibleProvider::simple("openai", "OpenAI", "test-key", &base_url);
+        let _stream = provider
+            .stream(&request(Some("S1")))
+            .await
+            .expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert!(header_values(&captured, "x-opencode-session").is_empty());
+    }
+
+    #[tokio::test]
+    async fn extra_headers_are_sent_and_reserved_collisions_fail_locally() {
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let provider = OpenAiCompatibleProvider::new(
+            "copilot",
+            "Copilot",
+            OpenAiCompatibleConfig {
+                credential: Credential::api_key("test-key"),
+                base_url,
+                auth_header: "Authorization".to_string(),
+                extra_headers: vec![("Editor-Version".to_string(), "codegg/test".to_string())],
+                models: Vec::new(),
+                tool_choice: ToolChoice::Auto,
+            },
+        );
+        let _stream = provider.stream(&request(None)).await.expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert_eq!(
+            header_values(&captured, "editor-version"),
+            vec!["codegg/test"]
+        );
+
+        for extra_headers in [
+            vec![("authorization".to_string(), "override".to_string())],
+            vec![("CONTENT-TYPE".to_string(), "text/plain".to_string())],
+            vec![("bad\r\nname".to_string(), "value".to_string())],
+            vec![("X-Test".to_string(), "bad\r\nvalue".to_string())],
+        ] {
+            let provider = OpenAiCompatibleProvider::new(
+                "openai",
+                "OpenAI",
+                OpenAiCompatibleConfig {
+                    credential: Credential::api_key("test-key"),
+                    base_url: "http://127.0.0.1:1/v1".to_string(),
+                    auth_header: "Authorization".to_string(),
+                    extra_headers,
+                    models: Vec::new(),
+                    tool_choice: ToolChoice::Auto,
+                },
+            );
+            let error = match provider.stream(&request(None)).await {
+                Ok(_) => panic!("invalid extra header must fail"),
+                Err(error) => error,
+            };
+            assert!(
+                matches!(error, ProviderError::Api { ref code, .. } if code == "reserved_header_collision" || code == "invalid_header")
+            );
+        }
+
+        let provider = OpenAiCompatibleProvider::new(
+            "opencode_go",
+            "OpenCode Go",
+            OpenAiCompatibleConfig {
+                credential: Credential::api_key("test-key"),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                auth_header: "Authorization".to_string(),
+                extra_headers: vec![("X-OPENCODE-SESSION".to_string(), "other".to_string())],
+                models: Vec::new(),
+                tool_choice: ToolChoice::Auto,
+            },
+        )
+        .with_session_affinity_header("x-opencode-session")
+        .expect("test session header name is valid");
+        let error = match provider.stream(&request(Some("S1"))).await {
+            Ok(_) => panic!("session header collision must fail"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(error, ProviderError::Api { ref code, .. } if code == "reserved_header_collision")
+        );
     }
 }

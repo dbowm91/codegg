@@ -214,4 +214,6 @@ pub fn create_opencode_go(credential: Credential) -> impl Provider {
         credential,
         "https://opencode.ai/go/v1",
     )
+    .with_session_affinity_header("x-opencode-session")
+    .expect("built-in OpenCode Go session header name is valid")
 }

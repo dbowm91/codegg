@@ -3,7 +3,7 @@ use crate::agent::{self, processor::EventProcessor, EMERGENCY_DEFAULT_MODEL};
 use crate::config::schema::Config;
 use crate::error::{AppError, ProviderError, ToolError};
 use crate::permission::PermissionChecker;
-use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message};
+use crate::provider::{ChatEvent, ChatRequest, ContentPart, Message, ProviderRequestContext};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
@@ -112,6 +112,14 @@ impl ExecMode {
             crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
         let tool_registry = crate::tool::ToolRegistry::with_config(&config);
 
+        let invocation_session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let invocation_session_id = codegg_core::context::SessionId::parse(&invocation_session_id)
+            .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?
+            .as_str()
+            .to_owned();
         let mut loop_instance = AgentLoop::new(
             all_agents,
             provider.clone_box(),
@@ -124,9 +132,7 @@ impl ExecMode {
             project_root.clone().ok_or_else(|| {
                 AppError::Other(anyhow::anyhow!("exec mode requires a workspace root"))
             })?,
-            self.session_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            invocation_session_id.clone(),
         );
         loop_instance.setup_question_channel_for_exec();
 
@@ -147,6 +153,9 @@ impl ExecMode {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: ProviderRequestContext {
+                session_id: Some(invocation_session_id.into()),
+            },
         };
 
         match loop_instance.run(request).await {

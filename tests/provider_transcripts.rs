@@ -28,6 +28,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         }
     }
 
@@ -642,6 +643,7 @@ mod tests {
             response_format: None,
             thinking_budget: None,
             reasoning_effort: None,
+            context: Default::default(),
         };
         let body = provider.build_body(&request);
         let messages = body["messages"].as_array().unwrap();
