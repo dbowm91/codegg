@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Roadmap
 
-Status: active planning — M001 ready
+Status: active planning — M002 ready
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -377,7 +377,7 @@ The agent-convergence roadmap is independent. A future integration may feed succ
 
 ### M001 — Habit observation and candidate store
 
-Status: ready
+Status: closed
 
 Plan:
 
@@ -398,7 +398,7 @@ Exit conditions:
 
 ### M002 — User-triggered skill draft and preview
 
-Status: blocked on M001
+Status: ready
 
 Plan:
 

@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion M002 — User-Triggered Skill Draft and Preview
 
-Status: blocked on M001
+Status: ready for handoff
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

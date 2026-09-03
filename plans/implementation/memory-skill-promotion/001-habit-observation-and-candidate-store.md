@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion M001 — Habit Observation and Candidate Store
 
-Status: ready
+Status: implemented
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
