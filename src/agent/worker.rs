@@ -94,6 +94,8 @@ pub struct SubAgentRequest {
     pub max_tool_calls: Option<usize>,
     pub parent_model: Option<String>,
     pub workspace_root: Option<PathBuf>,
+    /// Shared with the owning turn when the child runs in the same workspace.
+    pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
 }
 
 /// Stable, typed compatibility lineage for the pre-durable AgentRun path.
@@ -1204,6 +1206,7 @@ async fn execute_agent_task(
         .with_depth(request.depth)
         .with_parent_model(Some(profile.resolved_model.clone()))
         .with_workspace_root(request.workspace_root.clone())
+        .with_workspace_locks(request.workspace_locks.clone())
         .with_parent_allowed_paths(request.allowed_paths.clone());
         if let Some(run_id) = request.run_id.clone() {
             task_tool = task_tool.with_run_owner(run_id);
@@ -1341,6 +1344,9 @@ async fn execute_agent_task(
         workspace_root,
         subagent_session_id,
     );
+    if let Some(locks) = request.workspace_locks.clone() {
+        agent_loop.set_workspace_locks(locks);
+    }
     agent_loop.set_subagent_pool(Arc::clone(&subagent_pool));
 
     // The durable control service feeds these existing loop channels.  The
@@ -1599,6 +1605,7 @@ mod admission_tests {
             max_tool_calls: None,
             parent_model: None,
             workspace_root: None,
+            workspace_locks: None,
         }
     }
 

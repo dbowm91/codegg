@@ -461,6 +461,11 @@ pub struct AgentLoop {
     pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
     pub(super) checkpoint_manager: Option<crate::snapshot::checkpoint::EditCheckpointManager>,
     pub(super) workspace_id: Option<codegg_core::workspace::WorkspaceId>,
+    pub(super) workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    /// Retains the workspace service bundle so eviction cannot replace the
+    /// lock table while this loop is still executing.
+    pub(super) workspace_service_lease:
+        Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub(super) checkpoint_batch_seq: u64,
     pub(super) file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
     pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
@@ -753,6 +758,8 @@ impl AgentLoop {
             snapshot_manager,
             checkpoint_manager,
             workspace_id: None,
+            workspace_locks: None,
+            workspace_service_lease: None,
             checkpoint_batch_seq: 0,
             file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
             usage_store,
@@ -1039,6 +1046,26 @@ impl AgentLoop {
 
     pub fn set_workspace_id(&mut self, workspace_id: codegg_core::workspace::WorkspaceId) {
         self.workspace_id = Some(workspace_id);
+    }
+
+    /// Install the daemon-owned workspace service lease used by checkpointed
+    /// mutations. The lease must outlive the loop so all sessions contend on
+    /// the same per-workspace lock table.
+    pub fn set_workspace_services_lease(
+        &mut self,
+        lease: codegg_core::workspace_services::WorkspaceServicesLease,
+    ) {
+        self.workspace_locks = Some(lease.locks());
+        self.workspace_service_lease = Some(lease);
+    }
+
+    /// Install a shared workspace lock table for a child loop whose owning
+    /// runtime already retains the corresponding workspace service lease.
+    pub fn set_workspace_locks(
+        &mut self,
+        locks: Arc<codegg_core::workspace_services::WorkspaceLockTable>,
+    ) {
+        self.workspace_locks = Some(locks);
     }
 
     pub fn context_tracker(&mut self) -> &mut ContextTracker {
@@ -3402,6 +3429,7 @@ impl AgentLoop {
             max_tool_calls: None,
             parent_model,
             workspace_root: Some(self.workspace_root.clone()),
+            workspace_locks: self.workspace_locks.clone(),
         };
         tokio::spawn(async move {
             if let Err(e) = pool.spawner().send(request).await {

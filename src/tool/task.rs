@@ -385,6 +385,7 @@ pub struct TaskTool {
     parent_model: Option<String>,
     submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     workspace_root: Option<std::path::PathBuf>,
+    workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     parent_allowed_paths: Vec<String>,
     agent_runs: Option<Arc<dyn AgentRunStore>>,
     project_id: Option<ProjectId>,
@@ -480,6 +481,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            workspace_locks: None,
             parent_allowed_paths: Vec::new(),
             agent_runs: None,
             project_id: None,
@@ -507,6 +509,7 @@ impl TaskTool {
             parent_model: None,
             submission: None,
             workspace_root: None,
+            workspace_locks: None,
             parent_allowed_paths: Vec::new(),
             agent_runs: None,
             project_id: None,
@@ -609,6 +612,14 @@ impl TaskTool {
 
     pub fn with_workspace_root(mut self, root: Option<std::path::PathBuf>) -> Self {
         self.workspace_root = root;
+        self
+    }
+
+    pub fn with_workspace_locks(
+        mut self,
+        locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    ) -> Self {
+        self.workspace_locks = locks;
         self
     }
 
@@ -1375,6 +1386,7 @@ impl TaskTool {
                     max_tool_calls: None,
                     parent_model: self.parent_model.clone(),
                     workspace_root: self.workspace_root.clone(),
+                    workspace_locks: self.workspace_locks.clone(),
                 };
                 spawner.send_async(req).await.map_err(|e| {
                     ToolError::Execution(format!("failed to queue subagent: {}", e))

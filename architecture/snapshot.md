@@ -73,6 +73,17 @@ enter another turn's checkpoint because the checkpoint's path set is
 derived from accepted structured tool arguments, not from the
 unscoped event stream.
 
+For an eligible restorable batch, the daemon-retained workspace-service
+lease supplies the canonical `WorkspaceLockTable`. The repository guard is
+acquired before the first pre-state read and held through native execution,
+post-state capture, and checkpoint persistence, then released by RAII. This
+prevents independent sessions targeting one workspace from contributing to
+one another's checkpoint interval while keeping unrelated workspaces
+concurrent. A batch containing a supported native mutation plus an
+unknown/potentially mutating call is non-restorable as a whole and persists no
+native subset checkpoint. Affirmatively read-only calls may accompany native
+mutations only when the existing effect classifier marks them read-only.
+
 ### Restore
 
 `restore()` and `restore_to_path()` are available but **not

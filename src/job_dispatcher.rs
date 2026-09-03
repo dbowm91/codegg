@@ -82,6 +82,7 @@ impl JobDispatcher for SubAgentJobDispatcher {
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: None,
             workspace_root,
+            workspace_locks: None,
         };
 
         self.pool

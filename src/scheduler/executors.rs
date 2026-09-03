@@ -812,6 +812,7 @@ impl JobExecutor for SubagentJobExecutor {
             max_tool_calls: max_tool_calls.map(|m| m as usize),
             parent_model: None,
             workspace_root,
+            workspace_locks: None,
         };
         let effective_workspace_root = request.workspace_root.clone();
 

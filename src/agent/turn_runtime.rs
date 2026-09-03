@@ -126,6 +126,9 @@ pub struct TurnRunInput {
     pub execution: Arc<codegg_core::workspace::ExecutionContext>,
     /// Daemon-owned heavy-job submission boundary.
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    /// Lease retaining the active workspace service and its shared mutation
+    /// lock table while the detached turn executes.
+    pub workspace_service_lease: Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     /// Durable ownership store shared by daemon TaskTool instances and the
     /// scheduler's subagent executor.
     pub agent_run_store: Arc<dyn codegg_core::agent_run::AgentRunStore>,
@@ -199,6 +202,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             plugin_service,
             execution,
             submission,
+            workspace_service_lease,
             agent_run_store,
             run_control,
             run_group_service,
@@ -215,6 +219,7 @@ impl TurnRuntime for DefaultTurnRuntime {
         if let Err(error) = notification_service.recover_from_pool().await {
             tracing::warn!(error = %error, "failed to recover tool-program notifications");
         }
+        let workspace_locks = workspace_service_lease.as_ref().map(|lease| lease.locks());
 
         // ── Provider resolution ──────────────────────────────────────
         let mut registry = crate::provider::ProviderRegistry::new();
@@ -258,6 +263,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                 repository_id,
                 turn_id: Some(turn_id.clone()),
                 notification_service: Some(notification_service.clone()),
+                workspace_locks,
                 runtime_assets: crate::tool::factory::RuntimeAssetContext {
                     snapshot: asset_snapshot.clone(),
                     pin: asset_pin.clone(),
@@ -571,6 +577,7 @@ impl TurnRuntime for DefaultTurnRuntime {
             artifact_store,
             submission,
             execution,
+            workspace_service_lease,
             notification_service: Some(notification_service),
         };
         let mut agent_loop = crate::agent::agent_loop_factory::build_agent_loop(agent_loop_input);

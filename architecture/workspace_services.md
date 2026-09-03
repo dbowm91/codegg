@@ -112,7 +112,12 @@ and as the source for the migration tooling.
   `acquire_repository` with the canonical repository root so they
   contend on the same lock instead of racing each other. The
   `WorkspaceRepositoryGuard` is an owned `tokio::sync::MutexGuard`,
-  which is `Send`-safe across awaits.
+  which is `Send`-safe across awaits. A detached agent turn retains its
+  `WorkspaceServicesLease` for the turn lifetime and passes this same lock
+  table to checkpointing and child-agent execution. Edit checkpoints hold
+  the repository guard from pre-state capture through native mutation,
+  post-state capture, and persistence; this is scoped per workspace and
+  does not introduce a daemon-global serialization lock.
 
 ### Configuration snapshot
 

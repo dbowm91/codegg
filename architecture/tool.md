@@ -112,6 +112,12 @@ no edit checkpoint; a malformed move/create/delete that cannot be
 safely derived marks the batch non-restorable rather than persisting a
 partial checkpoint.
 
+A logical batch containing a supported native mutation and an unknown or
+potentially mutating call (including arbitrary Bash/terminal, Git mutation,
+plugin, or MCP work) is non-restorable as a whole; the native subset is not
+checkpointed. A native mutation may be accompanied by another call only when
+the existing authoritative effect classifier marks that call read-only.
+
 Checkpoints distinguish `Absent` vs `Present { hash, content }` so
 create/delete/move are representable without empty-file equivalence.
 Every checkpoint is scoped to explicit
@@ -129,6 +135,12 @@ checkpoint only when the resulting state meaningfully represents the
 mutation. Durable capture no longer depends on drained global
 `FileChanged` events; those events remain observational for TUI diff
 notification (`AppEvent::FileChanged` → TUI `file_diff.rs`).
+
+The daemon-owned workspace service lease supplies the canonical
+`WorkspaceLockTable` to each turn. For an eligible batch,
+`ToolBatchExecutor` holds the per-repository guard across pre-capture,
+native execution, post-capture, and persistence, so independent sessions
+produce a coherent serial checkpoint history without a daemon-global lock.
 
 See `architecture/snapshot.md` for the `EditCheckpoint` storage
 contract and `architecture/agent.md` for the `ToolBatchExecutor`

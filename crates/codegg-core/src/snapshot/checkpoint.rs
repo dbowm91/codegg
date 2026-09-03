@@ -46,6 +46,33 @@ pub struct EditCheckpoint {
     pub files: Vec<EditFileState>,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct EditCheckpointRow {
+    id: String,
+    workspace_id: String,
+    session_id: String,
+    turn_id: Option<String>,
+    batch_seq: i64,
+    created_at: i64,
+    data: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct EditRestoreOperationRow {
+    id: String,
+    checkpoint_id: String,
+    workspace_id: String,
+    session_id: String,
+    turn_id: Option<String>,
+    direction: String,
+    result: String,
+    conflict_paths: String,
+    applied_paths: String,
+    failed_paths: String,
+    error_message: Option<String>,
+    created_at: i64,
+}
+
 /// Manager for durable edit checkpoints. Reuses snapshot bounds.
 pub struct EditCheckpointManager {
     pool: SqlitePool,
@@ -262,7 +289,7 @@ impl EditCheckpointManager {
     }
 
     pub async fn get(&self, id: &str) -> Result<Option<EditCheckpoint>, String> {
-        let row: Option<(String, String, String, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let row: Option<EditCheckpointRow> = sqlx::query_as(
             "SELECT id, workspace_id, session_id, turn_id, batch_seq, created_at, data FROM edit_checkpoint WHERE id = ?",
         )
         .bind(id)
@@ -271,15 +298,15 @@ impl EditCheckpointManager {
         .map_err(|e| e.to_string())?;
 
         match row {
-            Some((id, workspace_id, session_id, turn_id, batch_seq, created_at, data)) => {
-                let files = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Some(row) => {
+                let files = serde_json::from_str(&row.data).map_err(|e| e.to_string())?;
                 Ok(Some(EditCheckpoint {
-                    id,
-                    workspace_id,
-                    session_id,
-                    turn_id,
-                    batch_seq,
-                    created_at,
+                    id: row.id,
+                    workspace_id: row.workspace_id,
+                    session_id: row.session_id,
+                    turn_id: row.turn_id,
+                    batch_seq: row.batch_seq,
+                    created_at: row.created_at,
                     files,
                 }))
             }
@@ -288,7 +315,7 @@ impl EditCheckpointManager {
     }
 
     pub async fn list_for_session(&self, session_id: &str) -> Result<Vec<EditCheckpoint>, String> {
-        let rows: Vec<(String, String, String, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let rows: Vec<EditCheckpointRow> = sqlx::query_as(
             "SELECT id, workspace_id, session_id, turn_id, batch_seq, created_at, data FROM edit_checkpoint WHERE session_id = ? ORDER BY created_at DESC",
         )
         .bind(session_id)
@@ -297,15 +324,15 @@ impl EditCheckpointManager {
         .map_err(|e| e.to_string())?;
 
         let mut out = Vec::new();
-        for (id, workspace_id, sid, turn_id, batch_seq, created_at, data) in rows {
-            let files = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        for row in rows {
+            let files = serde_json::from_str(&row.data).map_err(|e| e.to_string())?;
             out.push(EditCheckpoint {
-                id,
-                workspace_id,
-                session_id: sid,
-                turn_id,
-                batch_seq,
-                created_at,
+                id: row.id,
+                workspace_id: row.workspace_id,
+                session_id: row.session_id,
+                turn_id: row.turn_id,
+                batch_seq: row.batch_seq,
+                created_at: row.created_at,
                 files,
             });
         }
@@ -316,7 +343,7 @@ impl EditCheckpointManager {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<EditCheckpoint>, String> {
-        let rows: Vec<(String, String, String, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let rows: Vec<EditCheckpointRow> = sqlx::query_as(
             "SELECT id, workspace_id, session_id, turn_id, batch_seq, created_at, data FROM edit_checkpoint WHERE workspace_id = ? ORDER BY created_at DESC",
         )
         .bind(workspace_id)
@@ -325,15 +352,15 @@ impl EditCheckpointManager {
         .map_err(|e| e.to_string())?;
 
         let mut out = Vec::new();
-        for (id, wid, session_id, turn_id, batch_seq, created_at, data) in rows {
-            let files = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+        for row in rows {
+            let files = serde_json::from_str(&row.data).map_err(|e| e.to_string())?;
             out.push(EditCheckpoint {
-                id,
-                workspace_id: wid,
-                session_id,
-                turn_id,
-                batch_seq,
-                created_at,
+                id: row.id,
+                workspace_id: row.workspace_id,
+                session_id: row.session_id,
+                turn_id: row.turn_id,
+                batch_seq: row.batch_seq,
+                created_at: row.created_at,
                 files,
             });
         }
@@ -344,7 +371,7 @@ impl EditCheckpointManager {
         &self,
         session_id: &str,
     ) -> Result<Option<EditCheckpoint>, String> {
-        let row: Option<(String, String, String, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let row: Option<EditCheckpointRow> = sqlx::query_as(
             "SELECT id, workspace_id, session_id, turn_id, batch_seq, created_at, data FROM edit_checkpoint WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
         )
         .bind(session_id)
@@ -353,15 +380,15 @@ impl EditCheckpointManager {
         .map_err(|e| e.to_string())?;
 
         match row {
-            Some((id, workspace_id, sid, turn_id, batch_seq, created_at, data)) => {
-                let files = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Some(row) => {
+                let files = serde_json::from_str(&row.data).map_err(|e| e.to_string())?;
                 Ok(Some(EditCheckpoint {
-                    id,
-                    workspace_id,
-                    session_id: sid,
-                    turn_id,
-                    batch_seq,
-                    created_at,
+                    id: row.id,
+                    workspace_id: row.workspace_id,
+                    session_id: row.session_id,
+                    turn_id: row.turn_id,
+                    batch_seq: row.batch_seq,
+                    created_at: row.created_at,
                     files,
                 }))
             }
@@ -394,7 +421,7 @@ impl EditCheckpointManager {
         &self,
         workspace_id: &str,
     ) -> Result<Option<EditCheckpoint>, String> {
-        let row: Option<(String, String, String, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let row: Option<EditCheckpointRow> = sqlx::query_as(
             "SELECT id, workspace_id, session_id, turn_id, batch_seq, created_at, data FROM edit_checkpoint WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 1",
         )
         .bind(workspace_id)
@@ -403,15 +430,15 @@ impl EditCheckpointManager {
         .map_err(|e| e.to_string())?;
 
         match row {
-            Some((id, wid, session_id, turn_id, batch_seq, created_at, data)) => {
-                let files = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+            Some(row) => {
+                let files = serde_json::from_str(&row.data).map_err(|e| e.to_string())?;
                 Ok(Some(EditCheckpoint {
-                    id,
-                    workspace_id: wid,
-                    session_id,
-                    turn_id,
-                    batch_seq,
-                    created_at,
+                    id: row.id,
+                    workspace_id: row.workspace_id,
+                    session_id: row.session_id,
+                    turn_id: row.turn_id,
+                    batch_seq: row.batch_seq,
+                    created_at: row.created_at,
                     files,
                 }))
             }
@@ -575,62 +602,34 @@ impl EditCheckpointManager {
         session_id: &str,
     ) -> Result<Option<super::checked_restore::RestoreOperationRecord>, String> {
         self.ensure_restore_log_table().await?;
-        let row: Option<(
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            String,
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            i64,
-        )> = sqlx::query_as(
+        let row: Option<EditRestoreOperationRow> = sqlx::query_as(
             "SELECT id, checkpoint_id, workspace_id, session_id, turn_id, direction, result, conflict_paths, applied_paths, failed_paths, error_message, created_at FROM edit_restore_operation WHERE session_id = ? AND direction = 'undo' AND result = 'applied' ORDER BY created_at DESC LIMIT 1",
         )
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
-        Ok(row.map(
-            |(
-                id,
-                checkpoint_id,
-                workspace_id,
-                session_id,
-                turn_id,
-                direction,
-                result,
-                conflict_paths,
-                applied_paths,
-                failed_paths,
-                error_message,
-                created_at,
-            )| {
-                let dir = if direction == "undo" {
-                    super::checked_restore::RestoreDirection::Undo
-                } else {
-                    super::checked_restore::RestoreDirection::Reapply
-                };
-                super::checked_restore::RestoreOperationRecord {
-                    id,
-                    checkpoint_id,
-                    workspace_id,
-                    session_id,
-                    turn_id,
-                    direction: dir,
-                    result,
-                    conflict_paths: serde_json::from_str(&conflict_paths).unwrap_or_default(),
-                    applied_paths: serde_json::from_str(&applied_paths).unwrap_or_default(),
-                    failed_paths: serde_json::from_str(&failed_paths).unwrap_or_default(),
-                    error_message,
-                    created_at,
-                }
-            },
-        ))
+        Ok(row.map(|row| {
+            let dir = if row.direction == "undo" {
+                super::checked_restore::RestoreDirection::Undo
+            } else {
+                super::checked_restore::RestoreDirection::Reapply
+            };
+            super::checked_restore::RestoreOperationRecord {
+                id: row.id,
+                checkpoint_id: row.checkpoint_id,
+                workspace_id: row.workspace_id,
+                session_id: row.session_id,
+                turn_id: row.turn_id,
+                direction: dir,
+                result: row.result,
+                conflict_paths: serde_json::from_str(&row.conflict_paths).unwrap_or_default(),
+                applied_paths: serde_json::from_str(&row.applied_paths).unwrap_or_default(),
+                failed_paths: serde_json::from_str(&row.failed_paths).unwrap_or_default(),
+                error_message: row.error_message,
+                created_at: row.created_at,
+            }
+        }))
     }
 
     /// Checked restore for a specific checkpoint.

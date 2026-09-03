@@ -33,6 +33,7 @@ pub struct SessionToolContext {
     pub runtime_assets: RuntimeAssetContext,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -73,6 +74,7 @@ pub fn build_session_tool_registry(
         turn_id,
         runtime_assets: asset_context,
         notification_service,
+        workspace_locks,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -140,6 +142,7 @@ pub fn build_session_tool_registry(
             Vec::new(),
         )
         .with_parent_model(parent_model)
+        .with_workspace_locks(workspace_locks)
         .with_turn_owner(session_id.to_string(), turn_id.clone().unwrap_or_default())
         .with_max_depth(
             config

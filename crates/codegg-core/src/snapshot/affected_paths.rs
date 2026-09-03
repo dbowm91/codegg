@@ -130,8 +130,23 @@ pub fn extract_affected_paths(
 pub fn extract_batch_affected_paths(
     tool_calls: &[(String, serde_json::Value)],
 ) -> Result<Option<Vec<String>>, AffectedPathError> {
+    extract_batch_affected_paths_with_read_only(tool_calls, |_, _| false)
+}
+
+/// Extract paths for a logical batch while allowing callers to provide the
+/// authoritative classification for tools that are affirmatively read-only.
+///
+/// A batch containing a supported restorable mutation and an unknown or
+/// potentially mutating call is non-restorable as a whole. This preserves the
+/// provenance boundary: a native path subset must not be checkpointed while an
+/// untracked call may have changed one of those paths.
+pub fn extract_batch_affected_paths_with_read_only(
+    tool_calls: &[(String, serde_json::Value)],
+    is_read_only: impl Fn(&str, &serde_json::Value) -> bool,
+) -> Result<Option<Vec<String>>, AffectedPathError> {
     let mut all = Vec::new();
     let mut has_restorable = false;
+    let mut has_unknown_side_effect = false;
     for (name, input) in tool_calls {
         if is_restorable_tool(name) {
             has_restorable = true;
@@ -145,18 +160,11 @@ pub fn extract_batch_affected_paths(
                 }
                 all.push(p);
             }
-        } else {
-            // Non-restorable tool in batch: we treat batch as containing mixed work.
-            // Per plan: a tool not covered by checkpoint contract is marked non-restorable;
-            // if batch contains such tool alongside mutating tools, we still capture the
-            // mutating subset but must note non-restorable nature.
-            // For simplicity, we ignore non-restorable tools for path set,
-            // but caller can decide to mark batch non-restorable if needed.
-            // However if batch is purely non-restorable, we return None.
-            continue;
+        } else if !is_read_only(name, input) {
+            has_unknown_side_effect = true;
         }
     }
-    if !has_restorable {
+    if !has_restorable || has_unknown_side_effect {
         return Ok(None);
     }
     if all.is_empty() {
@@ -394,5 +402,35 @@ mod tests {
         // missing rename header should error, not produce partial
         let input = json!({"path":"a.txt","patch":"no headers","mode":"move"});
         assert!(extract_affected_paths("apply_patch", &input).is_err());
+    }
+
+    #[test]
+    fn mixed_unknown_side_effect_is_not_restorable() {
+        let calls = vec![
+            (
+                "write".to_string(),
+                json!({"path": "a.txt", "content": "new"}),
+            ),
+            ("bash".to_string(), json!({"command": "touch a.txt"})),
+        ];
+        assert_eq!(
+            extract_batch_affected_paths_with_read_only(&calls, |_, _| false).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn mixed_affirmative_read_only_call_remains_restorable() {
+        let calls = vec![
+            (
+                "write".to_string(),
+                json!({"path": "a.txt", "content": "new"}),
+            ),
+            ("read".to_string(), json!({"path": "a.txt"})),
+        ];
+        let paths = extract_batch_affected_paths_with_read_only(&calls, |name, _| name == "read")
+            .unwrap()
+            .unwrap();
+        assert_eq!(paths, vec!["a.txt"]);
     }
 }

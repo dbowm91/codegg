@@ -2724,6 +2724,15 @@ impl CoreDaemon {
                     },
                     None => None,
                 };
+                // Retain the daemon-owned workspace service for the detached
+                // turn. This keeps its canonical lock table alive until the
+                // loop exits, so checkpoint capture and native mutation share
+                // one inter-session repository authority.
+                let workspace_service_lease = self
+                    .workspace_services
+                    .acquire(&runtime.workspace_id)
+                    .await
+                    .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
                 let turn_input = crate::agent::turn_runtime::TurnRunInput {
                     session_id: session_id.clone(),
                     agents_dto: agents,
@@ -2742,6 +2751,7 @@ impl CoreDaemon {
                     plugin_service,
                     execution,
                     submission: self.deps.submission.clone(),
+                    workspace_service_lease: Some(workspace_service_lease),
                     agent_run_store: self.deps.agent_run_store.clone(),
                     run_control: self.deps.run_control.clone(),
                     run_group_service: self.deps.run_group_service.clone(),

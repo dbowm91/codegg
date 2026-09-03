@@ -1,15 +1,19 @@
 mod common;
 
 use codegg::snapshot::affected_paths::{
-    extract_affected_paths, extract_batch_affected_paths, is_restorable_tool, normalize_and_dedup,
+    extract_affected_paths, extract_batch_affected_paths,
+    extract_batch_affected_paths_with_read_only, is_restorable_tool, normalize_and_dedup,
 };
 use codegg::snapshot::checkpoint::EditCheckpointManager;
 use codegg::snapshot::checkpoint::{EditCheckpoint, EditFileState, FileState};
 use codegg::snapshot::SnapshotManager;
+use codegg::workspace_services::WorkspaceLockTable;
 use serde_json::json;
 use sqlx::SqlitePool;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::oneshot;
 
 async fn isolated_pool() -> SqlitePool {
     common::pool::isolated_pool().await
@@ -379,6 +383,94 @@ async fn concurrent_batches_same_workspace_isolated_pre_post() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn same_path_batches_serialize_capture_mutate_capture_and_persist() {
+    let pool = isolated_pool().await;
+    let tmp = tempfile::tempdir().unwrap();
+    fs::write(tmp.path().join("same.txt"), "initial").unwrap();
+    let mgr = create_checkpoint_manager(pool, tmp.path()).await;
+    let locks = Arc::new(WorkspaceLockTable::new());
+
+    let (first_entered_tx, first_entered_rx) = oneshot::channel();
+    let (first_continue_tx, first_continue_rx) = oneshot::channel();
+    let first_mgr = EditCheckpointManager::new(mgr.pool(), tmp.path().to_path_buf());
+    let first_locks = Arc::clone(&locks);
+    let first_root = tmp.path().to_path_buf();
+    let first = tokio::spawn(async move {
+        let _guard = first_locks.acquire_repository(&first_root).await;
+        let paths = vec!["same.txt".to_string()];
+        let pre = first_mgr.capture_states(&paths).await.unwrap();
+        first_entered_tx.send(()).unwrap();
+        first_continue_rx.await.unwrap();
+
+        fs::write(first_root.join("same.txt"), "first").unwrap();
+        let post = first_mgr.capture_states(&paths).await.unwrap();
+        first_mgr
+            .persist_checkpoint(EditCheckpoint {
+                id: "checkpoint-first".into(),
+                workspace_id: "workspace-1".into(),
+                session_id: "sess1".into(),
+                turn_id: Some("turn-1".into()),
+                batch_seq: 1,
+                created_at: 1,
+                files: vec![EditFileState {
+                    path: "same.txt".into(),
+                    pre: pre["same.txt"].clone(),
+                    post: post["same.txt"].clone(),
+                }],
+            })
+            .await
+            .unwrap();
+    });
+
+    first_entered_rx.await.unwrap();
+    let (second_started_tx, second_started_rx) = oneshot::channel();
+    let second_mgr = EditCheckpointManager::new(mgr.pool(), tmp.path().to_path_buf());
+    let second_locks = Arc::clone(&locks);
+    let second_root = tmp.path().to_path_buf();
+    let second = tokio::spawn(async move {
+        second_started_tx.send(()).unwrap();
+        let _guard = second_locks.acquire_repository(&second_root).await;
+        let paths = vec!["same.txt".to_string()];
+        let pre = second_mgr.capture_states(&paths).await.unwrap();
+        fs::write(second_root.join("same.txt"), "second").unwrap();
+        let post = second_mgr.capture_states(&paths).await.unwrap();
+        second_mgr
+            .persist_checkpoint(EditCheckpoint {
+                id: "checkpoint-second".into(),
+                workspace_id: "workspace-1".into(),
+                session_id: "sess2".into(),
+                turn_id: Some("turn-2".into()),
+                batch_seq: 1,
+                created_at: 2,
+                files: vec![EditFileState {
+                    path: "same.txt".into(),
+                    pre: pre["same.txt"].clone(),
+                    post: post["same.txt"].clone(),
+                }],
+            })
+            .await
+            .unwrap();
+        (pre, post)
+    });
+
+    // The second batch has started and is blocked on the same repository lock
+    // while the first batch completes its full checkpoint transaction.
+    second_started_rx.await.unwrap();
+    first_continue_tx.send(()).unwrap();
+    first.await.unwrap();
+    let (second_pre, second_post) = second.await.unwrap();
+
+    assert!(
+        matches!(second_pre["same.txt"], FileState::Present { ref content, .. } if content == "first")
+    );
+    assert!(
+        matches!(second_post["same.txt"], FileState::Present { ref content, .. } if content == "second")
+    );
+    let checkpoints = mgr.list_for_workspace("workspace-1").await.unwrap();
+    assert_eq!(checkpoints.len(), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn overlapping_mutations_serialize_deterministic() {
     // Two tools in same batch targeting same path produce overlapping raw paths -> dedup and serialize
     let calls = vec![
@@ -500,13 +592,28 @@ async fn unsupported_tool_not_mislabeled_restorable() {
     let calls = vec![("bash".to_string(), json!({"command":"ls"}))];
     let res = extract_batch_affected_paths(&calls).unwrap();
     assert_eq!(res, None);
-    // Mixed batch: restorable + non-restorable should still extract restorable subset
+    // Mixed batch: an unknown/potentially mutating call makes the whole
+    // logical batch non-restorable rather than extracting a native subset.
     let mixed = vec![
+        ("write".to_string(), json!({"path":"a.txt","content":"hi"})),
+        ("bash".to_string(), json!({"command":"touch a.txt"})),
+    ];
+    assert_eq!(
+        extract_batch_affected_paths_with_read_only(&mixed, |_, _| false).unwrap(),
+        None
+    );
+
+    let read_mixed = vec![
         ("write".to_string(), json!({"path":"a.txt","content":"hi"})),
         ("bash".to_string(), json!({"command":"echo hi"})),
     ];
-    let opt = extract_batch_affected_paths(&mixed).unwrap().unwrap();
-    assert_eq!(opt, vec!["a.txt"]);
+    assert_eq!(
+        extract_batch_affected_paths_with_read_only(&read_mixed, |name, input| {
+            name == "bash" && input["command"] == "echo hi"
+        })
+        .unwrap(),
+        Some(vec!["a.txt".to_string()])
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

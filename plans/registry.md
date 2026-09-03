@@ -39,7 +39,7 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Runtime safety — checked edit-history corrective follow-up | active | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 ready | M011/M012 remain historical closed evidence; exact head `4dd1220c` failed hosted Workspace Clippy and M013 owns cross-session checkpoint correctness. |
+| Runtime safety — checked edit-history corrective follow-up | active | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 active | M011/M012 remain historical closed evidence; exact head `4dd1220c` failed hosted Workspace Clippy and M013 owns cross-session checkpoint correctness. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 

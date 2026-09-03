@@ -24,6 +24,9 @@ pub struct AgentLoopBuildInput {
     pub artifact_store: Arc<dyn ContextArtifactStore>,
     pub submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     pub execution: Arc<ExecutionContext>,
+    /// Lease retaining the daemon-owned workspace service (and therefore its
+    /// canonical lock table) for the lifetime of the spawned turn.
+    pub workspace_service_lease: Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
 }
@@ -46,6 +49,9 @@ pub fn build_agent_loop(input: AgentLoopBuildInput) -> crate::agent::r#loop::Age
     );
     agent_loop.set_turn_id(input.turn_id);
     agent_loop.set_workspace_id(input.execution.workspace_id.clone());
+    if let Some(lease) = input.workspace_service_lease {
+        agent_loop.set_workspace_services_lease(lease);
+    }
     if let Some(spool) = input.subagent_pool {
         agent_loop.set_subagent_pool(spool);
     }

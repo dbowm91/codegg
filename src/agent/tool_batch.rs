@@ -16,6 +16,26 @@ use crate::tool::risk::{classify_tool_risk, summarize_tool_output};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+struct CheckpointContext {
+    paths: Vec<String>,
+    pre_states: std::collections::HashMap<String, crate::snapshot::checkpoint::FileState>,
+    workspace_id: String,
+    session_id: String,
+    turn_id: Option<String>,
+    batch_seq: i64,
+}
+
+fn is_affirmatively_read_only_tool(tc: &ToolCall) -> bool {
+    is_affirmatively_read_only_name(&tc.name, &tc.arguments)
+}
+
+fn is_affirmatively_read_only_name(name: &str, input: &serde_json::Value) -> bool {
+    matches!(
+        classify_tool_risk(name, input),
+        crate::session::events::ToolRisk::Read
+    )
+}
+
 pub(super) struct ToolBatchExecutor<'a> {
     loop_: &'a mut AgentLoop,
 }
@@ -475,49 +495,71 @@ impl AgentLoop {
         // --- Edit checkpoint: derive affected paths and capture pre-state ---
         // Durable checkpoint capture is scoped to workspace/session/turn/batch and
         // does not depend on unscoped global FileChanged draining.
-        let mut checkpoint_ctx: Option<(
-            Vec<String>,
-            std::collections::HashMap<String, crate::snapshot::checkpoint::FileState>,
-            String,
-            String,
-            Option<String>,
-            i64,
-        )> = None;
+        let mut checkpoint_ctx: Option<CheckpointContext> = None;
+        let mut checkpoint_guard = None;
         let mut checkpoint_serialize = false;
         let has_restorable = allowed_tools
             .iter()
             .any(|(_, tc, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name));
-        if has_restorable && self.checkpoint_manager.is_some() && self.workspace_id.is_some() {
-            let restorable_calls: Vec<(String, serde_json::Value)> = allowed_tools
-                .iter()
-                .filter(|(_, tc, _)| crate::snapshot::affected_paths::is_restorable_tool(&tc.name))
-                .map(|(_, tc, _)| (tc.name.to_string(), tc.arguments.clone()))
-                .collect();
-            match crate::snapshot::affected_paths::extract_batch_affected_paths(&restorable_calls) {
-                Ok(Some(raw_paths)) => {
-                    let raw_len = raw_paths.len();
-                    match crate::snapshot::affected_paths::normalize_and_dedup(
-                        raw_paths,
-                        &self.workspace_root,
-                    ) {
-                        Ok(normalized) => {
-                            checkpoint_serialize =
-                                crate::snapshot::affected_paths::has_overlapping_paths(
-                                    raw_len,
-                                    normalized.len(),
+        let checkpoint_batch_is_eligible = has_restorable
+            && allowed_tools.iter().all(|(_, tc, _)| {
+                crate::snapshot::affected_paths::is_restorable_tool(&tc.name)
+                    || is_affirmatively_read_only_tool(tc)
+            });
+        if checkpoint_batch_is_eligible {
+            let manager = self.checkpoint_manager.as_ref();
+            let workspace_id = self.workspace_id.as_ref();
+            let workspace_locks = self.workspace_locks.as_ref();
+            if let (Some(mgr), Some(workspace_id), Some(workspace_locks)) =
+                (manager, workspace_id, workspace_locks)
+            {
+                let batch_calls: Vec<(String, serde_json::Value)> = allowed_tools
+                    .iter()
+                    .map(|(_, tc, _)| (tc.name.to_string(), tc.arguments.clone()))
+                    .collect();
+                match crate::snapshot::affected_paths::extract_batch_affected_paths_with_read_only(
+                    &batch_calls,
+                    is_affirmatively_read_only_name,
+                ) {
+                    Ok(Some(raw_paths)) => {
+                        let raw_len = raw_paths.len();
+                        match crate::snapshot::affected_paths::normalize_and_dedup(
+                            raw_paths,
+                            &self.workspace_root,
+                        ) {
+                            Ok(normalized) => {
+                                checkpoint_serialize =
+                                    crate::snapshot::affected_paths::has_overlapping_paths(
+                                        raw_len,
+                                        normalized.len(),
+                                    );
+                                // Hold the canonical per-repository authority from
+                                // the first pre-state read through native execution,
+                                // post-state capture, and durable persistence. The
+                                // workspace service lease keeps this lock table from
+                                // being evicted and replaced while the detached loop
+                                // runs.
+                                checkpoint_guard = Some(
+                                    workspace_locks
+                                        .acquire_repository(&self.workspace_root)
+                                        .await,
                                 );
-                            if let Some(mgr) = &self.checkpoint_manager {
                                 match mgr.capture_states(&normalized).await {
                                     Ok(pre_states) => {
-                                        let ws_id = self.workspace_id.as_ref().unwrap().to_string();
+                                        let ws_id = workspace_id.to_string();
                                         let sess_id = self.session_id.clone();
                                         let turn = self.turn_id.clone();
                                         let seq = self.checkpoint_batch_seq as i64;
                                         self.checkpoint_batch_seq =
                                             self.checkpoint_batch_seq.wrapping_add(1);
-                                        checkpoint_ctx = Some((
-                                            normalized, pre_states, ws_id, sess_id, turn, seq,
-                                        ));
+                                        checkpoint_ctx = Some(CheckpointContext {
+                                            paths: normalized,
+                                            pre_states,
+                                            workspace_id: ws_id,
+                                            session_id: sess_id,
+                                            turn_id: turn,
+                                            batch_seq: seq,
+                                        });
                                     }
                                     Err(e) => {
                                         tracing::warn!(
@@ -527,23 +569,27 @@ impl AgentLoop {
                                     }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            tracing::warn!(
+                            Err(e) => {
+                                tracing::warn!(
                                 "checkpoint path normalization failed, batch non-restorable: {}",
                                 e
                             );
+                            }
                         }
                     }
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "checkpoint affected-path extraction failed, batch non-restorable: {}",
-                        e
-                    );
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "checkpoint affected-path extraction failed, batch non-restorable: {}",
+                            e
+                        );
+                    }
                 }
             }
+        } else if has_restorable {
+            tracing::debug!(
+                "checkpoint batch contains unknown side effects or lacks workspace authority; batch non-restorable"
+            );
         }
         // Clear stale FileChanged events for hygiene but do not use for durability.
         let _ = self.drain_file_change_events();
@@ -1265,8 +1311,14 @@ impl AgentLoop {
         }
 
         // --- Edit checkpoint: capture post-state and persist ---
-        if let Some((normalized, pre_states, ws_id, sess_id, turn_id, batch_seq)) =
-            checkpoint_ctx.take()
+        if let Some(CheckpointContext {
+            paths: normalized,
+            pre_states,
+            workspace_id: ws_id,
+            session_id: sess_id,
+            turn_id,
+            batch_seq,
+        }) = checkpoint_ctx.take()
         {
             if let Some(mgr) = &self.checkpoint_manager {
                 match mgr.capture_states(&normalized).await {
@@ -1329,6 +1381,10 @@ impl AgentLoop {
                 }
             }
         }
+
+        // Do not hold a workspace mutation guard while waiting for a question
+        // response or performing any later turn bookkeeping.
+        drop(checkpoint_guard);
 
         if has_pending_question {
             if let Some(rx) = self.question_rx.take() {
@@ -1433,8 +1489,9 @@ fn invocation_key_for(
 
 #[cfg(test)]
 mod invocation_tests {
-    use super::invocation_key_for;
+    use super::{invocation_key_for, is_affirmatively_read_only_name};
     use codegg_core::identity::AgentRunId;
+    use serde_json::json;
 
     #[test]
     fn invocation_identity_is_scoped_to_owner_and_provider_turn() {
@@ -1462,5 +1519,29 @@ mod invocation_tests {
             invocation_key_for("session", Some("turn"), None, 1, "duplicate", 0),
             invocation_key_for("session", Some("turn"), None, 1, "duplicate", 1)
         );
+    }
+
+    #[test]
+    fn checkpoint_batch_classification_fails_closed_for_unknown_effects() {
+        assert!(is_affirmatively_read_only_name(
+            "read",
+            &json!({"path": "a.txt"})
+        ));
+        assert!(is_affirmatively_read_only_name(
+            "bash",
+            &json!({"command": "ls a.txt"})
+        ));
+        assert!(!is_affirmatively_read_only_name(
+            "bash",
+            &json!({"command": "touch a.txt"})
+        ));
+        assert!(!is_affirmatively_read_only_name(
+            "mcp__server__write",
+            &json!({"path": "a.txt"})
+        ));
+        assert!(!is_affirmatively_read_only_name(
+            "plugin_mutation",
+            &json!({"path": "a.txt"})
+        ));
     }
 }
