@@ -255,6 +255,7 @@ Registered unconditionally in `with_options()`:
 | **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused repo_search. |
 | **question** | `question.rs` | Ask user clarifying questions. |
 | **skill** | `skill.rs` | Load a skill (SKILL.md) by name into context. |
+| **skill_proposal** | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
 | **apply_patch** | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). |
 | **diff** | `diff.rs` | Show differences between two file versions. |
 | **replace** | `replace.rs` | Regex find/replace with capture groups. |

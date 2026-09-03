@@ -276,6 +276,10 @@ pub struct HabitCandidate {
     pub first_seen: i64,
     pub last_seen: i64,
     pub status: HabitCandidateStatus,
+    /// Monotonic revision used by promotion requests to detect changes made
+    /// after the user reviewed the candidate.
+    #[serde(default = "default_revision")]
+    pub revision: u64,
     #[serde(default)]
     pub related_memory_ids: Vec<String>,
     #[serde(default)]
@@ -428,6 +432,7 @@ impl HabitStore {
                 }
                 candidate.successful_occurrences =
                     candidate.successful_occurrences.saturating_add(1);
+                candidate.revision = candidate.revision.saturating_add(1);
                 if !candidate
                     .recent_session_ids
                     .contains(&occurrence.session_id)
@@ -464,6 +469,7 @@ impl HabitStore {
                     first_seen: now,
                     last_seen: now,
                     status: HabitCandidateStatus::Observing,
+                    revision: 1,
                     related_memory_ids: Vec::new(),
                     promoted_skill: None,
                     occurrence_ids: occurrence_id.into_iter().collect(),
@@ -491,6 +497,7 @@ impl HabitStore {
                 HabitCandidateStatus::Observing | HabitCandidateStatus::Ready
             ) {
                 candidate.status = HabitCandidateStatus::Dismissed;
+                candidate.revision = candidate.revision.saturating_add(1);
                 true
             } else {
                 false
@@ -507,6 +514,7 @@ impl HabitStore {
         self.transition(project_identity, id, |candidate| {
             if candidate.status == HabitCandidateStatus::Ready {
                 candidate.status = HabitCandidateStatus::Promoted;
+                candidate.revision = candidate.revision.saturating_add(1);
                 candidate.promoted_skill = Some(skill.clone());
                 true
             } else {
@@ -524,6 +532,7 @@ impl HabitStore {
         self.transition(project_identity, id, |candidate| {
             if candidate.status != HabitCandidateStatus::Promoted {
                 candidate.status = HabitCandidateStatus::Superseded;
+                candidate.revision = candidate.revision.saturating_add(1);
                 candidate.superseded_by = replacement.clone();
                 true
             } else {
@@ -686,6 +695,10 @@ fn is_safe_namespace(namespace: &str) -> bool {
 
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn default_revision() -> u64 {
+    1
 }
 
 #[cfg(unix)]

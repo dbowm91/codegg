@@ -198,6 +198,34 @@ consolidation, or injected into the system prompt. They are inspectable through
 explicitly. Ready state means only “eligible for a later skill proposal”; M001
 does not draft or write skills and does not refresh runtime assets.
 
+## Skill promotion proposals (M002)
+
+M002 adds a user-triggered, pre-publication proposal layer beside the habit
+store. It does not write skill roots and does not refresh runtime assets.
+
+- Initiation is explicit: `/skill-promote <habit-id>` loads the `Ready`
+  candidate, captures its fingerprint/revision, creates a short-lived
+  session-scoped `PromotionDraftRequest` (15-minute TTL, single-use), and
+  injects a bounded drafting prompt into the current agent turn. No
+  background or automatic drafting exists.
+- The current agent drafts one portable `SKILL.md` and submits it through
+  the `skill_proposal` host tool (`action=submit`). The host checks request
+  ID, session/project/habit scope, fingerprint/revision freshness, and
+  expiry before validation. The tool is `DirectOnly`, so subagents and Tool
+  Programs cannot submit.
+- Validation reuses `validate_portable_document` (`src/skills/parser.rs`),
+  the same portable frontmatter/body seam as filesystem discovery, plus a
+  generated-proposal restriction layer (single `SKILL.md`, no
+  `allowed-tools`, no scripts/resources sidecars, no plugin/MCP payloads).
+- Proposals persist in `~/.config/codegg/memory/skill-promotions/` with
+  advisory locking, temp-file rename, digest/revision tracking, and bounded
+  counts. Preview via `/skill-proposals` and `/skill-proposal <id>`;
+  reject via `/skill-proposal reject <id>`; a new draft is a new
+  `/skill-promote` request. Rejecting never dismisses the habit, and the
+  habit stays `Ready` (never `Promoted`) until M003.
+- Collision diagnostics are advisory: same-name effective skills are
+  reported with source provenance; no file is overwritten or shadowed.
+
 ## TUI Commands
 
 | Command | Description |
@@ -210,6 +238,10 @@ does not draft or write skills and does not refresh runtime assets.
 | `/memory-consolidate` | Extract patterns from current session |
 | `/habits [ready]` | Inspect bounded workflow habit candidates |
 | `/habit-dismiss <id>` | Dismiss a habit candidate |
+| `/skill-promote <habit-id>` | Start one user-authorized skill draft from a ready habit |
+| `/skill-proposals` | List skill proposals (non-effective previews) |
+| `/skill-proposal <id>` | Preview one proposal with diagnostics and digest |
+| `/skill-proposal reject <id>` | Reject a proposal without dismissing the habit |
 
 ## Invariants & Gotchas
 

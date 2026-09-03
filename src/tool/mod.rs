@@ -52,6 +52,7 @@ pub mod risk;
 pub mod security;
 pub mod security_search;
 pub mod skill;
+pub mod skill_proposal;
 pub mod task;
 pub mod terminal;
 pub mod test;
@@ -452,6 +453,7 @@ impl ToolRegistry {
             options.asset_snapshot,
             options.asset_pin,
         ));
+        registry.register(crate::tool::skill_proposal::SkillProposalTool);
         registry.register(match workspace_root.as_ref() {
             Some(root) => {
                 crate::tool::apply_patch::ApplyPatchTool::default().with_allowed_root(root.clone())

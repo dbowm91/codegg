@@ -198,6 +198,12 @@ impl CommandRegistry {
                 .with_description("Inspect workflow habit candidates (args: ready)"),
             Command::new("/habit-dismiss", CommandCategory::Session, None)
                 .with_description("Dismiss a workflow habit candidate (args: id)"),
+            Command::new("/skill-promote", CommandCategory::Agent, None)
+                .with_description("Draft one skill proposal from a ready habit (args: habit id)"),
+            Command::new("/skill-proposals", CommandCategory::Session, None)
+                .with_description("List skill proposals"),
+            Command::new("/skill-proposal", CommandCategory::Session, None)
+                .with_description("Preview or reject a skill proposal (args: id | reject id)"),
             Command::new("/checkpoint", CommandCategory::Session, None)
                 .with_description("Create a checkpoint of current session"),
             Command::new("/goal", CommandCategory::Session, None)
@@ -521,7 +527,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 108);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 113);
     }
 
     #[test]

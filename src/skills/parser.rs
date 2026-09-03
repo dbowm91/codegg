@@ -28,6 +28,20 @@ pub(crate) struct NativeFrontmatter {
     pub tags: Vec<String>,
 }
 
+/// The bounded, in-memory result of parsing one portable `SKILL.md`.
+/// Proposal validation uses this same result as ordinary discovery, without
+/// creating a temporary file or enumerating package resources.
+#[derive(Debug, Clone)]
+pub struct ValidatedSkillDocument {
+    pub name: String,
+    pub normalized_name: String,
+    pub description: String,
+    pub frontmatter_raw: String,
+    pub body: String,
+    pub metadata: HashMap<String, serde_json::Value>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RawFrontmatter {
     #[serde(flatten)]
@@ -75,78 +89,46 @@ pub fn parse_candidate(
 
     let mut diagnostics = Vec::new();
 
-    let (name, description, metadata) =
-        match source_kind {
-            SourceKind::CodeGGNativeCompat | SourceKind::CodeGGProject
-                if !has_portable_fields(&frontmatter_str) =>
-            {
-                let fm: NativeFrontmatter =
-                    codegg_config::parse_yaml(location.clone(), frontmatter_str.as_bytes())
-                        .map_err(|e| {
-                            Diagnostic::error(
-                                format!("failed to parse frontmatter: {e}"),
-                                location.clone(),
-                            )
-                        })?;
-                let name = fm.name.unwrap_or_else(|| {
-                    skill_file
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                });
-                let description = fm.description.unwrap_or_default();
-                let mut meta = HashMap::new();
-                if let Some(v) = fm.version {
-                    meta.insert("version".to_string(), serde_json::Value::String(v));
-                }
-                if !fm.tags.is_empty() {
-                    meta.insert(
-                        "tags".to_string(),
-                        serde_json::Value::Array(
-                            fm.tags.into_iter().map(serde_json::Value::String).collect(),
-                        ),
-                    );
-                }
-                (name, description, meta)
+    let (name, description, metadata) = match source_kind {
+        SourceKind::CodeGGNativeCompat | SourceKind::CodeGGProject
+            if !has_portable_fields(&frontmatter_str) =>
+        {
+            let fm: NativeFrontmatter =
+                codegg_config::parse_yaml(location.clone(), frontmatter_str.as_bytes()).map_err(
+                    |e| {
+                        Diagnostic::error(
+                            format!("failed to parse frontmatter: {e}"),
+                            location.clone(),
+                        )
+                    },
+                )?;
+            let name = fm.name.unwrap_or_else(|| {
+                skill_file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+            let description = fm.description.unwrap_or_default();
+            let mut meta = HashMap::new();
+            if let Some(v) = fm.version {
+                meta.insert("version".to_string(), serde_json::Value::String(v));
             }
-            _ => {
-                let fm: PortableFrontmatter =
-                    codegg_config::parse_yaml(location.clone(), frontmatter_str.as_bytes())
-                        .map_err(|e| {
-                            Diagnostic::error(
-                                format!("failed to parse frontmatter: {e}"),
-                                location.clone(),
-                            )
-                        })?;
-                let name = fm.name.ok_or_else(|| {
-                    Diagnostic::error("missing required field: name".to_string(), location.clone())
-                })?;
-                let description = fm.description.ok_or_else(|| {
-                    Diagnostic::error(
-                        "missing required field: description".to_string(),
-                        location.clone(),
-                    )
-                })?;
-                let mut meta = fm.metadata;
-                if let Some(lic) = fm.license {
-                    meta.insert("license".to_string(), serde_json::Value::String(lic));
-                }
-                if let Some(compat) = fm.compatibility {
-                    meta.insert(
-                        "compatibility".to_string(),
-                        serde_json::Value::String(compat),
-                    );
-                }
-                if let Some(tools) = fm.allowed_tools {
-                    meta.insert("allowed-tools".to_string(), tools);
-                    diagnostics.push(Diagnostic::warning(
-                    "allowed-tools is preserved as metadata only; it does not grant permissions",
-                    location.clone(),
-                ));
-                }
-                (name, description, meta)
+            if !fm.tags.is_empty() {
+                meta.insert(
+                    "tags".to_string(),
+                    serde_json::Value::Array(
+                        fm.tags.into_iter().map(serde_json::Value::String).collect(),
+                    ),
+                );
             }
-        };
+            (name, description, meta)
+        }
+        _ => {
+            let parsed = validate_portable_document(&raw_content, config)?;
+            diagnostics.extend(parsed.diagnostics.clone());
+            (parsed.name, parsed.description, parsed.metadata)
+        }
+    };
 
     let normalized_name = normalize_name(&name, config)?;
 
@@ -177,6 +159,92 @@ pub fn parse_candidate(
         body,
         metadata,
         resources,
+        diagnostics,
+    })
+}
+
+/// Parse and validate a portable skill document in memory.
+///
+/// This is the single portable frontmatter/body validation seam shared by
+/// filesystem discovery and user-triggered proposals. It deliberately does
+/// not inspect a package directory or perform any filesystem write.
+pub fn validate_portable_document(
+    source: &str,
+    config: &AssetDiscoveryConfig,
+) -> Result<ValidatedSkillDocument, Diagnostic> {
+    let location = "skill proposal".to_string();
+    if source.len() as u64 > config.max_skill_file_size {
+        return Err(Diagnostic::error(
+            format!(
+                "skill file exceeds maximum size ({} bytes)",
+                config.max_skill_file_size
+            ),
+            location.clone(),
+        ));
+    }
+    let (frontmatter_raw, body) = parse_frontmatter(source).ok_or_else(|| {
+        Diagnostic::error(
+            "missing or malformed YAML frontmatter (expected --- delimiters)",
+            location.clone(),
+        )
+    })?;
+    if frontmatter_raw.len() > config.max_frontmatter_size {
+        return Err(Diagnostic::error(
+            format!(
+                "frontmatter exceeds maximum size ({})",
+                config.max_frontmatter_size
+            ),
+            location.clone(),
+        ));
+    }
+    let fm: PortableFrontmatter =
+        codegg_config::parse_yaml(location.clone(), frontmatter_raw.as_bytes()).map_err(|e| {
+            Diagnostic::error(
+                format!("failed to parse frontmatter: {e}"),
+                location.clone(),
+            )
+        })?;
+    let name = fm
+        .name
+        .ok_or_else(|| Diagnostic::error("missing required field: name", location.clone()))?;
+    let description = fm.description.ok_or_else(|| {
+        Diagnostic::error("missing required field: description", location.clone())
+    })?;
+    let normalized_name = normalize_name(&name, config)?;
+    let mut metadata = fm.metadata;
+    let mut diagnostics = Vec::new();
+    if let Some(license) = fm.license {
+        metadata.insert("license".to_string(), serde_json::Value::String(license));
+    }
+    if let Some(compatibility) = fm.compatibility {
+        metadata.insert(
+            "compatibility".to_string(),
+            serde_json::Value::String(compatibility),
+        );
+    }
+    if let Some(allowed_tools) = fm.allowed_tools {
+        metadata.insert("allowed-tools".to_string(), allowed_tools);
+        diagnostics.push(Diagnostic::warning(
+            "allowed-tools is preserved as metadata only; it does not grant permissions",
+            location.clone(),
+        ));
+    }
+    if description.len() > config.max_description_length {
+        diagnostics.push(Diagnostic::warning(
+            format!(
+                "description exceeds recommended maximum ({} chars)",
+                config.max_description_length
+            ),
+            location,
+        ));
+    }
+    Ok(ValidatedSkillDocument {
+        name,
+        normalized_name,
+        description,
+        frontmatter_raw,
+        body,
+        metadata,
         diagnostics,
     })
 }

@@ -18,8 +18,9 @@ provides lazy, security-bounded resource access for skill assets.
 | Module root | `src/skills/mod.rs` — re-exports + legacy `Skill`/`SkillIndex` |
 | Registry | `src/skills/registry.rs` — `AssetRegistry::build`, resolution |
 | Sources | `src/skills/source.rs` — `SourceKind`, `SourceRoot`, `AssetDiscoveryConfig` |
-| Parser | `src/skills/parser.rs` — frontmatter parsing, digest, resource inventory |
+| Parser | `src/skills/parser.rs` — frontmatter parsing, digest, resource inventory, `validate_portable_document` in-memory seam |
 | Candidates | `src/skills/candidate.rs` — `SkillCandidate`, `EffectiveSkill`, `ResolvedRegistry` |
+| Promotion | `src/skills/promotion.rs` — user-authorized proposal requests/store, no publisher, no skill-root writes |
 | Resources | `src/skills/resource.rs` — `ResourceHandle`, `ResourceReadLimits`, bounded reads |
 | Diagnostics | `src/skills/diagnostic.rs` — `Diagnostic`, `Severity` |
 | Compat adapter | `src/skills/compat.rs` — `SkillIndexCompat` wrapping `AssetRegistry` |
@@ -215,6 +216,23 @@ The daemon refreshes the immutable asset snapshot on session lifecycle
 and through the native `/reload` command. Refresh reports are bounded
 to names, digests, counts, and diagnostics. A failed candidate leaves
 the previous generation published.
+
+## Proposal boundary (M002, pre-publication)
+
+A proposal is not an effective skill. `validate_portable_document` is the
+single portable frontmatter/body seam shared by filesystem discovery
+(`parse_candidate`) and `SkillPromotionStore::submit`; no temporary file
+or package enumeration is used for proposals. Generated proposals accept
+one `SKILL.md` only: required portable `name`/`description`, optional
+`license`/safe `metadata`, Markdown body. `allowed-tools`, unsupported
+frontmatter fields, and explicit `scripts/`/`resources/`/`package.json`
+or `mcp:`/`plugin:` sidecar declarations are rejected; ordinary prose
+that merely mentions plugins is not. The publisher does not exist yet:
+proposal creation, validation, rejection, and preview never write a skill
+root and never invoke `AssetRefreshCoordinator`, so the effective set and
+generation are unchanged. Collision with an existing same-name skill is
+an advisory warning with source provenance. Explicit publication into
+CodeGG-owned roots is reserved for M003.
 
 ## Testing
 
