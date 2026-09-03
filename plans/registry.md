@@ -36,7 +36,7 @@ Canonical direction remains in:
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Agent convergence and independent verification | closed | `plans/subsystems/agent-convergence-roadmap.md` | M003 closed | `plans/closure/agent-convergence/003-status.md`; bounded repair/replan, explicit commit chaining, conservative model gating, and projection closure accepted. |
-| Memory-to-skill promotion | active | `plans/subsystems/memory-skill-promotion-roadmap.md` | M002 closed, M003 ready | M002 closure accepted in `plans/closure/memory-skill-promotion/002-status.md` (implementation `583c2702`); M003 publication work is now dependency-ready. |
+| Memory-to-skill promotion | closing | `plans/subsystems/memory-skill-promotion-roadmap.md` | M003 closure review | M003 implementation `081ae51`; closure evidence is being finalized in `plans/closure/memory-skill-promotion/003-status.md`. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -55,7 +55,13 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Dependencies / status |
 |---|---|---|---|
-| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/implementation/memory-skill-promotion/003-approved-skill-publication-and-refresh.md` | M002 strictly closed; implementation and closure evidence in progress. |
+| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/implementation/memory-skill-promotion/003-approved-skill-publication-and-refresh.md` | Production implementation landed in `081ae51`; closure review in progress. |
+
+## Active closure work
+
+| Subsystem | Milestone | Closure record | Status |
+|---|---|---|---|
+| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/closure/memory-skill-promotion/003-status.md` | closing |
 
 ## Newly registered feature execution order
 
@@ -89,7 +95,7 @@ Verification remains deliberately light: Provider M009 was accepted with focused
 ## Blocked work
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent newly registered feature work.
-- Memory-to-skill M003 is now dependency-ready under the accepted M002 closure; no memory-skill-promotion milestone remains blocked.
+- Memory-to-skill M003 implementation is landed and under closure review; no memory-skill-promotion milestone remains blocked.
 
 No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 

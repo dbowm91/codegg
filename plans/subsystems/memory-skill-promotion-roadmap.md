@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Roadmap
 
-Status: active planning — M003 active
+Status: closing — M003 closure review
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -423,7 +423,7 @@ Exit conditions:
 
 ### M003 — Explicit approved publication and asset refresh
 
-Status: ready
+Status: closing
 
 Plan:
 
