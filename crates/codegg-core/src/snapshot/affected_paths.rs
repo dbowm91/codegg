@@ -124,8 +124,9 @@ pub fn extract_affected_paths(
     }
 }
 
-/// Extract and normalize affected paths for an entire batch.
-/// Returns None if batch contains no restorable tools.
+/// Extract affected paths for an entire batch.
+/// Returns None if the batch contains no restorable tools or any
+/// unclassified side effect.
 /// Returns Err if any restorable tool has ambiguous/unsafe derivation.
 pub fn extract_batch_affected_paths(
     tool_calls: &[(String, serde_json::Value)],

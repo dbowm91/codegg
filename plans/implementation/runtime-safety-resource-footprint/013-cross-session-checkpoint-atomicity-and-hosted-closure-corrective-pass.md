@@ -1,6 +1,6 @@
 # Runtime Safety Milestone 013 — Cross-Session Checkpoint Atomicity and Hosted Closure Corrective Pass
 
-Status: active
+Status: implemented — closure accepted in `plans/closure/runtime-safety-resource-footprint/013-status.md`
 
 Repository baseline: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 

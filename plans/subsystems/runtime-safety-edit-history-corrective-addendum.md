@@ -1,6 +1,6 @@
 # Runtime Safety — Checked Edit History Corrective Addendum
 
-Status: active — M013 active
+Status: closed — M013 closed
 
 Repository baseline reviewed: `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce`
 
@@ -59,7 +59,7 @@ Exact head `4dd1220cf0f297d1e3d6206a1e2b39d2152fd8ce` failed normal CI run `3368
 
 ### M013 — Cross-session checkpoint atomicity and hosted closure corrective pass
 
-Status: ready
+Status: closed — see `plans/closure/runtime-safety-resource-footprint/013-status.md`
 
 Plan:
 
@@ -116,4 +116,7 @@ Those remain explicitly non-restorable or conflict-detected according to existin
 
 ## 8. Closure disposition
 
-Until M013 has an accepted closure record, the original M011/M012 records remain valid historical implementation evidence but the checked edit-history subsystem is not strictly closed. M013 is the sole active corrective owner for the discovered defects and hosted red head.
+M013 is the accepted strict corrective disposition for the checked edit-history
+line. The original M011/M012 records remain valid historical implementation
+evidence and are not rewritten. No further corrective milestone is registered
+behind this addendum.

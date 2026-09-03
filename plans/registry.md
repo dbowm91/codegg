@@ -39,7 +39,7 @@ Canonical direction remains in:
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
-| Runtime safety — checked edit-history corrective follow-up | active | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 active | M011/M012 remain historical closed evidence; exact head `4dd1220c` failed hosted Workspace Clippy and M013 owns cross-session checkpoint correctness. |
+| Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | `plans/closure/runtime-safety-resource-footprint/013-status.md`; exact candidate `f314c38e` passed hosted `CI / verify` run `33712437859` / job `100514597927`. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
@@ -47,7 +47,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Runtime safety — checked edit history | M013 | `plans/implementation/runtime-safety-resource-footprint/013-cross-session-checkpoint-atomicity-and-hosted-closure-corrective-pass.md` | Existing checkpoint, checked-restore, workspace-lock, and ToolBatch seams are sufficient; the corrective pass owns same-path inter-session attribution, mixed-batch restore eligibility, and the red exact-head Clippy result. |
 
 ## Closure work and dependencies
 
@@ -70,16 +69,15 @@ Verification remains deliberately light: the newly registered follow-ups require
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block the independent edit-history corrective follow-up unless implementation touches that sandbox path.
 
-No newly registered corrective plan is hard-blocked. Runtime-safety M013 remains
-dependency-ready; runtime-assets M007 is closed and goal-verification M013 is
-closed.
+No newly registered corrective plan is hard-blocked. Runtime-safety M013 is
+closed; runtime-assets M007 and goal-verification M013 are also closed.
 
 No new work is registered for browser-specific security, generic hook-taxonomy expansion, duplicate plugin/MCP runtimes, or opportunistic scheduling; the repository audit found those areas already owned by existing systems or insufficiently justified.
 
 ## New corrective execution order
 
-1. Runtime-safety M013 remains dependency-ready; runtime-assets M007 and goal-verification M013 are closed.
-2. Runtime-safety M013 must preserve M011/M012 checkpoint/Undo architecture while correcting same-path cross-session atomicity, mixed unknown-side-effect restore eligibility, and hosted Clippy closure evidence.
+1. Runtime-safety M013 is closed; runtime-assets M007 and goal-verification M013 are closed.
+2. Runtime-safety M013 preserved M011/M012 checkpoint/Undo architecture while correcting same-path cross-session atomicity, mixed unknown-side-effect restore eligibility, and hosted Clippy closure evidence.
 3. Runtime-assets M007 preserved M005/M006 plugin/MCP ownership while making every validated transport alias executable through the existing `McpService` path; its closure is recorded at `plans/closure/runtime-assets/007-status.md`.
 4. Goal-verification M013 preserved M012 host-owned terminal authority while adding exact goal provenance and conservative deterministic criterion semantics; it is now closed.
 5. Prior closure records are not rewritten; each corrective milestone receives a new closure record and becomes the current strict disposition for its narrow line of work.
@@ -148,6 +146,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Runtime safety, resource control, and footprint | C002 | conditionally closed | `plans/closure/runtime-safety-resource-footprint/010-status.md` |
 | Runtime safety — checked edit-history follow-up | M011 — mutation attribution and durable edit checkpoints | closed historical evidence; current correctness disposition owned by M013 | `plans/closure/runtime-safety-resource-footprint/011-status.md`; M013 owns later-discovered same-workspace same-path inter-session attribution and mixed-batch eligibility gaps. |
 | Runtime safety — checked edit-history follow-up | M012 — checked Undo/Reapply | closed historical evidence; current strict subsystem disposition owned by M013 | `plans/closure/runtime-safety-resource-footprint/012-status.md`; exact head `4dd1220c` later failed hosted Workspace Clippy before tests. |
+| Runtime safety — checked edit-history corrective follow-up | M013 — cross-session checkpoint atomicity and hosted closure corrective pass | closed | `plans/closure/runtime-safety-resource-footprint/013-status.md`; exact candidate `f314c38e`; hosted run `33712437859` / job `100514597927` passed through Workspace tests; no future registered plan was unblocked. |
 | Provider connections and Eggpool | M007 — conditional disposition (historical) | superseded by strict closure | `plans/closure/provider-connections/007-status.md`; the record's historical sections preserve the earlier conditional result and hosted Clippy failure `30681164263`; see the strict row below |
 | Programmatic tool execution and Tool Programs | M018 — runtime fixture correction (historical) | provisional implementation evidence retained; strict disposition owned by M019 | `plans/closure/tool-programs/018-status.md`; see the M019/M020 rows below |
 | Search and eggsearch integration | M001 — current eggsearch request-contract repair | closed | `plans/closure/search-eggsearch-integration/001-status.md`; implementation `acb6ba8`; M002 unblocked |
