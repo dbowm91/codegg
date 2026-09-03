@@ -166,6 +166,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 48 {
         migrate_and_record(pool, 48).await?;
     }
+    if current_version < 49 {
+        migrate_and_record(pool, 49).await?;
+    }
 
     Ok(())
 }
@@ -226,6 +229,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             46 => migrate_v46(pool).await?,
             47 => migrate_v47(pool).await?,
             48 => migrate_v48(pool).await?,
+            49 => migrate_v49(pool).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2118,6 +2122,65 @@ async fn migrate_v48(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_session_project_updated ON session(project_id, time_updated DESC)",
         "CREATE INDEX IF NOT EXISTS idx_session_events_session_created ON session_events(session_id, created_at)",
         "CREATE INDEX IF NOT EXISTS part_session_idx ON part(session_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(pool)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Agent convergence M001: durable bounded convergence specifications and
+/// cycle references. Execution remains owned by AgentRun/group/scheduler
+/// services; these tables contain coordination state only.
+async fn migrate_v49(pool: &SqlitePool) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_convergence (
+            id TEXT PRIMARY KEY,
+            owner_kind TEXT NOT NULL CHECK(owner_kind IN ('turn', 'run')),
+            owner_session_id TEXT,
+            owner_turn_id TEXT,
+            owner_run_id TEXT,
+            objective TEXT NOT NULL,
+            criteria_json TEXT NOT NULL,
+            objective_digest TEXT NOT NULL,
+            criteria_digest TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'producing', 'verifying', 'awaiting_decision', 'repairing', 'replanning', 'completed', 'failed', 'cancelled', 'exhausted')),
+            current_cycle INTEGER NOT NULL CHECK(current_cycle >= 0 AND current_cycle <= 4),
+            max_cycles INTEGER NOT NULL CHECK(max_cycles > 0 AND max_cycles <= 4),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            terminal_at INTEGER,
+            revision INTEGER NOT NULL CHECK(revision >= 0),
+            idempotency_key TEXT NOT NULL UNIQUE,
+            request_fingerprint TEXT NOT NULL,
+            CHECK ((owner_kind = 'turn' AND owner_session_id IS NOT NULL AND owner_turn_id IS NOT NULL AND owner_run_id IS NULL)
+                OR (owner_kind = 'run' AND owner_session_id IS NULL AND owner_turn_id IS NULL AND owner_run_id IS NOT NULL))
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS agent_convergence_cycle (
+            convergence_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK(ordinal >= 0 AND ordinal <= 3),
+            producer_group_id TEXT,
+            producer_run_ids_json TEXT NOT NULL DEFAULT '[]',
+            verifier_run_id TEXT,
+            verdict_json TEXT,
+            decision TEXT CHECK(decision IN ('accept', 'repair', 'replan', 'stop', 'escalate')),
+            source_base_commit TEXT,
+            result_commit TEXT,
+            created_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            PRIMARY KEY(convergence_id, ordinal),
+            FOREIGN KEY(convergence_id) REFERENCES agent_convergence(id) ON DELETE CASCADE
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_agent_convergence_owner_turn ON agent_convergence(owner_kind, owner_session_id, owner_turn_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_convergence_owner_run ON agent_convergence(owner_kind, owner_run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_convergence_status_updated ON agent_convergence(status, updated_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_convergence_cycle_verifier ON agent_convergence_cycle(verifier_run_id)",
     ] {
         sqlx::query(statement)
             .execute(pool)

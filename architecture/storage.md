@@ -109,7 +109,7 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 47` (`storage/mod.rs:39`) is exported and
+`STORAGE_LAYOUT_VERSION = 49` (`storage/mod.rs:39`) is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases. Migration 37 adds canonical
 `agent_task` and `agent_run` tables with typed string IDs, session/root/parent/
@@ -119,6 +119,13 @@ adds the `edit_checkpoint` table for durable per-batch pre/post file states
 scoped to workspace/session/turn/batch, reusing snapshot size/symlink bounds.
 Migration 47 adds the `edit_restore_operation` audit table for checked
 Undo/Reapply lineage, conflict/partial evidence, and restart durability.
+Migration 49 adds `agent_convergence` and `agent_convergence_cycle` for the
+M001 durable convergence foundation. The tables retain the exact bounded
+objective/criteria specification and owner identity, plus cycle references
+to existing agent groups/runs, verifier verdicts, and owner decisions. They
+do not duplicate run results or store transcripts/tool output. The SQLite
+store uses revision-checked lifecycle transitions and unique idempotency
+keys; restart reconciliation remains a pure classifier in the core domain.
 The legacy `task` table remains readable as compatibility history; it is not
 backfilled with unverifiable durable-run provenance.
 

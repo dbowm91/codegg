@@ -331,6 +331,32 @@ the recorded base and a clean, unchanged parent before dispatching an
 explicit typed merge, cherry-pick, or rebase; no child completion mutates the
 parent automatically.
 
+### Durable convergence foundation
+
+`codegg_core::agent_convergence` owns the bounded, host-side lifecycle for a
+produce/verify convergence request. `ConvergenceRecord` persists the exact
+delegated objective and acceptance criteria, their SHA-256 digests, the
+turn/run owner, a hard maximum of four cycles, and a revision-checked state
+machine. `ConvergenceCycleRecord` stores only references to existing producer
+groups/runs and verifier runs; it never copies transcripts, hidden reasoning,
+tool arguments, credentials, or complete `AgentRunResult` values.
+
+`ConvergenceStore` has in-memory and SQLite implementations. The store
+enforces idempotent creation, first-valid reference/verdict/decision writes,
+compare-and-set lifecycle transitions, bounded owner/recovery listings, and
+terminal monotonicity. `assemble_verifier_evidence` is a pure assembler over
+the durable spec and bounded authoritative run-result fields. Its semantic
+`Pass` verdict is advisory and is never `GoalVerificationVerdict::Met`, a
+permission approval, Git integration authorization, or goal-completion
+authority.
+
+`classify_reconciliation` is a pure restart classifier. It reports whether an
+existing run/group can advance, needs execution resumption, failed/cancelled,
+or needs attention; M001 does not schedule work. The internal
+`ConvergenceSummary` is intentionally bounded for a later frontend-neutral
+projection and leaves detailed specs and evidence to authorized on-demand
+fetches.
+
 `SubAgentPool` remains the child-runtime adapter and retains semantic
 delegation limits such as depth, fan-out, and tool budgets. Scheduler-owned
 requests do not acquire the pool's machine-capacity semaphore, so resource

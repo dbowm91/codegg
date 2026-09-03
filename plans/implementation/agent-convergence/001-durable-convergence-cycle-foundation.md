@@ -1,6 +1,6 @@
 # Agent Convergence M001 — Durable Convergence Cycle Foundation
 
-Status: ready
+Status: active
 
 Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

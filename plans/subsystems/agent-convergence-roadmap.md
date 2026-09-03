@@ -1,6 +1,6 @@
 # Agent Convergence and Independent Verification Roadmap
 
-Status: active planning — M001 ready
+Status: closing — M001 implementation landed; closure evidence in progress
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 
@@ -376,7 +376,7 @@ The memory-to-skill roadmap is independent. It may proceed in parallel and must 
 
 ### M001 — Durable convergence cycle foundation
 
-Status: ready
+Status: closing
 
 Class: invariant/infrastructure
 
