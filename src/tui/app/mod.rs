@@ -244,6 +244,14 @@ pub enum TuiCommand {
     HabitDismiss {
         id: String,
     },
+    SkillPublish {
+        id: String,
+        target_scope: crate::skills::promotion::SkillTargetScope,
+    },
+    SkillPublishFinished {
+        message: String,
+        is_error: bool,
+    },
     HabitResult {
         toast_message: String,
         is_error: bool,
@@ -6343,6 +6351,38 @@ impl App {
                     .and_then(|input| input.trim().strip_prefix("/skill-proposal"))
                     .unwrap_or("")
                     .trim();
+                if let Some(publish_args) = argument.strip_prefix("publish") {
+                    let parts = publish_args.split_whitespace().collect::<Vec<_>>();
+                    if parts.len() != 2 {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /skill-proposal publish <id> [project|global]");
+                        return;
+                    }
+                    let Some(target_scope) = (match parts[1] {
+                        "project" => Some(crate::skills::promotion::SkillTargetScope::Project),
+                        "global" => Some(crate::skills::promotion::SkillTargetScope::Global),
+                        _ => None,
+                    }) else {
+                        self.messages_state
+                            .toasts
+                            .warning("Publication scope must be project or global");
+                        return;
+                    };
+                    if crate::skills::promotion::SkillProposalId::parse(parts[0]).is_none() {
+                        self.messages_state
+                            .toasts
+                            .warning("Invalid skill proposal ID");
+                        return;
+                    }
+                    let id = parts[0].to_string();
+                    if let Some(ref tx) = self.tui_cmd_tx {
+                        let _ = send_tui(tx, TuiCommand::SkillPublish { id, target_scope });
+                    } else {
+                        crate::tui::commands::memory::start_skill_publish(self, id, target_scope);
+                    }
+                    return;
+                }
                 let (reject, id_text) = argument
                     .strip_prefix("reject ")
                     .map_or((false, argument), |id| (true, id.trim()));
@@ -6379,6 +6419,11 @@ impl App {
                             .warning(&format!("Could not reject proposal: {error}")),
                     }
                 } else {
+                    let _ = store.mark_previewed(
+                        &project_dir,
+                        &id,
+                        chrono::Utc::now().timestamp_millis(),
+                    );
                     match store.get_proposal(&project_dir, &id) {
                         Ok(Some(proposal)) => {
                             // Advisory live collision view: the registry may have
@@ -6416,7 +6461,25 @@ impl App {
                                     "Content digest: {} (proposal rev {})",
                                     proposal.content_digest, proposal.revision
                                 ),
-                                "Not installed or effective yet.".to_string(),
+                                if proposal.status
+                                    == crate::skills::promotion::SkillProposalStatus::Published
+                                {
+                                    format!(
+                                        "Published at {}/{}; runtime activation is determined by the next asset refresh.",
+                                        proposal
+                                            .publication
+                                            .as_ref()
+                                            .map(|p| format!("{:?}", p.target_scope))
+                                            .unwrap_or_else(|| "unknown".to_string()),
+                                        proposal
+                                            .publication
+                                            .as_ref()
+                                            .map(|p| p.relative_path.clone())
+                                            .unwrap_or_else(|| "unknown".to_string())
+                                    )
+                                } else {
+                                    "Not installed or effective yet.".to_string()
+                                },
                                 String::new(),
                                 proposal.skill_markdown,
                             ];

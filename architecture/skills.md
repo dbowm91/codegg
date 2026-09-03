@@ -20,7 +20,8 @@ provides lazy, security-bounded resource access for skill assets.
 | Sources | `src/skills/source.rs` — `SourceKind`, `SourceRoot`, `AssetDiscoveryConfig` |
 | Parser | `src/skills/parser.rs` — frontmatter parsing, digest, resource inventory, `validate_portable_document` in-memory seam |
 | Candidates | `src/skills/candidate.rs` — `SkillCandidate`, `EffectiveSkill`, `ResolvedRegistry` |
-| Promotion | `src/skills/promotion.rs` — user-authorized proposal requests/store, no publisher, no skill-root writes |
+| Promotion | `src/skills/promotion.rs` — user-authorized proposal requests/store and publication provenance |
+| Publication | `src/skills/publish.rs` — host-only validated proposal publisher, atomic CodeGG-owned writes, reconciliation |
 | Resources | `src/skills/resource.rs` — `ResourceHandle`, `ResourceReadLimits`, bounded reads |
 | Diagnostics | `src/skills/diagnostic.rs` — `Diagnostic`, `Severity` |
 | Compat adapter | `src/skills/compat.rs` — `SkillIndexCompat` wrapping `AssetRegistry` |
@@ -217,7 +218,7 @@ and through the native `/reload` command. Refresh reports are bounded
 to names, digests, counts, and diagnostics. A failed candidate leaves
 the previous generation published.
 
-## Proposal boundary (M002, pre-publication)
+## Proposal and publication boundary (M002–M003)
 
 A proposal is not an effective skill. `validate_portable_document` is the
 single portable frontmatter/body seam shared by filesystem discovery
@@ -227,18 +228,41 @@ one `SKILL.md` only: required portable `name`/`description`, optional
 `license`/safe `metadata`, Markdown body. `allowed-tools`, unsupported
 frontmatter fields, and explicit `scripts/`/`resources/`/`package.json`
 or `mcp:`/`plugin:` sidecar declarations are rejected; ordinary prose
-that merely mentions plugins is not. The publisher does not exist yet:
-proposal creation, validation, rejection, and preview never write a skill
-root and never invoke `AssetRefreshCoordinator`, so the effective set and
-generation are unchanged. Collision with an existing same-name skill is
-an advisory warning with source provenance. Explicit publication into
-CodeGG-owned roots is reserved for M003.
+that merely mentions plugins is not. Proposal creation, validation,
+rejection, and preview never write a skill root and never invoke
+`AssetRefreshCoordinator`, so the effective set and generation are
+unchanged. Collision with an existing same-name skill is an advisory
+warning with source provenance.
+
+M003 adds the host/TUI-only `/skill-proposal publish <id> project|global`
+operation. The model-facing proposal tool has no publication action and
+cannot supply the approval request. The host derives the destination from
+the closed scope enum: project publication writes only
+`<project>/.codegg/skills/<normalized-name>/SKILL.md`, while global
+publication writes only `<config>/codegg/skills/<normalized-name>/SKILL.md`.
+The publisher revalidates the current proposal, digest, parser restrictions,
+and root/package/destination symlink boundaries while holding a per-root
+lock. Existing different content is rejected; new content is written to a
+same-directory temporary file, synced, and atomically renamed. Proposal
+publication provenance and the habit `Promoted` state are persisted only
+after the rename. A crash between rename and metadata persistence can be
+completed with `SkillPublicationService::reconcile`, which verifies the
+destination digest and never rewrites the file.
+
+Foreign effective skills require a preview at the same proposal revision;
+publication records the shadowing source without writing any foreign root.
+On success the TUI invokes the existing daemon-owned `/reload` path. That
+path alone creates the next immutable runtime asset generation, so active
+turns retain their pinned snapshot and subsequent turns observe a successful
+refresh. A failed refresh retains the previous valid generation while the
+published file remains on disk and the refresh diagnostic is shown.
 
 ## Testing
 
 ```bash
 cargo test -p codegg skills               # legacy SkillIndex tests
 cargo test --test skills_registry          # AssetRegistry integration tests
+cargo test --test skill_publication        # approved publication safety/precedence tests
 ```
 
 `tests/skills_registry.rs` covers: empty project, all 4 project source

@@ -1,8 +1,8 @@
 //! User-authorized, pre-publication skill promotion state.
 //!
 //! This module owns the short-lived initiation capability and the durable
-//! proposal record. It deliberately has no publisher and never writes a
-//! skill root.
+//! proposal record. Publication remains a separate host/TUI-only service and
+//! this module never writes a skill root.
 
 use super::parser::{validate_portable_document, ValidatedSkillDocument};
 use super::{AssetDiscoveryConfig, AssetRegistry, Diagnostic, Severity, SourceKind};
@@ -134,7 +134,20 @@ pub enum SkillProposalStatus {
     Superseded,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Durable, root-relative provenance for a published proposal.  The
+/// destination is intentionally represented as a scope plus relative path;
+/// machine-specific absolute paths are not part of proposal state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedSkillRef {
+    pub proposal_id: SkillProposalId,
+    pub target_scope: SkillTargetScope,
+    pub normalized_name: String,
+    pub relative_path: String,
+    pub content_digest: String,
+    pub published_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundedDiagnostic {
     pub severity: Severity,
     pub reason: String,
@@ -157,7 +170,7 @@ impl BoundedDiagnostic {
         }
     }
 
-    fn error(reason: impl Into<String>) -> Self {
+    pub(crate) fn error(reason: impl Into<String>) -> Self {
         Self {
             severity: Severity::Error,
             reason: reason.into().chars().take(MAX_DIAGNOSTIC_BYTES).collect(),
@@ -166,7 +179,7 @@ impl BoundedDiagnostic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillProposal {
     pub id: SkillProposalId,
     pub promotion_request_id: PromotionRequestId,
@@ -184,6 +197,10 @@ pub struct SkillProposal {
     pub created_at: i64,
     pub updated_at: i64,
     pub revision: u64,
+    #[serde(default)]
+    pub publication: Option<PublishedSkillRef>,
+    #[serde(default)]
+    pub previewed_revision: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -244,6 +261,34 @@ impl SkillPromotionStore {
 
     fn habit_store(&self) -> io::Result<codegg_core::memory::habit::HabitStore> {
         codegg_core::memory::habit::HabitStore::with_root(self.habit_root.clone())
+    }
+
+    pub(crate) fn habit_root_for_publication(&self) -> PathBuf {
+        self.habit_root.clone()
+    }
+
+    /// Record that the user opened the current proposal preview. This is
+    /// metadata rather than proposal content, so it does not invalidate an
+    /// approval captured from that preview.
+    pub fn mark_previewed(
+        &self,
+        project_identity: &str,
+        id: &SkillProposalId,
+        now: i64,
+    ) -> io::Result<bool> {
+        let namespace = project_namespace(project_identity);
+        self.with_locked_file(&namespace, |file| {
+            let Some(proposal) = file
+                .proposals
+                .iter_mut()
+                .find(|proposal| &proposal.id == id)
+            else {
+                return Ok(false);
+            };
+            proposal.previewed_revision = Some(proposal.revision);
+            proposal.updated_at = now;
+            Ok(true)
+        })
     }
 
     pub fn begin_request(
@@ -466,11 +511,78 @@ impl SkillPromotionStore {
                 created_at: now,
                 updated_at: now,
                 revision: 1,
+                publication: None,
+                previewed_revision: None,
             };
             request.consumed = true;
             file.proposals.push(proposal.clone());
             Ok(proposal)
         })
+    }
+
+    /// Record publication only after the caller has durably renamed the
+    /// exact proposal bytes into the host-derived destination.  The revision
+    /// and digest checks make this a compare-and-swap transition and also
+    /// make retries idempotent after a crash between rename and persistence.
+    pub fn mark_published(
+        &self,
+        project_identity: &str,
+        id: &SkillProposalId,
+        expected_revision: u64,
+        expected_digest: &str,
+        publication: PublishedSkillRef,
+        now: i64,
+    ) -> io::Result<SkillProposal> {
+        let namespace = project_namespace(project_identity);
+        self.with_locked_file(&namespace, |file| {
+            let proposal = file
+                .proposals
+                .iter_mut()
+                .find(|proposal| &proposal.id == id)
+                .ok_or_else(|| invalid_data("skill proposal not found"))?;
+            if proposal.status == SkillProposalStatus::Published {
+                if proposal.publication.as_ref() == Some(&publication) {
+                    return Ok(proposal.clone());
+                }
+                return Err(invalid_data("skill proposal was published differently"));
+            }
+            if proposal.status != SkillProposalStatus::Validated {
+                return Err(invalid_data("skill proposal is not validated"));
+            }
+            if proposal.revision != expected_revision
+                || proposal.content_digest != expected_digest
+                || proposal.content_digest != publication.content_digest
+            {
+                return Err(invalid_data("skill proposal approval is stale"));
+            }
+            proposal.status = SkillProposalStatus::Published;
+            proposal.publication = Some(publication);
+            proposal.updated_at = now;
+            proposal.revision = proposal.revision.saturating_add(1);
+            Ok(proposal.clone())
+        })
+    }
+
+    /// Complete proposal metadata after a prior rename was observed but the
+    /// first metadata write failed.  The caller must have already verified the
+    /// exact destination digest and host-derived scope.
+    pub fn reconcile_published(
+        &self,
+        project_identity: &str,
+        id: &SkillProposalId,
+        expected_revision: u64,
+        expected_digest: &str,
+        publication: PublishedSkillRef,
+        now: i64,
+    ) -> io::Result<SkillProposal> {
+        self.mark_published(
+            project_identity,
+            id,
+            expected_revision,
+            expected_digest,
+            publication,
+            now,
+        )
     }
 
     fn path_for_namespace(&self, namespace: &str) -> io::Result<PathBuf> {
@@ -649,6 +761,16 @@ fn generated_restriction_diagnostics(
         }
     }
     diagnostics
+}
+
+/// Re-run the generated-content restrictions at publication time.  This is
+/// deliberately separate from proposal submission so changes to parser or
+/// restriction policy cannot be bypassed by an old `Validated` record.
+pub(crate) fn publication_restriction_diagnostics(
+    source: &str,
+    document: &ValidatedSkillDocument,
+) -> Vec<BoundedDiagnostic> {
+    generated_restriction_diagnostics(source, document)
 }
 
 fn bounded_context(

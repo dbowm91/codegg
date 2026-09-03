@@ -222,9 +222,39 @@ store. It does not write skill roots and does not refresh runtime assets.
   counts. Preview via `/skill-proposals` and `/skill-proposal <id>`;
   reject via `/skill-proposal reject <id>`; a new draft is a new
   `/skill-promote` request. Rejecting never dismisses the habit, and the
-  habit stays `Ready` (never `Promoted`) until M003.
+  habit stays `Ready` (never `Promoted`) until explicit M003 publication.
 - Collision diagnostics are advisory: same-name effective skills are
   reported with source provenance; no file is overwritten or shadowed.
+
+## Approved publication and refresh (M003)
+
+M003 is the separate host-controlled write boundary. A user publishes a
+validated proposal with `/skill-proposal publish <proposal-id> project|global`.
+The command captures the exact proposal revision and content digest, and the
+host derives the destination from the selected scope. The model-facing
+`skill_proposal` tool remains unable to approve or publish.
+
+Only these CodeGG-owned roots are writable:
+
+- project: `<project>/.codegg/skills/<normalized-name>/SKILL.md`;
+- global: `<config>/codegg/skills/<normalized-name>/SKILL.md`.
+
+Publication re-runs portable parser and generated-content restrictions,
+rejects path traversal, symlinked roots/packages/destinations, foreign-root
+writes, and existing different content. The writer holds a per-root lock and
+uses a synced same-directory temporary file plus atomic rename. It then
+records `PublishedSkillRef` provenance (proposal, scope, normalized name,
+relative path, and digest) and transitions the source habit to `Promoted`.
+If metadata persistence fails after rename, reconciliation verifies the
+exact destination digest and completes metadata without rewriting the file.
+
+Publication requests the existing daemon-owned runtime asset refresh. A
+successful refresh publishes a new immutable generation for subsequent
+turns; active turns remain pinned to their previous generation. A failed
+refresh retains that previous valid snapshot and leaves the published file
+in place, while the UI reports the refresh diagnostic. Registry precedence
+remains authoritative: foreign same-name skills are never overwritten, and
+publication reports when the CodeGG skill is shadowed.
 
 ## TUI Commands
 
@@ -242,6 +272,7 @@ store. It does not write skill roots and does not refresh runtime assets.
 | `/skill-proposals` | List skill proposals (non-effective previews) |
 | `/skill-proposal <id>` | Preview one proposal with diagnostics and digest |
 | `/skill-proposal reject <id>` | Reject a proposal without dismissing the habit |
+| `/skill-proposal publish <id> project\|global` | Explicitly publish one validated proposal into a CodeGG-owned root |
 
 ## Invariants & Gotchas
 

@@ -730,3 +730,100 @@ pub(crate) fn apply_habit_result(app: &mut App, message: String, is_error: bool)
         }
     }
 }
+
+/// Execute publication only for the native/TUI user command.  There is no
+/// corresponding model-facing tool or prompt path.
+pub(crate) fn start_skill_publish(
+    app: &mut App,
+    id: String,
+    target_scope: crate::skills::promotion::SkillTargetScope,
+) {
+    let Some(proposal_id) = crate::skills::promotion::SkillProposalId::parse(&id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid skill proposal ID");
+        return;
+    };
+    let project_dir = app.session_state.project_dir.clone();
+    let tx = app.tui_cmd_tx.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Memory,
+        "skill_publish",
+        async move {
+            let result = (|| {
+                let store = crate::skills::promotion::SkillPromotionStore::new()
+                    .map_err(|error| format!("Skill promotion store unavailable: {error}"))?;
+                let proposal = store
+                    .get_proposal(&project_dir, &proposal_id)
+                    .map_err(|error| format!("Could not load skill proposal: {error}"))?
+                    .ok_or_else(|| "Skill proposal not found".to_string())?;
+                let request = crate::skills::publish::SkillPublicationRequest {
+                    proposal_id: proposal.id.clone(),
+                    expected_revision: proposal.revision,
+                    expected_content_digest: proposal.content_digest.clone(),
+                    target_scope,
+                };
+                let global_config_dir = dirs::config_dir()
+                    .ok_or_else(|| "No platform config directory is available".to_string())?;
+                let service = crate::skills::publish::SkillPublicationService::new(store);
+                let result = service
+                    .publish(
+                        &project_dir,
+                        std::path::Path::new(&project_dir),
+                        &global_config_dir,
+                        request,
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let mut message = if result.idempotent {
+                    format!(
+                        "Skill publication already exists: {} (digest {}).",
+                        result.relative_path,
+                        result.content_digest.chars().take(12).collect::<String>()
+                    )
+                } else if result.reconciled {
+                    format!(
+                        "Reconciled published skill: {} (digest {}).",
+                        result.relative_path,
+                        result.content_digest.chars().take(12).collect::<String>()
+                    )
+                } else {
+                    format!(
+                        "Published skill: {} (digest {}). Refreshing runtime assets for subsequent turns.",
+                        result.relative_path,
+                        result.content_digest.chars().take(12).collect::<String>()
+                    )
+                };
+                if let Some(shadowed_by) = result.shadowed_by {
+                    message.push_str(&format!(
+                        " Effective resolution is shadowed by {shadowed_by}."
+                    ));
+                }
+                Ok(message)
+            })();
+            Some(match result {
+                Ok(message) => TuiCommand::SkillPublishFinished {
+                    message,
+                    is_error: false,
+                },
+                Err(message) => TuiCommand::SkillPublishFinished {
+                    message,
+                    is_error: true,
+                },
+            })
+        },
+    );
+}
+
+pub(crate) fn apply_skill_publish_finished(app: &mut App, message: String, is_error: bool) {
+    if is_error {
+        app.messages_state.toasts.error(&message);
+        return;
+    }
+    app.messages_state.toasts.success(&message);
+    // The existing daemon-owned refresh path is the only authority allowed
+    // to publish a new runtime asset generation.
+    crate::tui::commands::agents::start_refresh_assets(app);
+}

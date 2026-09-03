@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Roadmap
 
-Status: active planning — M002 closed, M003 ready
+Status: active planning — M003 active
 
 Repository baseline reviewed: `1bee32578566cc6cdf4025002af781309d8f29f4`
 

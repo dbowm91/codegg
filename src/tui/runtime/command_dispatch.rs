@@ -17,8 +17,9 @@ use super::super::commands::goals::{
 };
 #[allow(unused_imports)]
 use super::super::commands::memory::{
-    apply_habit_result, apply_memory_result, start_habit_dismiss, start_habit_list,
-    start_memory_forget, start_memory_remember, start_memory_search, start_memory_summary,
+    apply_habit_result, apply_memory_result, apply_skill_publish_finished, start_habit_dismiss,
+    start_habit_list, start_memory_forget, start_memory_remember, start_memory_search,
+    start_memory_summary, start_skill_publish,
 };
 #[allow(unused_imports)]
 use super::super::commands::plugins::{
@@ -193,6 +194,12 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::HabitDismiss { id } => {
             start_habit_dismiss(app, id);
+        }
+        TuiCommand::SkillPublish { id, target_scope } => {
+            start_skill_publish(app, id, target_scope);
+        }
+        TuiCommand::SkillPublishFinished { message, is_error } => {
+            apply_skill_publish_finished(app, message, is_error);
         }
         TuiCommand::CompactSession => {
             handle_compact_session(app);

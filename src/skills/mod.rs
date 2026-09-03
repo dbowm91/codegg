@@ -3,6 +3,7 @@ pub mod compat;
 pub mod diagnostic;
 pub mod parser;
 pub mod promotion;
+pub mod publish;
 pub mod registry;
 pub mod resource;
 pub mod source;

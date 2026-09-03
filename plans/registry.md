@@ -49,7 +49,13 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/implementation/memory-skill-promotion/003-approved-skill-publication-and-refresh.md` | M002 strictly closed in `plans/closure/memory-skill-promotion/002-status.md`; proposal store, digest/revision, and validation seam are authoritative. |
+| None | — | — | — |
+
+## Active implementation plans
+
+| Subsystem | Milestone | Plan | Dependencies / status |
+|---|---|---|---|
+| Memory-to-skill promotion | M003 — approved publication and asset refresh | `plans/implementation/memory-skill-promotion/003-approved-skill-publication-and-refresh.md` | M002 strictly closed; implementation and closure evidence in progress. |
 
 ## Newly registered feature execution order
 

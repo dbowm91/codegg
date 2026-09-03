@@ -203,7 +203,7 @@ impl CommandRegistry {
             Command::new("/skill-proposals", CommandCategory::Session, None)
                 .with_description("List skill proposals"),
             Command::new("/skill-proposal", CommandCategory::Session, None)
-                .with_description("Preview or reject a skill proposal (args: id | reject id)"),
+                .with_description("Preview, publish, or reject a skill proposal (args: id | publish id [project|global] | reject id)"),
             Command::new("/checkpoint", CommandCategory::Session, None)
                 .with_description("Create a checkpoint of current session"),
             Command::new("/goal", CommandCategory::Session, None)
