@@ -1,8 +1,8 @@
 # Agent Convergence M002 — Independent Verifier and Explicit Owner Decision
 
-Status: blocked on M001
+Status: ready
 
-Repository baseline: `1bee32578566cc6cdf4025002af781309d8f29f4`
+Repository baseline: `ffc3847c711a3ce7b410a1a59c205da8356dc645`
 
 Source subsystem roadmap:
 
