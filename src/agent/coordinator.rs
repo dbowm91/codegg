@@ -21,6 +21,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
+/// Cache key and partitions for the resolved model-facing tool surface.
+pub(super) type ToolDefCache = (
+    Option<String>,
+    bool,
+    bool,
+    String,
+    u64,
+    bool,
+    Option<ToolDeferralConfig>,
+    Vec<ToolDefinition>,
+    Vec<ToolDefinition>,
+);
+
 /// All long-lived capabilities used by one loop.
 ///
 /// Keeping these handles together makes the ownership boundary visible at the
@@ -36,17 +49,7 @@ pub(super) struct AgentLoopServices {
     pub(super) progress_recovery: RecoveryController,
     pub(super) recovery_parallel_limit: Option<usize>,
     pub(super) mcp_service: Option<Arc<RwLock<crate::mcp::McpService>>>,
-    pub(super) tool_def_cache: Option<(
-        Option<String>,
-        bool,
-        bool,
-        String,
-        u64,
-        bool,
-        Option<ToolDeferralConfig>,
-        Vec<ToolDefinition>,
-        Vec<ToolDefinition>,
-    )>,
+    pub(super) tool_def_cache: Option<ToolDefCache>,
     pub(super) deferred_tool_definitions: Vec<ToolDefinition>,
     pub(super) model_router: ModelRouter,
     pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
