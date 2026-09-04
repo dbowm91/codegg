@@ -1045,6 +1045,8 @@ dependencies = [
 name = "codegg-git"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "egggit",
  "proptest",
  "serde",
  "serde_json",

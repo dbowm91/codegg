@@ -1,11 +1,10 @@
 # Git Subsystem — Typed Operations, Structured Execution, and Recovery
 
-The Git subsystem spans three crates and a dozen root modules, providing a
-typed vocabulary for Git commands (codegg-git), read-only structured parsing
-(egggit), and a mutation/recovery/network execution framework in the root
-crate. It serves the command-intent classifier, command planner, BashTool
-dispatch, the native Git tool, provenance tracking, TUI sidebar, and
-RunStore persistence.
+The Git subsystem spans three crates and a dozen root adapters, providing a
+typed workflow vocabulary (codegg-git), generic read/process mechanics
+(egggit), and CodeGG durable lifecycle integration in codegg-core/root. It
+serves the command-intent classifier, command planner, BashTool dispatch, the
+native Git tool, provenance tracking, TUI sidebar, and RunStore persistence.
 
 ## Purpose
 
@@ -19,10 +18,10 @@ logging, or persistence surfaces.
 
 | Layer | Crate / Module | Role |
 |-------|----------------|------|
-| Data model | `crates/codegg-git/` | `GitOperation` enum (54 variants), `GitRiskClass` (11 variants), `parse_git_argv`, `render_argv`, path/ref safety types, `RedactedUrl`, `AuditSafeArgv`, canonical env-policy tables |
-| Structured reads | `crates/egggit/` | `status_v2` (rich status), `diff`, `log`, `blame`, `refs`, `worktree`, `conflict`, `operation_state` — all read-only, async, subprocess-based |
-| Execution | `src/git_service.rs` | `GitExecutionService` — unified executor delegating reads to egggit, mutations to subprocess fallback |
-| Mutations | `src/git_mutations.rs` | `GitEnvPolicy`, `GitMutationExecutor`, `RepoSnapshot`, `StateDelta`, `MutationOutcome`, `MutationResult` |
+| Generic Git mechanics | `crates/egggit/` | `process` (canonical environment policy and shell-free process construction), structured status/diff/log/blame/refs/worktree/conflict/operation-state reads |
+| Typed workflow model | `crates/codegg-git/` | `GitOperation`, risk/parser/render/path/ref/sensitive types, portable `RepoSnapshot`/`StateDelta`/`MutationResult` workflow boundary |
+| Execution adapter | `src/git_service.rs` | `GitExecutionService` — maps typed operations to structured egggit reads and the generic process boundary |
+| Mutations | `src/git_mutations.rs` | `GitMutationExecutor` and repository snapshot/delta orchestration over `codegg_git::workflow` |
 | Typed ops | `src/git_mutations_ops.rs` | Stage, commit, branch, restore, stash, merge, rebase, cherry-pick, revert, tag-delete |
 | Network | `src/git_network_ops.rs` | Fetch, pull, push, remote add/remove/set-url/rename, config get/set/unset, reset variants, clean |
 | Network policy | `src/git_network_policy.rs` | `NetworkEnvPolicy`, `NETWORK_ALLOWED_ENV_VARS`, `NetworkFailureKind`, URL credential redaction, `sanitize_argv_for_run_store` |
@@ -30,8 +29,31 @@ logging, or persistence surfaces.
 | Projector | `src/git_mutation_projector.rs` | `project_mutation`, `project_network_mutation`, `project_destructive_mutation`, `project_recovery` |
 | RunStore | `src/git_run_store.rs` | `persist_mutation`, `persist_recovery` |
 | Tool surface | `src/tool/git.rs` | `GitTool` with `subcommand`, `mutation` (40 actions), `recover`, `operation_state` |
-| Canonical env policy | `crates/codegg-git/src/process_policy.rs` | `ALLOWED_ENV_VARS` (21), `ALWAYS_STRIPPED_ENV_VARS` (28) — single source of truth |
+| Canonical env/process policy | `crates/egggit/src/process.rs` | `ALLOWED_ENV_VARS` (21), `ALWAYS_STRIPPED_ENV_VARS` (28), `GitEnvPolicy` — single source of truth; `codegg-git` keeps compatibility re-exports |
 | Managed worktree lifecycle | `crates/codegg-core/src/worktree_service.rs` | Durable worktree identity/lease state over hardened add/remove helpers |
+
+## Operation ownership matrix
+
+| Operation category | Canonical owner | Adapters/callers |
+|---|---|---|
+| Repository discovery and identity inspection | `egggit::worktree`, `egggit::refs`; lineage normalization in `codegg-core::repository_lineage` | workspace/project catalog, security review |
+| Status, diff, log, blame, ref/object reads | `egggit` read modules | `GitExecutionService`, TUI sidebar, review/security tools |
+| Safe argv parsing/rendering and path/ref validation | `codegg-git` typed model | command intent/planner, GitTool, mutation/network adapters |
+| Local Git process construction and environment hardening | `egggit::process` | all CodeGG-owned local Git subprocess callers |
+| Credential-safe remote process overlay and failure classification | root `git_network_policy` / `git_network_ops` | typed network mutation adapters; raw credentials remain ephemeral |
+| Commit, stage, restore, branch, stash, merge/rebase/cherry-pick/revert | root `git_mutations` + `git_mutations_ops` | GitTool and command routing |
+| Worktree create/remove/list/validate and leases | `codegg-core::worktree_service` (durable lifecycle); generic facts in `egggit::worktree` | agent-run scheduler/worktree services |
+| Base/result commit relationships and integration | `codegg-core` agent-run/worktree services and root `agent::run_integration` | parent-side integration only |
+| Mutation provenance and rerun metadata | root `git_run_store` over `codegg_git::workflow` results | RunStore; future rerun vertical M005 |
+| Integration/recovery/promote operations | root typed mutation/recovery adapters | agent-run integration and GitTool |
+| Projection-safe mutation summaries | root `git_mutation_projector` | TUI/model projection and RunStore artifacts |
+
+The crate boundary is intentional: `egggit` cannot own CodeGG durable
+identity without violating the dependency direction, and `codegg-git` cannot
+depend on `codegg-core` without creating a cycle. The portable workflow result
+types therefore live in `codegg-git`, while durable lifecycle and persistence
+remain in their existing CodeGG owners. There is one generic subprocess
+constructor and one typed workflow result vocabulary.
 
 ## How It Works
 
@@ -45,9 +67,9 @@ structured parsing, falling back to raw subprocess if egggit fails.
 All other operations fall through to `execute_raw` (subprocess via
 `render_argv`).
 
-Every `run_git_raw` call flows through `GitEnvPolicy::apply()` (env-clear,
-ALLOWED_ENV_VARS restore, ALWAYS_STRIPPED_ENV_VARS strip, editor/pager
-pinning, kill_on_drop). stdout/stderr pass through
+Every raw execution call flows through `egggit::process::GitEnvPolicy::apply()`
+(env-clear, allowlist restore, hard-deny strip, editor/pager pinning,
+kill_on_drop). stdout/stderr pass through
 `redact_url_credentials_in_text` before reaching any downstream consumer.
 
 Returns `GitExecutionResult` with `GitPayload` (status, diff, log, branches,
@@ -252,9 +274,11 @@ action regardless of routing mode.
 
 ## Invariants & Gotchas
 
-1. **egggit never mutates.** All egggit modules are read-only. Mutations
-   stay in the root crate (`git_mutations`, `git_mutations_ops`,
-   `git_network_ops`, `git_recovery`).
+1. **egggit owns generic Git mechanics and reads, never CodeGG lifecycle.**
+   Its process boundary is the only production owner of literal `git`
+   construction. Mutations and durable workflow orchestration use the root
+   and codegg-core adapters (`git_mutations`, `git_mutations_ops`,
+   `git_network_ops`, `git_recovery`, and `worktree_service`).
 
 2. **Single parsing/rendering truth.** `parse_git_argv` and `render_argv`
    in `codegg-git` are the only Git argv parsers. No duplicate parser
@@ -300,11 +324,11 @@ action regardless of routing mode.
     `ActualBackend::RawShell`. The classification boundary is
     `shell_shape::parse_shell_words` + `has_shell_operators()`.
 
-11. **Canonical subprocess policy.** `ALLOWED_ENV_VARS` and
-    `ALWAYS_STRIPPED_ENV_VARS` live in `codegg_git::process_policy`.
-    Both root crate and `codegg-core::worktree` consume the same lists.
-    Drift caught by `policy_drift_tests` and
-    `worktree_uses_canonical_policy`.
+11. **Canonical subprocess policy.** `ALLOWED_ENV_VARS`,
+    `ALWAYS_STRIPPED_ENV_VARS`, and `GitEnvPolicy` live in
+    `egggit::process`. `codegg-git` and `codegg-core` expose compatibility
+    paths but do not maintain copies. Drift is caught by the Git forbidden
+    pattern guard and the existing policy tests.
 
 12. **RunStore audit-safe rerun argv.** `RerunDescriptor.argv` is
     `Option<AuditSafeArgv>` — always sanitized via URL sanitizer. Raw URL

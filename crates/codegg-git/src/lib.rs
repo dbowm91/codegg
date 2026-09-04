@@ -2,8 +2,9 @@
 //!
 //! `codegg-git` establishes a stable typed vocabulary for Git commands that
 //! later native-tool, Bash-routing, policy, execution, projection, and
-//! provenance work consumes. It is intentionally architecture-first and
-//! side-effect free: parsing and rendering never execute commands.
+//! provenance work consumes. Parsing, rendering, and workflow result types
+//! are intentionally side-effect free; execution is delegated to `egggit`
+//! and CodeGG adapters.
 //!
 //! # Crate boundary
 //!
@@ -20,6 +21,7 @@ pub mod ref_name;
 pub mod render;
 pub mod risk;
 pub mod sensitive;
+pub mod workflow;
 
 pub use error::ParseError;
 pub use operation::GitOperation;
@@ -27,10 +29,11 @@ pub use origin::GitCommandOrigin;
 pub use parser::parse_git_argv;
 pub use path::{RepoPath, RepoRoot};
 pub use process_policy::{
-    is_allowed as is_allowed_env, is_stripped as is_stripped_env, ALLOWED_ENV_VARS,
+    is_allowed as is_allowed_env, is_stripped as is_stripped_env, GitEnvPolicy, ALLOWED_ENV_VARS,
     ALWAYS_STRIPPED_ENV_VARS,
 };
 pub use ref_name::{BranchName, ObjectId, RefName, RemoteName};
 pub use render::render_argv;
 pub use risk::{GitRiskClass, RiskSet};
 pub use sensitive::{redact_url_credentials, AuditSafeArgv, RedactedUrl};
+pub use workflow::{MutationOutcome, MutationResult, RepoSnapshot, StateDelta};

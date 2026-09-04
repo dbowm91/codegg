@@ -23,8 +23,8 @@ use codegg_core::run_store::{
     RunCompletion, RunDraft, RunHandle, RunId, RunKind, RunOwnership, RunStatus, RunStore,
 };
 
-use crate::git_mutations::MutationResult;
 use crate::git_network_policy::sanitize_argv_for_run_store;
+use codegg_git::MutationResult;
 
 /// Persist a completed `MutationResult` to the `RunStore`.
 ///

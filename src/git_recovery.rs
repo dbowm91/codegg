@@ -19,9 +19,9 @@ use egggit::{
 };
 
 use crate::git_mutations::{
-    classify_outcome, compute_delta, GitMutationError, GitMutationExecutor, MutationOutcome,
-    MutationResult, RepoSnapshot,
+    classify_outcome, compute_delta, GitMutationError, GitMutationExecutor,
 };
+use codegg_git::{MutationOutcome, MutationResult, RepoSnapshot};
 
 /// Outcome of a recovery action.
 #[derive(Debug, Clone, PartialEq, Eq)]

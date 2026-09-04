@@ -11,7 +11,7 @@
 
 use std::fmt::Write;
 
-use crate::git_mutations::{MutationOutcome, MutationResult};
+use codegg_git::{MutationOutcome, MutationResult};
 
 /// Format a `MutationResult` into a structured, human-readable summary.
 ///

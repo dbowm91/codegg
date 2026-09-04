@@ -9,7 +9,8 @@ polish/maintainability/verification plan (Workstream E2):
     with raw-form exposure.
   * Direct `expose_secret()` calls outside the rendering boundary.
   * RunStore persistence using unsanitized argv.
-  * Duplicated env-policy tables (must live in `codegg-git::process_policy`).
+  * Duplicated env-policy tables (must live in `egggit::process`).
+  * Direct literal `git` process construction outside the generic owner.
   * `RerunDescriptor { argv: <Vec<String>> }` literals (must use AuditSafeArgv).
 
 Exits 0 when all checks pass, 1 otherwise. Each finding includes the
@@ -239,17 +240,15 @@ def check_expose_secret_callers() -> List[Finding]:
 
 def check_duplicated_env_policy() -> List[Finding]:
     """Env policy tables must live only in
-    codegg_git::process_policy. Detect hand-maintained copies."""
+    egggit::process. Detect hand-maintained copies."""
     findings: List[Finding] = []
     # Heuristic: a hand-maintained copy is a file that defines one of the
     # canonical lists inline. We look for both `const ALLOWED_ENV_VARS`
     # and `const ALWAYS_STRIPPED_ENV_VARS` (or close variants) outside
     # the canonical module.
     canonical_paths = {
+        str((CRATES / "egggit" / "src" / "process.rs").relative_to(ROOT)),
         str((CRATES / "codegg-git" / "src" / "process_policy.rs").relative_to(ROOT)),
-        str((CRATES / "codegg-git" / "src" / "lib.rs").relative_to(ROOT)),
-        str((ROOT / "src" / "git_mutations.rs").relative_to(ROOT)),
-        str((CRATES / "codegg-core" / "src" / "worktree.rs").relative_to(ROOT)),
     }
     for path, lineno, content in rg(
         "const (ALLOWED_ENV_VARS|ALWAYS_STRIPPED_ENV_VARS|STRIPPED_ENV_VARS)",
@@ -268,7 +267,7 @@ def check_duplicated_env_policy() -> List[Finding]:
                 line=lineno,
                 message=(
                     "Hand-maintained env policy table detected. "
-                    "Use codegg_git::process_policy constants instead."
+                    "Use egggit::process constants instead."
                 ),
             )
         )
@@ -306,6 +305,38 @@ def check_rerun_argv_construction() -> List[Finding]:
                     f"RerunDescriptor.argv uses {argv_expr[:60]!r}; "
                     "must wrap with AuditSafeArgv::from_argv(...)"
                 ),
+            )
+        )
+    return findings
+
+
+def check_direct_git_process_construction() -> List[Finding]:
+    """Only the generic owner may construct a literal `git` command.
+
+    Test fixtures are excluded because they need to create temporary
+    repositories; production callers must use `egggit::process` or a typed
+    workflow service.
+    """
+    findings: List[Finding] = []
+    owner = "crates/egggit/src/process.rs"
+    pattern = r"(?:Command::new|StdCommand::new|process::Command::new)\(\s*\"git\"\s*\)"
+    for path, lineno, content in rg(pattern, ROOT, include="*.rs"):
+        path_str = str(path.relative_to(ROOT))
+        if (
+            path_str == owner
+            or path_str.startswith("tests/")
+            or "/tests/" in path_str
+            or _in_test_module(path, lineno)
+        ):
+            continue
+        if content.lstrip().startswith("//"):
+            continue
+        findings.append(
+            Finding(
+                rule="direct-git-process-construction",
+                file=path_str,
+                line=lineno,
+                message="literal git process construction must use egggit::process",
             )
         )
     return findings
@@ -368,6 +399,7 @@ CHECKS = [
     check_secret_debug_serialize,
     check_expose_secret_callers,
     check_duplicated_env_policy,
+    check_direct_git_process_construction,
     check_rerun_argv_construction,
     check_runstore_argv_sanitization,
 ]

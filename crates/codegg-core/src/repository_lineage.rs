@@ -7,7 +7,7 @@
 
 use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -369,9 +369,11 @@ fn parse_remote_config(output: &[u8]) -> (Vec<String>, bool) {
 }
 
 fn run_git(path: &Path, args: &[&str]) -> Result<Output, RepositoryLineageError> {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(path)
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("git".to_owned());
+    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+    let mut child = egggit::process::GitEnvPolicy::default()
+        .apply_sync(&argv, path)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")

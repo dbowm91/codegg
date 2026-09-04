@@ -3,13 +3,14 @@
 //! `egggit` exposes a small async API for inspecting a git repository:
 //! branch, status, diff summary, changed files, log, blame, refs, and patch
 //! validation. It does **not** mutate the repository; commit and worktree
-//! create/remove stay in Codegg under the permission flow.
+//! create/remove stay in CodeGG workflow owners under the permission flow.
 
 pub mod blame;
 pub mod conflict;
 pub mod diff;
 pub mod log;
 pub mod operation_state;
+pub mod process;
 pub mod refs;
 pub mod status;
 pub mod status_v2;
@@ -31,6 +32,7 @@ pub use operation_state::{
     MergeState, OperationFamily, RebaseState, RecoveryAction, RepositoryOperationState,
     SequenceState, SequencerState, UnknownOperationState,
 };
+pub use process::{GitEnvPolicy, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS};
 pub use refs::{
     list_branches, list_remotes, list_tags, resolve_commit, BranchInfo, RemoteInfo, TagInfo,
 };

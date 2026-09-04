@@ -14,19 +14,7 @@ async fn run_git_async(
     root: PathBuf,
     args: Vec<String>,
 ) -> Result<std::process::Output, EgggitError> {
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        cmd.args(&args).current_dir(&root);
-        cmd.output().map_err(|e| EgggitError::Io(e.to_string()))
-    })
-    .await
-    .map_err(|e| EgggitError::Join(e.to_string()))?
+    crate::process::run(&args, &root).await
 }
 
 fn push_parsed_worktree(

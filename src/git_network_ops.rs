@@ -27,10 +27,11 @@ use tokio::process::Command;
 
 use crate::git_mutations::{
     resolve_repo_root, validate_repo_path, GitEnvPolicy, GitMutationError, GitMutationExecutor,
-    MutationResult, ALLOWED_ENV_VARS, ALWAYS_STRIPPED_ENV_VARS,
+    ALWAYS_STRIPPED_ENV_VARS,
 };
 use crate::git_mutations_ops::run_raw_mutation;
 use crate::git_network_policy::NETWORK_ALLOWED_ENV_VARS;
+use codegg_git::MutationResult;
 
 // ── Network environment policy ─────────────────────────────────────
 
@@ -51,16 +52,10 @@ impl NetworkEnvPolicy {
     /// network policy applied. The caller receives the `Command` with
     /// `args` and `current_dir` already set.
     pub fn apply_to_command(&self, argv: &[String], cwd: &Path) -> Command {
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
-        cmd.env_clear();
-
-        // Restore base env vars.
-        for key in ALLOWED_ENV_VARS {
-            if let Some(v) = std::env::var_os(key) {
-                cmd.env(key, v);
-            }
-        }
+        // Start from the canonical generic Git policy. Network-specific
+        // access is an additive overlay; it must not duplicate the local
+        // env hardening rules.
+        let mut cmd = self.base.apply(argv, cwd);
 
         // Restore network-specific env vars (SSH agent, proxy,
         // credential-helper essentials for remote access).
@@ -79,22 +74,6 @@ impl NetworkEnvPolicy {
             cmd.env_remove(key);
         }
 
-        // Apply same flags as GitEnvPolicy::default().
-        if self.base.terminal_prompt_disabled {
-            cmd.env("GIT_TERMINAL_PROMPT", "0");
-        }
-        if self.base.pin_editor {
-            cmd.env("GIT_EDITOR", "true");
-            cmd.env("GIT_SEQUENCE_EDITOR", "true");
-        }
-        if self.base.strip_editors {
-            cmd.env_remove("EDITOR");
-            cmd.env_remove("VISUAL");
-        }
-        cmd.env("GPG_TTY", "");
-        cmd.env("GIT_PAGER", "cat");
-        cmd.env("PAGER", "cat");
-        cmd.kill_on_drop(true);
         cmd
     }
 }

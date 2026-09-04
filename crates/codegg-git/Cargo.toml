@@ -9,6 +9,8 @@ repository = "https://github.com/dbowm91/codegg"
 homepage = "https://github.com/dbowm91/codegg"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+egggit = { version = "=0.1.0", path = "../egggit" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 

@@ -19,12 +19,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use codegg_git::path::{PathError, RepoPath, RepoRoot};
 use codegg_git::ref_name::RefError;
 use codegg_git::{render_argv, GitOperation, GitRiskClass};
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
 
 use crate::git_network_policy::redact_url_credentials_in_text;
 use crate::git_network_policy::NetworkFailureKind;
@@ -32,132 +31,28 @@ use crate::git_service::{GitExecutionService, GitServiceError, RawGitOutput};
 
 // ── Process environment policy ───────────────────────────────────────
 //
-// The canonical env-var lists live in `codegg_git::process_policy`
-// (the `codegg-git` crate) so both the root crate and
-// `codegg-core::worktree` share the same source of truth. The
-// re-exports below preserve the historical `pub` paths used by
-// downstream callers (tests, AGENTS.md citations).
+// The canonical env-var lists and builder live in `egggit::process`. These
+// re-exports preserve the historical root paths used by downstream callers.
 
 /// Re-export of the canonical allowlist. See
 /// [`codegg_git::process_policy::ALLOWED_ENV_VARS`] for the source of
 /// truth and rationale.
-pub use codegg_git::process_policy::ALLOWED_ENV_VARS;
+pub use egggit::process::ALLOWED_ENV_VARS;
 
 /// Re-export of the canonical always-stripped set. See
 /// [`codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS`].
-pub use codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS;
+pub use egggit::process::ALWAYS_STRIPPED_ENV_VARS;
 
-/// Process-environment policy applied to every mutation subprocess.
-#[derive(Debug, Clone)]
-pub struct GitEnvPolicy {
-    /// Hard-pin `GIT_TERMINAL_PROMPT=0` so credential helpers never block.
-    pub terminal_prompt_disabled: bool,
-    /// When true, pin `GIT_EDITOR=true` and `GIT_SEQUENCE_EDITOR=true` to
-    /// prevent git from launching a user `$EDITOR`.
-    pub pin_editor: bool,
-    /// When true, strip `EDITOR`/`VISUAL` from the parent environment
-    /// before launching git.
-    pub strip_editors: bool,
-    /// When true, explicitly unset the variables in
-    /// [`ALWAYS_STRIPPED_ENV_VARS`] before launching git.
-    pub strip_command_bearers: bool,
-}
-
-impl Default for GitEnvPolicy {
-    fn default() -> Self {
-        Self {
-            terminal_prompt_disabled: true,
-            pin_editor: true,
-            strip_editors: true,
-            strip_command_bearers: true,
-        }
-    }
-}
-
-impl GitEnvPolicy {
-    /// Build an async `Command` from argv and repository root with the
-    /// policy applied. The caller receives the `Command` with `args` and
-    /// `current_dir` already set; the helper is the single source of
-    /// truth for env hardening.
-    ///
-    /// All Codegg-owned `git` subprocesses — typed mutations, managed
-    /// argv fallback, raw subcommand fallback, and snapshot capture —
-    /// MUST flow through `apply()`. Network operations apply the
-    /// baseline plus `NETWORK_ALLOWED_ENV_VARS` via
-    /// [`crate::git_network_policy::NetworkEnvPolicy::apply_to_command`].
-    pub fn apply(&self, argv: &[String], cwd: &Path) -> Command {
-        let mut cmd = Command::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
-        cmd.env_clear();
-        for key in ALLOWED_ENV_VARS {
-            if let Some(v) = std::env::var_os(key) {
-                cmd.env(key, v);
-            }
-        }
-        if self.strip_command_bearers {
-            for key in ALWAYS_STRIPPED_ENV_VARS {
-                cmd.env_remove(key);
-            }
-        }
-        if self.terminal_prompt_disabled {
-            cmd.env("GIT_TERMINAL_PROMPT", "0");
-        }
-        if self.pin_editor {
-            cmd.env("GIT_EDITOR", "true");
-            cmd.env("GIT_SEQUENCE_EDITOR", "true");
-        }
-        if self.strip_editors {
-            cmd.env_remove("EDITOR");
-            cmd.env_remove("VISUAL");
-        }
-        cmd.env("GPG_TTY", "");
-        cmd.env("GIT_PAGER", "cat");
-        cmd.env("PAGER", "cat");
-        cmd.kill_on_drop(true);
-        cmd
-    }
-
-    /// Synchronous variant of [`apply`] used by callers that need a
-    /// `std::process::Command` (e.g. TUI/dialog synchronous probes).
-    /// Drops `kill_on_drop` since `std::process::Command` has no
-    /// equivalent; downstream callers should still observe timeouts.
-    pub fn apply_sync(&self, argv: &[String], cwd: &Path) -> std::process::Command {
-        let mut cmd = std::process::Command::new(&argv[0]);
-        cmd.args(&argv[1..]).current_dir(cwd);
-        cmd.env_clear();
-        for key in ALLOWED_ENV_VARS {
-            if let Some(v) = std::env::var_os(key) {
-                cmd.env(key, v);
-            }
-        }
-        if self.strip_command_bearers {
-            for key in ALWAYS_STRIPPED_ENV_VARS {
-                cmd.env_remove(key);
-            }
-        }
-        if self.terminal_prompt_disabled {
-            cmd.env("GIT_TERMINAL_PROMPT", "0");
-        }
-        if self.pin_editor {
-            cmd.env("GIT_EDITOR", "true");
-            cmd.env("GIT_SEQUENCE_EDITOR", "true");
-        }
-        if self.strip_editors {
-            cmd.env_remove("EDITOR");
-            cmd.env_remove("VISUAL");
-        }
-        cmd.env("GPG_TTY", "");
-        cmd.env("GIT_PAGER", "cat");
-        cmd.env("PAGER", "cat");
-        cmd
-    }
-}
+/// Compatibility re-export. Generic Git process construction is owned by
+/// `egggit`; mutation orchestration remains in this root adapter until the
+/// scheduler can consume a crate-level durable workflow boundary.
+pub use egggit::process::GitEnvPolicy;
 
 #[cfg(test)]
 mod policy_drift_tests {
     use super::*;
 
-    /// Drift guard: the canonical lists in `codegg_git::process_policy`
+    /// Drift guard: the canonical lists in `egggit::process`
     /// MUST match the historical values the root crate has relied on
     /// since Phase F. If this test fails, the canonical list has
     /// changed and either (a) the policy genuinely changed (update the
@@ -223,7 +118,7 @@ mod policy_drift_tests {
 
     /// Drift guard: `codegg-core::worktree::hardened_git_command`
     /// MUST consume the same canonical lists. Both `pub use` aliases
-    /// below point at `codegg_git::process_policy` constants, so this
+    /// below point at `egggit::process` constants, so this
     /// is a structural check that the root crate and `codegg-core`
     /// read from the same source of truth.
     #[test]
@@ -241,135 +136,7 @@ mod policy_drift_tests {
 
 // ── Snapshots ────────────────────────────────────────────────────────
 
-/// A snapshot of repository state captured before or after a mutation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepoSnapshot {
-    /// HEAD commit hash (or branch name when not detached; the
-    /// porcelain v2 header sets this consistently).
-    pub head: String,
-    /// Current branch name (or detached hash if HEAD is detached).
-    pub branch: String,
-    /// Whether HEAD is detached.
-    pub detached: bool,
-    /// Number of staged entries (from porcelain v2 line 1).
-    pub staged_count: usize,
-    /// Number of unstaged entries (from porcelain v2 line 2).
-    pub unstaged_count: usize,
-    /// Number of untracked entries.
-    pub untracked_count: usize,
-    /// Number of conflicted entries.
-    pub conflicted_count: usize,
-    /// Wall-clock time of capture.
-    pub captured_at: DateTime<Utc>,
-    /// Optional full output of `git status --porcelain=v2 -z --branch`
-    /// (populated for projection/conflict extraction).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub raw_status: Option<String>,
-}
-
-impl RepoSnapshot {
-    /// Capture a snapshot by running `git status --porcelain=v2 -z --branch`.
-    pub async fn capture(repo_root: &Path) -> Result<Self, GitMutationError> {
-        capture_snapshot(repo_root).await
-    }
-}
-
-/// Typed state delta returned by every mutation operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StateDelta {
-    /// Pre-operation snapshot.
-    pub before: RepoSnapshot,
-    /// Post-operation snapshot.
-    pub after: RepoSnapshot,
-    /// Commits created (commit, cherry-pick, revert).
-    #[serde(default)]
-    pub commits_created: Vec<String>,
-    /// Refs created (branch, tag, etc.).
-    #[serde(default)]
-    pub refs_created: Vec<String>,
-    /// Refs deleted (branch/tag delete).
-    #[serde(default)]
-    pub refs_deleted: Vec<String>,
-    /// Paths added to the index (stage operations).
-    #[serde(default)]
-    pub paths_staged: Vec<String>,
-    /// Paths removed from the index (restore --staged, reset).
-    #[serde(default)]
-    pub paths_unstaged: Vec<String>,
-    /// Files with detected conflicts (merge/rebase/cherry-pick/revert
-    /// left the index in a conflict state).
-    #[serde(default)]
-    pub conflicts: Vec<String>,
-}
-
-impl StateDelta {
-    /// True if the operation actually changed the repository state.
-    pub fn is_noop(&self) -> bool {
-        self.commits_created.is_empty()
-            && self.refs_created.is_empty()
-            && self.refs_deleted.is_empty()
-            && self.paths_staged.is_empty()
-            && self.paths_unstaged.is_empty()
-            && self.conflicts.is_empty()
-            && self.before.head == self.after.head
-            && self.before.branch == self.after.branch
-            && self.before.staged_count == self.after.staged_count
-            && self.before.unstaged_count == self.after.unstaged_count
-    }
-}
-
-// ── Mutation result ─────────────────────────────────────────────────
-
-/// High-level outcome of a mutation operation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MutationOutcome {
-    /// Operation completed successfully and changed repository state.
-    Completed,
-    /// Operation completed but produced no state change.
-    NoOp,
-    /// Operation completed and fast-forwarded HEAD.
-    FastForward { from: String, to: String },
-    /// Operation produced conflicts. The repository is in a recoverable
-    /// Git-native state (MERGE_HEAD, REVERT_HEAD, etc. are set).
-    Conflict,
-    /// Operation was rejected by preconditions or git itself.
-    Rejected { reason: String },
-}
-
-impl MutationOutcome {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Completed => "completed",
-            Self::NoOp => "no-op",
-            Self::FastForward { .. } => "fast-forward",
-            Self::Conflict => "conflict",
-            Self::Rejected { .. } => "rejected",
-        }
-    }
-}
-
-/// The result of a single mutation operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MutationResult {
-    /// The original typed operation that was executed.
-    pub operation: GitOperation,
-    /// Subcommand name for display.
-    pub subcommand: String,
-    /// State delta (before/after + paths/refs/commits touched).
-    pub delta: StateDelta,
-    /// High-level outcome classification.
-    pub outcome: MutationOutcome,
-    /// Raw stdout from the git subprocess (truncated to 64 KiB).
-    pub stdout: String,
-    /// Raw stderr from the git subprocess (truncated to 64 KiB).
-    pub stderr: String,
-    /// Exit code from the subprocess.
-    pub exit_code: i32,
-    /// Whether the operation completed successfully (exit 0).
-    pub success: bool,
-    /// Wall-clock duration of the subprocess.
-    pub duration_ms: u64,
-}
+pub use codegg_git::workflow::{MutationOutcome, MutationResult, RepoSnapshot, StateDelta};
 
 // ── Errors ───────────────────────────────────────────────────────────
 

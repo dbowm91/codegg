@@ -23,9 +23,9 @@ use codegg_git::GitOperation;
 
 use crate::git_mutations::{
     classify_outcome, compute_delta, resolve_repo_root, validate_repo_path, CommitSelection,
-    GitEnvPolicy, GitMutationError, GitMutationExecutor, MutationOutcome, MutationResult,
-    StateDelta,
+    GitEnvPolicy, GitMutationError, GitMutationExecutor,
 };
+use codegg_git::{MutationOutcome, MutationResult, StateDelta};
 
 // ── Stage operations ────────────────────────────────────────────────
 

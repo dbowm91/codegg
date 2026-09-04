@@ -91,34 +91,13 @@ async fn capture_diff(
             full.push(b.to_string());
         }
     }
-    let root = root.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        if !root.exists() {
-            return Err(EgggitError::NotARepository(root.display().to_string()));
-        }
-        let mut cmd = std::process::Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        let refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
-        cmd.args(&refs).current_dir(&root);
-        cmd.output()
-            .map_err(|e| EgggitError::Io(e.to_string()))
-            .and_then(|out| {
-                if !out.status.success() {
-                    Err(EgggitError::Git(
-                        String::from_utf8_lossy(&out.stderr).to_string(),
-                    ))
-                } else {
-                    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-                }
-            })
-    })
-    .await
-    .map_err(|e| EgggitError::Join(e.to_string()))?
+    let output = crate::process::run(&full, root).await?;
+    if !output.status.success() {
+        return Err(EgggitError::Git(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 pub async fn diff_summary(root: &Path, base: Option<&str>) -> Result<DiffSummary, EgggitError> {
@@ -203,32 +182,14 @@ async fn run_diff(root: &Path, args: &[&str]) -> Result<String, EgggitError> {
     if !root.exists() {
         return Err(EgggitError::NotARepository(root.display().to_string()));
     }
-    let root = root.to_path_buf();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new("git");
-        cmd.env_clear();
-        if let Some(path) = std::env::var_os("PATH") {
-            cmd.env("PATH", path);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        cmd.args(&arg_refs).current_dir(&root);
-        cmd.output()
-            .map_err(|e| EgggitError::Io(e.to_string()))
-            .and_then(|out| {
-                if !out.status.success() {
-                    Err(EgggitError::Git(
-                        String::from_utf8_lossy(&out.stderr).to_string(),
-                    ))
-                } else {
-                    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-                }
-            })
-    })
-    .await
-    .map_err(|e| EgggitError::Join(e.to_string()))?
+    let output = crate::process::run(&args, root).await?;
+    if !output.status.success() {
+        return Err(EgggitError::Git(
+            String::from_utf8_lossy(&output.stderr).to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn count_after(haystack: &str, needle: &str) -> usize {
@@ -271,9 +232,14 @@ pub async fn validate_patch(root: &Path, patch: &str) -> Result<PatchValidation,
     tokio::task::spawn_blocking(move || {
         use std::io::Write;
         use std::process::Stdio;
-        let mut child = std::process::Command::new("git")
-            .args(["apply", "--check", "-"])
-            .current_dir(&root)
+        let argv = vec![
+            "git".to_owned(),
+            "apply".to_owned(),
+            "--check".to_owned(),
+            "-".to_owned(),
+        ];
+        let mut child = crate::process::GitEnvPolicy::default()
+            .apply_sync(&argv, &root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -46,16 +46,17 @@ the provided `git_root`, including symlink-safe resolution.
 
 1. Clears the process environment (`env_clear()`)
 2. Restores only variables in the canonical allowlist
-   (`codegg_git::process_policy::ALLOWED_ENV_VARS`)
+   (`egggit::process::ALLOWED_ENV_VARS`)
 3. Strips command-bearing variables
-   (`codegg_git::process_policy::ALWAYS_STRIPPED_ENV_VARS`)
+   (`egggit::process::ALWAYS_STRIPPED_ENV_VARS`)
 4. Pins `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `PAGER=cat`
 5. Pins `GIT_EDITOR=true`, `GIT_SEQUENCE_EDITOR=true`
 6. Strips `EDITOR`, `VISUAL`
 7. Sets `GPG_TTY=""`
 
-The canonical policy lists live in `codegg-git` and are re-exported
-from codegg-core as `POLICY_ALLOWED_ENV_VARS` / `POLICY_ALWAYS_STRIPPED_ENV_VARS`.
+The canonical policy and command builder live in `egggit::process` and are
+re-exported from codegg-git/codegg-core for compatibility as
+`POLICY_ALLOWED_ENV_VARS` / `POLICY_ALWAYS_STRIPPED_ENV_VARS`.
 
 ### Durable managed lifecycle
 
@@ -170,7 +171,7 @@ Internal type in egggit. Converted to legacy `Worktree` via
 
 ### Policy re-exports (codegg-core:11-14)
 ```rust
-pub use codegg_git::process_policy::{
+pub use egggit::process::{
     ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
     ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
 };
@@ -190,7 +191,7 @@ pub use codegg_git::process_policy::{
 ## Invariants & Gotchas
 
 - **Shared env policy**: `hardened_git_command` and `GitEnvPolicy::apply`
-  both consume `codegg_git::process_policy` constants. A drift-guard
+  both consume `egggit::process` constants. A drift-guard
   test (`worktree_uses_canonical_policy`) ensures codegg-core stays
   synchronized with the canonical source.
 - **Sync vs async**: `create_worktree`/`remove_worktree` are synchronous
@@ -215,4 +216,4 @@ is_git_worktree/is_git_file edge cases, and symlink detection.
 
 - [git.md](git.md) — Git execution architecture
 - `architecture/command_intent.md` — Git command classification
-- `crates/codegg-git/src/process_policy.rs` — Canonical env policy
+- `crates/egggit/src/process.rs` — Canonical env policy and process builder

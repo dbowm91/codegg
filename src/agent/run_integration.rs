@@ -5,11 +5,12 @@
 //! operation. This service validates lineage/base identity before dispatching
 //! through the canonical mutation executor.
 
-use crate::git_mutations::{resolve_repo_root, GitMutationExecutor, MutationOutcome};
+use crate::git_mutations::{resolve_repo_root, GitMutationExecutor};
 use crate::git_mutations_ops as git_ops;
 use codegg_core::agent_run::AgentRunStore;
 use codegg_core::run_result::AgentRunResult;
 use codegg_core::worktree_service::WorktreeService;
+use codegg_git::MutationOutcome;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;

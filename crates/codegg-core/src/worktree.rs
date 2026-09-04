@@ -3,12 +3,10 @@ use egggit::worktree::WorktreeInfo;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// Re-export the canonical env-policy constants from `codegg-git` so
-// downstream callers (tests, validation scripts) can continue to
-// reference the policy through the codegg-core surface if they
-// prefer. The canonical source of truth is
-// `codegg_git::process_policy` (see `crates/codegg-git/src/process_policy.rs`).
-pub use codegg_git::process_policy::{
+// Re-export the canonical policy constants from the core surface for
+// compatibility. Construction itself is delegated to egggit's generic
+// process boundary.
+pub use egggit::process::{
     ALLOWED_ENV_VARS as POLICY_ALLOWED_ENV_VARS,
     ALWAYS_STRIPPED_ENV_VARS as POLICY_ALWAYS_STRIPPED_ENV_VARS,
 };
@@ -107,31 +105,16 @@ pub fn remove_worktree(git_root: &Path, path: &Path, force: bool) -> Result<(), 
 /// pin `GIT_PAGER=cat`/`PAGER=cat` to avoid paginator stalls.
 ///
 /// The allowlist and stripped set come from
-/// `codegg_git::process_policy` (the single source of truth shared
+/// `egggit::process` (the single source of truth shared
 /// with the root crate's `GitEnvPolicy::apply` / `apply_sync`). This
 /// helper exists because `codegg-core` builds synchronous
 /// `std::process::Command` values (no tokio) and uses a single
 /// caller pattern for `worktree add` / `worktree remove`.
 fn hardened_git_command(args: &[&str], git_root: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(args).current_dir(git_root).env_clear();
-    for key in POLICY_ALLOWED_ENV_VARS {
-        if let Some(v) = std::env::var_os(key) {
-            cmd.env(key, v);
-        }
-    }
-    for key in POLICY_ALWAYS_STRIPPED_ENV_VARS {
-        cmd.env_remove(key);
-    }
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    cmd.env("GIT_EDITOR", "true");
-    cmd.env("GIT_SEQUENCE_EDITOR", "true");
-    cmd.env_remove("EDITOR");
-    cmd.env_remove("VISUAL");
-    cmd.env("GPG_TTY", "");
-    cmd.env("GIT_PAGER", "cat");
-    cmd.env("PAGER", "cat");
-    cmd
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push("git".to_owned());
+    argv.extend(args.iter().map(|arg| (*arg).to_owned()));
+    egggit::process::GitEnvPolicy::default().apply_sync(&argv, git_root)
 }
 
 pub fn find_git_root(start: &Path) -> Option<std::path::PathBuf> {
@@ -151,7 +134,7 @@ mod tests {
     use super::*;
 
     /// Drift guard: the local `hardened_git_command` must consume the
-    /// canonical lists from `codegg_git::process_policy`. If this
+    /// canonical lists from `egggit::process`. If this
     /// test ever fails, a future refactor has re-introduced a
     /// hand-maintained mirror that must be deleted in favor of the
     /// shared constants.
