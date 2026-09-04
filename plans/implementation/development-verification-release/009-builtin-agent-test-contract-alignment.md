@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 009 — Built-in Agent Test Contract Alignment
 
-Status: active
+Status: implemented — closed; see `plans/closure/development-verification-release/009-status.md`
 
 Repository baseline: `184fd07dd1c7e6c176aa176d9d12ce1d4f193b0d`
 

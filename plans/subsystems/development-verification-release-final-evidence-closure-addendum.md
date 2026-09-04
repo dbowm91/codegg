@@ -1,6 +1,6 @@
 # Development Verification and Release Final Evidence Closure Addendum
 
-Status: active — M008/M009 corrective hosted-verification closure in progress
+Status: active — M008 corrective hosted-verification closure in progress
 
 Parent roadmap:
 
@@ -166,4 +166,4 @@ A missing hosted run, nonzero canonical verification command, registry ownership
 | 006 — Final evidence and release documentation closure | conditionally closed | `plans/implementation/development-verification-release/006-final-evidence-and-release-documentation-closure.md` | `plans/closure/development-verification-release/006-stop-condition.md` | Historical implementation and stop-condition evidence retained; final verification ownership transferred to M007. |
 | 007 — Minimal verification contract and final closure | closed | `plans/implementation/development-verification-release/007-minimal-verification-contract-and-final-closure.md` | `plans/closure/development-verification-release/007-status.md` | Boundary guard corrected; focused, quick, and shared hosted evidence passed; Provider M007, Tool Programs M019, and Agent Runtime M017 are strictly closed. |
 | 008 — Hosted Clippy Review module ordering | active | `plans/implementation/development-verification-release/008-hosted-clippy-review-module-ordering.md` | — | Separate corrective follow-up for the pre-existing `items_after_test_module` finding exposed after M005 Clippy corrections. |
-| 009 — Built-in agent test contract alignment | active | `plans/implementation/development-verification-release/009-builtin-agent-test-contract-alignment.md` | — | Separate corrective follow-up for stale nine-agent test expectations exposed after M008 restored the hosted test phase. |
+| 009 — Built-in agent test contract alignment | closed | `plans/implementation/development-verification-release/009-builtin-agent-test-contract-alignment.md` | `plans/closure/development-verification-release/009-status.md` | Stale nine-agent expectations were aligned to the checked-in ten-agent assets; no agent assets or runtime behavior changed. |
