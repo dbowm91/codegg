@@ -82,7 +82,8 @@ impl AgentLoop {
     }
 
     pub(super) fn timeout_for_tool(&self, _tool_name: &str, default: Duration) -> Duration {
-        self.config
+        self.services
+            .config
             .server
             .as_ref()
             .and_then(|s| s.tool_timeout_seconds)
@@ -120,7 +121,7 @@ impl AgentLoop {
             agent_id: Some(agent_id.clone()),
             parent_job_id: None,
             parent_attempt_id: None,
-            provider_name: Some(self.provider.name().to_string()),
+            provider_name: Some(self.services.provider.name().to_string()),
             backend_policy: Some("native_only".into()),
             cancellation: None,
             deadline: None,
@@ -151,7 +152,7 @@ impl AgentLoop {
                     })
                     .and_then(|tools| {
                         crate::tool::tool_program_context::resolve_contract_snapshot(
-                            &self.tool_broker,
+                            &self.services.tool_broker,
                             &tools,
                         )
                         .ok()
@@ -225,7 +226,8 @@ impl AgentLoop {
         let git_subcommand = extract_git_subcommand(tc);
 
         let perm_result = if bash_command.is_some() {
-            self.permission_checker
+            self.services
+                .permission_checker
                 .check_bash(
                     path.as_deref(),
                     bash_command.as_deref(),
@@ -233,7 +235,8 @@ impl AgentLoop {
                 )
                 .await
         } else if git_subcommand.is_some() {
-            self.permission_checker
+            self.services
+                .permission_checker
                 .check_git(
                     path.as_deref(),
                     git_subcommand.as_deref(),
@@ -241,29 +244,31 @@ impl AgentLoop {
                 )
                 .await
         } else {
-            self.permission_checker
+            self.services
+                .permission_checker
                 .check(&tc.name, path.as_deref(), Some(&self.session_id))
                 .await
         };
-        let security_hint = if !self.security_service.enabled() {
+        let security_hint = if !self.services.security_service.enabled() {
             crate::security::policy::SecurityDecisionHint {
                 action: crate::security::policy::SecurityAction::Observe,
                 reason: String::new(),
                 finding: None,
             }
         } else if let Some(ref cmd) = bash_command {
-            self.security_service.classify_bash(cmd)
+            self.services.security_service.classify_bash(cmd)
         } else if let Some(ref subcommand) = git_subcommand {
-            self.security_service.classify_git(subcommand)
+            self.services.security_service.classify_git(subcommand)
         } else {
-            self.security_service
+            self.services
+                .security_service
                 .classify_tool_call(&tc.name, &tc.arguments)
         };
         if let Some(ref finding) = security_hint.finding {
             self.recent_findings.push(finding.clone());
         }
         // Check if the path targets a sensitive file, regardless of permission level
-        let sensitive_match = self.config.security.as_ref().and_then(|sec| {
+        let sensitive_match = self.services.config.security.as_ref().and_then(|sec| {
             crate::security::matches_sensitive_path(path.as_deref(), &sec.sensitive_paths)
         });
 
@@ -429,11 +434,13 @@ impl AgentLoop {
                 let allowed = choice.allowed();
                 if choice.persist() {
                     if allowed {
-                        self.permission_checker
+                        self.services
+                            .permission_checker
                             .always_allow(&tc.name, req.path.as_deref(), Some(&self.session_id))
                             .await;
                     } else {
-                        self.permission_checker
+                        self.services
+                            .permission_checker
                             .always_deny(&tc.name, req.path.as_deref(), Some(&self.session_id))
                             .await;
                     }
@@ -507,7 +514,7 @@ impl AgentLoop {
                     || is_affirmatively_read_only_tool(tc)
             });
         if checkpoint_batch_is_eligible {
-            let manager = self.checkpoint_manager.as_ref();
+            let manager = self.services.checkpoint_manager.as_ref();
             let workspace_id = self.workspace_id.as_ref();
             let workspace_locks = self.workspace_locks.as_ref();
             if let (Some(mgr), Some(workspace_id), Some(workspace_locks)) =
@@ -610,7 +617,7 @@ impl AgentLoop {
             effective_max = 1;
         }
         let regular_tool_count = allowed_tools.len();
-        let registry = &self.tool_registry;
+        let registry = &self.services.tool_registry;
 
         let mut mcp_tool_calls = Vec::with_capacity(4);
         let regular_tools: Vec<_> = allowed_tools
@@ -629,7 +636,7 @@ impl AgentLoop {
         let mut mcp_futures = Vec::with_capacity(mcp_tool_calls.len());
         for (orig_idx, tc) in mcp_tool_calls {
             let name = tc.name.clone();
-            let mcp_arc = self.mcp_service.clone();
+            let mcp_arc = self.services.mcp_service.clone();
             mcp_futures.push(async move {
                 if let Some((server, tool)) = parse_mcp_tool_name(&name) {
                     if let Some(mcp_arc) = mcp_arc {
@@ -725,10 +732,10 @@ impl AgentLoop {
         let mut results = Vec::with_capacity(regular_tool_count);
         let sem = Arc::new(tokio::sync::Semaphore::new(effective_max));
         let mut futures = Vec::with_capacity(regular_tool_count);
-        let hook_registry = self.hook_registry.as_ref().map(Arc::clone);
+        let hook_registry = self.services.hook_registry.as_ref().map(Arc::clone);
         let plugin_service = self.plugin_service.as_ref().map(Arc::clone);
-        let event_store = self.event_store.clone();
-        let tool_broker = Arc::clone(&self.tool_broker);
+        let event_store = self.services.event_store.clone();
+        let tool_broker = Arc::clone(&self.services.tool_broker);
         let authority_ref = {
             // M012-F01: Derive authority from the agent's real identity.
             // The agent_id is the current agent's name (e.g. "code", "plan"),
@@ -1290,6 +1297,7 @@ impl AgentLoop {
 
         const MAX_TOOL_RESULT_BYTES_FALLBACK: usize = 512 * 1024; // 512KB per tool result
         let max_tool_result_bytes = self
+            .services
             .execution_policy
             .as_ref()
             .map_or(MAX_TOOL_RESULT_BYTES_FALLBACK, |p| {
@@ -1324,7 +1332,7 @@ impl AgentLoop {
             batch_seq,
         }) = checkpoint_ctx.take()
         {
-            if let Some(mgr) = &self.checkpoint_manager {
+            if let Some(mgr) = &self.services.checkpoint_manager {
                 match mgr.capture_states(&normalized).await {
                     Ok(post_states) => {
                         let mut files = Vec::new();

@@ -15,6 +15,7 @@ pub mod compaction;
 pub mod context_frame;
 mod context_runtime;
 pub mod convergence;
+mod coordinator;
 pub mod instructions;
 pub mod r#loop;
 pub mod mention;

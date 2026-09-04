@@ -10,21 +10,25 @@ impl AgentLoop {
         request: &ChatRequest,
     ) -> Vec<crate::context::ContextBlock> {
         let adapter = crate::model_profile::resolve_adapter(None, &request.model);
-        let compiler = self.prompt_compiler_fingerprint.clone().unwrap_or_else(|| {
-            request
-                .messages
-                .iter()
-                .find_map(|message| match message {
-                    Message::System { content } => {
-                        Some(crate::context::stable_hash_hex(content.as_bytes()))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| crate::context::stable_hash_hex(""))
-        });
+        let compiler = self
+            .services
+            .prompt_compiler_fingerprint
+            .clone()
+            .unwrap_or_else(|| {
+                request
+                    .messages
+                    .iter()
+                    .find_map(|message| match message {
+                        Message::System { content } => {
+                            Some(crate::context::stable_hash_hex(content.as_bytes()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| crate::context::stable_hash_hex(""))
+            });
         crate::context::ContextPlan::from_request(
             request,
-            self.provider.name(),
+            self.services.provider.name(),
             &adapter.fingerprint,
             &compiler,
             crate::context::ContextPlanMode::Observation,
@@ -37,16 +41,18 @@ impl AgentLoop {
         &self,
         request: &ChatRequest,
     ) -> Option<crate::context::ContextPackResult> {
-        if !self.context_packer_config.enabled.unwrap_or(false) {
+        if !self.services.context_packer_config.enabled.unwrap_or(false) {
             return None;
         }
         let candidates = self.build_packer_candidates(request);
         let budget = crate::context::ContextPackBudget {
             max_tokens: self
+                .services
                 .context_packer_config
                 .max_stable_prefix_tokens
                 .unwrap_or(32000)
                 + self
+                    .services
                     .context_packer_config
                     .max_volatile_tokens
                     .unwrap_or(24000),
@@ -62,12 +68,17 @@ impl AgentLoop {
         _model_profile: &crate::model_profile::types::ResolvedModelProfile,
         phase: ContextPackObservationPhase,
     ) {
-        if !self.context_packer_config.enabled.unwrap_or(false) {
+        if !self.services.context_packer_config.enabled.unwrap_or(false) {
             return;
         }
         // Emit the active-mode request warning (from Phase 1) at observation time so it is visible
         // for any phase where diagnostics run. (Forced observe-only behavior is unchanged.)
-        if !self.context_packer_config.observe_only.unwrap_or(true) {
+        if !self
+            .services
+            .context_packer_config
+            .observe_only
+            .unwrap_or(true)
+        {
             tracing::warn!(
                 "context-packer active mode is not yet safe; running in observe-only mode"
             );
@@ -77,7 +88,12 @@ impl AgentLoop {
             return;
         };
 
-        if self.context_packer_config.log_diagnostics.unwrap_or(true) {
+        if self
+            .services
+            .context_packer_config
+            .log_diagnostics
+            .unwrap_or(true)
+        {
             let model = &request.model;
             let total_candidate_est = result.estimated_tokens
                 + result
@@ -93,7 +109,7 @@ impl AgentLoop {
                 .sum();
             let tool_definitions_hash =
                 crate::context::tool_definitions_hash(request.tools.as_deref().unwrap_or(&[]));
-            let hit_rate = self.context_cache_stats.cache_hit_rate(model);
+            let hit_rate = self.services.context_cache_stats.cache_hit_rate(model);
             let omitted_count = result.omitted_blocks.len();
             let top_omitted: Vec<String> = result
                 .omitted_blocks
@@ -116,7 +132,7 @@ impl AgentLoop {
             );
             // Compute effective-cost analysis (observation-only, no mutation)
             let analysis = crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
+                &self.services.context_cache_stats,
                 model,
                 result.stable_prefix_tokens,
                 slow_tokens,
@@ -129,7 +145,7 @@ impl AgentLoop {
                 analysis.cache_hit_rate,
                 analysis.reason,
             );
-            if let Some(e) = self.context_cache_stats.get(model) {
+            if let Some(e) = self.services.context_cache_stats.get(model) {
                 tracing::debug!(
                     "context-packer[{phase:?}]: cache_stats model={} last_in={} last_cached={} total_in={} total_cached={} calls={} rate={:.4}",
                     model, e.last_input_tokens, e.last_cached_tokens, e.total_input_tokens, e.total_cached_tokens, e.call_count, hit_rate
@@ -154,20 +170,24 @@ impl AgentLoop {
         request: &mut ChatRequest,
         phase: &str,
     ) {
-        if !self.context_policy_config.enabled() {
+        if !self.services.context_policy_config.enabled() {
             return;
         }
-        let mode = self.context_policy_config.mode();
+        let mode = self.services.context_policy_config.mode();
         if mode == crate::config::schema::ContextPolicyMode::Observe {
             return;
         }
-        if self.base_request_tools.is_empty() {
+        if self.services.base_request_tools.is_empty() {
             return;
         }
         if request.tools.is_none() {
             return;
         }
-        if let Some(until) = self.context_policy_runtime.reduction_disabled_until_turn {
+        if let Some(until) = self
+            .services
+            .context_policy_runtime
+            .reduction_disabled_until_turn
+        {
             if self.state.turn_count <= until {
                 tracing::info!(
                     policy = "context_tool_palette",
@@ -176,13 +196,13 @@ impl AgentLoop {
                     turn_count = self.state.turn_count,
                     "context policy backoff active"
                 );
-                request.tools = Some(self.base_request_tools.clone());
-                self.context_policy_runtime.last_reason =
+                request.tools = Some(self.services.base_request_tools.clone());
+                self.services.context_policy_runtime.last_reason =
                     Some("backoff active; using full base palette".to_string());
                 return;
             }
         }
-        let current_count_for_decision = self.base_request_tools.len();
+        let current_count_for_decision = self.services.base_request_tools.len();
         let pack_res = self.compute_context_pack_result(request);
         let analysis = if let Some(res) = pack_res {
             let slow_tokens: usize = res
@@ -192,7 +212,7 @@ impl AgentLoop {
                 .map(|b| b.estimated_tokens)
                 .sum();
             crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
+                &self.services.context_cache_stats,
                 &request.model,
                 res.stable_prefix_tokens,
                 slow_tokens,
@@ -202,6 +222,7 @@ impl AgentLoop {
             return;
         };
         let observed_count = self
+            .services
             .context_cache_stats
             .get(&request.model)
             .map(|e| e.call_count)
@@ -209,30 +230,31 @@ impl AgentLoop {
         let decision = crate::context::decide_policy(
             &analysis,
             current_count_for_decision,
-            &self.context_policy_config,
+            &self.services.context_policy_config,
             Some(phase),
             observed_count,
-            Some(&self.base_request_tools),
+            Some(&self.services.base_request_tools),
         );
         match decision.kind {
             crate::context::ContextPolicyDecisionKind::ReduceToolPalette => {
                 let mut red = crate::context::reduce_tool_palette(
-                    &self.base_request_tools,
-                    &self.context_policy_config,
+                    &self.services.base_request_tools,
+                    &self.services.context_policy_config,
                     None,
                 );
                 let cap_exceeded_by_required = red.cap_exceeded_by_required;
-                if red.selected.is_empty() && !self.base_request_tools.is_empty() {
+                if red.selected.is_empty() && !self.services.base_request_tools.is_empty() {
                     red = crate::context::ToolPaletteReduction {
-                        selected: self.base_request_tools.clone(),
+                        selected: self.services.base_request_tools.clone(),
                         omitted: vec![],
                         reason:
                             "fallback to full base palette to avoid empty selection after reduction"
                                 .to_string(),
                         cap_exceeded_by_required,
                     };
-                    self.context_policy_runtime.reduction_disabled_until_turn =
-                        Some(self.state.turn_count + 1);
+                    self.services
+                        .context_policy_runtime
+                        .reduction_disabled_until_turn = Some(self.state.turn_count + 1);
                 }
                 let selected = red.selected.clone();
                 let omitted = red.omitted.clone();
@@ -240,15 +262,19 @@ impl AgentLoop {
                 if let Some(ref mut tlist) = request.tools {
                     *tlist = selected.clone();
                 }
-                self.context_policy_runtime.last_selected_tool_count = selected.len();
-                self.context_policy_runtime.last_omitted_tools = omitted.clone();
-                self.context_policy_runtime.last_reason = Some(reason.clone());
-                self.context_policy_runtime.last_selected_tools =
+                self.services
+                    .context_policy_runtime
+                    .last_selected_tool_count = selected.len();
+                self.services.context_policy_runtime.last_omitted_tools = omitted.clone();
+                self.services.context_policy_runtime.last_reason = Some(reason.clone());
+                self.services.context_policy_runtime.last_selected_tools =
                     selected.iter().map(|t| t.name.clone()).collect();
-                self.context_policy_runtime.consecutive_reductions += 1;
-                if self.context_policy_config.log_policy_decisions() {
-                    let reduction_disabled_until_turn =
-                        self.context_policy_runtime.reduction_disabled_until_turn;
+                self.services.context_policy_runtime.consecutive_reductions += 1;
+                if self.services.context_policy_config.log_policy_decisions() {
+                    let reduction_disabled_until_turn = self
+                        .services
+                        .context_policy_runtime
+                        .reduction_disabled_until_turn;
                     let policy_backoff_active =
                         reduction_disabled_until_turn.is_some_and(|u| self.state.turn_count <= u);
                     tracing::info!(
@@ -256,7 +282,7 @@ impl AgentLoop {
                         mode = ?mode,
                         action = "ReduceToolPalette",
                         recommended_action = ?decision.recommended_action,
-                        base_tool_count = self.base_request_tools.len(),
+                        base_tool_count = self.services.base_request_tools.len(),
                         selected_tool_count = selected.len(),
                         omitted_tool_count = omitted.len(),
                         reason = %reason,
@@ -279,15 +305,19 @@ impl AgentLoop {
                 }
             }
             crate::context::ContextPolicyDecisionKind::WarnOnly
-                if self.context_policy_config.log_policy_decisions() =>
+                if self.services.context_policy_config.log_policy_decisions() =>
             {
                 if request.tools.is_some() {
-                    request.tools = Some(self.base_request_tools.clone());
+                    request.tools = Some(self.services.base_request_tools.clone());
                 }
-                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
-                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
-                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
-                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
+                self.services
+                    .context_policy_runtime
+                    .last_selected_tool_count = decision.selected_tool_count;
+                self.services.context_policy_runtime.last_omitted_tools =
+                    decision.omitted_tools.clone();
+                self.services.context_policy_runtime.last_reason = Some(decision.reason.clone());
+                self.services.context_policy_runtime.last_selected_tools =
+                    decision.selected_tools.clone();
                 let would_s = decision
                     .would_selected_tool_count
                     .unwrap_or(decision.selected_tool_count);
@@ -303,12 +333,16 @@ impl AgentLoop {
             }
             _ => {
                 if request.tools.is_some() {
-                    request.tools = Some(self.base_request_tools.clone());
+                    request.tools = Some(self.services.base_request_tools.clone());
                 }
-                self.context_policy_runtime.last_selected_tool_count = decision.selected_tool_count;
-                self.context_policy_runtime.last_omitted_tools = decision.omitted_tools.clone();
-                self.context_policy_runtime.last_reason = Some(decision.reason.clone());
-                self.context_policy_runtime.last_selected_tools = decision.selected_tools.clone();
+                self.services
+                    .context_policy_runtime
+                    .last_selected_tool_count = decision.selected_tool_count;
+                self.services.context_policy_runtime.last_omitted_tools =
+                    decision.omitted_tools.clone();
+                self.services.context_policy_runtime.last_reason = Some(decision.reason.clone());
+                self.services.context_policy_runtime.last_selected_tools =
+                    decision.selected_tools.clone();
             }
         }
     }
@@ -318,11 +352,15 @@ impl AgentLoop {
         request: &mut ChatRequest,
         phase: &str,
     ) {
-        if !self.context_policy_config.volatile_tail_compaction() {
+        if !self
+            .services
+            .context_policy_config
+            .volatile_tail_compaction()
+        {
             return;
         }
 
-        let mode = self.context_policy_config.volatile_tail_mode();
+        let mode = self.services.context_policy_config.volatile_tail_mode();
 
         // Build a minimal effective-cost analysis for the decision gate.
         // Reuse the pack result if available, otherwise build from message estimates.
@@ -336,7 +374,7 @@ impl AgentLoop {
                 .map(|b| b.estimated_tokens)
                 .sum();
             crate::context::EffectiveCostAnalysis::analyze(
-                &self.context_cache_stats,
+                &self.services.context_cache_stats,
                 model_name,
                 res.stable_prefix_tokens,
                 slow_tokens,
@@ -369,12 +407,12 @@ impl AgentLoop {
         let plan = crate::context::volatile_tail::plan_volatile_tail_compaction(
             &request.messages,
             &analysis,
-            &self.context_policy_config,
+            &self.services.context_policy_config,
         );
 
         let decision = crate::context::volatile_tail::decide_volatile_tail(
             &analysis,
-            &self.context_policy_config,
+            &self.services.context_policy_config,
             &plan,
         );
 
@@ -384,7 +422,7 @@ impl AgentLoop {
                     &mut request.messages,
                     &plan,
                 );
-                if self.context_policy_config.log_policy_decisions() {
+                if self.services.context_policy_config.log_policy_decisions() {
                     tracing::info!(
                         policy = "volatile_tail_compaction",
                         mode = ?mode,
@@ -394,7 +432,7 @@ impl AgentLoop {
                         safe_candidate_count = plan.safe_candidates.len(),
                         planned_compaction_tokens = plan.planned_tokens,
                         applied_compactions = applied,
-                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
+                        preserved_recent_messages = self.services.context_policy_config.preserve_recent_messages(),
                         phase = %phase,
                         "volatile tail policy decision"
                     );
@@ -412,7 +450,7 @@ impl AgentLoop {
                 }
             }
             crate::context::volatile_tail::VolatileTailDecisionKind::WarnOnly => {
-                if self.context_policy_config.log_policy_decisions() {
+                if self.services.context_policy_config.log_policy_decisions() {
                     tracing::warn!(
                         policy = "volatile_tail_compaction",
                         mode = ?mode,
@@ -421,7 +459,7 @@ impl AgentLoop {
                         candidate_count = plan.candidates.len(),
                         safe_candidate_count = plan.safe_candidates.len(),
                         planned_compaction_tokens = plan.planned_tokens,
-                        preserved_recent_messages = self.context_policy_config.preserve_recent_messages(),
+                        preserved_recent_messages = self.services.context_policy_config.preserve_recent_messages(),
                         reason = %decision.reason,
                         phase = %phase,
                         "volatile tail would compact but only warning"
@@ -429,7 +467,7 @@ impl AgentLoop {
                 }
             }
             crate::context::volatile_tail::VolatileTailDecisionKind::Noop => {
-                if self.context_policy_config.log_policy_decisions()
+                if self.services.context_policy_config.log_policy_decisions()
                     && tracing::enabled!(tracing::Level::DEBUG)
                 {
                     tracing::debug!(
@@ -447,17 +485,28 @@ impl AgentLoop {
     }
 
     pub(super) fn observe_tool_palette_starvation(&mut self, tool_calls: &[ToolCall]) -> bool {
-        if self.base_request_tools.is_empty() {
+        if self.services.base_request_tools.is_empty() {
             return false;
         }
-        if self.context_policy_runtime.last_selected_tools.is_empty() {
+        if self
+            .services
+            .context_policy_runtime
+            .last_selected_tools
+            .is_empty()
+        {
             return false;
         }
-        if self.context_policy_runtime.last_omitted_tools.is_empty() {
+        if self
+            .services
+            .context_policy_runtime
+            .last_omitted_tools
+            .is_empty()
+        {
             return false;
         }
 
         let base_names: Vec<String> = self
+            .services
             .base_request_tools
             .iter()
             .map(|t| t.name.clone())
@@ -465,7 +514,7 @@ impl AgentLoop {
         let called_names: Vec<String> = tool_calls.iter().map(|tc| tc.name.to_string()).collect();
         let starved = crate::context::detect_palette_starvation(
             &base_names,
-            &self.context_policy_runtime.last_selected_tools,
+            &self.services.context_policy_runtime.last_selected_tools,
             &called_names,
         );
 
@@ -474,17 +523,18 @@ impl AgentLoop {
                 tracing::warn!(
                     policy = "context_tool_palette",
                     tool = %name,
-                    base_tool_count = self.base_request_tools.len(),
-                    last_selected_tool_count = self.context_policy_runtime.last_selected_tool_count,
-                    last_omitted_tool_count = self.context_policy_runtime.last_omitted_tools.len(),
+                    base_tool_count = self.services.base_request_tools.len(),
+                    last_selected_tool_count = self.services.context_policy_runtime.last_selected_tool_count,
+                    last_omitted_tool_count = self.services.context_policy_runtime.last_omitted_tools.len(),
                     turn_count = self.state.turn_count,
                     reduction_disabled_until_turn = %(self.state.turn_count + 1),
                     "context policy starvation detected: model attempted omitted base-palette tool"
                 );
             }
-            self.context_policy_runtime.reduction_disabled_until_turn =
-                Some(self.state.turn_count + 1);
-            self.context_policy_runtime.last_reason =
+            self.services
+                .context_policy_runtime
+                .reduction_disabled_until_turn = Some(self.state.turn_count + 1);
+            self.services.context_policy_runtime.last_reason =
                 Some("starvation: model attempted omitted base-palette tool".to_string());
         }
 
@@ -514,8 +564,12 @@ impl AgentLoop {
             processor.cached_tokens(),
         );
 
-        let cache_key = self.context_plan_cache_key.as_deref().unwrap_or(model);
-        self.context_cache_stats.record_usage(
+        let cache_key = self
+            .services
+            .context_plan_cache_key
+            .as_deref()
+            .unwrap_or(model);
+        self.services.context_cache_stats.record_usage(
             cache_key,
             usage.input_tokens,
             usage.cached_input_tokens,
@@ -528,7 +582,7 @@ impl AgentLoop {
             input_tokens = usage.input_tokens,
             cached_input_tokens = ?usage.cached_input_tokens,
             output_tokens = usage.output_tokens,
-            cache_hit_rate = self.context_cache_stats.cache_hit_rate(cache_key),
+            cache_hit_rate = self.services.context_cache_stats.cache_hit_rate(cache_key),
             "updated context cache stats"
         );
 

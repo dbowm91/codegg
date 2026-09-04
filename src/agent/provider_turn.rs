@@ -58,18 +58,21 @@ async fn stream_once(
     loop_: &mut AgentLoop,
     request: &ChatRequest,
 ) -> Result<Vec<ChatEvent>, AppError> {
-    let stream = tokio::time::timeout(Duration::from_secs(120), loop_.provider.stream(request))
-        .await
-        .map_err(|_| {
-            AppError::Provider(ProviderError::Timeout(
-                "provider stream timeout".to_string(),
-            ))
-        })??;
+    let stream = tokio::time::timeout(
+        Duration::from_secs(120),
+        loop_.services.provider.stream(request),
+    )
+    .await
+    .map_err(|_| {
+        AppError::Provider(ProviderError::Timeout(
+            "provider stream timeout".to_string(),
+        ))
+    })??;
     let mut events = Vec::with_capacity(64);
     let session_id_arc: Arc<str> = Arc::from(loop_.session_id.as_str());
     let model_name = request.model.clone();
-    let provider_name = loop_.provider.name().to_string();
-    let usage_store = loop_.usage_store.clone();
+    let provider_name = loop_.services.provider.name().to_string();
+    let usage_store = loop_.services.usage_store.clone();
     let pricing_service = crate::util::pricing::PricingService::new();
 
     use futures_util::StreamExt;

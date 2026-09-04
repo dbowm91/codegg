@@ -13,6 +13,7 @@
 //! - `ExecutionLimits` - bounds on turns, tokens, timeouts
 //! - `ContextTracker` - monitors token usage for compaction
 
+use crate::agent::coordinator::{AgentLoopServices, TurnLifecycle, TurnPhase};
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::{
     ActionClass, AutonomyState, ProgressObservation, RecoveryAction, RecoveryController,
@@ -74,18 +75,6 @@ use tokio::sync::mpsc;
 use tracing::instrument;
 
 const FOLLOW_UP_CHANNEL_CAPACITY: usize = 32;
-
-type ToolDefCache = (
-    Option<String>,
-    bool,
-    bool,
-    String,
-    u64,
-    bool,
-    Option<crate::config::schema::ToolDeferralConfig>,
-    Vec<crate::provider::ToolDefinition>,
-    Vec<crate::provider::ToolDefinition>,
-);
 
 fn redact_local_paths(input: &str, local_paths: &(Option<String>, Option<String>)) -> String {
     let mut result = Cow::Borrowed(input);
@@ -431,20 +420,13 @@ impl Default for ExecutionLimits {
 }
 
 pub struct AgentLoop {
-    pub(super) agents: HashMap<String, Agent>,
+    pub(super) services: AgentLoopServices,
+    pub(super) lifecycle: TurnLifecycle,
     pub(super) state: AgentLoopState,
     pub(super) limits: ExecutionLimits,
-    pub(super) provider: Box<dyn crate::provider::Provider>,
-    pub(super) permission_checker: PermissionChecker,
-    pub(super) tool_registry: ToolRegistry,
-    pub(super) hook_registry: Option<Arc<crate::hooks::HookRegistry>>,
-    pub(super) context_tracker: ContextTracker,
-    pub(super) progress_recovery: RecoveryController,
-    pub(super) recovery_parallel_limit: Option<usize>,
     pub(super) steering: Arc<AtomicBool>,
     pub(super) follow_up_tx: mpsc::Sender<String>,
     pub(super) follow_up_rx: mpsc::Receiver<String>,
-    pub(super) config: Config,
     pub(super) question_tx: Option<tokio::sync::oneshot::Sender<String>>,
     pub(super) question_rx: Option<tokio::sync::oneshot::Receiver<String>>,
     pub(super) plugin_service: Option<Arc<crate::plugin::service::PluginService>>,
@@ -453,13 +435,6 @@ pub struct AgentLoop {
     /// Durable child loops retain the originating turn for provenance while
     /// their run ID remains the invocation owner scope.
     pub(super) turn_id: Option<String>,
-    pub(super) mcp_service: Option<Arc<tokio::sync::RwLock<crate::mcp::McpService>>>,
-    pub(super) tool_def_cache: Option<ToolDefCache>,
-    pub(super) deferred_tool_definitions: Vec<crate::provider::ToolDefinition>,
-    pub(super) model_router: ModelRouter,
-    #[allow(dead_code)]
-    pub(super) snapshot_manager: Option<crate::snapshot::SnapshotManager>,
-    pub(super) checkpoint_manager: Option<crate::snapshot::checkpoint::EditCheckpointManager>,
     pub(super) workspace_id: Option<codegg_core::workspace::WorkspaceId>,
     pub(super) workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
     /// Retains the workspace service bundle so eviction cannot replace the
@@ -467,60 +442,23 @@ pub struct AgentLoop {
     pub(super) workspace_service_lease:
         Option<codegg_core::workspace_services::WorkspaceServicesLease>,
     pub(super) checkpoint_batch_seq: u64,
-    pub(super) file_change_rx: tokio::sync::broadcast::Receiver<AppEvent>,
-    pub(super) usage_store: Option<Arc<crate::session::UsageStore>>,
-    pub(super) security_service: crate::security::service::SecurityService,
     pub(super) recent_findings: Vec<crate::security::finding::SecurityFinding>,
-    pub(super) todo_state: std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>>,
-    pub(super) task_state_policy: crate::model_profile::types::TaskStatePolicy,
-    pub(super) todo_pool: Option<sqlx::SqlitePool>,
-    pub(super) event_store: Option<Arc<crate::session::EventStore>>,
-    pub(super) execution_policy: Option<crate::agent::policy::ExecutionPolicy>,
     pub(super) original_user_prompt: Option<String>,
     pub(super) subagent_pool: Option<Arc<crate::agent::worker::SubAgentPool>>,
     pub(super) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
     /// Immutable workspace authority captured during construction.
     pub(super) workspace_root: std::path::PathBuf,
     pub(super) max_tool_calls: Option<usize>,
-    pub(super) goal_store: Option<Arc<crate::goal::GoalStore>>,
     pub(super) goal_wall_clock: std::sync::Mutex<crate::goal::runtime::GoalWallClock>,
     pub(super) cancel_rx: Option<tokio::sync::watch::Receiver<bool>>,
     pub(super) steer_rx: Option<mpsc::Receiver<String>>,
     pub(super) pending_steer: Option<String>,
     pub(super) local_paths: (Option<String>, Option<String>),
     pub(super) context_ledger: crate::agent::context_frame::ContextLedgerState,
-    pub(super) artifact_store: Arc<dyn crate::context::ContextArtifactStore>,
-    pub(super) projection_config: crate::context::ProjectionConfig,
-    pub(super) context_packer_config: crate::config::schema::ContextPackerConfig,
-    pub(super) context_policy_config: crate::config::schema::ContextPolicyConfig,
-    pub(super) context_cache_stats: crate::context::ContextCacheStats,
-    /// Compound identity of the last provider-facing context plan.
-    pub(super) context_plan_cache_key: Option<String>,
-    /// Fingerprint emitted by PromptCompiler for the current turn. This is
-    /// authoritative context identity; flattened system text is not rehashed
-    /// as a substitute.
-    pub(super) prompt_compiler_fingerprint: Option<String>,
-    /// Full profile-filtered tool palette for the current run (source of truth for policy reductions).
-    /// Captured once after model-profile filter at start of run(); reductions derive from this, not from
-    /// the (possibly previously reduced) request.tools. Enables non-cumulative, restorable palettes.
-    pub(super) base_request_tools: Vec<crate::provider::ToolDefinition>,
-    /// In-memory backoff/starvation state for the context policy (resets per run()).
-    pub(super) context_policy_runtime: ContextPolicyRuntimeState,
-    /// Immutable runtime-asset identity captured for this agent run.
-    pub(super) runtime_asset_pin:
-        Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
-    /// Canonical tool broker for executing production tool calls.
-    /// Built from `tool_registry` at construction time.
-    pub(super) tool_broker: Arc<crate::tool::ToolBroker>,
-    /// Optional notification service for background tool program completions.
-    pub(super) notification_service:
-        Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
-    pub(super) run_control: Option<Arc<crate::agent::run_control::RunControlService>>,
     pub(super) run_id: Option<codegg_core::identity::AgentRunId>,
     /// Host-owned habit observation state. Only allowlisted structural action
     /// metadata reaches this collector; raw calls/results remain in the
     /// ordinary model execution path and are never persisted here.
-    pub(super) habit_store: Option<Arc<codegg_core::memory::habit::HabitStore>>,
     pub(super) habit_project_namespace: String,
     pub(super) habit_actions: Vec<codegg_core::memory::habit::WorkflowAction>,
     pub(super) habit_had_failure: bool,
@@ -532,7 +470,7 @@ impl AgentLoop {
         &self,
         definitions: Vec<crate::provider::ToolDefinition>,
     ) -> Vec<crate::provider::ToolDefinition> {
-        let Some(ref policy) = self.execution_policy else {
+        let Some(ref policy) = self.services.execution_policy else {
             return definitions;
         };
 
@@ -738,7 +676,53 @@ impl AgentLoop {
             codegg_core::memory::project_namespace(&workspace_root.to_string_lossy());
 
         Self {
-            agents: map,
+            services: AgentLoopServices {
+                provider,
+                permission_checker,
+                tool_registry,
+                hook_registry,
+                context_tracker,
+                progress_recovery: RecoveryController::default(),
+                recovery_parallel_limit: None,
+                mcp_service,
+                tool_def_cache: None,
+                deferred_tool_definitions: Vec::new(),
+                model_router,
+                snapshot_manager,
+                checkpoint_manager,
+                file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
+                usage_store,
+                security_service,
+                todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
+                    crate::task_state::TodoState::new(),
+                )),
+                task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
+                todo_pool: todo_pool.clone(),
+                event_store: pool
+                    .as_ref()
+                    .map(|p| Arc::new(crate::session::EventStore::new(p.clone()))),
+                execution_policy: None,
+                artifact_store,
+                projection_config,
+                context_packer_config,
+                context_policy_config,
+                context_cache_stats: crate::context::ContextCacheStats::new(),
+                context_plan_cache_key: None,
+                prompt_compiler_fingerprint: None,
+                base_request_tools: Vec::new(),
+                context_policy_runtime: ContextPolicyRuntimeState::default(),
+                runtime_asset_pin: None,
+                tool_broker,
+                notification_service: None,
+                run_control: None,
+                goal_store: pool
+                    .as_ref()
+                    .map(|p| Arc::new(crate::goal::GoalStore::new(p.clone()))),
+                habit_store,
+                agents: map,
+                config,
+            },
+            lifecycle: TurnLifecycle::new(),
             state: AgentLoopState {
                 current_agent: default_name,
                 turn_count: 0,
@@ -752,74 +736,31 @@ impl AgentLoop {
                 unaccounted_output_tokens: 0,
             },
             limits: ExecutionLimits::default(),
-            provider,
-            permission_checker,
-            tool_registry,
-            hook_registry,
-            context_tracker,
-            progress_recovery: RecoveryController::default(),
-            recovery_parallel_limit: None,
             steering: Arc::new(AtomicBool::new(false)),
             follow_up_tx,
             follow_up_rx,
-            config,
             question_tx: None,
             question_rx: None,
             plugin_service: None,
             session_id,
             turn_id: None,
-            mcp_service,
-            tool_def_cache: None,
-            deferred_tool_definitions: Vec::new(),
-            model_router,
-            snapshot_manager,
-            checkpoint_manager,
             workspace_id: None,
             workspace_locks: None,
             workspace_service_lease: None,
-            checkpoint_batch_seq: 0,
-            file_change_rx: crate::bus::global::GlobalEventBus::subscribe(),
-            usage_store,
-            security_service,
             recent_findings: Vec::new(),
-            todo_state: std::sync::Arc::new(tokio::sync::Mutex::new(
-                crate::task_state::TodoState::new(),
-            )),
-            task_state_policy: crate::model_profile::types::TaskStatePolicy::explicit_todo(),
-            todo_pool: todo_pool.clone(),
-            event_store: pool
-                .as_ref()
-                .map(|p| Arc::new(crate::session::EventStore::new(p.clone()))),
-            execution_policy: None,
             original_user_prompt: None,
             subagent_pool: None,
             submission: None,
             workspace_root,
             max_tool_calls: None,
-            goal_store: pool
-                .as_ref()
-                .map(|p| Arc::new(crate::goal::GoalStore::new(p.clone()))),
+            checkpoint_batch_seq: 0,
             goal_wall_clock: std::sync::Mutex::new(crate::goal::runtime::GoalWallClock::default()),
             cancel_rx: None,
             steer_rx: None,
             local_paths,
             pending_steer: None,
             context_ledger: crate::agent::context_frame::ContextLedgerState::new(),
-            artifact_store,
-            projection_config,
-            context_packer_config,
-            context_policy_config,
-            context_cache_stats: crate::context::ContextCacheStats::new(),
-            context_plan_cache_key: None,
-            prompt_compiler_fingerprint: None,
-            base_request_tools: Vec::new(),
-            context_policy_runtime: ContextPolicyRuntimeState::default(),
-            runtime_asset_pin: None,
-            tool_broker,
-            notification_service: None,
-            run_control: None,
             run_id: None,
-            habit_store,
             habit_project_namespace,
             habit_actions: Vec::new(),
             habit_had_failure: false,
@@ -834,28 +775,32 @@ impl AgentLoop {
         request: &mut ChatRequest,
     ) -> Result<crate::context::ContextPlan, AppError> {
         let adapter = crate::model_profile::resolve_adapter(None, &request.model);
-        let compiler = self.prompt_compiler_fingerprint.clone().unwrap_or_else(|| {
-            request
-                .messages
-                .iter()
-                .find_map(|message| match message {
-                    Message::System { content } => {
-                        Some(crate::context::stable_hash_hex(content.as_bytes()))
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| crate::context::stable_hash_hex(""))
-        });
+        let compiler = self
+            .services
+            .prompt_compiler_fingerprint
+            .clone()
+            .unwrap_or_else(|| {
+                request
+                    .messages
+                    .iter()
+                    .find_map(|message| match message {
+                        Message::System { content } => {
+                            Some(crate::context::stable_hash_hex(content.as_bytes()))
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| crate::context::stable_hash_hex(""))
+            });
         let plan = crate::context::ContextPlan::from_request(
             request,
-            self.provider.name(),
+            self.services.provider.name(),
             &adapter.fingerprint,
             &compiler,
             crate::context::ContextPlanMode::Full,
         )
         .map_err(|error| AppError::Agent(AgentError::Invalid(error)))?;
         plan.apply_to_request(request);
-        self.context_plan_cache_key = Some(plan.cache_key());
+        self.services.context_plan_cache_key = Some(plan.cache_key());
         Ok(plan)
     }
 
@@ -865,17 +810,17 @@ impl AgentLoop {
         &mut self,
         pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
     ) {
-        self.runtime_asset_pin = pin;
+        self.services.runtime_asset_pin = pin;
     }
 
     pub fn set_prompt_compiler_fingerprint(&mut self, fingerprint: String) {
-        self.prompt_compiler_fingerprint = Some(fingerprint);
+        self.services.prompt_compiler_fingerprint = Some(fingerprint);
     }
 
     pub fn runtime_asset_pin(
         &self,
     ) -> Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>> {
-        self.runtime_asset_pin.as_ref().map(Arc::clone)
+        self.services.runtime_asset_pin.as_ref().map(Arc::clone)
     }
 
     /// Set the notification service for background tool program completions.
@@ -883,7 +828,7 @@ impl AgentLoop {
         &mut self,
         service: Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>,
     ) {
-        self.notification_service = Some(service);
+        self.services.notification_service = Some(service);
     }
 
     /// Check for pending background tool program notifications and
@@ -895,11 +840,11 @@ impl AgentLoop {
     /// Recovery for cross-process crashes is delegated to
     /// [`crate::agent::tool_program_recovery::inject_recoverable_notifications`].
     async fn inject_pending_notifications(&self, messages: &mut Vec<Message>) {
-        let Some(ref svc) = self.notification_service else {
+        let Some(ref svc) = self.services.notification_service else {
             return;
         };
         let report = crate::agent::tool_program_recovery::inject_recoverable_notifications(
-            self.event_store.as_deref(),
+            self.services.event_store.as_deref(),
             svc,
             &self.session_id,
             |text| {
@@ -931,7 +876,7 @@ impl AgentLoop {
     }
 
     pub fn set_agent(&mut self, name: &str) -> Result<(), AgentError> {
-        if self.agents.contains_key(name) {
+        if self.services.agents.contains_key(name) {
             self.state.current_agent = name.to_string();
             Ok(())
         } else {
@@ -958,11 +903,11 @@ impl AgentLoop {
     }
 
     pub fn current_agent(&self) -> Option<&Agent> {
-        self.agents.get(&self.state.current_agent)
+        self.services.agents.get(&self.state.current_agent)
     }
 
     pub fn agents(&self) -> &HashMap<String, Agent> {
-        &self.agents
+        &self.services.agents
     }
 
     pub fn state(&self) -> &AgentLoopState {
@@ -978,7 +923,8 @@ impl AgentLoop {
     }
 
     pub(super) fn tool_timeout(&self) -> u64 {
-        self.config
+        self.services
+            .config
             .server
             .as_ref()
             .and_then(|s| s.tool_timeout_seconds)
@@ -986,7 +932,7 @@ impl AgentLoop {
     }
 
     pub(super) fn permission_version(&self) -> u64 {
-        if let Some(ref perm) = self.config.permission {
+        if let Some(ref perm) = self.services.config.permission {
             let json = serde_json::to_string(perm).unwrap_or_default();
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -998,17 +944,18 @@ impl AgentLoop {
     }
 
     pub(super) fn max_parallel_tools(&self) -> usize {
-        if let Some(limit) = self.recovery_parallel_limit {
+        if let Some(limit) = self.services.recovery_parallel_limit {
             return self.max_parallel_tools_unconstrained().min(limit.max(1));
         }
         self.max_parallel_tools_unconstrained()
     }
 
     fn max_parallel_tools_unconstrained(&self) -> usize {
-        if let Some(ref policy) = self.execution_policy {
+        if let Some(ref policy) = self.services.execution_policy {
             return policy.max_parallel_tools;
         }
-        self.config
+        self.services
+            .config
             .server
             .as_ref()
             .and_then(|s| s.max_parallel_tools)
@@ -1090,7 +1037,7 @@ impl AgentLoop {
     }
 
     pub fn context_tracker(&mut self) -> &mut ContextTracker {
-        &mut self.context_tracker
+        &mut self.services.context_tracker
     }
 
     pub fn set_plugin_service(&mut self, service: Arc<crate::plugin::service::PluginService>) {
@@ -1110,15 +1057,20 @@ impl AgentLoop {
     }
 
     pub fn set_task_state_policy(&mut self, policy: crate::model_profile::types::TaskStatePolicy) {
-        self.task_state_policy = policy;
+        self.services.task_state_policy = policy;
     }
 
     pub fn set_execution_policy(&mut self, policy: crate::agent::policy::ExecutionPolicy) {
-        self.context_tracker.set_limit(policy.context_window);
-        self.context_tracker
+        self.services
+            .context_tracker
+            .set_limit(policy.context_window);
+        self.services
+            .context_tracker
             .set_threshold(policy.compaction_threshold);
-        self.context_tracker.set_model(Some(policy.model.clone()));
-        self.execution_policy = Some(policy);
+        self.services
+            .context_tracker
+            .set_model(Some(policy.model.clone()));
+        self.services.execution_policy = Some(policy);
     }
 
     pub fn set_max_tool_calls(&mut self, max: Option<usize>) {
@@ -1134,7 +1086,7 @@ impl AgentLoop {
         service: Arc<crate::agent::run_control::RunControlService>,
         run_id: codegg_core::identity::AgentRunId,
     ) {
-        self.run_control = Some(service);
+        self.services.run_control = Some(service);
         self.run_id = Some(run_id);
     }
 
@@ -1158,6 +1110,7 @@ impl AgentLoop {
             return None;
         }
         let trigger_cfg = self
+            .services
             .config
             .research
             .as_ref()
@@ -1189,11 +1142,11 @@ impl AgentLoop {
     }
 
     pub fn execution_policy(&self) -> Option<&crate::agent::policy::ExecutionPolicy> {
-        self.execution_policy.as_ref()
+        self.services.execution_policy.as_ref()
     }
 
     pub async fn build_context_frame(&self) -> crate::agent::context_frame::ContextFrame {
-        let todo = self.todo_state.lock().await;
+        let todo = self.services.todo_state.lock().await;
         let current_task = todo
             .items
             .iter()
@@ -1248,16 +1201,16 @@ impl AgentLoop {
     }
 
     pub fn todo_state(&self) -> std::sync::Arc<tokio::sync::Mutex<crate::task_state::TodoState>> {
-        self.todo_state.clone()
+        self.services.todo_state.clone()
     }
 
     pub async fn load_persisted_todos(&self) {
-        if let Some(pool) = &self.todo_pool {
+        if let Some(pool) = &self.services.todo_pool {
             if !self.session_id.is_empty() {
                 let store = crate::session::store::TodoStore::new(pool.clone());
                 match store.list(&self.session_id).await {
                     Ok(session_items) => {
-                        let mut todo = self.todo_state.lock().await;
+                        let mut todo = self.services.todo_state.lock().await;
                         todo.load_from_session(session_items);
                     }
                     Err(e) => {
@@ -1328,7 +1281,8 @@ impl AgentLoop {
         let effect = if kind == WorkflowActionKind::GitRead {
             WorkflowEffectClass::ReadOnly
         } else {
-            self.tool_registry
+            self.services
+                .tool_registry
                 .get(tool_name)
                 .map(|tool| tool.contract(tool_name, tool.parameters()).effect_class)
                 .map(|class| match class {
@@ -1388,7 +1342,7 @@ impl AgentLoop {
         if !explicit_success || self.habit_had_failure || self.habit_actions.is_empty() {
             return;
         }
-        let Some(store) = self.habit_store.clone() else {
+        let Some(store) = self.services.habit_store.clone() else {
             return;
         };
         let occurrence = codegg_core::memory::habit::WorkflowOccurrence {
@@ -1498,7 +1452,7 @@ impl AgentLoop {
     /// `run()` after the loop body so the budget is updated even on
     /// the user's last turn.
     async fn account_goal_for_turn(&mut self) {
-        let Some(goal_store) = self.goal_store.clone() else {
+        let Some(goal_store) = self.services.goal_store.clone() else {
             return;
         };
         if self.session_id.is_empty() {
@@ -1552,7 +1506,7 @@ impl AgentLoop {
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
     ) {
-        let Some(goal_store) = self.goal_store.clone() else {
+        let Some(goal_store) = self.services.goal_store.clone() else {
             return;
         };
         if self.session_id.is_empty() {
@@ -1615,7 +1569,7 @@ impl AgentLoop {
     }
 
     fn check_limits(&self) -> Option<String> {
-        if let Some(agent) = self.agents.get(&self.state.current_agent) {
+        if let Some(agent) = self.services.agents.get(&self.state.current_agent) {
             if let Some(steps) = agent.steps {
                 if self.state.turn_count >= steps {
                     return Some(format!("max steps ({}) reached", steps));
@@ -1649,7 +1603,7 @@ impl AgentLoop {
     }
 
     async fn record_run_boundary(&self, boundary: &str) {
-        let (Some(control), Some(run_id)) = (&self.run_control, &self.run_id) else {
+        let (Some(control), Some(run_id)) = (&self.services.run_control, &self.run_id) else {
             return;
         };
         if let Err(error) = control
@@ -1672,7 +1626,7 @@ impl AgentLoop {
     }
 
     fn apply_agent_config(&self, request: &mut ChatRequest) {
-        if let Some(agent) = self.agents.get(&self.state.current_agent) {
+        if let Some(agent) = self.services.agents.get(&self.state.current_agent) {
             if let Some(ref model) = agent.model {
                 request.model = model.clone();
             }
@@ -1705,7 +1659,7 @@ impl AgentLoop {
     }
 
     fn apply_auto_routing(&self, request: &mut ChatRequest) {
-        if !self.model_router.is_enabled() {
+        if !self.services.model_router.is_enabled() {
             return;
         }
 
@@ -1714,8 +1668,8 @@ impl AgentLoop {
             return;
         }
 
-        let complexity = self.model_router.classify(&prompt, tool_name);
-        if let Some(model) = self.model_router.route_model(complexity) {
+        let complexity = self.services.model_router.classify(&prompt, tool_name);
+        if let Some(model) = self.services.model_router.route_model(complexity) {
             tracing::info!(
                 "Auto-routing task to {} (complexity: {:?}, prompt: {:.50}...)",
                 model,
@@ -1797,11 +1751,13 @@ impl AgentLoop {
 
     async fn build_tool_definitions(&mut self) -> Vec<crate::provider::ToolDefinition> {
         let model = self
+            .services
             .agents
             .get(&self.state.current_agent)
             .and_then(|a| a.model.as_ref());
 
         let lsp_enabled = self
+            .services
             .config
             .experimental
             .as_ref()
@@ -1814,7 +1770,7 @@ impl AgentLoop {
         // egglsp/eggsentry MCP adapters) are hidden by default while
         // user-configured third-party MCP servers stay visible.
         let search_cfg = crate::search_backend::state::search_config();
-        let tool_backends = self.tool_registry.tool_backends();
+        let tool_backends = self.services.tool_registry.tool_backends();
         let expose_raw_search = search_cfg.expose_raw_mcp_tools();
         let eggsearch_server = search_cfg
             .eggsearch
@@ -1854,7 +1810,7 @@ impl AgentLoop {
             hidden_servers,
         };
 
-        let mcp_tools = if let Some(ref mcp_arc) = self.mcp_service {
+        let mcp_tools = if let Some(ref mcp_arc) = self.services.mcp_service {
             match mcp_arc.try_read() {
                 Ok(mcp) => mcp.list_filtered_tools(&policy),
                 Err(_) => {
@@ -1870,7 +1826,7 @@ impl AgentLoop {
             Vec::new()
         };
         // Set defer_loading on MCP tools based on the catalog
-        let catalog = self.tool_registry.catalog();
+        let catalog = self.services.tool_registry.catalog();
         let mcp_tools: Vec<_> = mcp_tools
             .into_iter()
             .map(|mut t| {
@@ -1899,7 +1855,7 @@ impl AgentLoop {
             ref cache_tool_deferral,
             ref cached_defs,
             ref cached_deferred,
-        )) = self.tool_def_cache
+        )) = self.services.tool_def_cache
         {
             if cache_model.as_ref().map(|s| s.as_str()) == model.map(|s| s.as_str())
                 && cache_plan == self.state.plan_mode
@@ -1907,10 +1863,10 @@ impl AgentLoop {
                 && cache_mcp_count == &mcp_tool_revision
                 && cache_perm_ver == permission_version
                 && cache_expose_raw == expose_raw_search
-                && cache_tool_deferral == &self.config.tool_deferral
+                && cache_tool_deferral == &self.services.config.tool_deferral
             {
                 let mut definitions = cached_defs.clone();
-                self.deferred_tool_definitions = cached_deferred.clone();
+                self.services.deferred_tool_definitions = cached_deferred.clone();
 
                 if let Some(ref plugin_svc) = self.plugin_service {
                     let input = serde_json::json!({
@@ -1934,12 +1890,12 @@ impl AgentLoop {
                     }
                 }
 
-                definitions.extend(self.deferred_tool_definitions.iter().cloned());
+                definitions.extend(self.services.deferred_tool_definitions.iter().cloned());
                 return definitions;
             }
         }
 
-        let tools = self.tool_registry.list();
+        let tools = self.services.tool_registry.list();
         let flags = compute_model_flags(model);
         // Hide tools that the registry marks as non-exposed
         // (e.g. `DisabledTool` stubs) so the model never sees a
@@ -1973,6 +1929,7 @@ impl AgentLoop {
         // this deterministic snapshot; the broker remains the execution and
         // permission authority.
         let has_functional_spawner = self
+            .services
             .tool_registry
             .list()
             .iter()
@@ -1981,6 +1938,7 @@ impl AgentLoop {
         let surface = match crate::agent::tool_surface::ResolvedToolSurface::resolve(
             all_definitions,
             &self
+                .services
                 .agents
                 .get(&self.state.current_agent)
                 .map(|agent| {
@@ -2013,9 +1971,10 @@ impl AgentLoop {
         let all_definitions = surface.definitions();
 
         // Partition tools into immediate vs deferred based on provider capabilities
-        let provider_id = self.provider.id();
+        let provider_id = self.services.provider.id();
         let caps = crate::provider::ProviderCapabilities::for_provider(provider_id);
         let deferral_enabled = self
+            .services
             .config
             .tool_deferral
             .as_ref()
@@ -2023,6 +1982,7 @@ impl AgentLoop {
             .unwrap_or(true);
 
         let always_loaded: Vec<String> = self
+            .services
             .config
             .tool_deferral
             .as_ref()
@@ -2030,6 +1990,7 @@ impl AgentLoop {
             .unwrap_or_default();
 
         let max_initial = self
+            .services
             .config
             .tool_deferral
             .as_ref()
@@ -2057,24 +2018,24 @@ impl AgentLoop {
                     let (kept, excess) = immediate.split_at(max);
                     let mut deferred_tools = deferred_tools;
                     deferred_tools.extend(excess.iter().cloned());
-                    self.deferred_tool_definitions = deferred_tools;
+                    self.services.deferred_tool_definitions = deferred_tools;
                     kept.to_vec()
                 } else {
-                    self.deferred_tool_definitions = deferred_tools;
+                    self.services.deferred_tool_definitions = deferred_tools;
                     immediate
                 }
             } else {
-                self.deferred_tool_definitions = deferred_tools;
+                self.services.deferred_tool_definitions = deferred_tools;
                 immediate
             };
 
-            (immediate, self.deferred_tool_definitions.clone())
+            (immediate, self.services.deferred_tool_definitions.clone())
         } else {
             // Provider doesn't support defer_loading or deferral is disabled: all tools immediate.
             // Providers like deepseek, qwen, cerebras, groq, etc. go through OpenAiCompatibleProvider
             // with provider_ids not matching "openai" or "anthropic", so they get default capabilities
             // (supports_defer_loading: false). All tools are sent in the single `tools` array.
-            self.deferred_tool_definitions.clear();
+            self.services.deferred_tool_definitions.clear();
             (all_definitions, Vec::new())
         };
 
@@ -2083,23 +2044,24 @@ impl AgentLoop {
         let mut available_names: Vec<String> = definitions.iter().map(|t| t.name.clone()).collect();
         // Also include deferred tool names so they can be found via search
         available_names.extend(deferred.iter().map(|t| t.name.clone()));
-        self.tool_registry
+        self.services
+            .tool_registry
             .set_search_tool_available_tools(available_names);
 
-        self.tool_def_cache = Some((
+        self.services.tool_def_cache = Some((
             model.map(|s| s.to_string()),
             self.state.plan_mode,
             lsp_enabled,
             mcp_tool_revision,
             permission_version,
             expose_raw_search,
-            self.config.tool_deferral.clone(),
+            self.services.config.tool_deferral.clone(),
             definitions.clone(),
             deferred,
         ));
 
         let mut result = definitions;
-        result.extend(self.deferred_tool_definitions.iter().cloned());
+        result.extend(self.services.deferred_tool_definitions.iter().cloned());
 
         if let Some(ref plugin_svc) = self.plugin_service {
             let input = serde_json::json!({
@@ -2130,7 +2092,7 @@ impl AgentLoop {
         messages: &mut Vec<Message>,
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
     ) {
-        let Some(policy) = self.execution_policy.as_ref() else {
+        let Some(policy) = self.services.execution_policy.as_ref() else {
             return;
         };
         let context_limit = policy.context_window;
@@ -2138,12 +2100,14 @@ impl AgentLoop {
         let reserved_output_tokens = policy.reserved_output_tokens;
         let max_tool_result_tokens = policy.max_tool_result_tokens;
         let auto = self
+            .services
             .config
             .compaction
             .as_ref()
             .and_then(|config| config.auto)
             .unwrap_or(false);
         let prune = self
+            .services
             .config
             .compaction
             .as_ref()
@@ -2199,9 +2163,9 @@ impl AgentLoop {
             max_tool_result_tokens,
             auto,
             prune,
-            compaction_config: self.config.compaction.as_ref(),
+            compaction_config: self.services.config.compaction.as_ref(),
             active_model: Some(model_profile.model.as_str()),
-            provider: Some(self.provider.as_ref()),
+            provider: Some(self.services.provider.as_ref()),
             provider_context: ProviderRequestContext {
                 session_id: Some(Arc::from(self.session_id.as_str())),
             },
@@ -2242,8 +2206,8 @@ impl AgentLoop {
         let tokens_before = result.tokens_before;
         let tokens_after = result.tokens_after;
         *messages = result.messages;
-        self.context_tracker.reset();
-        self.context_tracker.add_messages(messages);
+        self.services.context_tracker.reset();
+        self.services.context_tracker.add_messages(messages);
 
         let already_has_frame = messages.iter().any(|message| {
             matches!(message, Message::System { content } if content.contains("[codegg compacted session state]"))
@@ -2254,11 +2218,11 @@ impl AgentLoop {
                 push_control_instruction(messages, model_profile, &frame.to_control_text());
             }
         }
-        if self.task_state_policy.inject_after_compaction {
-            let mut todo = self.todo_state.lock().await;
+        if self.services.task_state_policy.inject_after_compaction {
+            let mut todo = self.services.todo_state.lock().await;
             if !todo.is_all_done() {
                 if let Some(reminder) =
-                    crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
+                    crate::task_state::build_todo_reminder(&todo, &self.services.task_state_policy)
                 {
                     push_control_instruction(messages, model_profile, &reminder);
                     todo.reminder_pending = false;
@@ -2311,6 +2275,7 @@ impl AgentLoop {
     }
 
     async fn run_inner(&mut self, mut request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
+        self.lifecycle.set_phase(TurnPhase::Admission);
         let canonical_session_id = codegg_core::context::SessionId::parse(&self.session_id)
             .map_err(|error| AppError::Agent(AgentError::Invalid(error.to_string())))?;
         // AgentLoop is also used directly by exec, CLI, and test harnesses.
@@ -2329,7 +2294,7 @@ impl AgentLoop {
                 .unwrap_or_default()
                 .as_secs() as i64,
         };
-        if let Some(ref hr) = self.hook_registry {
+        if let Some(ref hr) = self.services.hook_registry {
             for err in hr
                 .run_hooks(crate::hooks::HookEvent::SessionStart, &session_start_ctx)
                 .await
@@ -2364,11 +2329,13 @@ impl AgentLoop {
 
         self.apply_auto_routing(&mut request);
         self.apply_agent_config(&mut request);
-        let model_profile =
-            crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
+        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
+            .resolve(&request.model);
 
-        let exec_policy =
-            crate::agent::policy::ExecutionPolicy::from_profile(&model_profile, &self.config);
+        let exec_policy = crate::agent::policy::ExecutionPolicy::from_profile(
+            &model_profile,
+            &self.services.config,
+        );
         self.set_execution_policy(exec_policy.clone());
         self.apply_model_profile_defaults(&mut request, &model_profile);
         tracing::debug!(
@@ -2382,6 +2349,7 @@ impl AgentLoop {
         if let Some(system) = request.system.take() {
             let mut content = system;
             if let Some(hints) = self
+                .services
                 .security_service
                 .format_prompt_hints(&self.recent_findings)
             {
@@ -2405,11 +2373,11 @@ impl AgentLoop {
             &model_profile,
         );
         request.tools = Some(filtered.clone());
-        self.base_request_tools = filtered;
+        self.services.base_request_tools = filtered;
         // Reset per-run policy runtime (defensive; new AgentLoop instances also start defaulted).
-        self.context_policy_runtime = ContextPolicyRuntimeState::default();
-        self.progress_recovery = RecoveryController::default();
-        self.recovery_parallel_limit = None;
+        self.services.context_policy_runtime = ContextPolicyRuntimeState::default();
+        self.services.progress_recovery = RecoveryController::default();
+        self.services.recovery_parallel_limit = None;
         self.habit_actions.clear();
         self.habit_had_failure = false;
         // Gated effective-cost driven tool palette reduction (prototype). Applies only to
@@ -2419,7 +2387,9 @@ impl AgentLoop {
         // so they are stateless per call and non-cumulative.
         self.apply_tool_palette_policy_if_active(&mut request, "InitialRequest");
         self.apply_context_plan(&mut request)?;
-        self.context_tracker.add_messages(&request.messages);
+        self.services
+            .context_tracker
+            .add_messages(&request.messages);
 
         // Phase 5: replaced the inline observation block with a call to the shared helper.
         // The helper always observes (never mutates) and uses the shared candidate builder.
@@ -2428,6 +2398,7 @@ impl AgentLoop {
             &model_profile,
             ContextPackObservationPhase::InitialRequest,
         );
+        self.lifecycle.set_phase(TurnPhase::ContextPreparation);
 
         let mut all_events = Vec::with_capacity(128);
         let mut processor = EventProcessor::new();
@@ -2494,7 +2465,7 @@ impl AgentLoop {
             // mutated by the mailbox bridge.
             self.record_run_boundary("before_provider_turn").await;
 
-            if let Some(agent) = self.agents.get(&self.state.current_agent) {
+            if let Some(agent) = self.services.agents.get(&self.state.current_agent) {
                 if let Some(steps) = agent.steps {
                     if self.state.turn_count + 1 >= steps {
                         tracing::info!(
@@ -2518,6 +2489,7 @@ impl AgentLoop {
             }
 
             self.state.turn_count += 1;
+            self.lifecycle.begin_turn(self.state.turn_count);
             tracing::debug!("Agent turn {}", self.state.turn_count);
 
             let agent_start_ctx = crate::hooks::HookContext {
@@ -2531,7 +2503,7 @@ impl AgentLoop {
                     .unwrap_or_default()
                     .as_secs() as i64,
             };
-            if let Some(ref hr) = self.hook_registry {
+            if let Some(ref hr) = self.services.hook_registry {
                 for err in hr
                     .run_hooks(crate::hooks::HookEvent::AgentStart, &agent_start_ctx)
                     .await
@@ -2569,18 +2541,20 @@ impl AgentLoop {
 
             // Inject todo reminder if needed
             {
-                let mut todo = self.todo_state.lock().await;
-                let should_inject = (self.task_state_policy.inject_on_resume
+                let mut todo = self.services.todo_state.lock().await;
+                let should_inject = (self.services.task_state_policy.inject_on_resume
                     && self.state.turn_count == 1)
                     || todo.reminder_pending
                     || (self
+                        .services
                         .task_state_policy
                         .inject_after_tool_calls
                         .is_some_and(|threshold| todo.tool_calls_since_injection >= threshold));
                 if should_inject {
-                    if let Some(reminder) =
-                        crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
-                    {
+                    if let Some(reminder) = crate::task_state::build_todo_reminder(
+                        &todo,
+                        &self.services.task_state_policy,
+                    ) {
                         push_control_instruction(&mut request.messages, &model_profile, &reminder);
                         todo.reminder_pending = false;
                         todo.tool_calls_since_injection = 0;
@@ -2757,7 +2731,7 @@ impl AgentLoop {
                 // Note: headers are passed to the provider via the request;
                 // individual providers consume them in their stream() implementation.
                 let headers_input = ChatHeadersHookInput {
-                    provider: self.provider.name().to_string(),
+                    provider: self.services.provider.name().to_string(),
                     headers: serde_json::json!({}),
                 };
                 match hooks.chat_headers(headers_input).await {
@@ -2786,7 +2760,7 @@ impl AgentLoop {
                 // inject Authorization headers based on their token sources.
                 use crate::plugin::lifecycle::AuthHookInput;
                 let auth_input = AuthHookInput {
-                    provider: self.provider.name().to_string(),
+                    provider: self.services.provider.name().to_string(),
                     token: String::new(),
                     headers: serde_json::json!({}),
                 };
@@ -2816,6 +2790,7 @@ impl AgentLoop {
             // history hardening. It preserves chronology while pinning the
             // compound cache identity for the usage event below.
             self.apply_context_plan(&mut request)?;
+            self.lifecycle.set_phase(TurnPhase::ProviderInvocation);
 
             let events =
                 match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, &request)
@@ -2851,8 +2826,9 @@ impl AgentLoop {
                         preview
                     );
                 }
-                let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
-                    .resolve_adapter(None, &request.model);
+                let adapter =
+                    crate::model_profile::ModelProfileResolver::new(&self.services.config)
+                        .resolve_adapter(None, &request.model);
                 if let Some(profile) = adapter.text_tool_repair.as_deref() {
                     if !autonomy.adapter_repair_allowed() {
                         // Repair budget exhausted: M002 permits at most one
@@ -2899,7 +2875,7 @@ impl AgentLoop {
                     && autonomy.continuation_allowed()
                 {
                     if let Some(msg) = processor.to_assistant_message() {
-                        self.context_tracker.add_message(&msg);
+                        self.services.context_tracker.add_message(&msg);
                         request.messages.push(msg);
                     }
                     just_executed_tools = false;
@@ -2932,9 +2908,11 @@ impl AgentLoop {
                 break;
             }
             self.observe_tool_palette_starvation(&tool_calls);
+            self.lifecycle.set_phase(TurnPhase::ToolExecution);
             let tool_results = crate::agent::tool_batch::ToolBatchExecutor::new(self)
                 .execute(&tool_calls)
                 .await?;
+            self.lifecycle.set_phase(TurnPhase::Recovery);
             just_executed_tools = !tool_results.is_empty();
             self.record_habit_tool_results(&tool_calls, &tool_results);
             // The file-change bus is the observable state transition fact for
@@ -2967,6 +2945,7 @@ impl AgentLoop {
                     });
                 let output = &outcome.model_text;
                 let effect_class = self
+                    .services
                     .tool_registry
                     .get(&tc.name)
                     .map(|tool| tool.contract(&tc.name, tool.parameters()).effect_class);
@@ -3003,7 +2982,7 @@ impl AgentLoop {
                     batch_id: recovery_batch,
                 };
                 match autonomy.observe_tool_result(&outcome, observation) {
-                    RecoveryDecision::Progress => self.recovery_parallel_limit = None,
+                    RecoveryDecision::Progress => self.services.recovery_parallel_limit = None,
                     RecoveryDecision::Recover { action, incident } => {
                         let instruction = match action {
                             RecoveryAction::Nudge => format!(
@@ -3015,7 +2994,7 @@ impl AgentLoop {
                                 if outcome.status
                                     != crate::agent::progress_recovery::ToolExecutionStatus::Denied
                                 {
-                                    request.tools = Some(self.base_request_tools.clone());
+                                    request.tools = Some(self.services.base_request_tools.clone());
                                 }
                                 "Recovery correction: the available palette was restored to the authorized base surface. Choose one available structured tool and continue.".to_string()
                             }
@@ -3068,7 +3047,7 @@ impl AgentLoop {
                 let sensitive_edits: Vec<String> = edited_paths
                     .iter()
                     .filter(|p| {
-                        self.config.security.as_ref().is_some_and(|sec| {
+                        self.services.config.security.as_ref().is_some_and(|sec| {
                             crate::security::matches_sensitive_path(
                                 Some(p.as_str()),
                                 &sec.sensitive_paths,
@@ -3084,7 +3063,7 @@ impl AgentLoop {
             }
 
             if let Some(msg) = processor.to_assistant_message() {
-                self.context_tracker.add_message(&msg);
+                self.services.context_tracker.add_message(&msg);
                 request.messages.push(msg);
             }
 
@@ -3135,10 +3114,11 @@ impl AgentLoop {
                 let turn = self.state.turn_count;
                 let handle_result =
                     crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
-                let effective_handle = if self.projection_config.artifact_store_enabled {
+                let effective_handle = if self.services.projection_config.artifact_store_enabled {
                     match handle_result {
                         Ok(ref handle) => {
                             let store_result = self
+                                .services
                                 .artifact_store
                                 .put(crate::context::ContextArtifact {
                                     handle: handle.clone(),
@@ -3193,7 +3173,7 @@ impl AgentLoop {
                     &redacted_content,
                     tool_outcome_is_success(outcome),
                     effective_handle,
-                    &self.projection_config,
+                    &self.services.projection_config,
                 );
 
                 self.context_ledger
@@ -3203,13 +3183,13 @@ impl AgentLoop {
                     tool_call_id: id.clone().into(),
                     content: proj.model_text.into(),
                 };
-                self.context_tracker.add_message(&msg);
+                self.services.context_tracker.add_message(&msg);
                 request.messages.push(msg);
             }
 
             // Track tool calls for todo reminder cadence
             if !tool_calls.is_empty() {
-                let mut todo = self.todo_state.lock().await;
+                let mut todo = self.services.todo_state.lock().await;
                 todo.tool_calls_since_injection += tool_calls.len();
             }
 
@@ -3217,7 +3197,7 @@ impl AgentLoop {
             {
                 let has_todowrite = tool_calls.iter().any(|tc| tc.name.as_str() == "todowrite");
                 if has_todowrite {
-                    let mut todo = self.todo_state.lock().await;
+                    let mut todo = self.services.todo_state.lock().await;
                     todo.tool_calls_since_injection = 0;
                 }
             }
@@ -3250,7 +3230,7 @@ impl AgentLoop {
                     .unwrap_or_default()
                     .as_secs() as i64,
             };
-            if let Some(ref hr) = self.hook_registry {
+            if let Some(ref hr) = self.services.hook_registry {
                 for err in hr
                     .run_hooks(crate::hooks::HookEvent::AgentEnd, &agent_end_ctx)
                     .await
@@ -3297,11 +3277,12 @@ impl AgentLoop {
         // `maybe_start_goal_continuation_turn`.
         self.maybe_continue_goal(&mut request, &mut all_events, &mut processor)
             .await;
+        self.lifecycle.set_phase(TurnPhase::Completion);
 
         crate::bus::global::GlobalEventBus::publish(AppEvent::ContextUpdated {
             session_id: self.session_id.clone(),
-            context_tokens: self.context_tracker.current_tokens(),
-            context_limit: self.context_tracker.context_limit(),
+            context_tokens: self.services.context_tracker.current_tokens(),
+            context_limit: self.services.context_tracker.context_limit(),
         });
 
         // Auto-invoke security-review subagent at session end for comprehensive review
@@ -3332,7 +3313,7 @@ impl AgentLoop {
                 .unwrap_or_default()
                 .as_secs() as i64,
         };
-        if let Some(ref hr) = self.hook_registry {
+        if let Some(ref hr) = self.services.hook_registry {
             for err in hr
                 .run_hooks(crate::hooks::HookEvent::SessionEnd, &session_end_ctx)
                 .await
@@ -3371,7 +3352,7 @@ impl AgentLoop {
     /// Capture a snapshot of the project state if snapshot_manager is configured
     #[allow(dead_code)]
     pub(super) async fn capture_snapshot_if_needed(&mut self) {
-        if let Some(ref mut snapshot_manager) = self.snapshot_manager {
+        if let Some(ref mut snapshot_manager) = self.services.snapshot_manager {
             let session_id = self.session_id.clone();
             match snapshot_manager.capture(&session_id, None).await {
                 Ok(snapshot) => {
@@ -3402,7 +3383,7 @@ impl AgentLoop {
         edited_paths: &[String],
         at_session_end: bool,
     ) {
-        let _sec_config = match self.config.security.as_ref() {
+        let _sec_config = match self.services.config.security.as_ref() {
             Some(c) if c.auto_invoke_review_agent && c.enabled => c,
             _ => return,
         };
@@ -3453,6 +3434,7 @@ impl AgentLoop {
         let session_id = self.session_id.clone();
         let agent = "security-review".to_string();
         let parent_model = self
+            .services
             .agents
             .get(&self.state.current_agent)
             .and_then(|a| a.model.clone());
@@ -3539,7 +3521,7 @@ impl AgentLoop {
     pub(super) fn drain_file_change_events(&mut self) -> Vec<(String, Option<String>)> {
         let mut changes = Vec::new();
         loop {
-            match self.file_change_rx.try_recv() {
+            match self.services.file_change_rx.try_recv() {
                 Ok(AppEvent::FileChanged {
                     path, old_content, ..
                 }) => {
@@ -3558,7 +3540,7 @@ impl AgentLoop {
 
     #[allow(dead_code)]
     pub(super) async fn capture_incremental_snapshot_if_needed(&mut self, label: Option<String>) {
-        if self.snapshot_manager.is_none() {
+        if self.services.snapshot_manager.is_none() {
             return;
         }
 
@@ -3567,7 +3549,7 @@ impl AgentLoop {
             return;
         }
 
-        if let Some(ref snapshot_manager) = self.snapshot_manager {
+        if let Some(ref snapshot_manager) = self.services.snapshot_manager {
             match snapshot_manager
                 .capture_incremental(&self.session_id, label, changes)
                 .await
@@ -3598,8 +3580,8 @@ impl AgentLoop {
         all_events: &mut Vec<ChatEvent>,
         processor: &mut EventProcessor,
     ) {
-        let model_profile =
-            crate::model_profile::ModelProfileResolver::new(&self.config).resolve(&request.model);
+        let model_profile = crate::model_profile::ModelProfileResolver::new(&self.services.config)
+            .resolve(&request.model);
         loop {
             // Check if a follow-up is already queued without blocking
             let prompt = match self.follow_up_rx.try_recv() {
@@ -3628,6 +3610,7 @@ impl AgentLoop {
             let mut autonomy = AutonomyState::default();
             let mut just_executed_tools = false;
             loop {
+                self.lifecycle.set_phase(TurnPhase::ContextPreparation);
                 self.compact_if_needed(&mut request.messages, &model_profile)
                     .await;
                 // Phase 5: observe in follow-up loop after compaction and before provider call.
@@ -3643,6 +3626,7 @@ impl AgentLoop {
                     &model_profile,
                     ContextPackObservationPhase::BeforeProviderCall,
                 );
+                self.lifecycle.set_phase(TurnPhase::ProviderInvocation);
                 let events =
                     match crate::agent::provider_turn::ProviderTurnAdapter::receive(self, request)
                         .await
@@ -3670,8 +3654,9 @@ impl AgentLoop {
                             preview
                         );
                     }
-                    let adapter = crate::model_profile::ModelProfileResolver::new(&self.config)
-                        .resolve_adapter(None, &request.model);
+                    let adapter =
+                        crate::model_profile::ModelProfileResolver::new(&self.services.config)
+                            .resolve_adapter(None, &request.model);
                     if let Some(profile) = adapter.text_tool_repair.as_deref() {
                         if !autonomy.adapter_repair_allowed() {
                             // Repair budget exhausted: M002 permits at most one
@@ -3747,6 +3732,7 @@ impl AgentLoop {
                     break;
                 }
                 self.observe_tool_palette_starvation(&tool_calls);
+                self.lifecycle.set_phase(TurnPhase::ToolExecution);
                 let tool_results = match crate::agent::tool_batch::ToolBatchExecutor::new(self)
                     .execute(&tool_calls)
                     .await
@@ -3758,6 +3744,7 @@ impl AgentLoop {
                         return;
                     }
                 };
+                self.lifecycle.set_phase(TurnPhase::Recovery);
                 just_executed_tools = !tool_results.is_empty();
                 self.record_habit_tool_results(&tool_calls, &tool_results);
 
@@ -3810,10 +3797,12 @@ impl AgentLoop {
                     let turn = self.state.turn_count;
                     let handle_result =
                         crate::context::ContextHandle::build_tool(&self.session_id, turn, id);
-                    let effective_handle = if self.projection_config.artifact_store_enabled {
+                    let effective_handle = if self.services.projection_config.artifact_store_enabled
+                    {
                         match handle_result {
                             Ok(ref handle) => {
                                 let store_result = self
+                                    .services
                                     .artifact_store
                                     .put(crate::context::ContextArtifact {
                                         handle: handle.clone(),
@@ -3873,7 +3862,7 @@ impl AgentLoop {
                         &redacted_content,
                         tool_outcome_is_success(outcome),
                         effective_handle,
-                        &self.projection_config,
+                        &self.services.projection_config,
                     );
 
                     self.context_ledger
@@ -4603,7 +4592,7 @@ Current session context: [old frame here that would have been clobbered]";
         };
 
         // Build a minimal AgentLoop via the test-friendly constructor path used elsewhere.
-        // We don't need a full provider; the observe path only reads self.config/state and request.
+        // We don't need a full provider; the observe path only reads self.services.config/state and request.
         // Use the existing Phase1 test pattern but invoke the helper (which is private) via compute + direct call simulation.
         // Since helpers are not pub, we exercise the same logic the helper uses (build + pack) and assert request unchanged.
         let original_system_text = "System prompt here. No packer marker.";

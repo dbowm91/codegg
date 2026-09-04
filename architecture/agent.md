@@ -14,9 +14,9 @@ asset management.
 | File | Role |
 |------|------|
 | `src/agent/mod.rs` | `Agent`, `AgentMode`, `AgentRuntimeKind`, builtin agents, resolution, safety envelope |
-| `src/agent/loop.rs` | `AgentLoop` — main execution cycle, ~75 fields, streaming, tool dispatch |
-| `src/agent/loop.rs:76` | `ToolDefCache` tuple type for cached tool definitions |
-| `src/agent/loop.rs:403` | `AgentLoop` struct definition |
+| `src/agent/loop.rs` | `AgentLoop` — turn identity, live controls, and lifecycle sequencing |
+| `src/agent/coordinator.rs` | `AgentLoopServices` construction boundary and typed `TurnLifecycle` phases |
+| `src/agent/loop.rs` | `AgentLoop` struct definition; canonical service handles are grouped in `AgentLoopServices` |
 | `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
 | `src/context/policy.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
 | `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — provider retry and stream normalization |
@@ -55,28 +55,41 @@ TurnSubmit (daemon)
       → ResolvedToolSurface built (native plan/model filtered)
       → ExecutionPolicy derived from ResolvedModelProfile
     → AgentLoop::run()
-      1. Pre-execution hooks (SessionStart)
-      2. ModelRouter::apply_auto_routing()
-      3. Tool definitions built + exposure filter applied
-      4. ContextTracker initialized
-      Main Loop:
-      5. Check limits (turns, tokens, timeout, steering)
-      6. Pre-turn hooks (AgentStart)
-      7. compact_if_needed() — delegates typed context preparation to the canonical context owner
-      8. History hardening (fix orphan tool messages)
-      9. ProviderTurnAdapter::stream_with_retry()
-      10. EventProcessor accumulates streaming events
-      11. Text repair (if adapter grammar configured)
-       12. ToolBatchExecutor: permission → affected-path extraction → pre-state capture → parallel/serialized execution → post-state capture → checkpoint persist → results
-      13. RecoveryController: progress/stall/fingerprint tracking
-      14. Plan mode detection
-      15. Post-turn hooks (AgentEnd)
-      Repeat until no tool calls
-      Post-loop:
-      16. Goal accounting, continuation decision
-      17. Drain follow-up prompts
-      18. SessionEnd hooks
+      Admission → ContextPreparation
+      Main loop (repeated per bounded turn):
+        ContextPreparation
+          → ProviderInvocation (ProviderTurnAdapter)
+          → ToolExecution (ToolBatchExecutor, when calls exist)
+          → Recovery (AutonomyState / RecoveryController)
+        → Completion when the provider has no further calls
+      Completion: projection, goal accounting, follow-ups, SessionEnd hooks
 ```
+
+`TurnLifecycle` is an in-memory sequencing aid only. Durable run identity,
+completion, recovery, and scheduler admission remain owned by the run-control,
+RunStore, and scheduler services; the lifecycle enum never becomes a second
+durable state machine.
+
+### Coordinator/service ownership (M004)
+
+`AgentLoop` owns only the current agent/turn counters, workspace and run
+identity, cancellation/steering/question channels, bounded context ledger,
+and transient habit observation. `AgentLoopServices` owns the handles needed
+to invoke canonical services and is initialized once by the compatibility
+constructor (daemon callers use the typed factory).
+
+| Phase or concern | Canonical owner | Coordinator responsibility |
+|---|---|---|
+| Context preparation, compaction, cache policy | `crate::context` and `context_runtime` adapters | Sequence preparation and apply typed context plans |
+| Provider invocation and retry | `ProviderTurnAdapter` / provider implementation | Supply the request and consume normalized events |
+| Tool authorization and execution | `ToolBroker`, `ToolRegistry`, `ToolBatchExecutor` | Order the batch and route outcomes |
+| Progress and recovery | `RecoveryController` / convergence services | Feed bounded observations and apply typed recovery decisions |
+| Runs, checkpoints, goals, artifacts | RunStore/run-control, checkpoint, goal, artifact services | Trigger persistence at lifecycle boundaries |
+| Projection and completion | context projection, event bus, lifecycle hooks | Publish final bounded events and terminal output |
+
+No coordinator field reconstructs context-token policy, subprocess lifecycle,
+Git safety/provenance, provider transport, tool authorization, scheduler
+admission, or durable completion authority.
 
 ### Agent Resolution (5-layer priority)
 
@@ -230,18 +243,15 @@ pub enum AgentRuntimeKind {
 
 ### AgentLoop (`src/agent/loop.rs:403`)
 
-~57 fields. Key groups:
+The loop has 29 direct fields. Service and policy handles are grouped in
+`AgentLoopServices` so the coordinator cannot accidentally initialize one
+canonical concern independently of the others.
 
-- **Turn identity**: `session_id`, `agents`, `state`, `limits`
-- **Provider**: `provider: Box<dyn Provider>`, `tool_def_cache`, `base_request_tools`
-- **Context**: `context_tracker`, `execution_policy`, `context_ledger`, `context_plan_cache_key`
-- **Tool execution**: `tool_registry`, `tool_broker`, `permission_checker`, `mcp_service`
-- **Recovery**: `progress_recovery: RecoveryController`, `recovery_parallel_limit`
-- **State**: `steering`, `follow_up_tx/rx`, `question_tx/rx`, `pending_steer`, `cancel_rx`
-- **Assets**: `runtime_asset_pin`, `projection_config`, `artifact_store`
-- **Goals**: `goal_store`, `goal_wall_clock`
-- **Subagents**: `subagent_pool`, `submission`
-- **Workspace**: `workspace_root` (immutable, captured at construction)
+- **Coordinator state**: `state`, `limits`, `lifecycle`, `pending_steer`, and live control channels
+- **Identity**: `session_id`, `turn_id`, `run_id`, and immutable `workspace_root`
+- **Service boundary**: `services: AgentLoopServices` (provider, context, tool, recovery, persistence, and projection handles)
+- **Compatibility/observation**: `context_ledger`, `recent_findings`, and bounded habit observation
+- **Delegation**: `subagent_pool`, `submission`
 
 ### AgentLoopState (`src/agent/loop.rs`)
 
@@ -268,21 +278,6 @@ pub struct ExecutionLimits {
     pub max_tokens: usize,     // Default: 1,000,000
     pub timeout: Duration,     // Default: 600 seconds
 }
-```
-
-### ToolDefCache (`src/agent/loop.rs:76`)
-
-```rust
-type ToolDefCache = (
-    Option<String>,    // model
-    bool,              // plan_mode
-    bool,              // lsp_enabled
-    String,            // mcp_surface_digest
-    u64,               // permission_version
-    bool,              // has_functional_task_spawner
-    Vec<ToolDefinition>, // base definitions
-    Vec<ToolDefinition>, // deferred definitions
-);
 ```
 
 ### ResolvedAgentExecutionProfile (`src/agent/mod.rs:436`)
