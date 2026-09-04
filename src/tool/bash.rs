@@ -7,13 +7,14 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::command_intent::plan::{plan_execution, CommandPlan, ExecutionBackend, NativeCommand};
-use crate::command_intent::{classify_command, CommandIntentKind};
+use crate::command_intent::pipeline::{prepare_command, CommandPipelineResult};
+use crate::command_intent::plan::{
+    CommandDispatchTarget, CommandPlan, ExecutionBackend, NativeCommand,
+};
+use crate::command_intent::{CommandIntentContext, CommandIntentKind};
 use crate::command_outcome::{
     ownership_for_outcome, run_kind_for_outcome, ActualExecutor, ExecutionOutcome,
 };
-use crate::command_routing::resolve_routing;
-use crate::command_routing::RoutingDecision;
 use crate::config::schema::CommandIntentConfig;
 use crate::config::schema::CommandIntentFamily;
 use crate::config::schema::CommandIntentMode;
@@ -95,48 +96,16 @@ struct RoutingMetric {
     fallback: bool,
 }
 
-/// Map a `CommandIntentKind` to the corresponding `CommandIntentFamily` for
-/// config lookup. Returns `None` for kinds that don't map to a routable family.
-///
-/// For `GitMutating` the family is the conservative `GitLocalMutation`
-/// default — the precise family (`GitNetwork` / `GitDestructive`) is
-/// resolved from the plan via `plan_family()`.
+/// Compatibility helper for older tests/callers. The canonical family
+/// mapping is owned by `command_intent::plan`.
+#[cfg(test)]
 fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
-    match kind {
-        CommandIntentKind::Test => Some(CommandIntentFamily::Tests),
-        CommandIntentKind::GitReadOnly => Some(CommandIntentFamily::GitRead),
-        CommandIntentKind::GitMutating => Some(CommandIntentFamily::GitLocalMutation),
-        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
-            Some(CommandIntentFamily::Search)
-        }
-        CommandIntentKind::PythonAnalyze
-        | CommandIntentKind::PythonTransform
-        | CommandIntentKind::PythonVerify => Some(CommandIntentFamily::Python),
-        CommandIntentKind::Build => Some(CommandIntentFamily::Build),
-        CommandIntentKind::Lint => Some(CommandIntentFamily::Lint),
-        CommandIntentKind::Format => Some(CommandIntentFamily::Format),
-        _ => None,
-    }
+    crate::command_intent::plan::command_intent_family_for_kind(kind)
 }
 
-/// Resolve the precise `CommandIntentFamily` from a `CommandPlan`.
-///
-/// For `GitMutating` intents this re-derives the family from the typed
-/// `GitOperation` and risk set, so that destructive operations are routed
-/// through `GitDestructive`, network operations through `GitNetwork`, and
-/// plain local mutations through `GitLocalMutation`. For all other intents
-/// this delegates to `intent_kind_to_family()`.
+/// Compatibility helper delegating to the plan-owned family mapping.
 fn plan_family(plan: &CommandPlan) -> Option<CommandIntentFamily> {
-    use crate::command_intent::plan::git_operation_family;
-    use crate::command_intent::plan::ExecutionBackend;
-    let kind = plan.intent.kind;
-    if matches!(kind, CommandIntentKind::GitMutating) {
-        if let ExecutionBackend::Git { request } = &plan.backend {
-            return git_operation_family(&request.operation, &request.risk_set)
-                .or(Some(CommandIntentFamily::GitLocalMutation));
-        }
-    }
-    intent_kind_to_family(kind)
+    plan.command_family()
 }
 
 /// Map an `ExecutionBackend` to a `PlannedBackend` for persistence provenance.
@@ -1393,17 +1362,17 @@ impl BashTool {
         })
     }
 
-    /// Dispatch a routing decision to the appropriate backend.
-    async fn dispatch_routing_decision(
+    /// Dispatch the canonical command target to the appropriate backend.
+    async fn dispatch_command_target(
         &self,
-        decision: &RoutingDecision,
+        decision: &CommandDispatchTarget,
         _plan: &CommandPlan,
         canonical_workdir: Option<&Path>,
         input_workdir: Option<&Path>,
         timeout: Duration,
     ) -> Result<DispatchOutcome, ToolError> {
         match decision {
-            RoutingDecision::RouteToTestRunner {
+            CommandDispatchTarget::RouteToTestRunner {
                 argv,
                 validated_command,
                 ..
@@ -1416,11 +1385,11 @@ impl BashTool {
                 )
                 .await
             }
-            RoutingDecision::RouteToNativeTool { command, .. } => {
+            CommandDispatchTarget::RouteToNativeTool { command, .. } => {
                 self.dispatch_to_native_tool(command, canonical_workdir, timeout)
                     .await
             }
-            RoutingDecision::RouteToPythonScripting { script, mode, .. } => {
+            CommandDispatchTarget::RouteToPythonScripting { script, mode, .. } => {
                 let mode_str = match mode {
                     crate::command_intent::plan::PythonModeGuess::Analyze => "analyze",
                     crate::command_intent::plan::PythonModeGuess::Transform => "transform",
@@ -1430,7 +1399,7 @@ impl BashTool {
                 self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
                     .await
             }
-            RoutingDecision::RouteToManagedProcess { command, cwd, .. } => {
+            CommandDispatchTarget::RouteToManagedProcess { command, cwd, .. } => {
                 let kind = match _plan.intent.kind {
                     CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
                     CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
@@ -1440,7 +1409,7 @@ impl BashTool {
                 self.dispatch_to_managed_process(command, Some(cwd), timeout, kind)
                     .await
             }
-            RoutingDecision::RouteToGit { request, .. } => {
+            CommandDispatchTarget::RouteToGit { request, .. } => {
                 // Track U unified dispatch: route typed Git operations
                 // through `GitMutationExecutor` so they share the same
                 // env policy, snapshot/delta, projection, and RunStore
@@ -1450,11 +1419,11 @@ impl BashTool {
                 self.dispatch_to_git(request, canonical_workdir, input_workdir, timeout)
                     .await
             }
-            RoutingDecision::RouteToShell { command, .. } => {
+            CommandDispatchTarget::RouteToShell { command, .. } => {
                 self.dispatch_to_shell(command, canonical_workdir, timeout)
                     .await
             }
-            RoutingDecision::Rejected { reason } => Err(ToolError::Execution(format!(
+            CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(
                 "command rejected: {}",
                 reason
             ))),
@@ -1710,38 +1679,6 @@ impl Tool for BashTool {
                 .map(|root| root.to_string_lossy().into_owned())
         });
 
-        // Phase 04/10: Classify command intent, plan execution, and resolve routing.
-        // When active routing is enabled for the command's family AND the plan
-        // passes validation AND no kill switch is active, dispatch to the
-        // structured backend. Otherwise, execute via raw shell (observe mode).
-        let (intent, plan, decision, routing_metadata) =
-            if let Some(ref cic) = self.command_intent_config {
-                let mode = cic.mode();
-                let intent = classify_command(command);
-                let plan = plan_execution(&intent);
-                let decision = resolve_routing(&plan);
-
-                let family_enabled = plan_family(&plan)
-                    .map(|f| cic.is_enabled(f))
-                    .unwrap_or(false);
-
-                let metadata = RoutingMetadata {
-                    intent_kind: intent.kind.label().to_string(),
-                    backend_label: plan.backend.label().to_string(),
-                    projector_label: plan.projector.label().to_string(),
-                    rtk_eligible: plan.rtk_policy.is_rtk_eligible(),
-                    confidence: format!("{:?}", intent.confidence).to_lowercase(),
-                    risk_level: format!("{:?}", intent.risk.level).to_lowercase(),
-                    routing_enabled: family_enabled,
-                    routing_decision: format!("{:?}", decision),
-                    mode,
-                };
-
-                (Some(intent), Some(plan), Some(decision), Some(metadata))
-            } else {
-                (None, None, None, None)
-            };
-
         // Resolve canonical working directory
         let mut canonical_workdir: Option<PathBuf> = None;
 
@@ -1787,6 +1724,45 @@ impl Tool for BashTool {
             }
         }
 
+        // M006 canonical pipeline: normalize/classify, plan, and derive the
+        // executor target once. The explicit context keeps production cwd
+        // authority out of the classifier and planner.
+        let context = CommandIntentContext {
+            workspace_root: self.workspace_root.clone(),
+            cwd: canonical_workdir
+                .clone()
+                .or_else(|| workdir.as_ref().map(PathBuf::from)),
+        };
+        let pipeline: CommandPipelineResult = prepare_command(command, &context);
+        let (intent, plan, decision, routing_metadata) = {
+            let metadata = self.command_intent_config.as_ref().map(|cic| {
+                let mode = cic.mode();
+                let family_enabled = pipeline
+                    .plan
+                    .command_family()
+                    .map(|f| cic.is_enabled(f))
+                    .unwrap_or(false);
+                let metadata = RoutingMetadata {
+                    intent_kind: pipeline.intent.kind.label().to_string(),
+                    backend_label: pipeline.plan.backend.label().to_string(),
+                    projector_label: pipeline.plan.projector.label().to_string(),
+                    rtk_eligible: pipeline.plan.rtk_policy.is_rtk_eligible(),
+                    confidence: format!("{:?}", pipeline.intent.confidence).to_lowercase(),
+                    risk_level: format!("{:?}", pipeline.intent.risk.level).to_lowercase(),
+                    routing_enabled: family_enabled,
+                    routing_decision: format!("{:?}", pipeline.dispatch),
+                    mode,
+                };
+                metadata
+            });
+            (
+                Some(pipeline.intent.clone()),
+                Some(pipeline.plan.clone()),
+                Some(pipeline.dispatch.clone()),
+                metadata,
+            )
+        };
+
         tracing::info!("Running: {command}");
         let start = std::time::Instant::now();
 
@@ -1797,7 +1773,7 @@ impl Tool for BashTool {
             // Use plan_family so destructive / network / local mutations get
             // their own RouteLevel gate. Fall back to intent_kind_to_family
             // when the plan family is unresolved (e.g., RawShell intent).
-            let family = plan_family(plan).or(intent_kind_to_family(plan.intent.kind));
+            let family = plan_family(plan);
             let active_for_family = family.map(|f| cic.is_active_for_family(f)).unwrap_or(false);
             let plan_valid = plan.validate_for_active_routing().is_ok();
             let kill_switch_active = family.map(|f| self.check_kill_switches(f)).unwrap_or(true);
@@ -1824,7 +1800,7 @@ impl Tool for BashTool {
             let planned_backend = plan_to_planned_backend(Some(&plan_ref.backend));
 
             match self
-                .dispatch_routing_decision(
+                .dispatch_command_target(
                     decision_ref,
                     plan_ref,
                     canonical_workdir.as_deref(),
@@ -1850,9 +1826,7 @@ impl Tool for BashTool {
                         );
                         if let Some(ref plan) = plan {
                             self.record_routing_metric(RoutingMetric {
-                                family: plan_family(plan)
-                                    .or(intent_kind_to_family(plan.intent.kind))
-                                    .unwrap_or(CommandIntentFamily::Tests),
+                                family: plan_family(plan).unwrap_or(CommandIntentFamily::Tests),
                                 decision: "active_routing_delegation_without_runid".to_string(),
                                 fallback: self.run_store.is_some(),
                             });
@@ -1874,9 +1848,7 @@ impl Tool for BashTool {
                     // scheduler entirely.
                     if let Some(ref plan) = plan {
                         self.record_routing_metric(RoutingMetric {
-                            family: plan_family(plan)
-                                .or(intent_kind_to_family(plan.intent.kind))
-                                .unwrap_or(CommandIntentFamily::Tests),
+                            family: plan_family(plan).unwrap_or(CommandIntentFamily::Tests),
                             decision: "active_routing_rejected".to_string(),
                             fallback: false,
                         });
@@ -2368,6 +2340,7 @@ mod tests {
 
     // ── Phase 04 routing metadata tests ────────────────────────────────
 
+    use crate::command_intent::classify_command;
     use crate::command_intent::plan::{plan_execution, ExecutionBackend};
     use crate::command_intent::IntentConfidence;
     use crate::command_intent::RiskLevel;

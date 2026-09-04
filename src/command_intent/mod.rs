@@ -1,3 +1,4 @@
+pub mod pipeline;
 pub mod plan;
 pub mod shell_shape;
 
@@ -14,6 +15,20 @@ pub struct CommandIntentContext {
     pub workspace_root: Option<PathBuf>,
     /// Current working directory. Falls back to process cwd when None.
     pub cwd: Option<PathBuf>,
+}
+
+impl CommandIntentContext {
+    /// Return the execution directory selected by the caller.
+    ///
+    /// The daemon path supplies this from its workspace/execution context. A
+    /// relative `.` fallback is retained for compatibility callers that use
+    /// the legacy classifier APIs without a workspace context.
+    pub fn execution_cwd(&self) -> PathBuf {
+        self.cwd
+            .clone()
+            .or_else(|| self.workspace_root.clone())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

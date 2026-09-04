@@ -367,6 +367,46 @@ pub enum ExecutionBackend {
     },
 }
 
+/// Canonical executor-facing target produced by a [`CommandPlan`].
+///
+/// Backend selection and the data needed by the corresponding executor are
+/// one deterministic mapping. `command_routing` re-exports this type only for
+/// source compatibility with older callers; production code consumes
+/// `CommandPlan::dispatch_target()`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CommandDispatchTarget {
+    RouteToTestRunner {
+        argv: Vec<String>,
+        scope_label: String,
+        validated_command: Option<String>,
+    },
+    RouteToShell {
+        command: String,
+        timeout_secs: Option<u64>,
+    },
+    RouteToPythonScripting {
+        script: String,
+        mode: PythonModeGuess,
+        timeout_secs: Option<u64>,
+    },
+    RouteToNativeTool {
+        tool_name: String,
+        command: NativeCommand,
+    },
+    RouteToManagedProcess {
+        command: NativeCommand,
+        cwd: PathBuf,
+        timeout_secs: Option<u64>,
+    },
+    RouteToGit {
+        request: GitExecutionRequest,
+        timeout_secs: Option<u64>,
+    },
+    Rejected {
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PythonModeGuess {
     Analyze,
@@ -426,6 +466,68 @@ impl CommandPlan {
                 PermissionDefault::Ask | PermissionDefault::Deny
             )
         })
+    }
+
+    /// Convert the validated backend selection into the executor-facing
+    /// target. This is the sole production routing interpretation.
+    pub fn dispatch_target(&self) -> CommandDispatchTarget {
+        match &self.backend {
+            ExecutionBackend::TestRunner { validated_command } => {
+                let Some(argv) = self.intent.parsed_argv.clone() else {
+                    return CommandDispatchTarget::Rejected {
+                        reason: "test command has no typed argv; use explicit shell mode"
+                            .to_string(),
+                    };
+                };
+                CommandDispatchTarget::RouteToTestRunner {
+                    argv,
+                    scope_label: format!("command-intent:{}", self.intent.kind.label()),
+                    validated_command: validated_command.clone(),
+                }
+            }
+            ExecutionBackend::PythonScript { script, mode_guess } => {
+                CommandDispatchTarget::RouteToPythonScripting {
+                    script: script.clone(),
+                    mode: *mode_guess,
+                    timeout_secs: self.timeout_secs,
+                }
+            }
+            ExecutionBackend::NativeTool { tool_name, command } => {
+                CommandDispatchTarget::RouteToNativeTool {
+                    tool_name: tool_name.clone(),
+                    command: command.clone(),
+                }
+            }
+            ExecutionBackend::ManagedArgv { command, cwd } => {
+                CommandDispatchTarget::RouteToManagedProcess {
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    timeout_secs: self.timeout_secs,
+                }
+            }
+            ExecutionBackend::Git { request } => CommandDispatchTarget::RouteToGit {
+                request: request.clone(),
+                timeout_secs: self.timeout_secs,
+            },
+            ExecutionBackend::RawShell { command } => CommandDispatchTarget::RouteToShell {
+                command: command.clone(),
+                timeout_secs: self.timeout_secs,
+            },
+            ExecutionBackend::Reject { reason } => CommandDispatchTarget::Rejected {
+                reason: reason.clone(),
+            },
+        }
+    }
+
+    /// Resolve the routing configuration family from the already-validated
+    /// plan. Git operations use their typed risk set; all other families use
+    /// the intent kind without reclassifying the command text.
+    pub fn command_family(&self) -> Option<crate::config::schema::CommandIntentFamily> {
+        if let ExecutionBackend::Git { request } = &self.backend {
+            return git_operation_family(&request.operation, &request.risk_set)
+                .or_else(|| command_intent_family_for_kind(self.intent.kind));
+        }
+        command_intent_family_for_kind(self.intent.kind)
     }
 
     /// Validate that this plan is safe to execute via active routing.
@@ -491,8 +593,41 @@ impl CommandPlan {
     }
 }
 
+/// Map a semantic intent kind to its routing configuration family.
+pub fn command_intent_family_for_kind(
+    kind: CommandIntentKind,
+) -> Option<crate::config::schema::CommandIntentFamily> {
+    use crate::config::schema::CommandIntentFamily;
+
+    match kind {
+        CommandIntentKind::Test => Some(CommandIntentFamily::Tests),
+        CommandIntentKind::GitReadOnly => Some(CommandIntentFamily::GitRead),
+        CommandIntentKind::GitMutating => Some(CommandIntentFamily::GitLocalMutation),
+        CommandIntentKind::SearchReadOnly | CommandIntentKind::FileRead => {
+            Some(CommandIntentFamily::Search)
+        }
+        CommandIntentKind::PythonAnalyze
+        | CommandIntentKind::PythonTransform
+        | CommandIntentKind::PythonVerify => Some(CommandIntentFamily::Python),
+        CommandIntentKind::Build => Some(CommandIntentFamily::Build),
+        CommandIntentKind::Lint => Some(CommandIntentFamily::Lint),
+        CommandIntentKind::Format => Some(CommandIntentFamily::Format),
+        _ => None,
+    }
+}
+
 pub fn plan_execution(intent: &CommandIntent) -> CommandPlan {
-    let backend = select_backend(intent);
+    plan_execution_with_context(intent, &super::CommandIntentContext::default())
+}
+
+/// Plan an intent with an explicit execution context. The context supplies
+/// executor authority such as cwd; semantic classification remains on
+/// `CommandIntent`.
+pub fn plan_execution_with_context(
+    intent: &CommandIntent,
+    context: &super::CommandIntentContext,
+) -> CommandPlan {
+    let backend = select_backend(intent, context);
     let permission_requests = generate_permission_requests(intent, &backend);
     let projector = select_projector(intent, &backend);
     let rtk_policy = select_rtk_policy(intent, &backend);
@@ -507,12 +642,16 @@ pub fn plan_execution(intent: &CommandIntent) -> CommandPlan {
         rtk_policy,
         context_policy: intent.context_policy,
         timeout_secs,
-        cwd: None,
+        cwd: Some(context.execution_cwd()),
         notes,
     }
 }
 
-fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
+fn select_backend(
+    intent: &CommandIntent,
+    context: &super::CommandIntentContext,
+) -> ExecutionBackend {
+    let cwd = context.execution_cwd();
     match intent.kind {
         CommandIntentKind::Test => {
             let validated = validate_test_command(&intent.command);
@@ -548,8 +687,7 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
                         NativeCommand::from_argv(argv.clone())
                             .map(|command| ExecutionBackend::ManagedArgv {
                                 command,
-                                cwd: std::env::current_dir()
-                                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                                cwd: cwd.clone(),
                             })
                             .unwrap_or_else(|| ExecutionBackend::Reject {
                                 reason: "git argv is empty".to_string(),
@@ -591,7 +729,7 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
             .and_then(NativeCommand::from_argv)
             .map(|command| ExecutionBackend::ManagedArgv {
                 command,
-                cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                cwd: cwd.clone(),
             })
             .unwrap_or_else(|| ExecutionBackend::Reject {
                 reason: "native command has no typed argv; use explicit shell mode".to_string(),
@@ -602,7 +740,7 @@ fn select_backend(intent: &CommandIntent) -> ExecutionBackend {
             .and_then(NativeCommand::from_argv)
             .map(|command| ExecutionBackend::ManagedArgv {
                 command,
-                cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                cwd: cwd.clone(),
             })
             .unwrap_or_else(|| ExecutionBackend::Reject {
                 reason: "native command has no typed argv; use explicit shell mode".to_string(),

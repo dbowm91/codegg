@@ -110,11 +110,16 @@ pub struct CommandPlan {
 
 Methods: `is_executable()`, `requires_any_permission()`.
 
-## Planning
+## Planning and dispatch target
 
 ```rust
 pub fn plan_execution(intent: &CommandIntent) -> CommandPlan
 ```
+
+Production callers with workspace authority use
+`plan_execution_with_context(intent, context)`. The plan then produces the
+single executor-facing target with `CommandPlan::dispatch_target()`; this is
+the canonical backend-to-dispatch mapping.
 
 ### Backend Selection
 
@@ -230,7 +235,7 @@ The `is_read_only_formatter()` helper detects `--check`, `--diff`, and
 The `is_safe_git_subcommand()` helper walks past simple global options
 (`-C <path>`, etc.) to find the subcommand; only `git add` is auto-allowed.
 
-## Re-exports
+## Compatibility re-exports
 
 `src/command_planner.rs` re-exports everything from `command_intent::plan`:
 ```rust
@@ -244,6 +249,11 @@ pub use crate::command_intent::plan::{
 This is an internal-crate compatibility surface for existing callers. New
 production code imports the canonical planning types directly from
 `command_intent::plan`.
+
+`src/command_routing.rs` is likewise retained only for compatibility:
+`resolve_routing(plan)` delegates directly to `plan.dispatch_target()` and
+`RoutingDecision` is an alias of `CommandDispatchTarget`. It is not a second
+planner or router.
 
 ## Invariants & Gotchas
 

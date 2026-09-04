@@ -184,6 +184,8 @@ Exit condition: an eligible completed run can be rerun end-to-end, produces a ne
 
 ### M006 — Command pipeline convergence
 
+Status: active — `plans/implementation/architecture-convergence-incomplete-verticals/006-command-pipeline-convergence.md`
+
 Primary class: infrastructure / polish.
 
 Audit `command`, `command_intent`, planner, routing, and outcome layers and collapse overlapping phases into one typed command pipeline with explicit parse/intent/authorization/dispatch/result boundaries. Preserve externally visible commands and deterministic routing behavior.

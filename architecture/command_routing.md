@@ -1,16 +1,20 @@
 # Command Routing
 
-The command routing module resolves a `CommandPlan` into a concrete `RoutingDecision` that maps to a specific codegg subsystem. This is the third stage of the command intent pipeline (classify → plan → **route**).
+The command dispatch target is owned by `CommandPlan` and maps its selected
+backend to a specific CodeGG subsystem. It is the dispatch boundary of the
+typed command pipeline; it does not reinterpret command text or intent.
 
 ## Purpose
 
-Map a `CommandPlan`'s `ExecutionBackend` to a `RoutingDecision` enum variant
+Map a `CommandPlan`'s `ExecutionBackend` to a `CommandDispatchTarget` enum variant
 that carries the executor-specific data needed for actual dispatch.
 
 ## Where It Lives
 
-- `src/command_routing.rs` — `resolve_routing()` and `RoutingDecision` enum
-- `src/tool/bash.rs` — dispatch methods that consume `RoutingDecision`
+- `src/command_intent/plan.rs` — `CommandDispatchTarget` and
+  `CommandPlan::dispatch_target()`
+- `src/command_routing.rs` — compatibility alias and `resolve_routing()` shim
+- `src/tool/bash.rs` — dispatch methods that consume the canonical target
 
 ## How It Works
 
@@ -18,10 +22,10 @@ that carries the executor-specific data needed for actual dispatch.
   CommandPlan
         │
         ▼
-  resolve_routing(plan) ─→ RoutingDecision
+  plan.dispatch_target() ─→ CommandDispatchTarget
         │
         ▼
-  BashTool::dispatch_routing_decision()
+  BashTool::dispatch_command_target()
         │
         ├── RouteToTestRunner → submit_test_job()
         ├── RouteToGit        → dispatch_to_git()
@@ -34,10 +38,10 @@ that carries the executor-specific data needed for actual dispatch.
 
 ## Key Types & APIs
 
-### `RoutingDecision`
+### `CommandDispatchTarget` (compatibility name: `RoutingDecision`)
 
 ```rust
-pub enum RoutingDecision {
+pub enum CommandDispatchTarget {
     RouteToTestRunner {
         argv: Vec<String>,
         scope_label: String,
@@ -79,15 +83,15 @@ map to `RouteToGit`.
 Native routing carries the supported UTF-8 `NativeCommand` strings directly
 to the managed-process boundary.
 
-### `resolve_routing()`
+### `CommandPlan::dispatch_target()`
 
 ```rust
-pub fn resolve_routing(plan: &CommandPlan) -> RoutingDecision
+pub fn dispatch_target(&self) -> CommandDispatchTarget
 ```
 
-Maps `ExecutionBackend` → `RoutingDecision`:
+Maps `ExecutionBackend` → `CommandDispatchTarget`:
 
-| Backend | RoutingDecision |
+| Backend | CommandDispatchTarget |
 |---------|----------------|
 | `TestRunner { validated_command }` | `RouteToTestRunner { argv, scope_label, validated_command }` |
 | `PythonScript { script, mode_guess }` | `RouteToPythonScripting { script, mode, timeout_secs }` |
@@ -97,7 +101,7 @@ Maps `ExecutionBackend` → `RoutingDecision`:
 | `RawShell { command }` | `RouteToShell { command, timeout_secs }` |
 | `Reject { reason }` | `Rejected { reason }` |
 
-`RoutingDecision` is the dispatch boundary: it adds executor-facing data
+`CommandDispatchTarget` is the dispatch boundary: it adds executor-facing data
 such as parsed test argv, scope labels, timeouts, cwd, and the typed Git
 request.
 
@@ -105,8 +109,8 @@ request.
 
 Active routing is controlled by `CommandIntentMode::Active`. When active:
 
-1. `BashTool::execute()` classifies the command, plans execution, validates
-   via `validate_for_active_routing()`, and dispatches to the resolved subsystem
+1. `BashTool::execute()` calls `prepare_command()` once, validates the plan via
+   `validate_for_active_routing()`, and dispatches the plan-owned target
 2. Dispatch methods submit scheduler-backed work through `submit_test_job()`,
    `dispatch_to_managed_process()`, and `dispatch_to_shell()`. Git and Python
    retain their domain-specific canonical adapters.
@@ -270,11 +274,14 @@ only for the optional caller-side persistence attempt.
 
 - Active routing failures are terminal — they never fall back to raw shell,
   which would bypass admission or duplicate execution.
-- `RoutingDecision` is a dispatch-time boundary, not a persisted invocation
+- `CommandDispatchTarget` is a dispatch-time boundary, not a persisted invocation
   model. Runtime truth is carried by `ActualExecutor`; persisted details use
   the core `RunInvocation` record.
 - `RouteToGit` replaces both `RouteToNativeTool` (egggit) and the former
   `GitMutating` managed-process path.
+
+The old `resolve_routing()` function and `RoutingDecision` name remain as a
+source-compatible alias only; they delegate to the plan and contain no policy.
 
 ## Tests
 

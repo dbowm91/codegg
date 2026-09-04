@@ -95,20 +95,20 @@ A single user prompt flows through the system along this path:
 
 ### Command Execution Pipeline
 
-Shell-originated commands additionally flow through a 3-stage pipeline:
+Shell-originated commands flow through one typed pipeline:
 
 ```
 Raw Shell Command
     │
     ▼
-classify_command_with_context()          ← command_intent (stage 1)
-    │  Risk assessment, execution capabilities
+prepare_command()                        ← command_intent::pipeline
+    │  Parse/normalize + semantic intent
     ▼
-plan_execution()                         ← command_planner (stage 2)
-    │  Backend selection, permission generation, projector policy
+plan_execution_with_context()            ← command_intent::plan
+    │  Backend, permission/risk, projector policy
     ▼
-resolve_routing()                        ← command_routing (stage 3)
-    │  Concrete subsystem dispatch
+CommandPlan::dispatch_target()
+    │  One typed executor target
     ▼
 ┌──────────────────────────────────────────────────────────┐
 │ RouteToTestRunner │ RouteToShell │ RouteToPython          │
@@ -117,7 +117,8 @@ resolve_routing()                        ← command_routing (stage 3)
 ```
 
 Active routing (`CommandIntentMode::Active`) dispatches to structured backends;
-the default `Observe` mode classifies and annotates only.
+the default `Observe` mode classifies and annotates only. `command_routing` is
+retained as a source-compatible facade and has no independent routing logic.
 
 ## Module Map
 
@@ -344,8 +345,14 @@ Durable tool domains live in workspace crates under `crates/` and are consumed d
 - `GitExecutionService` is the canonical read executor; `egggit` never mutates.
 - All process-spawn sites are inventoried in `docs/execution-ownership.toml`.
 
-### 3-Stage Command Pipeline
-Commands flow through classification → planning → routing. Each stage is a separate module with clear responsibilities. Active routing mode (`CommandIntentMode::Active`) enables dispatch to structured backends; default mode is `Observe` (classify + annotate only).
+### Typed Command Pipeline
+`command_intent::pipeline::prepare_command` is the canonical entry point for
+raw shell-originated input. It classifies once, plans with an explicit
+execution context, and calls `CommandPlan::dispatch_target()` once. The plan
+owns backend, permission, projector, timeout, and routing-family selection.
+The daemon/tool boundary remains the authorization authority; active-routing
+validation is only a preflight gate. `command_routing` remains a compatibility
+facade for callers of `resolve_routing`.
 
 ### Projection Pipeline (10 Phases)
 Shell output flows through a 10-phase projection pipeline: raw capture → projector selection → RTK compression → redaction → expansion handles → context budget → promotion decisions. Each phase is independently testable.
