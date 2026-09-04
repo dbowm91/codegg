@@ -855,6 +855,14 @@ fn parse_content_length(header: &str) -> Option<usize>
 
 Uses Content-Length headers for LSP message framing. Preserves user's PATH from environment. Stderr is drained in a background task (capped at 64KB) to prevent blocking initialization. `read_response` and `read_notification` have been removed; stdout is exclusively owned by the background reader task in `client.rs`.
 
+LSP is an explicit protocol-process exception in the execution-ownership
+inventory. Its child is long-lived and its stdin/stdout are Content-Length
+framed, so finite captured-process streaming is not the correct abstraction.
+The LSP launcher remains the owner of protocol framing, restart state, and
+child handles; its bounded stderr, explicit environment, cancellation, and
+cleanup obligations are documented and guarded in
+`architecture/process-tool-execution-ownership.md`.
+
 ### language.rs - Language Detection
 
 ```rust

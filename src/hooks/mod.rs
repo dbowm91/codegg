@@ -7,9 +7,8 @@ use crate::config::schema::{HookConfig as ConfigHookConfig, HookConfigEntry};
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Stdio;
+use std::ffi::OsString;
 use std::time::Duration;
-use tokio::process::Command;
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -111,38 +110,57 @@ impl ShellCommandHook {
 impl Hook for ShellCommandHook {
     async fn execute(&self, ctx: &HookContext) -> Result<(), AppError> {
         let env_vars = ctx.to_env_vars();
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(&self.command)
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
+        let cwd = std::env::current_dir().map_err(AppError::Io)?;
+        let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
         for (key, value) in env_vars {
-            cmd.env(key, value);
+            environment_policy = environment_policy.with_var(key, value);
         }
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            vec![
+                OsString::from("sh"),
+                OsString::from("-c"),
+                OsString::from(&self.command),
+            ],
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.environment_policy = environment_policy;
+        request.timeout = Some(self.timeout);
+        request.output_policy =
+            crate::managed_process::OutputPolicy::with_limits(64 * 1024, 64 * 1024);
 
-        let output = tokio::time::timeout(self.timeout, cmd.output()).await;
+        let output = crate::managed_process::ManagedProcessService::run(request).await;
         match output {
-            Ok(Ok(out)) => {
-                if out.status.success() {
+            Ok(out) => {
+                if out.exit_status.success()
+                    && !matches!(
+                        out.termination,
+                        crate::managed_process::TerminationReason::TimedOut
+                            | crate::managed_process::TerminationReason::Cancelled
+                    )
+                {
                     Ok(())
                 } else {
-                    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                    let stderr = out.stderr.to_string_lossy();
+                    let reason = if matches!(
+                        out.termination,
+                        crate::managed_process::TerminationReason::TimedOut
+                    ) {
+                        format!("timed out after {:?}", self.timeout)
+                    } else {
+                        stderr
+                    };
                     Err(AppError::Other(anyhow::anyhow!(
                         "Hook command failed (event={}): {}",
                         self.event.as_str(),
-                        stderr
+                        reason
                     )))
                 }
             }
-            Ok(Err(e)) => Err(AppError::Io(e)),
-            Err(_) => Err(AppError::Other(anyhow::anyhow!(
-                "Hook command timed out after {:?} (event={})",
-                self.timeout,
-                self.event.as_str()
+            Err(error) => Err(AppError::Other(anyhow::anyhow!(
+                "Hook command failed to start (event={}): {}",
+                self.event.as_str(),
+                error
             ))),
         }
     }

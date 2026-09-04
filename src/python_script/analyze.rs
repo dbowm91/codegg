@@ -222,19 +222,8 @@ main()
 /// Run the AST scanner by spawning `python3 -I` with the script piped via stdin.
 /// Returns a fallback result if Python is unavailable or parsing fails.
 fn ast_scan_python(code: &str) -> AstScanResult {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = match Command::new("python3")
-        .arg("-I")
-        .arg("-c")
-        .arg(AST_SCANNER_SCRIPT)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
         Err(_) => {
             return AstScanResult {
                 fallback: true,
@@ -242,21 +231,23 @@ fn ast_scan_python(code: &str) -> AstScanResult {
             }
         }
     };
+    let mut request = crate::managed_process::ManagedProcessRequest::new(
+        vec![
+            "python3".into(),
+            "-I".into(),
+            "-c".into(),
+            AST_SCANNER_SCRIPT.into(),
+        ],
+        cwd,
+        crate::managed_process::ProcessProvenance::default(),
+    );
+    request.stdin = crate::managed_process::StdinPolicy::Bytes(code.as_bytes().to_vec());
+    request.timeout = Some(std::time::Duration::from_secs(5));
+    request.output_policy = crate::managed_process::OutputPolicy::with_limits(64 * 1024, 64 * 1024);
 
-    if let Some(mut stdin) = child.stdin.take() {
-        if stdin.write_all(code.as_bytes()).is_err() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return AstScanResult {
-                fallback: true,
-                ..Default::default()
-            };
-        }
-    }
-
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
-        Err(_) => {
+    let output = match crate::managed_process::ManagedProcessService::run_blocking(request) {
+        Ok(output) if output.exit_status.success() => output,
+        _ => {
             return AstScanResult {
                 fallback: true,
                 ..Default::default()
@@ -264,14 +255,7 @@ fn ast_scan_python(code: &str) -> AstScanResult {
         }
     };
 
-    if !output.status.success() {
-        return AstScanResult {
-            fallback: true,
-            ..Default::default()
-        };
-    }
-
-    match serde_json::from_slice(&output.stdout) {
+    match serde_json::from_slice(&output.stdout.as_bytes()) {
         Ok(result) => result,
         Err(_) => AstScanResult {
             fallback: true,

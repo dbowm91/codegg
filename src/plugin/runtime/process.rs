@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use std::ffi::OsString;
+use std::path::PathBuf;
 
 use crate::config::schema::{CommandStdinMode, CommandStdoutMode};
 use crate::plugin::policy::PluginPermissionPolicy;
@@ -90,22 +92,18 @@ impl PluginRuntime for ProcessRuntime {
     async fn invoke(&self, invocation: PluginInvocation) -> Result<PluginResponse, RuntimeError> {
         let timeout_ms = self.spec.timeout_ms.unwrap_or(self.limits.timeout_ms);
 
-        let mut cmd = tokio::process::Command::new(&self.spec.command);
-        cmd.args(&self.spec.args)
-            .args(&invocation.args)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-
-        if let Some(ref cwd) = self.spec.cwd {
-            cmd.current_dir(cwd);
-        }
-
+        let cwd = self
+            .spec
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| RuntimeError::Io("plugin process cwd could not be resolved".into()))?;
+        let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
         for env_var in &self.spec.env {
             if let Some((key, value)) = env_var.split_once('=') {
                 // Literal KEY=value — always allowed
-                cmd.env(key, value);
+                environment_policy = environment_policy.with_var(key, value);
             } else {
                 // Passthrough KEY — only allowed if policy permits
                 let passthrough_allowed = self
@@ -115,7 +113,7 @@ impl PluginRuntime for ProcessRuntime {
 
                 if passthrough_allowed {
                     if let Ok(val) = std::env::var(env_var) {
-                        cmd.env(env_var, val);
+                        environment_policy = environment_policy.with_var(env_var, val);
                     }
                 }
                 // When passthrough is denied, the env var is silently
@@ -123,44 +121,60 @@ impl PluginRuntime for ProcessRuntime {
             }
         }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            RuntimeError::Spawn(format!("failed to spawn '{}': {}", self.spec.command, e))
-        })?;
+        let mut argv = Vec::with_capacity(1 + self.spec.args.len() + invocation.args.len());
+        argv.push(OsString::from(&self.spec.command));
+        argv.extend(self.spec.args.iter().map(OsString::from));
+        argv.extend(invocation.args.iter().map(OsString::from));
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            argv,
+            cwd,
+            crate::managed_process::ProcessProvenance::new(
+                &invocation.plugin_id,
+                &invocation.invocation_id,
+            ),
+        );
+        request.environment_policy = environment_policy;
+        request.timeout = Some(std::time::Duration::from_millis(timeout_ms));
+        request.output_policy = crate::managed_process::OutputPolicy::with_limits(
+            self.limits.max_stdout_bytes,
+            self.limits.max_stderr_bytes,
+        );
+        if self.spec.stdin == CommandStdinMode::Json {
+            let json = serde_json::to_vec(&invocation).map_err(|e| {
+                RuntimeError::InvalidJson(format!("failed to serialize invocation: {e}"))
+            })?;
+            request.stdin = crate::managed_process::StdinPolicy::Bytes(json);
+        }
 
-        let output =
-            tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async move {
-                // Keep stdin writes under the same deadline as process
-                // execution. A plugin that never reads a full pipe must not
-                // hold the invocation open indefinitely.
-                if self.spec.stdin == CommandStdinMode::Json {
-                    if let Some(ref mut stdin) = child.stdin {
-                        let json = serde_json::to_string(&invocation).map_err(|e| {
-                            RuntimeError::InvalidJson(format!(
-                                "failed to serialize invocation: {e}"
-                            ))
-                        })?;
-                        use tokio::io::AsyncWriteExt;
-                        stdin
-                            .write_all(json.as_bytes())
-                            .await
-                            .map_err(|e| RuntimeError::Io(format!("failed to write stdin: {e}")))?;
-                    }
-                }
-                // Drop stdin to signal EOF.
-                drop(child.stdin.take());
-                child.wait_with_output().await.map_err(|e| {
-                    RuntimeError::Io(format!("failed to wait for '{}': {}", self.spec.command, e))
-                })
-            })
+        let output = crate::managed_process::ManagedProcessService::run(request)
             .await
-            .map_err(|_| RuntimeError::Timeout { timeout_ms })??;
+            .map_err(|error| match error {
+                crate::managed_process::ManagedProcessError::Spawn(error) => {
+                    RuntimeError::Spawn(format!("failed to spawn '{}': {error}", self.spec.command))
+                }
+                other => RuntimeError::Io(format!(
+                    "managed plugin process '{}' failed: {other}",
+                    self.spec.command
+                )),
+            })?;
+        if matches!(
+            output.termination,
+            crate::managed_process::TerminationReason::TimedOut
+        ) {
+            return Err(RuntimeError::Timeout { timeout_ms });
+        }
+        if matches!(
+            output.termination,
+            crate::managed_process::TerminationReason::Cancelled
+        ) {
+            return Err(RuntimeError::Io("plugin process was cancelled".into()));
+        }
 
-        let stdout_raw = truncate_bytes(&output.stdout, self.limits.max_stdout_bytes);
-        let stderr_raw = truncate_bytes(&output.stderr, self.limits.max_stderr_bytes);
+        let stdout_raw = output.stdout.as_bytes();
+        let stderr_raw = output.stderr.as_bytes();
+        let exit_code = output.exit_status.code().unwrap_or(-1);
 
-        let exit_code = output.status.code().unwrap_or(-1);
-
-        if !output.status.success() {
+        if !output.exit_status.success() {
             let stdout_str = String::from_utf8_lossy(&stdout_raw).to_string();
             let stderr_str = String::from_utf8_lossy(&stderr_raw).to_string();
             return Err(RuntimeError::NonZeroExit {
@@ -232,14 +246,6 @@ fn text_to_response(stdout: &str, stderr: &str) -> PluginResponse {
     }
 }
 
-fn truncate_bytes(bytes: &[u8], max: usize) -> Vec<u8> {
-    if bytes.len() <= max {
-        bytes.to_vec()
-    } else {
-        bytes[..max].to_vec()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,13 +306,6 @@ mod tests {
         let resp = parse_process_output(json, "", &CommandStdoutMode::Auto).unwrap();
         assert!(resp.ok);
         assert!(resp.effects.is_empty());
-    }
-
-    #[test]
-    fn truncate_bytes_works() {
-        assert_eq!(truncate_bytes(&[1, 2, 3], 5), vec![1, 2, 3]);
-        assert_eq!(truncate_bytes(&[1, 2, 3, 4, 5], 3), vec![1, 2, 3]);
-        assert_eq!(truncate_bytes(&[], 5), Vec::<u8>::new());
     }
 
     #[test]

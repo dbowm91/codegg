@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -521,22 +520,25 @@ fn build_landlock_paths(
     // This is a bounded interpreter-discovery probe, not the user script
     // execution path. Keep it synchronous and capped because it runs before
     // the canonical managed launch is assembled.
-    // execution-ownership: definition_or_adapter
-    let probe = std::process::Command::new(interpreter)
-        .arg("-c")
-        .arg("import sys; print(sys.prefix)")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-    if let Ok(mut child) = probe {
-        let mut bytes = Vec::new();
-        if let Some(stdout) = child.stdout.take() {
-            let _ = stdout.take(64 * 1024).read_to_end(&mut bytes);
-        }
-        if let Err(error) = child.wait() {
-            tracing::warn!(error = %error, "failed to reap Python interpreter discovery child");
-        }
-        let prefix = String::from_utf8_lossy(&bytes).trim().to_string();
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            vec![
+                interpreter.into(),
+                "-c".into(),
+                "import sys; print(sys.prefix)".into(),
+            ],
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.timeout = Some(Duration::from_secs(5));
+        request.output_policy = crate::managed_process::OutputPolicy::new(64 * 1024);
+        let prefix = crate::managed_process::ManagedProcessService::run_blocking(request)
+            .ok()
+            .filter(|result| result.exit_status.success())
+            .map(|result| result.stdout.to_string_lossy())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if !prefix.is_empty() {
             read_paths.push(PathBuf::from(prefix));
         }

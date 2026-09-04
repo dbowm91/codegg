@@ -337,6 +337,10 @@ direct-child cleanup only. Shell, TestRunner, and SubAgentPool retain
 their domain semantics behind typed executors; TestRunner is an
 explicit lifecycle exemption because it streams parser input into
 durable line-oriented test logs and owns stall-timeout semantics.
+Synchronous callers use the bounded `run_blocking` adapter and streaming
+foreground callers use `run_streaming`; neither adapter admits durable work.
+See `architecture/process-tool-execution-ownership.md` for the complete
+spawn-site disposition and protocol exceptions.
 
 ### Tool program child-job composition (M007)
 

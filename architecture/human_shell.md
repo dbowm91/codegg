@@ -13,7 +13,7 @@ and a promotion model that keeps ephemeral commands out of model context.
 | File | Contents |
 |------|----------|
 | `types.rs` | `ShellOrigin`, `ShellCapturePolicy`, `ShellCommandId`, `ShellRequest`, `ShellEvent`, `ShellStatus`, `ShellPromotionMode`, `ShellEnvPolicy`, `PromptSubmissionKind`, `classify_prompt_submission()` |
-| `runtime.rs` | `ShellRuntime` (spawns via `$SHELL -lc`), `ShellHandle` (abort handle) |
+| `runtime.rs` | `ShellRuntime` (streams `$SHELL -lc` through `ManagedProcessService`), `ShellHandle` (cancellation handle) |
 | `store.rs` | `ShellOutputStore` (bounded VecDeque), `BoundedOutput` (head/tail split), `ShellOutputEntry` |
 | `policy.rs` | `HumanShellPolicyDecision` (Allow/Warn/Block), `evaluate_command()` |
 | `digest.rs` | `ShellDigest` (structured failure extraction), `ShellFailure`, `TruncationReport` |
@@ -37,9 +37,10 @@ literal `!` chat message.
 
 1. User input parsed by `classify_prompt_submission()` →
    `PromptSubmissionKind::HumanShell { command, promote_after }`.
-2. `ShellRuntime::spawn()` launches `$SHELL -lc <command>` with
-   `kill_on_drop(true)`, timeout (default 300s), and piped
-   stdout/stderr. Returns `ShellHandle` with abort capability.
+2. `ShellRuntime::spawn()` submits `$SHELL -lc <command>` to
+   `ManagedProcessService::run_streaming()` with inherited-but-filtered
+   environment, explicit cwd, timeout (default 300s), and bounded
+   stdout/stderr. Returns `ShellHandle` with cancellation capability.
 3. Shell events (`Started`, `Stdout`, `Stderr`, `Exited`, `TimedOut`,
    `FailedToStart`) stream over `mpsc::Sender<ShellEvent>`.
 4. `ShellOutputStore` receives bounded head/tail for TUI rendering.
@@ -114,10 +115,12 @@ pub enum PromptSubmissionKind { Chat(String), Slash(String), HumanShell { comman
 
 ### ShellRuntime (`runtime.rs:10`)
 
-Spawns via `Command::new($SHELL).arg("-lc").arg(&command)`. Sends
-events over `mpsc::Sender<ShellEvent>`. Timeout enforced via
-`tokio::time::timeout` on `child.wait()`. Plugin service integration
-via `with_plugin_service()` for shell env lifecycle hooks.
+Builds a typed `$SHELL -lc` request and sends events over
+`mpsc::Sender<ShellEvent>`. Generic timeout, cancellation, process-group,
+bounded-output, and reap behavior belongs to `ManagedProcessService`.
+Plugin service integration remains available via `with_plugin_service()` for
+shell environment lifecycle hooks. See
+`architecture/process-tool-execution-ownership.md`.
 
 ### ShellOutputStore (`store.rs:93`)
 

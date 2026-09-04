@@ -1362,27 +1362,32 @@ mod tests {
     use tempfile::TempDir;
 
     fn init_repo(dir: &Path) {
+        // execution-ownership: test_only
         Command::new("git")
             .args(["init", "--initial-branch=main"])
             .current_dir(dir)
             .output()
             .unwrap();
+        // execution-ownership: test_only
         Command::new("git")
             .args(["config", "user.email", "test@example.com"])
             .current_dir(dir)
             .output()
             .unwrap();
+        // execution-ownership: test_only
         Command::new("git")
             .args(["config", "user.name", "Test"])
             .current_dir(dir)
             .output()
             .unwrap();
         std::fs::write(dir.join("README"), "base\n").unwrap();
+        // execution-ownership: test_only
         Command::new("git")
             .args(["add", "."])
             .current_dir(dir)
             .output()
             .unwrap();
+        // execution-ownership: test_only
         Command::new("git")
             .args(["commit", "-m", "base"])
             .current_dir(dir)
@@ -1535,6 +1540,7 @@ mod tests {
         let external = TempDir::new().unwrap();
         let managed = TempDir::new().unwrap();
         let (_, repository, _, _) = ids();
+        // execution-ownership: test_only
         Command::new("git")
             .args([
                 "worktree",

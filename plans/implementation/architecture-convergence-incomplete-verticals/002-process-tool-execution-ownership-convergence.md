@@ -1,6 +1,6 @@
 # Architecture Convergence M002 — Process and Tool Execution Ownership Convergence
 
-Status: active
+Status: closing
 
 Repository baseline: `3c4890035513cd4d74430b6f64523c8be676024e`
 

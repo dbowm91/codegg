@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use codegg_config::schema::ShellOutputRtkConfig;
@@ -10,19 +9,6 @@ use crate::shell::projector::{
     ProjectionExactness, ProjectionKind, ProjectionRawSemantics, ProjectionRequest,
     ProjectionResult, ProjectionSupport,
 };
-
-#[cfg(unix)]
-fn kill_pid(pid: u32, force: bool) {
-    let mut command = Command::new("kill");
-    if force {
-        command.arg("-9");
-    }
-    match command.arg(pid.to_string()).status() {
-        Ok(status) if status.success() => {}
-        Ok(status) => tracing::debug!(pid, force, ?status, "kill command did not succeed"),
-        Err(error) => tracing::warn!(pid, force, %error, "failed to invoke kill command"),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Workstream 2: Structured capability probe diagnostics
@@ -729,9 +715,7 @@ impl CommandOutputProjector for RtkProjector {
 impl RtkProjector {
     /// Maximum bytes to pass to RTK for compression (1 MiB).
     const MAX_INPUT_BYTES: usize = 1024 * 1024;
-
-    /// Grace period after kill for the helper thread to reap the child.
-    const KILL_GRACE: Duration = Duration::from_millis(250);
+    const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 
     fn project_post_process(
         &self,
@@ -770,135 +754,71 @@ impl RtkProjector {
 
         let input_bytes = input.len() as u64;
 
-        let mut cmd = Command::new(&rtk_path);
-        cmd.stdin(std::process::Stdio::piped());
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        let output = run_managed(
+            &rtk_path,
+            &[],
+            Some(&input),
+            timeout,
+            Self::MAX_OUTPUT_BYTES,
+            None,
+        )
+        .map_err(|error| ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: error.to_string(),
+        })?;
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProjectionError::BackendUnavailable {
+        if !output.exit_status.success() {
+            return Err(ProjectionError::BackendUnavailable {
                 backend: "rtk",
-                reason: format!("failed to spawn RTK: {e}"),
-            })?;
-
-        let stdin = child.stdin.take();
-        let write_handle = std::thread::spawn(move || {
-            if let Some(mut stdin) = stdin {
-                let _ = std::io::Write::write_all(&mut stdin, &input);
-            }
-        });
-
-        let pid = child.id();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-
-        std::thread::spawn(move || {
-            let status = child.wait();
-            let stdout_bytes = child_stdout
-                .map(|mut s| {
-                    let mut buf = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                })
-                .unwrap_or_default();
-            let stderr_bytes = child_stderr
-                .map(|mut s| {
-                    let mut buf = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                })
-                .unwrap_or_default();
-            let _ = tx.send((status, stdout_bytes, stderr_bytes));
-        });
-
-        let _ = write_handle.join();
-
-        match rx.recv_timeout(timeout) {
-            Ok((Ok(status), stdout_bytes, stderr_bytes)) => {
-                if !status.success() {
-                    return Err(ProjectionError::BackendUnavailable {
-                        backend: "rtk",
-                        reason: format!("RTK exited with non-zero status: {status}"),
-                    });
-                }
-
-                let text = String::from_utf8_lossy(&stdout_bytes).to_string();
-                let stderr_text = String::from_utf8_lossy(&stderr_bytes);
-
-                let mut warnings = Vec::new();
-                if !stderr_text.is_empty() {
-                    let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
-                        format!(
-                            "{}... ({} bytes truncated)",
-                            &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
-                            stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
-                        )
-                    } else {
-                        stderr_text.trim().to_string()
-                    };
-                    warnings.push(format!("RTK stderr: {truncated}"));
-                }
-                warnings.push(format!(
-                    "RTK post-process: {} input bytes -> {} output bytes",
-                    input_bytes,
-                    text.len()
-                ));
-
-                let output_bytes = text.len();
-
-                Ok(ProjectionResult {
-                    projection_id: crate::shell::projector::ProjectionId::new(),
-                    text,
-                    projector: Self::NAME.to_string(),
-                    kind: ProjectionKind::ExternalCompressed,
-                    exactness: ProjectionExactness::Lossy,
-                    redaction: crate::shell::projection::RedactionState::NotApplied,
-                    omitted: Vec::new(),
-                    expansion_handles: build_expansion_handles(run),
-                    input_bytes,
-                    output_bytes,
-                    estimated_input_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
-                        input_bytes as usize,
-                    )),
-                    estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
-                        output_bytes,
-                    )),
-                    warnings,
-                    raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
-                    source_spans: Vec::new(),
-                    redaction_records: Vec::new(),
-                    rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
-                })
-            }
-            Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {
-                backend: "rtk",
-                reason: format!("RTK process error: {e}"),
-            }),
-            Err(_) => {
-                #[cfg(unix)]
-                {
-                    kill_pid(pid, false);
-                }
-                // Bounded grace period so the detached helper thread can
-                // reap the killed child and exit; escalate to SIGKILL if
-                // it does not. Without this the thread blocked on
-                // `child.wait()` leaks whenever the child lingers.
-                let reaped = rx.recv_timeout(Self::KILL_GRACE).is_ok();
-                #[cfg(unix)]
-                {
-                    if !reaped {
-                        kill_pid(pid, true);
-                        let _ = rx.recv_timeout(Self::KILL_GRACE);
-                    }
-                }
-                Err(ProjectionError::BackendUnavailable {
-                    backend: "rtk",
-                    reason: format!("RTK timed out after {}ms", timeout.as_millis()),
-                })
-            }
+                reason: format!("RTK exited with non-zero status: {}", output.exit_status),
+            });
         }
+
+        let text = output.stdout.to_string_lossy();
+        let stderr_text = output.stderr.to_string_lossy();
+
+        let mut warnings = Vec::new();
+        if !stderr_text.is_empty() {
+            let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
+                format!(
+                    "{}... ({} bytes truncated)",
+                    &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
+                    stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
+                )
+            } else {
+                stderr_text.trim().to_string()
+            };
+            warnings.push(format!("RTK stderr: {truncated}"));
+        }
+        warnings.push(format!(
+            "RTK post-process: {} input bytes -> {} output bytes",
+            input_bytes,
+            text.len()
+        ));
+
+        let output_bytes = text.len();
+
+        Ok(ProjectionResult {
+            projection_id: crate::shell::projector::ProjectionId::new(),
+            text,
+            projector: Self::NAME.to_string(),
+            kind: ProjectionKind::ExternalCompressed,
+            exactness: ProjectionExactness::Lossy,
+            redaction: crate::shell::projection::RedactionState::NotApplied,
+            omitted: Vec::new(),
+            expansion_handles: build_expansion_handles(run),
+            input_bytes,
+            output_bytes,
+            estimated_input_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
+                input_bytes as usize,
+            )),
+            estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
+            warnings,
+            raw_semantics: ProjectionRawSemantics::OriginalCommandRaw,
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
+        })
     }
 
     fn project_wrapper(
@@ -941,142 +861,81 @@ impl RtkProjector {
             parsed_owned.iter().map(|s| s.as_str()).collect()
         };
 
-        let mut cmd = Command::new(&rtk_path);
-        cmd.args(&args);
+        let output = run_managed(
+            &rtk_path,
+            &args,
+            None,
+            timeout,
+            Self::MAX_OUTPUT_BYTES,
+            Some(&request.run.cwd),
+        )
+        .map_err(|error| ProjectionError::BackendUnavailable {
+            backend: "rtk",
+            reason: error.to_string(),
+        })?;
 
-        // Propagate the original command's working directory so RTK
-        // resolves relative paths the same way the original process did.
-        if !request.run.cwd.as_os_str().is_empty() {
-            cmd.current_dir(&request.run.cwd);
-        }
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProjectionError::BackendUnavailable {
+        if !output.exit_status.success() {
+            return Err(ProjectionError::BackendUnavailable {
                 backend: "rtk",
-                reason: format!("failed to spawn RTK: {e}"),
-            })?;
-
-        let pid = child.id();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let child_stdout = child.stdout.take();
-        let child_stderr = child.stderr.take();
-
-        std::thread::spawn(move || {
-            let status = child.wait();
-            let stdout_bytes = child_stdout
-                .map(|mut s| {
-                    let mut buf = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                })
-                .unwrap_or_default();
-            let stderr_bytes = child_stderr
-                .map(|mut s| {
-                    let mut buf = Vec::new();
-                    let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                    buf
-                })
-                .unwrap_or_default();
-            let _ = tx.send((status, stdout_bytes, stderr_bytes));
-        });
-
-        match rx.recv_timeout(timeout) {
-            Ok((Ok(status), stdout_bytes, stderr_bytes)) => {
-                if !status.success() {
-                    return Err(ProjectionError::BackendUnavailable {
-                        backend: "rtk",
-                        reason: format!("RTK exited with non-zero status: {status}"),
-                    });
-                }
-
-                let text = String::from_utf8_lossy(&stdout_bytes).to_string();
-                let stderr_text = String::from_utf8_lossy(&stderr_bytes);
-                let input_bytes = request.run.total_retained_bytes();
-                let output_bytes = text.len();
-
-                let mut warnings = Vec::new();
-                if !stderr_text.is_empty() {
-                    let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
-                        format!(
-                            "{}... ({} bytes truncated)",
-                            &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
-                            stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
-                        )
-                    } else {
-                        stderr_text.trim().to_string()
-                    };
-                    warnings.push(format!("RTK stderr: {truncated}"));
-                }
-                warnings.push(format!(
-                    "RTK wrapper: {} input bytes -> {} output bytes",
-                    input_bytes, output_bytes
-                ));
-                // Expansion handles in wrapper mode refer to the original
-                // command's raw stdout/stderr, not RTK's compressed output.
-                if !request.run.is_partial() {
-                    warnings.push("expansion handles refer to original command output".into());
-                }
-
-                let raw_semantics = if request.run.is_partial() {
-                    ProjectionRawSemantics::OriginalRawUnavailable
-                } else {
-                    ProjectionRawSemantics::WrappedCommandRaw
-                };
-
-                Ok(ProjectionResult {
-                    projection_id: crate::shell::projector::ProjectionId::new(),
-                    text,
-                    projector: Self::NAME.to_string(),
-                    kind: ProjectionKind::ExternalCompressed,
-                    exactness: ProjectionExactness::Lossy,
-                    redaction: crate::shell::projection::RedactionState::NotApplied,
-                    omitted: Vec::new(),
-                    expansion_handles: build_expansion_handles(request.run),
-                    input_bytes,
-                    output_bytes,
-                    estimated_input_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
-                        input_bytes as usize,
-                    )),
-                    estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
-                        output_bytes,
-                    )),
-                    warnings,
-                    raw_semantics,
-                    source_spans: Vec::new(),
-                    redaction_records: Vec::new(),
-                    rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
-                })
-            }
-            Ok((Err(e), _, _)) => Err(ProjectionError::BackendUnavailable {
-                backend: "rtk",
-                reason: format!("RTK process error: {e}"),
-            }),
-            Err(_) => {
-                #[cfg(unix)]
-                {
-                    kill_pid(pid, false);
-                }
-                // Bounded grace period so the detached helper thread can
-                // reap the killed child and exit; escalate to SIGKILL if
-                // it does not. Without this the thread blocked on
-                // `child.wait()` leaks whenever the child lingers.
-                let reaped = rx.recv_timeout(Self::KILL_GRACE).is_ok();
-                #[cfg(unix)]
-                {
-                    if !reaped {
-                        kill_pid(pid, true);
-                        let _ = rx.recv_timeout(Self::KILL_GRACE);
-                    }
-                }
-                Err(ProjectionError::BackendUnavailable {
-                    backend: "rtk",
-                    reason: format!("RTK timed out after {}ms", timeout.as_millis()),
-                })
-            }
+                reason: format!("RTK exited with non-zero status: {}", output.exit_status),
+            });
         }
+
+        let text = output.stdout.to_string_lossy();
+        let stderr_text = output.stderr.to_string_lossy();
+        let input_bytes = request.run.total_retained_bytes();
+        let output_bytes = text.len();
+
+        let mut warnings = Vec::new();
+        if !stderr_text.is_empty() {
+            let truncated = if stderr_text.len() > Self::MAX_STDERR_WARNING_BYTES {
+                format!(
+                    "{}... ({} bytes truncated)",
+                    &stderr_text[..Self::MAX_STDERR_WARNING_BYTES],
+                    stderr_text.len() - Self::MAX_STDERR_WARNING_BYTES
+                )
+            } else {
+                stderr_text.trim().to_string()
+            };
+            warnings.push(format!("RTK stderr: {truncated}"));
+        }
+        warnings.push(format!(
+            "RTK wrapper: {} input bytes -> {} output bytes",
+            input_bytes, output_bytes
+        ));
+        // Expansion handles in wrapper mode refer to the original
+        // command's raw stdout/stderr, not RTK's compressed output.
+        if !request.run.is_partial() {
+            warnings.push("expansion handles refer to original command output".into());
+        }
+
+        let raw_semantics = if request.run.is_partial() {
+            ProjectionRawSemantics::OriginalRawUnavailable
+        } else {
+            ProjectionRawSemantics::WrappedCommandRaw
+        };
+
+        Ok(ProjectionResult {
+            projection_id: crate::shell::projector::ProjectionId::new(),
+            text,
+            projector: Self::NAME.to_string(),
+            kind: ProjectionKind::ExternalCompressed,
+            exactness: ProjectionExactness::Lossy,
+            redaction: crate::shell::projection::RedactionState::NotApplied,
+            omitted: Vec::new(),
+            expansion_handles: build_expansion_handles(request.run),
+            input_bytes,
+            output_bytes,
+            estimated_input_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(
+                input_bytes as usize,
+            )),
+            estimated_output_tokens: Some(ProjectionBudget::approx_tokens_from_bytes(output_bytes)),
+            warnings,
+            raw_semantics,
+            source_spans: Vec::new(),
+            redaction_records: Vec::new(),
+            rtk_metadata: crate::shell::projector::RtkResultMetadata::default(),
+        })
     }
 }
 
@@ -1163,67 +1022,65 @@ enum TimedOutError {
     Other(std::io::Error),
 }
 
+impl std::fmt::Display for TimedOutError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TimedOut => formatter.write_str("process timed out"),
+            Self::Other(error) => error.fmt(formatter),
+        }
+    }
+}
+
+fn run_managed(
+    binary: &Path,
+    args: &[&str],
+    stdin: Option<&[u8]>,
+    timeout: Duration,
+    output_limit: usize,
+    cwd: Option<&Path>,
+) -> Result<crate::managed_process::ManagedProcessResult, TimedOutError> {
+    let cwd = match cwd {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir().map_err(TimedOutError::Other)?,
+    };
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push(binary.as_os_str().to_owned());
+    argv.extend(args.iter().map(std::ffi::OsString::from));
+    let mut request = crate::managed_process::ManagedProcessRequest::new(
+        argv,
+        cwd,
+        crate::managed_process::ProcessProvenance::default(),
+    );
+    request.timeout = Some(timeout);
+    request.output_policy = crate::managed_process::OutputPolicy::new(output_limit);
+    if let Some(stdin) = stdin {
+        request.stdin = crate::managed_process::StdinPolicy::Bytes(stdin.to_vec());
+    }
+
+    let output = crate::managed_process::ManagedProcessService::run_blocking(request)
+        .map_err(|error| TimedOutError::Other(std::io::Error::other(error.to_string())))?;
+    if matches!(
+        output.termination,
+        crate::managed_process::TerminationReason::TimedOut
+    ) {
+        return Err(TimedOutError::TimedOut);
+    }
+    if !output.exit_status.success() {
+        return Err(TimedOutError::Other(std::io::Error::other(format!(
+            "exit status: {}",
+            output.exit_status
+        ))));
+    }
+    Ok(output)
+}
+
 fn run_with_timeout(
     binary: &Path,
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, TimedOutError> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return Err(TimedOutError::Other(e)),
-    };
-
-    let pid = child.id();
-    let (tx, rx) = std::sync::mpsc::channel();
-
-    let child_stdout = child.stdout.take();
-    let child_stderr = child.stderr.take();
-
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let stdout_bytes = child_stdout
-            .map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            })
-            .unwrap_or_default();
-        let _stderr_bytes = child_stderr
-            .map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            })
-            .unwrap_or_default();
-        let _ = tx.send((status, stdout_bytes));
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok((Ok(status), stdout_bytes)) => {
-            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-            if status.success() {
-                Ok(stdout)
-            } else {
-                Err(TimedOutError::Other(std::io::Error::other(format!(
-                    "exit status: {}",
-                    status
-                ))))
-            }
-        }
-        Ok((Err(e), _)) => Err(TimedOutError::Other(e)),
-        Err(_) => {
-            #[cfg(unix)]
-            {
-                kill_pid(pid, false);
-            }
-            Err(TimedOutError::TimedOut)
-        }
-    }
+    run_managed(binary, args, None, timeout, 1024 * 1024, None)
+        .map(|output| output.stdout.to_string_lossy())
 }
 
 fn run_with_stdin_timeout(
@@ -1232,72 +1089,8 @@ fn run_with_stdin_timeout(
     stdin_data: &[u8],
     timeout: Duration,
 ) -> Result<String, TimedOutError> {
-    let mut cmd = Command::new(binary);
-    cmd.args(args);
-    cmd.stdin(std::process::Stdio::piped());
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return Err(TimedOutError::Other(e)),
-    };
-
-    let pid = child.id();
-    let stdin = child.stdin.take();
-    let stdin_data = stdin_data.to_vec();
-    let write_handle = std::thread::spawn(move || {
-        if let Some(mut stdin) = stdin {
-            let _ = std::io::Write::write_all(&mut stdin, &stdin_data);
-        }
-    });
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let child_stdout = child.stdout.take();
-    let child_stderr = child.stderr.take();
-
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let stdout_bytes = child_stdout
-            .map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            })
-            .unwrap_or_default();
-        let _stderr_bytes = child_stderr
-            .map(|mut s| {
-                let mut buf = Vec::new();
-                let _ = std::io::Read::read_to_end(&mut s, &mut buf);
-                buf
-            })
-            .unwrap_or_default();
-        let _ = tx.send((status, stdout_bytes));
-    });
-
-    let _ = write_handle.join();
-
-    match rx.recv_timeout(timeout) {
-        Ok((Ok(status), stdout_bytes)) => {
-            let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-            if status.success() {
-                Ok(stdout)
-            } else {
-                Err(TimedOutError::Other(std::io::Error::other(format!(
-                    "exit status: {}",
-                    status
-                ))))
-            }
-        }
-        Ok((Err(e), _)) => Err(TimedOutError::Other(e)),
-        Err(_) => {
-            #[cfg(unix)]
-            {
-                kill_pid(pid, false);
-            }
-            Err(TimedOutError::TimedOut)
-        }
-    }
+    run_managed(binary, args, Some(stdin_data), timeout, 1024 * 1024, None)
+        .map(|output| output.stdout.to_string_lossy())
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {

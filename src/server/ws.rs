@@ -2026,7 +2026,7 @@ async fn upgrade_tui(
                     message: "Too Many Requests".to_string(),
                 };
                 if let Ok(msg) = serde_json::to_string(&err) {
-                    if queue_message(&out_tx_for_reader, WsMessage::Text(msg.into())).is_err() {
+                    if !queue_message(&out_tx_for_reader, WsMessage::Text(msg.into())) {
                         tracing::debug!("rate-limit WS delivery failed (receiver gone)");
                     }
                 }
@@ -2480,7 +2480,7 @@ async fn handle_tui_message_with_observer(
                     message: "projection-primary connections resume with ProjectionCursor".into(),
                 };
                 if let Ok(json) = serde_json::to_string(&diagnostic) {
-                    if queue_message(bus_tx, WsMessage::Text(json.into())).is_err() {
+                    if !queue_message(bus_tx, WsMessage::Text(json.into())) {
                         tracing::debug!("projection diagnostic WS delivery failed");
                     }
                 }

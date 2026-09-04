@@ -61,6 +61,18 @@ For each match, the guard requires either:
 
 Adding a new unclassified site fails CI.
 
+## Canonical process lifecycle
+
+Finite local process execution converges on `ManagedProcessService` in
+`src/managed_process.rs`. It owns typed argv execution, explicit cwd/env,
+process groups, cancellation and timeout, bounded capture/streaming,
+sandbox-helper coordination, classification, cleanup, and reaping. Scheduler
+executors admit durable work; the service runs the accepted attempt. Human
+shells, formatters, hooks, RTK, IDE helpers, terminal tools, and plugin finite
+children use adapters over this lifecycle. The full diagram and exception
+inventory are in
+[`architecture/process-tool-execution-ownership.md`](../architecture/process-tool-execution-ownership.md).
+
 The guard is fail-closed for malformed manifests, forbidden owner classes,
 unreadable production source, unclassified spawn/dispatch sites, unbounded
 finite-process collection, and lossy argv reparsing. Its `--self-test` checks
@@ -92,7 +104,7 @@ disrupting the canonical subsystem ownership:
 | Git (mutations, network, recovery, reads) | Typed mutations (Phase D), network/destructive (Phase E), conflicts/recovery (Phase F) — see `architecture/git.md` |
 | Python script execution | Module-based scripting at `src/python_script/` — see `architecture/python_scripting.md` |
 | External formatters | Deferred domain executor — tracked in `docs/execution-ownership.toml` |
-| Plugin process lifecycle | Deferred domain executor — tracked in `docs/execution-ownership.toml` |
+| Plugin process lifecycle | Finite child lifecycle is canonical; plugin admission/lifecycle remains deferred — tracked in `docs/execution-ownership.toml` |
 
 These domains are tracked in the execution-ownership TOML manifest and
 documented in `architecture/`.

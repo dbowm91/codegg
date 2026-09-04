@@ -146,7 +146,7 @@ reason = "connect_or_start_daemon may spawn a daemon child process via the codeg
 [[site]]
 path = "src/shell/runtime.rs"
 owner = "interactive"
-reason = "long-lived user shell command execution via PTY"
+reason = "human shell commands use ManagedProcessService streaming; shell semantics remain interactive and are not durable scheduler work"
 
 [[site]]
 path = "src/tui/app/mod.rs"
@@ -198,14 +198,19 @@ owner = "definition_or_adapter"
 reason = "Python scripting subsystem definition; scheduler-owned execution via PythonJobExecutor"
 
 [[site]]
-path = "src/formatter.rs"
-owner = "deferred_domain_executor"
-reason = "External formatters (cargo fmt, prettier, black) may route through scheduler in future"
+path = "src/python_script/analyze.rs"
+owner = "definition_or_adapter"
+reason = "Synchronous Python risk probe uses ManagedProcessService blocking adapter; analysis fallback remains non-authoritative"
 
 [[site]]
 path = "src/plugin/runtime/process.rs"
 owner = "deferred_domain_executor"
-reason = "Plugin process runtime spawns plugin processes; long-lived by design, pending scheduler integration"
+reason = "Plugin process runtime uses ManagedProcessService; plugin admission/lifecycle ownership remains a deferred domain integration"
+
+[[site]]
+path = "src/tool/formatter.rs"
+owner = "definition_or_adapter"
+reason = "External formatters use ManagedProcessService blocking adapter; scheduler admission remains a separate future domain decision"
 
 [[site]]
 path = "crates/egglsp/src/launch.rs"
@@ -222,6 +227,26 @@ path = "crates/codegg-core/src/worktree.rs"
 owner = "deferred_domain_executor"
 reason = "Worktree creation/removal uses hardened git subprocess; pending scheduler integration"
 
+[[site]]
+path = "crates/codegg-core/src/repository_lineage.rs"
+owner = "deferred_domain_executor"
+reason = "Repository lineage uses a bounded local git probe; pending typed Git scheduler integration"
+
+[[site]]
+path = "src/bin/codegg-sandbox-helper.rs"
+owner = "definition_or_adapter"
+reason = "ManagedProcessService-owned sandbox helper applies Landlock and execs the already-validated target"
+
+[[site]]
+path = "src/mcp/local.rs"
+owner = "interactive"
+reason = "MCP JSON-RPC protocol child retains framing and long-lived connection state; process lifecycle is protocol-specialized"
+
+[[site]]
+path = "src/core/transport/stdio.rs"
+owner = "standalone_compat"
+reason = "Deprecated standalone core stdio compatibility transport owns protocol framing and child connection state"
+
 # ---------------------------------------------------------------------
 # Hooks / helper processes
 # ---------------------------------------------------------------------
@@ -234,7 +259,17 @@ reason = "ShellCommandHook executes user-defined hook commands with timeout; con
 [[site]]
 path = "src/shell/rtk.rs"
 owner = "definition_or_adapter"
-reason = "RTK discovery and invocation; cleanup helper for child processes"
+reason = "RTK discovery/projection adapter uses ManagedProcessService for blocking bounded invocations"
+
+[[site]]
+path = "src/tool/terminal.rs"
+owner = "scheduler"
+reason = "Terminal tool execution uses ManagedProcessService; tool authorization remains local and scheduler admission is owned by its caller"
+
+[[site]]
+path = "src/ide/"
+owner = "interactive"
+reason = "IDE diff helper uses ManagedProcessService blocking adapter for user-controlled external editor commands"
 
 [[site]]
 path = "src/upgrade/"
@@ -264,12 +299,3 @@ reason = "mod tests block uses git subprocess to set up test fixtures; not a pro
 path = "src/git_service.rs"
 owner = "definition_or_adapter"
 reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"
-
-# ---------------------------------------------------------------------
-# Deferred domain executor: external formatters
-# ---------------------------------------------------------------------
-
-[[site]]
-path = "src/tool/formatter.rs"
-owner = "deferred_domain_executor"
-reason = "External formatters (cargo fmt, prettier, black) currently spawn directly via std::process::Command; future migration routes through scheduler as JobKind::Format"

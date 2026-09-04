@@ -3639,6 +3639,7 @@ async fn spawn_process_monitor(
 async fn open_null_stderr() -> std::io::Result<tokio::process::ChildStderr> {
     use std::process::Stdio;
     use tokio::process::Command;
+    // execution-ownership: test_only
     let mut cmd = Command::new("true");
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -7595,6 +7596,7 @@ mod tests {
     async fn spawn_hung_runtime(label: &'static str) -> LspProcessRuntime {
         use std::process::Stdio;
         use tokio::process::Command;
+        // execution-ownership: test_only
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c")
             .arg("sleep 60")
@@ -7621,6 +7623,7 @@ mod tests {
     async fn spawn_dummy_runtime(label: &'static str) -> LspProcessRuntime {
         use std::process::Stdio;
         use tokio::process::Command;
+        // execution-ownership: test_only
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c")
             .arg("exit 0")

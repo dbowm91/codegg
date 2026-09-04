@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002 active; M003/M008 ready | M004 waits on M002/M003; M005 waits on M003; M006 waits on M004; M007 waits on M002's stable execution/edit boundary. |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002 closing; M003/M008 ready | M004 waits on M002/M003; M005 waits on M003; M006 waits on M004; M007 waits on M002 closure. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -57,11 +57,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Closure work |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/002-process-tool-execution-ownership-convergence.md` | Implementation in progress; closure record will be added after focused safety and ownership verification. |
+| Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/002-process-tool-execution-ownership-convergence.md` | Implementation landed; closure record is being finalized after focused safety and ownership verification. |
 
 ## Architecture convergence execution order
 
-1. M002, M003, and M008 are dependency-ready. M002/M003 may run in parallel if implementation agents coordinate root wiring edits; M008 is independent. M001 is conditionally closed pending its named host-toolchain focused-test rerun.
+1. M002 is in closure; M003 and M008 remain dependency-ready. M001 is conditionally closed pending its named host-toolchain focused-test rerun.
 2. M004 begins only after M002 and M003 close. M001's converged context owner is now available for it to consume; it must not introduce temporary extraction layers.
 3. M005 begins after M003 closes so rerun/replay uses one stable Git/worktree/provenance boundary. It may proceed in parallel with M004 once M003 is closed.
 4. M006 begins after M004 closes so command-pipeline simplification targets the final AgentLoop coordinator boundary instead of churning an unstable interface.

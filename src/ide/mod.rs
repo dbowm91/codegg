@@ -1,53 +1,41 @@
 use similar::{ChangeTag, TextDiff};
+use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::Builder;
 
 const IDE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn run_command_with_timeout(program: &str, args: &[&str]) -> Result<(), String> {
     let program = program.to_string();
-    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-
-    let mut child = Command::new(&program)
-        .args(&args)
-        .spawn()
-        .map_err(|e| format!("failed to spawn {}: {}", program, e))?;
-
-    let deadline = Instant::now() + IDE_COMMAND_TIMEOUT;
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("{} failed (exit {})", program, status))
-                };
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    // Kill and reap so a hung child does not linger as
-                    // an orphan past the timeout.
-                    if let Err(error) = child.kill() {
-                        tracing::warn!(error = %error, "failed to kill timed-out IDE helper");
-                    }
-                    if let Err(error) = child.wait() {
-                        tracing::warn!(error = %error, "failed to reap timed-out IDE helper");
-                    }
-                    return Err(format!(
-                        "{} timed out after {:?}",
-                        program, IDE_COMMAND_TIMEOUT
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Err(format!("wait failed: {}", e));
-            }
-        }
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push(OsString::from(&program));
+    argv.extend(args.iter().map(OsString::from));
+    let cwd = std::env::current_dir().map_err(|e| format!("failed to resolve IDE cwd: {e}"))?;
+    let mut request = crate::managed_process::ManagedProcessRequest::new(
+        argv,
+        cwd,
+        crate::managed_process::ProcessProvenance::default(),
+    );
+    request.environment_policy = crate::managed_process::EnvironmentPolicy::inherited();
+    request.timeout = Some(IDE_COMMAND_TIMEOUT);
+    request.output_policy = crate::managed_process::OutputPolicy::new(64 * 1024);
+    let output = crate::managed_process::ManagedProcessService::run_blocking(request)
+        .map_err(|error| format!("failed to run {}: {error}", program))?;
+    if matches!(
+        output.termination,
+        crate::managed_process::TerminationReason::TimedOut
+    ) {
+        return Err(format!(
+            "{} timed out after {:?}",
+            program, IDE_COMMAND_TIMEOUT
+        ));
+    }
+    if output.exit_status.success() {
+        Ok(())
+    } else {
+        Err(format!("{} failed (exit {})", program, output.exit_status))
     }
 }
 

@@ -333,17 +333,29 @@ def main() -> int:
             # sites; their process-spawn entries are owned by the
             # scheduler executors themselves.
             continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError as error:
+            failures.append(f"{rel}: could not read source for ownership scan: {error}")
+            continue
+        patterns = SPAWN_PATTERNS
+        has_imported_process_command = any(
+            not is_comment_line(line)
+            and re.search(r"^\s*use\s+(?:tokio|std)::process::[^;]*\bCommand\b", line)
+            for line in content.splitlines()
+        )
+        if has_imported_process_command:
+            # Imported process commands are commonly written as `Command::new`
+            # and need the same inventory treatment as fully qualified calls.
+            patterns = SPAWN_PATTERNS + [
+                ("imported_process_spawn", re.compile(r"\bCommand::new\s*\("))
+            ]
         if not is_classified(sites, rel):
-            try:
-                content = path.read_text(encoding="utf-8")
-            except OSError as error:
-                failures.append(f"{rel}: could not read source for ownership scan: {error}")
-                continue
             lines = content.splitlines()
             for i, line in enumerate(lines):
                 if is_comment_line(line):
                     continue
-                for name, pat in SPAWN_PATTERNS:
+                for name, pat in patterns:
                     if pat.search(line):
                         prev = lines[i - 1] if i > 0 else None
                         owner = annotate_owner(line, prev)

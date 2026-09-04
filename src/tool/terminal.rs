@@ -3,9 +3,9 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 
 use crate::error::ToolError;
 use crate::tool::{Tool, ToolCategory};
@@ -301,33 +301,42 @@ impl Tool for TerminalTool {
             format!("{} {}", command, args.join(" "))
         };
 
-        let output = tokio::time::timeout(timeout, async {
-            let mut cmd = Command::new("sh");
-            cmd.env_clear();
-            if let Some(path) = std::env::var_os("PATH") {
-                cmd.env("PATH", path);
-            } else {
-                cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            }
-            cmd.arg("-c").arg(&full_command);
+        let cwd = self
+            .workdir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| ToolError::Execution("terminal cwd could not be resolved".into()))?;
+        let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
+        for (key, value) in env_vars {
+            environment_policy = environment_policy.with_var(key, value);
+        }
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            vec![
+                OsString::from("sh"),
+                OsString::from("-c"),
+                OsString::from(full_command),
+            ],
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        request.environment_policy = environment_policy;
+        request.timeout = Some(timeout);
+        request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
+        let output = crate::managed_process::ManagedProcessService::run(request)
+            .await
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+        if matches!(
+            output.termination,
+            crate::managed_process::TerminationReason::TimedOut
+        ) {
+            return Err(ToolError::Timeout(format!(
+                "command timed out after {}s",
+                timeout_secs
+            )));
+        }
 
-            for (key, value) in env_vars {
-                cmd.env(&key, &value);
-            }
-
-            if let Some(ref dir) = self.workdir {
-                cmd.current_dir(dir);
-            }
-
-            cmd.kill_on_drop(true);
-            cmd.output().await
-        })
-        .await
-        .map_err(|_| ToolError::Timeout(format!("command timed out after {}s", timeout_secs)))?
-        .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = output.stdout.to_string_lossy();
+        let stderr = output.stderr.to_string_lossy();
 
         let mut result = String::new();
         if !stdout.is_empty() {
@@ -350,7 +359,7 @@ impl Tool for TerminalTool {
 
         result.push_str(&format!(
             "\n\n[exit code: {}]",
-            output.status.code().unwrap_or(-1)
+            output.exit_status.code().unwrap_or(-1)
         ));
 
         Ok(result)

@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::types::{ShellCommandId, ShellEvent, ShellRequest, DEFAULT_TIMEOUT_SECS};
 
@@ -89,120 +88,70 @@ impl ShellRuntime {
             }
         }
 
-        let mut cmd = Command::new(&self.shell);
-        cmd.arg("-lc").arg(&command);
-        cmd.current_dir(&cwd);
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-        cmd.kill_on_drop(true);
-
-        // Apply environment overrides from plugin hooks.
-        for key in &remove_env {
-            cmd.env_remove(key);
-        }
-        for (key, value) in &extra_env {
-            cmd.env(key, value);
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx
-                    .send(ShellEvent::FailedToStart {
-                        id,
-                        error: e.to_string(),
-                    })
-                    .await;
-                return Err(e.to_string());
+        let mut environment_policy = match req.env_policy {
+            super::types::ShellEnvPolicy::Inherit => {
+                crate::managed_process::EnvironmentPolicy::inherited()
+            }
+            super::types::ShellEnvPolicy::Clean => {
+                crate::managed_process::EnvironmentPolicy::sanitized()
             }
         };
+        for key in remove_env {
+            environment_policy = environment_policy.deny_var(key);
+        }
+        for (key, value) in extra_env {
+            environment_policy = environment_policy.with_var(key, value);
+        }
 
-        let stdout = child.stdout.take().expect("stdout piped at spawn");
-        let stderr = child.stderr.take().expect("stderr piped at spawn");
+        let cancellation = CancellationToken::new();
+        let mut process_request = crate::managed_process::ManagedProcessRequest::new(
+            vec![self.shell.clone().into(), "-lc".into(), command.into()],
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        process_request.environment_policy = environment_policy;
+        process_request.timeout = Some(timeout_dur);
+        process_request.cancellation = cancellation.clone();
+        process_request.output_policy =
+            crate::managed_process::OutputPolicy::new(super::types::DEFAULT_MAX_BYTES_PER_COMMAND);
 
-        let tx_stdout = tx.clone();
-        let tx_stderr = tx.clone();
-
-        let stdout_task = tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
-            let mut buf = Vec::with_capacity(8192);
-            loop {
-                buf.clear();
-                match reader.fill_buf().await {
-                    Ok([]) => break,
-                    Ok(data) => {
-                        buf.extend_from_slice(data);
-                        let len = buf.len();
-                        let _ = tx_stdout
-                            .send(ShellEvent::Stdout {
-                                id,
-                                bytes: buf[..len].to_vec(),
-                            })
-                            .await;
-                        reader.consume(len);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        let stderr_task = tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = Vec::with_capacity(8192);
-            loop {
-                buf.clear();
-                match reader.fill_buf().await {
-                    Ok([]) => break,
-                    Ok(data) => {
-                        buf.extend_from_slice(data);
-                        let len = buf.len();
-                        let _ = tx_stderr
-                            .send(ShellEvent::Stderr {
-                                id,
-                                bytes: buf[..len].to_vec(),
-                            })
-                            .await;
-                        reader.consume(len);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
+        let (output_tx, mut output_rx) = mpsc::channel(128);
+        let process_task = tokio::spawn(
+            crate::managed_process::ManagedProcessService::run_streaming(
+                process_request,
+                output_tx,
+            ),
+        );
         let tx_exit = tx.clone();
-        let exit_task = tokio::spawn(async move {
+        tokio::spawn(async move {
             let start = Instant::now();
+            let mut process_task = process_task;
+            let result = loop {
+                tokio::select! {
+                    chunk = output_rx.recv() => {
+                        if let Some(chunk) = chunk {
+                            forward_output(&tx_exit, id, chunk).await;
+                        }
+                    }
+                    result = &mut process_task => break result,
+                }
+            };
+            while let Some(chunk) = output_rx.recv().await {
+                forward_output(&tx_exit, id, chunk).await;
+            }
 
-            {
-                let mut child = child;
-                let wait_result = tokio::time::timeout(timeout_dur, child.wait()).await;
-                match wait_result {
-                    Ok(Ok(status)) => {
-                        let elapsed = start.elapsed();
-                        let _ = stdout_task.await;
-                        let _ = stderr_task.await;
+            match result {
+                Ok(Ok(result)) => match result.termination {
+                    crate::managed_process::TerminationReason::Exited => {
                         let _ = tx_exit
                             .send(ShellEvent::Exited {
                                 id,
-                                status: status.code(),
-                                elapsed,
+                                status: result.exit_status.code(),
+                                elapsed: start.elapsed(),
                             })
                             .await;
                     }
-                    Ok(Err(e)) => {
-                        let _ = stdout_task.await;
-                        let _ = stderr_task.await;
-                        let _ = tx_exit
-                            .send(ShellEvent::FailedToStart {
-                                id,
-                                error: e.to_string(),
-                            })
-                            .await;
-                    }
-                    Err(_) => {
-                        let _ = child.kill().await;
-                        let _ = tokio::time::timeout(Duration::from_secs(1), stdout_task).await;
-                        let _ = tokio::time::timeout(Duration::from_secs(1), stderr_task).await;
+                    crate::managed_process::TerminationReason::TimedOut => {
                         let _ = tx_exit
                             .send(ShellEvent::TimedOut {
                                 id,
@@ -210,13 +159,39 @@ impl ShellRuntime {
                             })
                             .await;
                     }
+                    crate::managed_process::TerminationReason::Cancelled => {}
+                    crate::managed_process::TerminationReason::OutputLimitExceeded { stream } => {
+                        let _ = tx_exit
+                            .send(ShellEvent::FailedToStart {
+                                id,
+                                error: format!("managed shell output limit exceeded on {stream:?}"),
+                            })
+                            .await;
+                    }
+                },
+                Ok(Err(error)) => {
+                    let _ = tx_exit
+                        .send(ShellEvent::FailedToStart {
+                            id,
+                            error: error.to_string(),
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    let _ = tx_exit
+                        .send(ShellEvent::FailedToStart {
+                            id,
+                            error: format!("managed shell task failed: {error}"),
+                        })
+                        .await;
                 }
             }
         });
 
         Ok(ShellHandle {
             id,
-            abort_handle: exit_task.abort_handle(),
+            cancellation,
+            abort_handle: None,
         })
     }
 }
@@ -230,12 +205,16 @@ impl Default for ShellRuntime {
 #[derive(Debug, Clone)]
 pub struct ShellHandle {
     pub id: ShellCommandId,
-    abort_handle: tokio::task::AbortHandle,
+    cancellation: CancellationToken,
+    abort_handle: Option<tokio::task::AbortHandle>,
 }
 
 impl ShellHandle {
     pub fn kill(&self) {
-        self.abort_handle.abort();
+        self.cancellation.cancel();
+        if let Some(abort_handle) = &self.abort_handle {
+            abort_handle.abort();
+        }
     }
 
     pub fn id(&self) -> ShellCommandId {
@@ -244,8 +223,30 @@ impl ShellHandle {
 
     #[cfg(test)]
     pub fn new_for_test(id: ShellCommandId, abort_handle: tokio::task::AbortHandle) -> Self {
-        Self { id, abort_handle }
+        Self {
+            id,
+            cancellation: CancellationToken::new(),
+            abort_handle: Some(abort_handle),
+        }
     }
+}
+
+async fn forward_output(
+    tx: &mpsc::Sender<ShellEvent>,
+    id: ShellCommandId,
+    chunk: crate::managed_process::ManagedProcessOutputChunk,
+) {
+    let event = match chunk.stream {
+        crate::managed_process::OutputStream::Stdout => ShellEvent::Stdout {
+            id,
+            bytes: chunk.bytes,
+        },
+        crate::managed_process::OutputStream::Stderr => ShellEvent::Stderr {
+            id,
+            bytes: chunk.bytes,
+        },
+    };
+    let _ = tx.send(event).await;
 }
 
 #[cfg(test)]
@@ -458,7 +459,8 @@ mod tests {
             .block_on(async { tokio::spawn(async {}).abort_handle() });
         let handle = ShellHandle {
             id: ShellCommandId(99),
-            abort_handle,
+            cancellation: CancellationToken::new(),
+            abort_handle: Some(abort_handle),
         };
         handle.kill();
     }
@@ -503,15 +505,7 @@ mod tests {
                 assert!(started, "should have received Started event");
                 assert!(timed_out, "should have received TimedOut event");
             }
-            Err(_) => {
-                eprintln!(
-                    "NOTE: runtime timeout test timed out — this is a known macOS limitation \
-                     where child.kill() through sh -lc does not reliably kill the process tree. \
-                     The timeout mechanism itself is correct (tokio::time::timeout wrapping \
-                     child.wait()); the integration test just cannot verify TimedOut event \
-                     delivery on macOS because the process survives the kill signal."
-                );
-            }
+            Err(_) => panic!("managed shell timeout did not emit a TimedOut event"),
         }
     }
 }

@@ -143,6 +143,8 @@ Exit condition: a contributor can answer “where does context policy live?” w
 
 ### M002 — Process and tool execution ownership convergence
 
+Status: closing — implementation landed; formal closure evidence is being recorded.
+
 Primary class: invariant / infrastructure.
 
 Establish one canonical process-execution path underneath Bash, shell sessions, Tool Programs, and other command-running tools. Separate tool schema/authorization/dispatch from process lifecycle, sandboxing, cancellation, process groups, output bounds, and result capture. Reuse existing runtime-safety machinery and delete bypass/duplicate helpers where safe.

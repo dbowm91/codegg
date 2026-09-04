@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::config::schema::{FormatterConfig, FormatterRule};
 use crate::error::{AppError, ToolError};
@@ -44,26 +46,42 @@ impl Formatter {
             )));
         }
 
-        let mut cmd = std::process::Command::new(&command[0]);
-        cmd.args(&command[1..]).arg(path).env_clear();
-        if let Some(path_value) = std::env::var_os("PATH") {
-            cmd.env("PATH", path_value);
-        } else {
-            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-        }
-
+        let cwd = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .ok_or_else(|| {
+                AppError::Tool(ToolError::Format(
+                    "formatter cwd could not be resolved".into(),
+                ))
+            })?;
+        let mut argv = command.iter().map(OsString::from).collect::<Vec<_>>();
+        argv.push(path.as_os_str().to_owned());
+        let mut request = crate::managed_process::ManagedProcessRequest::new(
+            argv,
+            cwd,
+            crate::managed_process::ProcessProvenance::default(),
+        );
+        let mut environment_policy = crate::managed_process::EnvironmentPolicy::sanitized();
         if let Some(env) = &rule.environment {
             for (k, v) in env {
-                cmd.env(k, v);
+                environment_policy = environment_policy.with_var(k, v);
             }
         }
+        request.environment_policy = environment_policy;
+        request.timeout = Some(Duration::from_secs(120));
+        request.output_policy = crate::managed_process::OutputPolicy::new(256 * 1024);
+        let output = crate::managed_process::ManagedProcessService::run_blocking(request).map_err(
+            |error| {
+                AppError::Tool(ToolError::Format(format!(
+                    "failed to run formatter: {error}"
+                )))
+            },
+        )?;
 
-        let output = cmd.output().map_err(|e| {
-            AppError::Tool(ToolError::Format(format!("failed to run formatter: {e}")))
-        })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.exit_status.success() {
+            let stderr = output.stderr.to_string_lossy();
             return Err(AppError::Tool(ToolError::Format(format!(
                 "formatter failed: {stderr}"
             ))));

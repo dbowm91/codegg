@@ -76,6 +76,22 @@ impl EnvironmentPolicy {
         }
     }
 
+    /// Construct a policy that inherits the current environment while still
+    /// removing variables known to alter command execution or credential
+    /// lookup. This is used only for explicitly human-originated commands
+    /// whose shell semantics require the user's environment.
+    pub fn inherited() -> Self {
+        let denied = codegg_git::ALWAYS_STRIPPED_ENV_VARS
+            .iter()
+            .map(OsString::from)
+            .collect();
+        Self {
+            inherited: std::env::vars_os().map(|(name, _)| name).collect(),
+            overrides: BTreeMap::new(),
+            denied,
+        }
+    }
+
     /// Add a variable to the inherited allowlist.
     pub fn allow_inherited_var(mut self, name: impl Into<OsString>) -> Self {
         self.inherited.insert(name.into());
@@ -141,6 +157,13 @@ pub enum OverflowPolicy {
 pub enum OutputStream {
     Stdout,
     Stderr,
+}
+
+/// A bounded output chunk emitted by the streaming adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedProcessOutputChunk {
+    pub stream: OutputStream,
+    pub bytes: Vec<u8>,
 }
 
 /// Bounded capture settings for stdout and stderr.
@@ -410,16 +433,50 @@ impl ManagedProcessService {
     ) -> Result<ManagedProcessResult, ManagedProcessError> {
         run(request).await
     }
+
+    /// Execute a managed process from a synchronous adapter while retaining
+    /// the same async lifecycle implementation and safety guarantees.
+    pub fn run_blocking(
+        request: ManagedProcessRequest,
+    ) -> Result<ManagedProcessResult, ManagedProcessError> {
+        std::thread::Builder::new()
+            .name("codegg-managed-process".to_string())
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| ManagedProcessError::Wait(io::Error::other(error)))?
+                    .block_on(run(request))
+            })
+            .map_err(|error| ManagedProcessError::Wait(io::Error::other(error)))?
+            .join()
+            .map_err(|_| {
+                ManagedProcessError::Wait(io::Error::other(
+                    "managed process blocking adapter panicked",
+                ))
+            })?
+    }
+
+    /// Execute a managed process while forwarding bounded stdout/stderr
+    /// chunks to a caller-owned channel. The final result remains authoritative
+    /// for exit, timeout, cancellation, truncation, and cleanup state.
+    pub async fn run_streaming(
+        request: ManagedProcessRequest,
+        output_tx: mpsc::Sender<ManagedProcessOutputChunk>,
+    ) -> Result<ManagedProcessResult, ManagedProcessError> {
+        run_inner(request, Some(output_tx), None).await
+    }
 }
 
 pub async fn run(
     request: ManagedProcessRequest,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
-    run_inner(request, None).await
+    run_inner(request, None, None).await
 }
 
 async fn run_inner(
     request: ManagedProcessRequest,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
     #[cfg(test)] helper_override: Option<&Path>,
     #[cfg(not(test))] _helper_override: Option<&Path>,
 ) -> Result<ManagedProcessResult, ManagedProcessError> {
@@ -507,6 +564,7 @@ async fn run_inner(
         OutputStream::Stdout,
         overflow_tx.clone(),
         output_policy.overflow,
+        output_tx.clone(),
     ));
     let stderr_task = tokio::spawn(read_bounded(
         stderr,
@@ -514,6 +572,7 @@ async fn run_inner(
         OutputStream::Stderr,
         overflow_tx,
         output_policy.overflow,
+        output_tx,
     ));
     let status_task = status_reader.map(|reader| tokio::spawn(read_status(reader)));
     let stdin_task = match &stdin {
@@ -724,6 +783,7 @@ async fn read_bounded<R>(
     stream: OutputStream,
     overflow_tx: mpsc::Sender<OutputStream>,
     overflow_policy: OverflowPolicy,
+    output_tx: Option<mpsc::Sender<ManagedProcessOutputChunk>>,
 ) -> Result<BoundedOutput, io::Error>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -734,6 +794,18 @@ where
         let read = reader.read(&mut buffer).await?;
         if read == 0 {
             return Ok(output);
+        }
+        if let Some(output_tx) = output_tx.as_ref() {
+            let stream_len = cap.saturating_sub(output.total_bytes).min(read);
+            if stream_len > 0 {
+                let chunk = ManagedProcessOutputChunk {
+                    stream,
+                    bytes: buffer[..stream_len].to_vec(),
+                };
+                if output_tx.try_send(chunk).is_err() {
+                    tracing::debug!(?stream, "managed process output chunk dropped");
+                }
+            }
         }
         let was_truncated = output.is_truncated();
         output.append(&buffer[..read], cap);
@@ -990,7 +1062,7 @@ mod tests {
             write_paths: Vec::new(),
         });
 
-        let error = run_inner(request, Some(&helper))
+        let error = run_inner(request, None, Some(&helper))
             .await
             .expect_err("missing status must fail closed");
         assert!(
@@ -1041,7 +1113,7 @@ mod tests {
         readonly.set_readonly(true);
         std::fs::set_permissions(workspace.path(), readonly).expect("read-only workspace");
 
-        let result = run_inner(request, Some(&helper))
+        let result = run_inner(request, None, Some(&helper))
             .await
             .expect("sandbox target succeeds in read-only cwd");
         assert!(matches!(
@@ -1129,6 +1201,30 @@ mod tests {
         request.stdin = StdinPolicy::Bytes(b"managed-input\n".to_vec());
         let result = run(request).await.expect("stdin result");
         assert_eq!(result.stdout.to_string_lossy(), "managed-input");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn streaming_forwards_bounded_output_and_retains_final_result() {
+        let mut request = request("printf 'stdout'; printf 'stderr' >&2");
+        request.output_policy = OutputPolicy::new(64);
+        let (tx, mut rx) = mpsc::channel(16);
+        let result = ManagedProcessService::run_streaming(request, tx)
+            .await
+            .expect("streaming process result");
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            match chunk.stream {
+                OutputStream::Stdout => stdout.extend(chunk.bytes),
+                OutputStream::Stderr => stderr.extend(chunk.bytes),
+            }
+        }
+        assert_eq!(stdout, b"stdout");
+        assert_eq!(stderr, b"stderr");
+        assert_eq!(result.stdout.to_string_lossy(), "stdout");
+        assert_eq!(result.stderr.to_string_lossy(), "stderr");
     }
 
     #[test]
