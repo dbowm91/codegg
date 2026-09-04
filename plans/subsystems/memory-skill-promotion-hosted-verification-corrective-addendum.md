@@ -162,7 +162,7 @@ being absorbed into this pass.
 
 ### Milestone M005 — Publication and proposal Clippy closure
 
-Status: ready
+Status: active
 
 Plan:
 
@@ -178,7 +178,7 @@ Dependency disposition:
 
 M005 depends on the M004 production correction being landed, but not on M004
 strict closure. Its scope is independently bounded to the existing
-publication/proposal code and is ready for handoff.
+publication/proposal code and implementation is in progress.
 
 ## 8. ADR and compatibility disposition
 

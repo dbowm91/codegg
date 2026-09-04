@@ -203,6 +203,18 @@ pub struct SkillProposal {
     pub previewed_revision: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct SkillProposalSubmission<'a> {
+    pub project_identity: &'a str,
+    pub session_id: &'a str,
+    pub request_id: &'a PromotionRequestId,
+    pub habit_id: &'a HabitId,
+    pub supplied_name: &'a str,
+    pub supplied_description: &'a str,
+    pub skill_markdown: &'a str,
+    pub now: i64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct PromotionFile {
     version: u16,
@@ -414,17 +426,17 @@ impl SkillPromotionStore {
 
     /// Validate and persist one proposal, consuming the initiation record in
     /// the same locked transaction. No filesystem skill root is touched.
-    pub fn submit(
-        &self,
-        project_identity: &str,
-        session_id: &str,
-        request_id: &PromotionRequestId,
-        habit_id: &HabitId,
-        supplied_name: &str,
-        supplied_description: &str,
-        skill_markdown: &str,
-        now: i64,
-    ) -> io::Result<SkillProposal> {
+    pub fn submit(&self, submission: SkillProposalSubmission<'_>) -> io::Result<SkillProposal> {
+        let SkillProposalSubmission {
+            project_identity,
+            session_id,
+            request_id,
+            habit_id,
+            supplied_name,
+            supplied_description,
+            skill_markdown,
+            now,
+        } = submission;
         if skill_markdown.len() as u64 > MAX_MARKDOWN_BYTES {
             return Err(invalid_data("proposal exceeds skill file size bound"));
         }
@@ -624,6 +636,7 @@ impl SkillPromotionStore {
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(lock_path)?;
         flock_lock(&lock)?;
         let result = (|| {

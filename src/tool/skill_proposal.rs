@@ -110,16 +110,16 @@ impl Tool for SkillProposalTool {
         })?;
         let now = chrono::Utc::now().timestamp_millis();
         let mut proposal = store
-            .submit(
-                &project_identity,
-                &session_id,
-                &request_id,
-                &habit_id,
-                &parsed.name,
-                &parsed.description,
-                &parsed.skill_markdown,
+            .submit(crate::skills::promotion::SkillProposalSubmission {
+                project_identity: &project_identity,
+                session_id: &session_id,
+                request_id: &request_id,
+                habit_id: &habit_id,
+                supplied_name: &parsed.name,
+                supplied_description: &parsed.description,
+                skill_markdown: &parsed.skill_markdown,
                 now,
-            )
+            })
             .map_err(|error| crate::error::ToolError::Execution(error.to_string()))?;
 
         if proposal.status == crate::skills::promotion::SkillProposalStatus::Validated {

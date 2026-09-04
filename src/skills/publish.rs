@@ -18,6 +18,18 @@ use std::path::{Component, Path, PathBuf};
 const SKILL_FILE: &str = "SKILL.md";
 const MAX_READ_BYTES: u64 = 256 * 1024;
 
+struct PublishLockedInput<'a> {
+    project_identity: &'a str,
+    project_root: &'a Path,
+    global_config_dir: &'a Path,
+    request: SkillPublicationRequest,
+    root: &'a Path,
+    package: &'a Path,
+    destination: &'a Path,
+    relative_path: &'a str,
+    now: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillPublicationRequest {
     pub proposal_id: SkillProposalId,
@@ -96,20 +108,21 @@ impl SkillPublicationService {
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)?;
         flock_lock(&lock)?;
 
-        let result = self.publish_locked(
+        let result = self.publish_locked(PublishLockedInput {
             project_identity,
             project_root,
             global_config_dir,
             request,
-            &root,
-            &package,
-            &destination,
-            &relative_path,
+            root: &root,
+            package: &package,
+            destination: &destination,
+            relative_path: &relative_path,
             now,
-        );
+        });
         let _ = flock_unlock(&lock);
         result
     }
@@ -137,6 +150,7 @@ impl SkillPublicationService {
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&lock_path)?;
         flock_lock(&lock)?;
         let result = self.reconcile_locked(
@@ -209,16 +223,19 @@ impl SkillPublicationService {
 
     fn publish_locked(
         &self,
-        project_identity: &str,
-        project_root: &Path,
-        global_config_dir: &Path,
-        request: SkillPublicationRequest,
-        root: &Path,
-        package: &Path,
-        destination: &Path,
-        relative_path: &str,
-        now: i64,
+        input: PublishLockedInput<'_>,
     ) -> Result<SkillPublicationResult, SkillPublicationError> {
+        let PublishLockedInput {
+            project_identity,
+            project_root,
+            global_config_dir,
+            request,
+            root,
+            package,
+            destination,
+            relative_path,
+            now,
+        } = input;
         // Reload under the destination lock so a stale preview cannot race a
         // revision change or another publisher.
         let proposal = self
@@ -419,7 +436,7 @@ impl SkillPublicationService {
         };
         if skill.source_path
             == destination_root
-                .join(&proposal.name.trim().to_lowercase())
+                .join(proposal.name.trim().to_lowercase())
                 .join(SKILL_FILE)
         {
             return Ok(None);

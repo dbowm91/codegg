@@ -4,7 +4,8 @@ use codegg::memory::habit::{
 };
 use codegg::memory::project_namespace;
 use codegg::skills::promotion::{
-    compute_content_digest, SkillPromotionStore, SkillProposalStatus, SkillTargetScope,
+    compute_content_digest, SkillPromotionStore, SkillProposalStatus, SkillProposalSubmission,
+    SkillTargetScope,
 };
 use codegg::skills::{validate_portable_document, AssetDiscoveryConfig, AssetRegistry, SourceKind};
 use std::fs;
@@ -58,19 +59,45 @@ fn fixture() -> (tempfile::TempDir, String, HabitId, SkillPromotionStore) {
 }
 
 #[test]
+fn promotion_lock_contents_are_preserved() {
+    let (dir, identity, habit_id, store) = fixture();
+    let namespace = project_namespace(&identity);
+    let suffix = namespace.strip_prefix("project/").unwrap();
+    let lock_path = dir
+        .path()
+        .join("promotions")
+        .join(format!("{suffix}.json.lock"));
+    let marker = b"advisory-lock-owner";
+    fs::write(&lock_path, marker).unwrap();
+
+    store
+        .begin_request(
+            &identity,
+            "session-1",
+            &habit_id,
+            Vec::new(),
+            Vec::new(),
+            10,
+        )
+        .unwrap();
+
+    assert_eq!(fs::read(lock_path).unwrap(), marker);
+}
+
+#[test]
 fn submission_without_explicit_request_is_denied() {
     let (_dir, identity, habit_id, store) = fixture();
     let request_id = codegg::skills::promotion::PromotionRequestId::new();
-    let result = store.submit(
-        &identity,
-        "session-1",
-        &request_id,
-        &habit_id,
-        "demo",
-        "demo",
-        "---\nname: demo\ndescription: demo\n---\nbody",
-        10,
-    );
+    let result = store.submit(SkillProposalSubmission {
+        project_identity: &identity,
+        session_id: "session-1",
+        request_id: &request_id,
+        habit_id: &habit_id,
+        supplied_name: "demo",
+        supplied_description: "demo",
+        skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+        now: 10,
+    });
     assert!(result.is_err());
 }
 
@@ -90,31 +117,31 @@ fn request_is_revision_bound_and_consumed_after_one_submission() {
     assert_eq!(request.context.target_scope_hint, SkillTargetScope::Project);
     let markdown = "---\nname: demo\ndescription: demo\n---\nbody";
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            markdown,
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Validated);
     assert_eq!(proposal.revision, 1);
     assert_eq!(proposal.content_digest, compute_content_digest(markdown));
     assert!(store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            markdown,
-            12,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 12,
+        })
         .is_err());
 }
 
@@ -156,16 +183,16 @@ fn stale_candidate_revision_is_rejected() {
         })
         .unwrap();
     assert!(store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\n---\nbody",
-            12,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+            now: 12,
+        })
         .is_err());
 }
 
@@ -188,16 +215,16 @@ fn proposal_restrictions_reject_allowed_tools_without_skill_root_changes() {
         )
         .unwrap();
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\nallowed-tools: [bash]\n---\nbody",
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\nallowed-tools: [bash]\n---\nbody",
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Rejected);
     assert!(proposal
@@ -248,44 +275,44 @@ fn wrong_session_project_or_habit_is_denied() {
     let markdown = "---\nname: demo\ndescription: demo\n---\nbody";
     // Wrong session.
     assert!(store
-        .submit(
-            &identity,
-            "session-2",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            markdown,
-            11
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-2",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 11,
+        })
         .is_err());
     // Wrong habit.
     let other = codegg::memory::habit::HabitId::parse("other-habit").unwrap();
     assert!(store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &other,
-            "demo",
-            "demo",
-            markdown,
-            11
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &other,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 11,
+        })
         .is_err());
     // Wrong project identity (different namespace).
     let other_project = format!("{identity}-other");
     assert!(store
-        .submit(
-            &other_project,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            markdown,
-            11
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &other_project,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 11,
+        })
         .is_err());
 }
 
@@ -305,16 +332,16 @@ fn expired_request_cannot_be_replayed() {
     let markdown = "---\nname: demo\ndescription: demo\n---\nbody";
     let ttl = codegg::skills::promotion::REQUEST_TTL_MS;
     assert!(store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            markdown,
-            10 + ttl + 1
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: markdown,
+            now: 10 + ttl + 1,
+        })
         .is_err());
 }
 
@@ -436,7 +463,16 @@ fn proposal_restrictions_reject_scripts_and_sidecars_but_allow_prose() {
             .begin_request(&identity, "session-1", &habit_id, Vec::new(), Vec::new(), 10)
             .unwrap();
         let proposal = store
-            .submit(&identity, "session-1", &request.id, &habit_id, "demo", "demo", markdown, 11)
+            .submit(SkillProposalSubmission {
+                project_identity: &identity,
+                session_id: "session-1",
+                request_id: &request.id,
+                habit_id: &habit_id,
+                supplied_name: "demo",
+                supplied_description: "demo",
+                skill_markdown: markdown,
+                now: 11,
+            })
             .unwrap();
         if expect_valid {
             assert_eq!(proposal.status, SkillProposalStatus::Validated, "markdown: {markdown}");
@@ -478,16 +514,16 @@ fn rejection_lifecycle_is_monotonic_and_habit_stays_ready() {
         )
         .unwrap();
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\n---\nbody",
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Validated);
     // M002 never marks the habit Promoted; that is reserved for M003.
@@ -527,16 +563,16 @@ fn proposal_scope_is_host_enum_not_path() {
         )
         .unwrap();
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\n---\nbody",
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.target_scope, SkillTargetScope::Project);
     assert_eq!(proposal.project_namespace, project_namespace(&identity));
@@ -557,16 +593,16 @@ fn malformed_persisted_proposal_fails_safely() {
         )
         .unwrap();
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\n---\nbody",
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Validated);
     // Corrupt the backing file; reads must fail closed, not return partial state.
@@ -651,16 +687,16 @@ fn collision_diagnostic_is_advisory_without_overwrite() {
         )
         .unwrap();
     let proposal = store
-        .submit(
-            &identity,
-            "session-1",
-            &request.id,
-            &habit_id,
-            "demo",
-            "demo",
-            "---\nname: demo\ndescription: demo\n---\nbody",
-            11,
-        )
+        .submit(SkillProposalSubmission {
+            project_identity: &identity,
+            session_id: "session-1",
+            request_id: &request.id,
+            habit_id: &habit_id,
+            supplied_name: "demo",
+            supplied_description: "demo",
+            skill_markdown: "---\nname: demo\ndescription: demo\n---\nbody",
+            now: 11,
+        })
         .unwrap();
     assert_eq!(proposal.status, SkillProposalStatus::Validated);
     let existing = fs::read_to_string(skill_dir.join("SKILL.md")).unwrap();

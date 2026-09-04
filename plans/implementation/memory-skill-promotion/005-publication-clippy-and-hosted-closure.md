@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Milestone 005 — Publication Clippy and Hosted Closure
 
-Status: ready
+Status: active
 
 Repository baseline: `7ef387aa0302efa3106b1d14ee166fd93e921cb9`
 

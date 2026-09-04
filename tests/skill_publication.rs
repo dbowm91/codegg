@@ -4,7 +4,8 @@ use codegg::memory::habit::{
 };
 use codegg::memory::project_namespace;
 use codegg::skills::promotion::{
-    compute_content_digest, SkillPromotionStore, SkillProposalStatus, SkillTargetScope,
+    compute_content_digest, SkillPromotionStore, SkillProposalStatus, SkillProposalSubmission,
+    SkillTargetScope,
 };
 use codegg::skills::publish::{
     SkillPublicationError, SkillPublicationRequest, SkillPublicationService,
@@ -62,16 +63,17 @@ fn proposal(
         .begin_request(identity, "session", habit_id, Vec::new(), Vec::new(), 10)
         .unwrap();
     store
-        .submit(
-            identity,
-            "session",
-            &request.id,
+        .submit(SkillProposalSubmission {
+            project_identity: identity,
+            session_id: "session",
+            request_id: &request.id,
             habit_id,
-            "demo",
-            "A demo skill",
-            "---\nname: demo\ndescription: A demo skill\n---\n# Demo\n\nUse the workflow.",
-            11,
-        )
+            supplied_name: "demo",
+            supplied_description: "A demo skill",
+            skill_markdown:
+                "---\nname: demo\ndescription: A demo skill\n---\n# Demo\n\nUse the workflow.",
+            now: 11,
+        })
         .unwrap()
 }
 
@@ -85,6 +87,33 @@ fn request(
         expected_content_digest: proposal.content_digest.clone(),
         target_scope,
     }
+}
+
+#[test]
+fn publication_lock_contents_are_preserved() {
+    let (dir, identity, habit_id, store) = ready_fixture();
+    let proposal = proposal(&identity, &habit_id, &store);
+    let lock_root = dir.path().join("project/.codegg/skills");
+    fs::create_dir_all(&lock_root).unwrap();
+    let lock_path = lock_root.join(".codegg-skill-publish.lock");
+    let marker = b"advisory-lock-owner";
+    fs::write(&lock_path, marker).unwrap();
+
+    let service = SkillPublicationService::new(
+        SkillPromotionStore::with_roots(dir.path().join("promotions"), dir.path().join("memory"))
+            .unwrap(),
+    );
+    service
+        .publish(
+            &identity,
+            std::path::Path::new(&identity),
+            &dir.path().join("config"),
+            request(&proposal, SkillTargetScope::Project),
+            20,
+        )
+        .unwrap();
+
+    assert_eq!(fs::read(lock_path).unwrap(), marker);
 }
 
 #[test]
