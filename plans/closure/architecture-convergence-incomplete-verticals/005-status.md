@@ -16,6 +16,9 @@ Implementation commit:
 
 - `a6a5055` — complete the durable test-run rerun vertical and its scheduler,
   RunStore, TUI, protocol, projection, cancellation, and documentation paths.
+- `5dd280a` — harden recorded-base validation, preserve historical subdirectory
+  execution context, redact test argv across durable surfaces, and begin the
+  child RunStore record before process launch.
 
 ## 1. Executive finding
 
@@ -37,13 +40,13 @@ explicitly ineligible; they are not represented as partially safe replay.
 | Requirement | Evidence | Result |
 |---|---|---|
 | Define a bounded rerunnable specification | `src/run_rerun.rs` accepts only `RunKind::Test`, terminal eligible statuses, `test_runner`, non-empty audit-safe argv, no script source reference, and a valid workspace-contained cwd | pass |
-| Derive `can_rerun` from reconstructability | `RunCellView::from_manifest` checks kind, status, backend, argv, script source, and redaction marker; daemon repeats authoritative validation | pass |
+| Derive `can_rerun` from reconstructability | `RunCellView::from_manifest` checks kind, status, backend, descriptor base/cwd, argv, script source, and redaction marker; daemon repeats authoritative validation including canonical recorded base and test argv checks | pass |
 | Typed daemon/core request | Additive `CoreRequest::RunRerun` and `CoreResponse::RunRerunAccepted` route the operation through `CoreDaemon` | pass |
 | Current authority is checked | Daemon requires a currently registered session, verifies its workspace binding, and compares the historical session/workspace identity | pass |
 | Scheduler authority is preserved | `RunRerun` creates `NewJob` and calls `JobSubmissionService::submit`; no direct executor or process call is introduced | pass |
-| Fresh durable identity and parent immutability | Child is a new scheduler job/attempt and `RunStore::begin_run`; `RunDraft.parent_run_id` and `RunOwnership::ChildOf` are set without writing the parent | pass |
+| Fresh durable identity and parent immutability | Child is a new scheduler job/attempt; the leased RunStore begins the child before process launch, and `RunDraft.parent_run_id`/`RunOwnership::ChildOf` are set without writing the parent | pass |
 | Linkage and projection event | Test completion carries child/parent IDs; `BusEventSink` emits `RunRerunLinked`; safe-publication classification accepts the event | pass |
-| Secrets are not replayed | Rerun reconstructs only `AuditSafeArgv`; redacted credential markers return `ineligible_secret_reacquisition_required`; no raw secret is persisted or expanded | pass |
+| Secrets are not replayed | Rerun reconstructs only `AuditSafeArgv`; test reports, invocation metadata, legacy index, and rerun descriptors use the audit form; redacted credential markers return `ineligible_secret_reacquisition_required` | pass |
 | Cancellation applies to child | Scheduler token is propagated into test supervision; process group is killed and the persisted report becomes `Cancelled` | pass |
 | TUI placeholder is removed | `src/tui/commands/run_rerun.rs` sends the typed request and reports accepted child job IDs or stable denial diagnostics | pass |
 | Restart/replay visibility | Child is owned by the workspace RunStore and normal list/get/event replay paths; no in-memory-only linkage was added | pass by storage/event design; runtime restart test is host-limited |
@@ -65,6 +68,9 @@ explicitly ineligible; they are not represented as partially safe replay.
 
 - Added `src/run_rerun.rs` as the daemon-side validation and job-construction
   owner for the supported rerun class.
+- The daemon now validates both recorded workspace roots and the historical
+  manifest/descriptor cwd before submission; scheduler execution resolves
+  relative cwd values against the leased canonical workspace.
 - Added additive protocol request/response fields and mapped the existing
   `RunRerunLinked` event through the application event bridge and safe
   projection publication policy.
@@ -76,6 +82,9 @@ explicitly ineligible; they are not represented as partially safe replay.
   daemon-created child cannot execute without durable artifacts/events.
 - Propagated scheduler cancellation into the test runner and process-group
   cleanup.
+- Test execution now confines raw argv to the process-launch boundary. All
+  persisted invocation/report/index/descriptor surfaces receive sanitized
+  argv, and a RunStore record is opened before child-process launch.
 - Replaced the TUI local-store/sentinel handler with a registered async typed
   command and completion message. Normal session test submission also now
   preserves the active session ID.
@@ -117,6 +126,8 @@ rtk cargo check -p codegg-core --all-targets
 rtk cargo clippy --workspace --all-targets --all-features -- -D warnings
 rtk cargo test -p codegg-core rerun_descriptor_no_permission_persistence -- --nocapture
 rtk cargo test -p codegg-core projection_replay::safe_publication::tests -- --nocapture
+rtk cargo test -p codegg-git sensitive -- --nocapture --test-threads=1
+rtk cargo test --test command_routing_execution_ownership test_runner_persists_only_audit_safe_argv -- --nocapture --test-threads=1
 rtk scripts/verify.sh quick
 rtk git diff --check
 ```
@@ -125,6 +136,11 @@ Focused core results:
 
 - RunStore redaction persistence test: 1 passed.
 - Safe-publication suite: 3 passed.
+- `codegg-git` sensitive suite: 15 passed. The new root integration test is
+  compiled by the quick/all-target checks but cannot link on this host because
+  the configured x86_64 target selects incompatible arm64 MacPorts
+  `liblzma`/`libiconv`; this is the same environmental linker limitation
+  recorded for the root test binary above.
 - Quick verification: passed generated-agent checks, core boundary,
   sandbox-contract, execution-ownership, formatting, and locked workspace
   all-target checking.
@@ -143,7 +159,8 @@ Host-limited:
 ## 8. Downstream unblock audit
 
 M005 depended on the conditionally closed M003 Git/worktree boundary and is
-now closed. No newly registered plan was blocked on M005: M006 remains ready
+now closed. The post-hardening audit found no newly registered plan blocked on
+M005: M006 remains ready
 from M004, M007 remains ready from M002, and M008 remains independently ready
 from the session-projection closure. Their statuses therefore require no
 change. The unrelated runtime-safety C002 supported-Linux evidence blocker
