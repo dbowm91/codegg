@@ -1,6 +1,6 @@
 # Architecture Convergence M001 — Context and Compaction Ownership Convergence
 
-Status: closing
+Status: implemented
 
 Repository baseline: `3c4890035513cd4d74430b6f64523c8be676024e`
 

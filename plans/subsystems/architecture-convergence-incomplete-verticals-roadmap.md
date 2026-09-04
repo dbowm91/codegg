@@ -121,13 +121,19 @@ M002 ---------------------> M007 controlled LSP mutation apply
 session-projection closure -> M008 headless projection consumer + legacy transport disposition
 ```
 
-M001, M002, and M003 are dependency-ready and may execute in parallel if separate implementation agents avoid overlapping root wiring edits. M004 is hard-dependent on M001-M003 because it should consume the converged owners rather than inventing temporary extraction targets.
+M002, M003, and M008 are dependency-ready; M002 and M003 may execute in
+parallel if separate implementation agents avoid overlapping root wiring edits,
+and M008 is independent. M004 is now hard-dependent on M002 and M003 because
+it should consume the converged owners rather than invent temporary extraction
+targets.
 
 M005 has a hard dependency on M003 because replay/rerun must use the final Git/run ownership boundary. M006 depends on M004 so command simplification does not churn an unstable AgentLoop interface. M007 has an interface dependency on M002's canonical execution/edit boundary. M008 depends only on the already-closed session-projection subsystem and can execute independently.
 
 ## 6. Ordered milestones
 
 ### M001 — Context and compaction ownership convergence
+
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/001-status.md`
 
 Primary class: infrastructure / polish.
 

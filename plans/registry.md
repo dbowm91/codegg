@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | ready | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001/M002/M003/M008 ready | M004 waits on M001-M003; M005 waits on M003; M006 waits on M004; M007 waits on M002's stable execution/edit boundary. |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002/M003/M008 ready | M004 waits on M002/M003; M005 waits on M003; M006 waits on M004; M007 waits on M002's stable execution/edit boundary. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -50,15 +50,14 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M001 — context and compaction ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/001-context-compaction-ownership-convergence.md` | Prior runtime/context/provider corrective dependencies are closed; this milestone can inventory and converge current owners independently. |
 | Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/002-process-tool-execution-ownership-convergence.md` | Tool Programs, runtime safety, and daemon/process lifecycle dependencies are closed; no new scheduler/tool runtime is required. |
 | Architecture convergence and incomplete verticals | M003 — Git ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/003-git-ownership-convergence.md` | Agent-run/worktree and edit-history dependencies are closed; ownership can be converged without changing durable Git/worktree semantics. |
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | `plans/implementation/architecture-convergence-incomplete-verticals/008-headless-projection-consumer-legacy-transport-disposition.md` | Session projections are already closed; a second consumer can validate the existing contract independently of M001-M007. |
 
 ## Architecture convergence execution order
 
-1. M001, M002, M003, and M008 are dependency-ready. M001-M003 may run in parallel if implementation agents coordinate root wiring edits; M008 is independent.
-2. M004 begins only after M001-M003 close. It must consume the converged context, process/tool, and Git owners rather than introduce temporary extraction layers.
+1. M002, M003, and M008 are dependency-ready. M002/M003 may run in parallel if implementation agents coordinate root wiring edits; M008 is independent. M001 is conditionally closed pending its named host-toolchain focused-test rerun.
+2. M004 begins only after M002 and M003 close. M001's converged context owner is now available for it to consume; it must not introduce temporary extraction layers.
 3. M005 begins after M003 closes so rerun/replay uses one stable Git/worktree/provenance boundary. It may proceed in parallel with M004 once M003 is closed.
 4. M006 begins after M004 closes so command-pipeline simplification targets the final AgentLoop coordinator boundary instead of churning an unstable interface.
 5. M007 begins when M002 closes or exposes its stable execution/edit integration contract; checked edit-history and LSP preview ownership remain otherwise unchanged.
@@ -69,7 +68,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Architecture convergence and incomplete verticals | M004 — AgentLoop coordinator reduction | Hard-blocked on M001, M002, and M003 closure. |
+| Architecture convergence and incomplete verticals | M004 — AgentLoop coordinator reduction | Hard-blocked on M002 and M003 closure; M001 is conditionally closed. |
 | Architecture convergence and incomplete verticals | M005 — durable run rerun/replay completion | Hard-blocked on M003 Git ownership convergence. |
 | Architecture convergence and incomplete verticals | M006 — command pipeline convergence | Hard-blocked on M004 AgentLoop coordinator reduction. |
 | Architecture convergence and incomplete verticals | M007 — controlled LSP mutation application | Interface-blocked until M002 closes or provides a stable canonical process/edit boundary. |
@@ -93,6 +92,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity | closed | `plans/closure/search-eggsearch-integration/005-status.md` |
 | Development verification and release | M007-M009 — minimal verification and hosted corrective closures | closed | `plans/closure/development-verification-release/007-status.md`; `008-status.md`; `009-status.md` |
 | Memory-to-skill promotion | M005 — publication Clippy and hosted closure | closed | `plans/closure/memory-skill-promotion/005-status.md` |
+| Architecture convergence and incomplete verticals | M001 — context and compaction ownership convergence | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/001-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmap, must receive a new milestone/addendum under the normal planning process.
 
