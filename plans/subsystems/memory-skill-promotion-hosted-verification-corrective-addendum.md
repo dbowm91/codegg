@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Hosted Verification Corrective Addendum
 
-Status: active
+Status: closed — M005 strict publication/proposal hosted closure complete
 
 Repository baseline reviewed: `4ea4eaa000ecf65b0e70ed7278cf071a57cf2197`
 
@@ -162,7 +162,7 @@ being absorbed into this pass.
 
 ### Milestone M005 — Publication and proposal Clippy closure
 
-Status: active
+Status: closed
 
 Plan:
 
@@ -176,9 +176,10 @@ then establish a green hosted `CI / verify` run through Workspace tests.
 
 Dependency disposition:
 
-M005 depends on the M004 production correction being landed, but not on M004
-strict closure. Its scope is independently bounded to the existing
-publication/proposal code and implementation is in progress.
+M005 depended on the M004 production correction being landed, but not on M004
+strict closure. Its scope remained independently bounded to the existing
+publication/proposal code and is now strictly closed with exact-head hosted
+evidence.
 
 ## 8. ADR and compatibility disposition
 

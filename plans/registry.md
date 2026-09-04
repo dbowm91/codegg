@@ -36,7 +36,7 @@ Canonical direction remains in:
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Agent convergence and independent verification | closed | `plans/subsystems/agent-convergence-roadmap.md` | M003 closed | `plans/closure/agent-convergence/003-status.md`; bounded repair/replan, explicit commit chaining, conservative model gating, and projection closure accepted. |
-| Memory-to-skill promotion | active | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M005 active; M004 corrective pass required | M004 fixed the two M001-owned habit lock opens, but hosted run `33836217483` / job `100909174354` on `7ef387aa` exposed six older M002/M003 publication/proposal Clippy findings; M005 owns those findings. |
+| Memory-to-skill promotion | closed | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M005 closed; M004 historical corrective pass resolved through M005's accepted candidate | M005 corrected the six M002/M003 publication/proposal Clippy findings and passed exact-head hosted Clippy and Workspace tests in run `33841790039` / job `100930040217`. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | M008/M009 closed; M007 remains closed | Hosted Clippy ordering and stale built-in-agent test expectations are corrected; no blocker remains. |
@@ -54,20 +54,18 @@ Canonical direction remains in:
 
 1. Agent-convergence M001–M003 remain closed under their accepted closure records.
 2. Memory-to-skill M001–M003 remain immutable historical closure evidence, but the current strict subsystem disposition is reopened under M004 because exact `main` head `4ea4eaa` failed hosted Workspace Clippy on M001-owned code.
-3. Memory-to-skill M004 implementation is complete but its strict closure is corrective-pass-required because exact hosted CI exposed six M002/M003 publication/proposal findings outside M004's bounded ownership.
-4. Memory-to-skill M005 is the active corrective milestone. It owns only the six reported publication/proposal Clippy findings and exact-head hosted closure; it must not broaden into habit, parser, asset-refresh, or generic filesystem redesign.
+3. Memory-to-skill M004 implementation is complete and its strict closure was corrective-pass-required because exact hosted CI exposed six M002/M003 publication/proposal findings outside M004's bounded ownership; M005 resolved that disposition without rewriting M004's historical record.
+4. Memory-to-skill M005 is closed. It owned only the six reported publication/proposal Clippy findings and exact-head hosted closure; it did not broaden into habit, parser, asset-refresh, or generic filesystem redesign.
 5. Development verification M008 and M009 are separate hosted-verification corrective milestones; both are closed without changing ReviewTool behavior, agent assets, or runtime behavior.
 5. Convergence must continue to compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.
 6. Habit promotion must retain structural privacy bounds: no raw shell/tool output/arguments in automatic habit fingerprints, no automatic model drafting, and no skill publication without explicit user approval.
-7. No new ADR is required because scheduler/authorization/foreign-asset/storage ownership remain unchanged. If M005 discovers a need to change those boundaries, work stops for a separately registered follow-up rather than widening the milestone.
-8. M004/M005 verification remains deliberately narrow: owning habit/memory/promotion tests, the exact workspace/all-target Clippy command, `scripts/verify.sh quick`, and the existing hosted `CI / verify` lane on the exact final candidate. No new CI lane, benchmark gate, scanner, or release automation is introduced.
+7. No new ADR was required because scheduler/authorization/foreign-asset/storage ownership remained unchanged; M005's closure confirms no boundary follow-up was needed.
+8. M004/M005 verification remained deliberately narrow: owning habit/memory/promotion tests, the exact workspace/all-target Clippy command, `scripts/verify.sh quick`, and the existing hosted `CI / verify` lane on the exact final candidate. No new CI lane, benchmark gate, scanner, or release automation was introduced.
 
 ## Closure work and dependencies
 
-- Memory-to-skill M005 is active; its production correction and focused
-  evidence are being prepared for exact-head hosted closure.
-- Development verification M008 is active; it owns the separate hosted Clippy
-  ordering correction exposed by the M005 candidate.
+- Memory-to-skill M005 is closed; its production correction and exact-head
+  hosted closure are recorded in `plans/closure/memory-skill-promotion/005-status.md`.
 
 Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. Provider M009 is now closed through `plans/closure/provider-connections/009-status.md`.
 
@@ -83,16 +81,14 @@ Historical closed control points remain:
 - DVR M007 minimal verification contract and final closure: `plans/closure/development-verification-release/007-status.md`.
 - Runtime consolidation M010, agent-runtime M011/M017, post-audit C003, and search M005 remain closed per their linked records below.
 - Runtime-assets M005/M006, goal-verification M012, and runtime-safety M011/M012 remain immutable historical closure evidence. Their current strict subsystem dispositions are superseded only by the corrective milestones M007/M013/M013; goal-verification M013 is now closed.
-- Memory-to-skill M001–M003 closure records remain immutable historical evidence. M004 owns the later exact-head hosted Clippy failure in M001-introduced `memory/habit.rs`; M005 owns the six M002/M003 publication/proposal findings exposed by the M004 candidate; the final subsystem closure disposition remains open until M005.
+- Memory-to-skill M001–M004 closure records remain immutable historical evidence. M005 owns the six M002/M003 publication/proposal findings exposed by the M004 candidate and records the final strict subsystem closure; none of those historical records were rewritten.
 
 Verification remains deliberately light: Provider M009 was accepted with focused direct-call request-context tests, retained M008 provider/header regression tests, and the repository's existing `scripts/verify.sh quick` posture. Existing historical closures retain their recorded evidence requirements. Memory-to-skill M004 adds no new verification framework; it uses the already-existing workspace Clippy and hosted CI lane because that is the exact failing evidence. No new CI lanes, scanners, coverage/benchmark/size gates, dependency bots, workflow-dispatch mechanisms, release automation, or fixed release cadence are added.
 
 ## Blocked work
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block M004.
-- Memory-to-skill M005 is in progress after M004's strict closure was blocked by the six publication/proposal findings. M001–M004 historical records remain unchanged.
-- Development verification M008 is closed for the separate hosted Clippy `items_after_test_module` finding in `src/tool/review.rs`; it was not part of memory-to-skill M005 scope.
-- Development verification M009 is closed for stale nine-agent expectations in agent tests revealed after M008; it was not part of memory-to-skill M005 scope.
+- Memory-to-skill M005 is closed after correcting the six publication/proposal findings and passing exact-head hosted verification. M001–M004 historical records remain unchanged.
 
 No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 
@@ -103,7 +99,7 @@ No new work is registered for browser-specific security, generic hook-taxonomy e
 1. Memory-to-skill M004 corrects the two M001-owned advisory lock-file opens so their non-truncating `OpenOptions` semantics are explicit; lint suppression, CI weakening, and toolchain downgrade are forbidden substitutes.
 2. The failed predecessor evidence is exact head `4ea4eaa000ecf65b0e70ed7278cf071a57cf2197`, hosted run `33813852632`, job `100841494152`; historical M001/M003 closure records remain unchanged.
 3. M004's hosted candidate `7ef387aa` fixed those two findings but exposed six older M002/M003 publication/proposal Clippy findings; M005 owns their behavior-preserving correction and final hosted closure.
-4. After `plans/closure/memory-skill-promotion/005-status.md` is accepted, the registry may return memory-to-skill promotion to `closed at M005`; no downstream plan is currently blocked on M004.
+4. `plans/closure/memory-skill-promotion/005-status.md` is accepted and the registry returns memory-to-skill promotion to `closed at M005`; no downstream plan was blocked on M004 or M005.
 5. Provider M009 is closed and preserves the accepted M008 transport implementation while correcting direct provider callers that dropped required session/run context.
 6. Research model-backed phases reuse one stable research-run affinity value across extraction, claim, and verification calls.
 7. Agent-invoked ReviewTool and CommitTool consume the existing `ToolExecutionContext.session_id`; standalone invocation uses one invocation-scoped identity when a provider request is made.
@@ -192,6 +188,7 @@ Strict M011 closure was accepted because all M011 acceptance criteria were met, 
 | Development verification and release | M007 — minimal verification contract and final closure | closed | `plans/closure/development-verification-release/007-status.md`; accepted revision `c85980e2`; boundary guard fail-open correction; no registered plan was left blocked |
 | Development verification and release | M008 — hosted Clippy Review module ordering | closed | `plans/closure/development-verification-release/008-status.md`; implementation `184fd07`, accepted hosted candidate `28a0cb41`; run `33841790039` / job `100930040217` passed through Workspace tests |
 | Development verification and release | M009 — built-in agent test contract alignment | closed | `plans/closure/development-verification-release/009-status.md`; accepted revision `28a0cb41`; hosted run `33841790039` / job `100930040217` passed through Workspace tests |
+| Memory-to-skill promotion | M005 — publication Clippy and hosted closure | closed | `plans/closure/memory-skill-promotion/005-status.md`; accepted revision `28a0cb41`; hosted run `33841790039` / job `100930040217` passed through Workspace tests |
 | Memory-to-skill promotion | M001 — habit observation and candidate store | closed historical evidence; current hosted verification disposition owned by M004 | `plans/closure/memory-skill-promotion/001-status.md`; implementation `2f029d8d`; later exact-head audit found the two advisory-lock `OpenOptions` warnings now owned by M004. |
 | Memory-to-skill promotion | M002 — user-triggered skill draft and preview | closed | `plans/closure/memory-skill-promotion/002-status.md`; implementation `583c2702`; M003 moved to ready. |
 | Memory-to-skill promotion | M003 — approved publication and asset refresh | closed historical evidence; current strict subsystem disposition owned by M004 | `plans/closure/memory-skill-promotion/003-status.md`; implementation `081ae51`; closure recorded the habit Clippy warnings but M004 owns their workstream attribution and exact-head hosted closure. |
