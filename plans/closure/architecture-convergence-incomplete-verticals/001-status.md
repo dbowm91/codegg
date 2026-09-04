@@ -22,7 +22,7 @@ toolchain.
 ## 2. Implementation revisions and dependency review
 
 - The plan was activated and moved to `closing` when production wiring landed.
-- Implementation: [`0809a64cc22e0ba547de078493066c34aa4d0fad`](https://github.com/openai/codegg/commit/0809a64cc22e0ba547de078493066c34aa4d0fad)
+- Implementation: [`0809a64cc22e0ba547de078493066c34aa4d0fad`](https://github.com/dbowm91/codegg/commit/0809a64cc22e0ba547de078493066c34aa4d0fad)
   — `context: converge compaction ownership`.
 - The implementation plan is moved from `closing` to `implemented` by the
   closure commit that adds this record and updates the planning controls.
