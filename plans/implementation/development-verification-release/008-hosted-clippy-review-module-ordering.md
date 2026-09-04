@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 008 — Hosted Clippy Review Module Ordering
 
-Status: active
+Status: implemented — closed; see `plans/closure/development-verification-release/008-status.md`
 
 Repository baseline: `8c8febedb1d941e1a90a2ff3d02264e3127441fb`
 
