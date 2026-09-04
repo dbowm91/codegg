@@ -153,6 +153,8 @@ Exit condition: every production subprocess execution path has an explicit dispo
 
 ### M003 — Git ownership convergence
 
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/003-status.md`
+
 Primary class: invariant / infrastructure.
 
 Clarify the boundary among `egggit`, `codegg-git`, and root adapters. Generic safe Git/process/domain primitives belong in `egggit`; CodeGG-specific worktree/run/mutation orchestration belongs in `codegg-git`; root tools/TUI/projectors become adapters. Remove forwarding or duplicate domain logic where evidence supports deletion.

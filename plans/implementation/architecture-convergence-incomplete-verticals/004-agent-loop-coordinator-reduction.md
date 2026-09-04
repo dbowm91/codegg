@@ -1,6 +1,6 @@
 # Architecture Convergence M004 — AgentLoop Coordinator Reduction
 
-Status: blocked
+Status: ready
 
 Repository baseline: `3c4890035513cd4d74430b6f64523c8be676024e`
 
