@@ -102,10 +102,21 @@ pub fn validate(
     if historical_workspace != canonical_workspace {
         return Err(RerunError::WorkspaceChanged);
     }
+    let descriptor_workspace = std::fs::canonicalize(&descriptor.workspace_root)
+        .map_err(|_| RerunError::WorkspaceChanged)?;
+    if descriptor_workspace != canonical_workspace {
+        return Err(RerunError::WorkspaceChanged);
+    }
     let cwd = std::fs::canonicalize(&descriptor.cwd).map_err(|_| RerunError::InvalidBase)?;
     if !cwd.starts_with(&canonical_workspace) {
         return Err(RerunError::InvalidBase);
     }
+    let manifest_cwd = std::fs::canonicalize(&manifest.cwd).map_err(|_| RerunError::InvalidBase)?;
+    if manifest_cwd != cwd {
+        return Err(RerunError::InvalidBase);
+    }
+    crate::test_runner::index::validate_indexed_rerun_command(argv, &canonical_workspace, &cwd)
+        .map_err(|_| RerunError::MissingSpecification)?;
 
     Ok(ValidatedRerun {
         parent_run_id: manifest.run_id.clone(),
@@ -267,6 +278,38 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "ineligible_secret_reacquisition_required"
+        );
+    }
+
+    #[test]
+    fn rerun_rejects_changed_recorded_base() {
+        let root = std::env::current_dir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let mut changed = manifest(&root);
+        changed.rerun.as_mut().unwrap().workspace_root = other.path().to_path_buf();
+        assert_eq!(
+            validate(&changed, &root, Some("session-1"))
+                .unwrap_err()
+                .code(),
+            "ineligible_missing_or_invalid_base"
+        );
+    }
+
+    #[test]
+    fn rerun_rejects_non_test_runner_argv() {
+        let root = std::env::current_dir().unwrap();
+        let mut unsupported = manifest(&root);
+        unsupported.rerun.as_mut().unwrap().argv =
+            Some(codegg_git::AuditSafeArgv::from_argv(vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "true".into(),
+            ]));
+        assert_eq!(
+            validate(&unsupported, &root, Some("session-1"))
+                .unwrap_err()
+                .code(),
+            "ineligible_missing_spec"
         );
     }
 }

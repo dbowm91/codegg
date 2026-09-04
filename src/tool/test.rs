@@ -340,6 +340,7 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
     Ok(TestRunRequest {
         scope,
         workdir,
+        execution_cwd: None,
         timeout_secs,
         stall_timeout_secs,
         max_report_bytes,

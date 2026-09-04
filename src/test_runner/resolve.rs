@@ -64,7 +64,10 @@ pub fn resolve_test_command(request: &TestRunRequest) -> Result<ResolvedTestComm
             Ok(ResolvedTestCommand {
                 language: TestLanguage::Generic,
                 argv: argv.clone(),
-                cwd: workdir.to_path_buf(),
+                cwd: request
+                    .execution_cwd
+                    .clone()
+                    .unwrap_or_else(|| workdir.to_path_buf()),
                 scope_label: "bash-dispatch".to_string(),
             })
         }
@@ -314,6 +317,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         }
     }

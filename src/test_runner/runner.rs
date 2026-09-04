@@ -55,6 +55,9 @@ pub enum TestRunError {
 
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+
+    #[error("failed to persist test run: {0}")]
+    RunStore(String),
 }
 
 /// Context for event publishing during test supervision.
@@ -139,8 +142,27 @@ pub async fn run_resolved_test(
     let stdout_log_path = log_dir.join("stdout.log");
     let stderr_log_path = log_dir.join("stderr.log");
 
+    // Keep the raw argv confined to the process-launch boundary. Reports,
+    // events, the legacy index, and RunStore records all receive the typed
+    // audit form, including URL credential redaction.
+    let mut audit_resolved = resolved.clone();
+    audit_resolved.argv = codegg_git::AuditSafeArgv::from_argv(resolved.argv.clone()).into_inner();
+
+    // Create the durable child record before launching the process. In the
+    // scheduler path this makes an accepted rerun visible as Running even if
+    // the daemon or child process dies before completion.
+    let run_handle = if let Some(store) = run_store {
+        Some(
+            begin_test_run(store, request, &audit_resolved)
+                .await
+                .map_err(|e| TestRunError::RunStore(e.to_string()))?,
+        )
+    } else {
+        None
+    };
+
     let job_id = Uuid::new_v4().to_string();
-    let command_display = resolved.argv.join(" ");
+    let command_display = audit_resolved.argv.join(" ");
 
     if let Some(sink) = sink {
         sink.started(TestRunStartedSnapshot {
@@ -203,7 +225,7 @@ pub async fn run_resolved_test(
 
     let report = build_report(
         &result,
-        &resolved,
+        &audit_resolved,
         elapsed_ms,
         &parse_state,
         &log_dir,
@@ -230,11 +252,15 @@ pub async fn run_resolved_test(
     // must not fail the test run).
     crate::test_runner::index::append_to_index(&report, &request.workdir).await;
 
-    // Persist to RunStore (best-effort; RunStore write failure must not fail
-    // the test run). This gives test runs the same RunStore lifecycle as
-    // bash/python runs.
-    let run_id = if let Some(store) = run_store {
-        persist_to_run_store(store, request, &report, &resolved).await
+    // Persist the terminal result to RunStore. A persistence failure is
+    // surfaced to the scheduler: an accepted rerun must not be reported as a
+    // successful, untraceable child.
+    let run_id = if let (Some(store), Some(handle)) = (run_store, run_handle) {
+        Some(
+            persist_to_run_store(store, handle, request, &report, &audit_resolved)
+                .await
+                .map_err(|e| TestRunError::RunStore(e.to_string()))?,
+        )
     } else {
         None
     };
@@ -641,19 +667,15 @@ pub async fn resolve_and_run_test(
     run_resolved_test(&request, resolved, sink, run_store).await
 }
 
-/// Persist a completed test run to the RunStore. Best-effort; errors are
-/// logged but do not propagate. Returns the `RunId` if the run was
-/// successfully begun — callers use this as proof of delegated ownership.
-async fn persist_to_run_store(
+/// Begin and complete a test run in the RunStore. The begin step is separate
+/// so the scheduler has a durable Running child before process launch; the
+/// completion step adds artifacts and the rerun descriptor.
+async fn begin_test_run(
     store: &Arc<dyn codegg_core::run_store::RunStore>,
     request: &TestRunRequest,
-    report: &TestReport,
     resolved: &ResolvedTestCommand,
-) -> Option<codegg_core::run_store::RunId> {
+) -> Result<codegg_core::run_store::RunHandle, codegg_core::error::RunStoreError> {
     use codegg_core::run_store::*;
-
-    let cwd = resolved.cwd.clone();
-    let workspace_root = request.workdir.clone();
 
     let draft = RunDraft {
         kind: RunKind::Test,
@@ -664,8 +686,8 @@ async fn persist_to_run_store(
         },
         session_id: request.session_id.clone(),
         parent_run_id: request.parent_run_id.clone(),
-        workspace_root,
-        cwd,
+        workspace_root: request.workdir.clone(),
+        cwd: resolved.cwd.clone(),
         backend: BackendRecord {
             family: "test_runner".to_string(),
             detail: Some(resolved.scope_label.clone()),
@@ -689,20 +711,24 @@ async fn persist_to_run_store(
         asset_provenance: None,
     };
 
+    store.begin_run(draft).await
+}
+
+async fn persist_to_run_store(
+    store: &Arc<dyn codegg_core::run_store::RunStore>,
+    handle: codegg_core::run_store::RunHandle,
+    request: &TestRunRequest,
+    report: &TestReport,
+    resolved: &ResolvedTestCommand,
+) -> Result<codegg_core::run_store::RunId, codegg_core::error::RunStoreError> {
+    use codegg_core::run_store::*;
+
     let status = match report.status {
         TestStatus::Passed => RunStatus::Complete,
         TestStatus::Failed => RunStatus::Failed,
         TestStatus::TimedOut => RunStatus::TimedOut,
         TestStatus::Error => RunStatus::Failed,
         TestStatus::Cancelled => RunStatus::Cancelled,
-    };
-
-    let handle = match store.begin_run(draft).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!("test runner: failed to begin RunStore run: {e}");
-            return None;
-        }
     };
 
     // Write stdout artifact
@@ -778,7 +804,7 @@ async fn persist_to_run_store(
         parent_run_id: request.parent_run_id.clone(),
     });
 
-    let _ = store
+    store
         .complete_run(
             handle.clone(),
             RunCompletion {
@@ -794,9 +820,8 @@ async fn persist_to_run_store(
                 fallback: None,
             },
         )
-        .await;
-
-    Some(handle.run_id)
+        .await
+        .map(|_| handle.run_id)
 }
 
 #[cfg(test)]
@@ -834,6 +859,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
@@ -863,6 +889,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = resolve_and_run_test(request, None, None)
@@ -892,6 +919,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
@@ -921,6 +949,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
@@ -944,6 +973,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let resolved = ResolvedTestCommand {
@@ -968,6 +998,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let resolved = ResolvedTestCommand {
@@ -1047,6 +1078,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
@@ -1079,6 +1111,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
@@ -1137,6 +1170,7 @@ mod tests {
             max_report_bytes: None,
             session_id: Some("test-session".into()),
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let sink = TestSink::new();
@@ -1166,6 +1200,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None).await;
@@ -1222,6 +1257,7 @@ mod tests {
             max_report_bytes: None,
             session_id: None,
             parent_run_id: None,
+            execution_cwd: None,
             cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)

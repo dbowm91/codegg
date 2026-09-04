@@ -19,7 +19,7 @@ use std::sync::Arc;
 use codegg::command_intent::CommandIntentKind;
 use codegg::config::schema::{CommandIntentConfig, CommandIntentMode, RouteLevel};
 use codegg::python_script::PythonScriptTool;
-use codegg::test_runner::types::{TestRunRequest, TestScope};
+use codegg::test_runner::types::{ResolvedTestCommand, TestRunRequest, TestScope};
 use codegg::tool::bash::BashTool;
 use codegg::tool::Tool;
 use codegg_core::run_store::{
@@ -413,6 +413,7 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
         max_report_bytes: Some(8_000),
         session_id: None,
         parent_run_id: None,
+        execution_cwd: None,
         cancellation: None,
     };
 
@@ -447,6 +448,65 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn test_runner_persists_only_audit_safe_argv() {
+    use codegg::test_runner::runner::run_resolved_test;
+    use codegg::test_runner::types::TestLanguage;
+
+    let store = Arc::new(MemRunStore::new());
+    let dir = tempfile::tempdir().unwrap();
+    let secret_url = "https://user:rerun-secret@example.test/repo";
+    let resolved = ResolvedTestCommand {
+        language: TestLanguage::Generic,
+        argv: vec!["echo".into(), secret_url.into()],
+        cwd: dir.path().to_path_buf(),
+        scope_label: "test_runner_audit_safety".into(),
+    };
+    let request = TestRunRequest {
+        scope: TestScope::Auto,
+        workdir: dir.path().to_path_buf(),
+        execution_cwd: None,
+        timeout_secs: Some(30),
+        stall_timeout_secs: Some(15),
+        max_report_bytes: Some(8_000),
+        session_id: Some("audit-session".into()),
+        parent_run_id: None,
+        cancellation: None,
+    };
+    let store_dyn: Arc<dyn RunStore> = store.clone();
+    let report = run_resolved_test(&request, resolved, None, Some(&store_dyn))
+        .await
+        .unwrap()
+        .into_report();
+    assert_eq!(report.argv[1], "https://redacted@example.test/repo");
+
+    let runs = all_runs(&store).await;
+    assert_eq!(runs.len(), 1);
+    let manifest = &runs[0];
+    let manifest_json = serde_json::to_string(manifest).unwrap();
+    assert!(!manifest_json.contains("rerun-secret"));
+    assert!(manifest
+        .rerun
+        .as_ref()
+        .unwrap()
+        .argv
+        .as_ref()
+        .unwrap()
+        .as_slice()
+        .iter()
+        .all(|token| !token.contains("rerun-secret")));
+
+    for artifact in &manifest.artifacts {
+        let chunk = store
+            .read_artifact(&artifact.artifact_id, None)
+            .await
+            .unwrap();
+        assert!(!String::from_utf8_lossy(&chunk.data).contains("rerun-secret"));
+    }
+    let index = std::fs::read_to_string(dir.path().join(".codegg/test-runs/index.json")).unwrap();
+    assert!(!index.contains("rerun-secret"));
 }
 
 // ── 9. Env kill switch: forces raw shell even with Active config ─────

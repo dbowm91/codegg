@@ -198,6 +198,11 @@ Tagged enum with ~60 variants. Major groups:
 
 **Run Responses**: `RunList`, `RunGet`, `RunArtifactChunk`, `RunRerunAccepted`
 
+`RunRerun` is an additive request for a bounded, credential-free historical
+test-run reconstruction. The response contains the fresh child job identity;
+the child RunStore identity and `RunRerunLinked` event arrive through normal
+scheduler/test-run completion projections.
+
 **Job Responses**: `JobGet`, `JobList`, `JobAttempts`, `JobCancelResult`,
 `JobSubmitted`, `JobWaited`, `JobRetryStarted`
 

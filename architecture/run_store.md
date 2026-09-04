@@ -179,7 +179,7 @@ pub trait RunStore: Send + Sync {
 | `src/tool/factory.rs:45-52` | Creates `FsRunStore` at `.codegg/runs/`, passes to tools |
 | `src/tool/bash.rs:664-760` | Persists runs with correct `RunKind` per routing decision |
 | `src/python_script/tool.rs:143-257` | Persists `Python` runs with diff/sandbox/changes |
-| `src/test_runner/runner.rs:238-239` | Persists `Test` runs after each run |
+| `src/test_runner/runner.rs` | Begins the `Test` RunStore record before process launch and completes it after supervision |
 
 ### TUI integration
 
@@ -261,7 +261,7 @@ storage before the rename is visible.
 | Gap | Details |
 |-----|---------|
 | Native git/search tools | No run_store integration |
-| Full rerun from manifest | RerunDescriptor defined but re-execution not wired |
+| Git/Python/shell/worktree rerun | Intentionally unsupported until each class has an explicit reconstruction and credential contract |
 | Rollback/revert | No rollback infrastructure (`can_rollback = false`) |
 | Artifact viewer | Run detail shows metadata, not full content (`can_view_artifact = false`) |
 

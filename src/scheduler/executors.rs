@@ -125,7 +125,8 @@ impl JobExecutor for TestJobExecutor {
             }
         };
         let cwd = match extract_cwd(&ctx.job) {
-            Some(p) => p,
+            Some(p) if p.is_absolute() => p,
+            Some(p) => ctx.workspace_root.join(p),
             None => {
                 return failure_completion(
                     started,
@@ -137,7 +138,8 @@ impl JobExecutor for TestJobExecutor {
 
         let request = crate::test_runner::types::TestRunRequest {
             scope: crate::test_runner::types::TestScope::BashDispatch(argv),
-            workdir: cwd,
+            workdir: ctx.workspace_root.clone(),
+            execution_cwd: Some(cwd),
             timeout_secs: ctx.job.timeout.map(|d| d.as_secs().max(1)).or(Some(900)),
             stall_timeout_secs: Some(450),
             max_report_bytes: None,

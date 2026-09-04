@@ -138,11 +138,14 @@ canonical workspace before submitting a fresh scheduler child.
 
 Credential-bearing or redacted argv is rejected with
 `ineligible_secret_reacquisition_required`; no durable value is expanded
-back into a credential. Git/worktree, Python, shell, and other unsupported
-run classes remain fail-closed until their own current-credential and base
-validation contracts are implemented. Test child manifests retain the
-parent `RunId`, and completion emits `RunRerunLinked` after the child is
-persisted.
+back into a credential. The bounded test-run path does not prompt or consult
+a credential helper because it has no credential reacquisition contract;
+future credential-bearing reruns must add that hook before becoming eligible.
+Git/worktree, Python, shell, and other unsupported run classes remain
+fail-closed until their own current-credential and base validation contracts
+are implemented. Test child manifests retain the parent `RunId`, are begun
+before process launch, and completion emits `RunRerunLinked` after the child
+is durably completed.
 
 The TUI no longer emits the historical `ShellRerun { id: 0 }` sentinel. It
 sends `CoreRequest::RunRerun` and surfaces either the admitted child job ID

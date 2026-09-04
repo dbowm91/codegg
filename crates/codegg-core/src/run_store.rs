@@ -763,6 +763,8 @@ impl RunCellView {
         ) && manifest.rerun.as_ref().is_some_and(|r| {
             r.backend_family == "test_runner"
                 && r.script_source_ref.is_none()
+                && r.workspace_root == manifest.workspace_root
+                && r.cwd == manifest.cwd
                 && matches!(&r.argv, Some(v) if !v.as_slice().is_empty())
                 && !r.argv.as_ref().is_some_and(|argv| {
                     argv.as_slice()

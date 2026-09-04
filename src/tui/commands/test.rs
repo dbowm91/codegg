@@ -78,6 +78,7 @@ fn build_test_request(
     Ok(crate::test_runner::TestRunRequest {
         scope: test_scope,
         workdir,
+        execution_cwd: None,
         timeout_secs: None,
         stall_timeout_secs: None,
         max_report_bytes: None,

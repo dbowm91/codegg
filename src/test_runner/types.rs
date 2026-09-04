@@ -120,7 +120,14 @@ impl FailureClass {
 #[derive(Debug, Clone)]
 pub struct TestRunRequest {
     pub scope: TestScope,
+    /// Workspace root used for RunStore records, logs, and the legacy test
+    /// index. A scheduler rerun may set `execution_cwd` when the historical
+    /// command ran from a workspace subdirectory.
     pub workdir: PathBuf,
+    /// Optional process working directory for scheduler-owned reruns. This is
+    /// deliberately separate from `workdir` so durable workspace identity is
+    /// not replaced by a historical subdirectory.
+    pub execution_cwd: Option<PathBuf>,
     pub timeout_secs: Option<u64>,
     pub stall_timeout_secs: Option<u64>,
     pub max_report_bytes: Option<usize>,
