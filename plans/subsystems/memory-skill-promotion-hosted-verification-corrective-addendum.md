@@ -133,7 +133,7 @@ Agent convergence is independent and remains closed. The unrelated supported-Lin
 
 ## 7. Milestone M004 — Habit lock-open policy and hosted closure
 
-Status: active
+Status: implemented
 
 Plan:
 
@@ -154,6 +154,31 @@ Exit conditions:
 - normal push CI for the exact final candidate passes through Workspace tests;
 - `plans/closure/memory-skill-promotion/004-status.md` records the failed predecessor run and accepted replacement run/job;
 - registry returns the memory-to-skill subsystem to `closed` only after that closure evidence exists.
+
+The exact hosted candidate also exposed six pre-existing Clippy findings in
+the M002/M003 publication and proposal implementation. Those findings are
+outside M004's bounded ownership and are assigned to M005 below rather than
+being absorbed into this pass.
+
+### Milestone M005 — Publication and proposal Clippy closure
+
+Status: ready
+
+Plan:
+
+- `plans/implementation/memory-skill-promotion/005-publication-clippy-and-hosted-closure.md`
+
+Objective:
+
+Resolve the six M002/M003-owned workspace Clippy findings reported by the
+exact M004 hosted candidate, without changing proposal/publication behavior,
+then establish a green hosted `CI / verify` run through Workspace tests.
+
+Dependency disposition:
+
+M005 depends on the M004 production correction being landed, but not on M004
+strict closure. Its scope is independently bounded to the existing
+publication/proposal code and is ready for handoff.
 
 ## 8. ADR and compatibility disposition
 

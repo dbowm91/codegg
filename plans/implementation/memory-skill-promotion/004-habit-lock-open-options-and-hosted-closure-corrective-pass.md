@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Milestone 004 — Habit Lock OpenOptions and Hosted Closure Corrective Pass
 
-Status: active
+Status: implemented
 
 Repository baseline: `4ea4eaa000ecf65b0e70ed7278cf071a57cf2197`
 
