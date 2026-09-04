@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002 conditionally closed; M003 conditionally closed; M004/M005/M007/M008 ready | M006 waits on M004. |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M004 active; M001 conditionally closed; M002 conditionally closed; M003 conditionally closed | M006 waits on M004. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -50,7 +50,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M004 — AgentLoop coordinator reduction | `plans/implementation/architecture-convergence-incomplete-verticals/004-agent-loop-coordinator-reduction.md` | M001, M002, and M003 are conditionally closed; canonical context, process, and Git boundaries are available. |
 | Architecture convergence and incomplete verticals | M005 — durable run rerun/replay completion | `plans/implementation/architecture-convergence-incomplete-verticals/005-durable-run-rerun-replay-completion.md` | M003 is conditionally closed; the typed Git workflow/process boundary is stable for safe reconstruction. |
 | Architecture convergence and incomplete verticals | M007 — controlled LSP mutation application | `plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md` | M002's canonical process/edit integration boundary is stable; existing checked edit-history and LSP preview ownership remain unchanged. |
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | `plans/implementation/architecture-convergence-incomplete-verticals/008-headless-projection-consumer-legacy-transport-disposition.md` | Session projections are already closed; a second consumer can validate the existing contract independently of M001-M007. |
