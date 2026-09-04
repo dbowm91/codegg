@@ -125,6 +125,10 @@ pub struct TestRunRequest {
     pub stall_timeout_secs: Option<u64>,
     pub max_report_bytes: Option<usize>,
     pub session_id: Option<String>,
+    pub parent_run_id: Option<codegg_core::run_store::RunId>,
+    /// Scheduler cancellation propagated into the supervised child process.
+    /// This runtime handle is never serialized into a run record.
+    pub cancellation: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +199,8 @@ pub struct TestRunCompletedSnapshot {
     pub status: String,
     pub summary: String,
     pub log_dir: Option<String>,
+    pub run_id: Option<String>,
+    pub parent_run_id: Option<String>,
 }
 
 /// Sink for test lifecycle events. Implementations can publish to an

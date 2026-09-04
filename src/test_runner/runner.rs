@@ -194,6 +194,7 @@ pub async fn run_resolved_test(
         stall_deadline_secs,
         start,
         &ctx,
+        request.cancellation.as_ref(),
     )
     .await;
 
@@ -210,19 +211,6 @@ pub async fn run_resolved_test(
         &stderr_log_path,
         max_report_bytes,
     );
-
-    if let Some(sink) = sink {
-        sink.completed(TestRunCompletedSnapshot {
-            session_id: request.session_id.clone().unwrap_or_default(),
-            job_id,
-            status: format!("{:?}", report.status).to_lowercase(),
-            summary: report.summary.clone(),
-            log_dir: report
-                .log_dir
-                .as_ref()
-                .map(|p| p.to_string_lossy().to_string()),
-        });
-    }
 
     let report_json = serde_json::to_string_pretty(&report).unwrap_or_default();
     let report_path = log_dir.join("report.json");
@@ -246,10 +234,25 @@ pub async fn run_resolved_test(
     // the test run). This gives test runs the same RunStore lifecycle as
     // bash/python runs.
     let run_id = if let Some(store) = run_store {
-        persist_to_run_store(store, &report, &resolved, &request.workdir).await
+        persist_to_run_store(store, request, &report, &resolved).await
     } else {
         None
     };
+
+    if let Some(sink) = sink {
+        sink.completed(TestRunCompletedSnapshot {
+            session_id: request.session_id.clone().unwrap_or_default(),
+            job_id,
+            status: format!("{:?}", report.status).to_lowercase(),
+            summary: report.summary.clone(),
+            log_dir: report
+                .log_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
+            run_id: run_id.as_ref().map(ToString::to_string),
+            parent_run_id: request.parent_run_id.as_ref().map(ToString::to_string),
+        });
+    }
 
     Ok(DelegatedTestRun { report, run_id })
 }
@@ -351,6 +354,7 @@ enum SupervisorResult {
         elapsed_ms: u64,
         last_output: Option<String>,
     },
+    Cancelled,
     ChildFailed(String),
 }
 
@@ -365,6 +369,7 @@ async fn supervisor_loop(
     stall_deadline_secs: u64,
     start: Instant,
     ctx: &SupervisorContext<'_>,
+    cancellation: Option<&tokio_util::sync::CancellationToken>,
 ) -> SupervisorResult {
     let mut stdout_done = false;
     let mut stderr_done = false;
@@ -406,6 +411,17 @@ async fn supervisor_loop(
                     elapsed_ms: elapsed,
                     last_output: excerpt,
                 };
+            }
+            _ = async {
+                match cancellation {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                kill_child(child).await;
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                return SupervisorResult::Cancelled;
             }
             _ = tokio::time::sleep(stall_interval) => {
                 if stall_deadline_secs == 0 {
@@ -538,6 +554,7 @@ fn build_report(
             };
             (TestStatus::TimedOut, None, Some(timeout))
         }
+        SupervisorResult::Cancelled => (TestStatus::Cancelled, None, None),
         SupervisorResult::ChildFailed(msg) => {
             let timeout = TestTimeout {
                 kind: TimeoutKind::WallClock,
@@ -629,14 +646,14 @@ pub async fn resolve_and_run_test(
 /// successfully begun — callers use this as proof of delegated ownership.
 async fn persist_to_run_store(
     store: &Arc<dyn codegg_core::run_store::RunStore>,
+    request: &TestRunRequest,
     report: &TestReport,
     resolved: &ResolvedTestCommand,
-    workdir: &Path,
 ) -> Option<codegg_core::run_store::RunId> {
     use codegg_core::run_store::*;
 
     let cwd = resolved.cwd.clone();
-    let workspace_root = workdir.to_path_buf();
+    let workspace_root = request.workdir.clone();
 
     let draft = RunDraft {
         kind: RunKind::Test,
@@ -645,8 +662,8 @@ async fn persist_to_run_store(
             argv: Some(resolved.argv.clone()),
             script_hash: None,
         },
-        session_id: None,
-        parent_run_id: None,
+        session_id: request.session_id.clone(),
+        parent_run_id: request.parent_run_id.clone(),
         workspace_root,
         cwd,
         backend: BackendRecord {
@@ -664,7 +681,11 @@ async fn persist_to_run_store(
         // its own record (BashTool checks `ownership_for_outcome()`).
         planned_backend: Some(codegg_core::run_store::PlannedBackend::TestRunner),
         actual_backend: Some(codegg_core::run_store::ActualBackend::TestRunner),
-        ownership: codegg_core::run_store::RunOwnership::DelegatedBackend,
+        ownership: request
+            .parent_run_id
+            .clone()
+            .map(codegg_core::run_store::RunOwnership::ChildOf)
+            .unwrap_or(codegg_core::run_store::RunOwnership::DelegatedBackend),
         asset_provenance: None,
     };
 
@@ -751,10 +772,10 @@ async fn persist_to_run_store(
         script_source_ref: None,
         backend_family: "test_runner".to_string(),
         cwd: resolved.cwd.clone(),
-        workspace_root: workdir.to_path_buf(),
+        workspace_root: request.workdir.clone(),
         mode: Some(resolved.scope_label.clone()),
         config_profile: None,
-        parent_run_id: None,
+        parent_run_id: request.parent_run_id.clone(),
     });
 
     let _ = store
@@ -812,6 +833,8 @@ mod tests {
             stall_timeout_secs: Some(30),
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
@@ -839,6 +862,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = resolve_and_run_test(request, None, None)
             .await
@@ -866,6 +891,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
@@ -893,6 +920,8 @@ mod tests {
             stall_timeout_secs: Some(1),
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
@@ -914,6 +943,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let resolved = ResolvedTestCommand {
             language: crate::test_runner::types::TestLanguage::Generic,
@@ -936,6 +967,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let resolved = ResolvedTestCommand {
             language: crate::test_runner::types::TestLanguage::Generic,
@@ -1013,6 +1046,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
@@ -1043,6 +1078,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await
@@ -1099,6 +1136,8 @@ mod tests {
             stall_timeout_secs: Some(30),
             max_report_bytes: None,
             session_id: Some("test-session".into()),
+            parent_run_id: None,
+            cancellation: None,
         };
         let sink = TestSink::new();
         let result = run_resolved_test(&request, resolved, Some(&sink), None)
@@ -1126,6 +1165,8 @@ mod tests {
             stall_timeout_secs: Some(30),
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None).await;
         assert!(result.is_ok());
@@ -1180,6 +1221,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         };
         let result = run_resolved_test(&request, resolved, None, None)
             .await

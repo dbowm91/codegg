@@ -316,6 +316,16 @@ pub enum AppEvent {
         status: String,
         summary: String,
         log_dir: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+        #[serde(default)]
+        parent_run_id: Option<String>,
+    },
+    /// A completed rerun child was durably linked to its historical parent.
+    RunRerunLinked {
+        session_id: String,
+        parent_run_id: String,
+        child_run_id: String,
     },
     /// Context window usage updated.
     ContextUpdated {
@@ -379,6 +389,7 @@ impl AppEvent {
             AppEvent::TestRunStarted { .. } => "test_run:started",
             AppEvent::TestRunProgress { .. } => "test_run:progress",
             AppEvent::TestRunCompleted { .. } => "test_run:completed",
+            AppEvent::RunRerunLinked { .. } => "run:rerun_linked",
             AppEvent::ContextUpdated { .. } => "context:updated",
         }
     }
@@ -417,6 +428,8 @@ mod tests {
             status: "passed".into(),
             summary: "42 passed, 0 failed".into(),
             log_dir: Some("/tmp/test-runs".into()),
+            run_id: None,
+            parent_run_id: None,
         };
         assert_eq!(event.event_type(), "test_run:completed");
     }

@@ -664,6 +664,7 @@ impl BashTool {
                         argv: argv.to_vec(),
                         cwd: Some(run_cwd.to_string_lossy().into_owned()),
                         scope: Some("bash-dispatch".into()),
+                        parent_run_id: None,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,

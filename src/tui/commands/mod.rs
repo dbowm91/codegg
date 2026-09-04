@@ -11,6 +11,7 @@ pub(super) mod project_catalog;
 pub(super) mod project_picker;
 pub(super) mod provider_connections;
 pub(super) mod research;
+pub(super) mod run_rerun;
 pub(super) mod security;
 pub(super) mod session_selection;
 pub(super) mod sessions;

@@ -128,6 +128,26 @@ control).
 
 ## Acceptance criteria (Workstream A5)
 
+## M005 durable rerun implementation addendum
+
+The historical record above describes the redacted-persisted policy and the
+pre-M005 placeholder consumer. M005 now consumes only the bounded supported
+vertical: `RunKind::Test` records with a `test_runner` backend and
+audit-safe argv. The daemon revalidates the current bound session and
+canonical workspace before submitting a fresh scheduler child.
+
+Credential-bearing or redacted argv is rejected with
+`ineligible_secret_reacquisition_required`; no durable value is expanded
+back into a credential. Git/worktree, Python, shell, and other unsupported
+run classes remain fail-closed until their own current-credential and base
+validation contracts are implemented. Test child manifests retain the
+parent `RunId`, and completion emits `RunRerunLinked` after the child is
+persisted.
+
+The TUI no longer emits the historical `ShellRerun { id: 0 }` sentinel. It
+sends `CoreRequest::RunRerun` and surfaces either the admitted child job ID
+or the daemon's stable denial code.
+
 - [x] Lifecycle documented with code-level references. (this file)
 - [x] Raw credentials are absent from durable RunStore data — the
       rerun path now persists only the redacted form.

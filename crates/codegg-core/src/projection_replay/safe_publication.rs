@@ -123,6 +123,7 @@ pub fn has_safe_origin(event: &CoreEvent) -> bool {
         CoreEvent::TestRunStarted { session_id, .. } => !session_id.is_empty(),
         CoreEvent::TestRunProgress { session_id, .. } => !session_id.is_empty(),
         CoreEvent::TestRunCompleted { session_id, .. } => !session_id.is_empty(),
+        CoreEvent::RunRerunLinked { session_id, .. } => !session_id.is_empty(),
         CoreEvent::SessionUpdated { session_id, .. } => !session_id.is_empty(),
         CoreEvent::FileChanged { .. } => true,
         CoreEvent::JobCreated { session_id, .. } => session_id.is_some(),

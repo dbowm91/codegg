@@ -104,7 +104,8 @@ fn inactive_kind_for(event: &AppEvent) -> InactiveSummaryKind {
         | AppEvent::SubagentFailed { .. }
         | AppEvent::TestRunStarted { .. }
         | AppEvent::TestRunProgress { .. }
-        | AppEvent::TestRunCompleted { .. } => InactiveSummaryKind::StatusUpdate,
+        | AppEvent::TestRunCompleted { .. }
+        | AppEvent::RunRerunLinked { .. } => InactiveSummaryKind::StatusUpdate,
         _ => InactiveSummaryKind::StatusUpdate,
     }
 }
@@ -126,6 +127,11 @@ fn inactive_detail_for(event: &AppEvent) -> Option<String> {
         }
         AppEvent::CompactionTriggered { .. } => Some("compaction triggered".to_string()),
         AppEvent::TestRunCompleted { status, .. } => Some(format!("test run {status}")),
+        AppEvent::RunRerunLinked {
+            parent_run_id,
+            child_run_id,
+            ..
+        } => Some(format!("rerun linked: {parent_run_id} -> {child_run_id}")),
         _ => None,
     }
 }

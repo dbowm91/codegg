@@ -110,8 +110,12 @@ impl JobExecutor for TestJobExecutor {
 
     async fn execute(&self, ctx: JobExecutionContext) -> ExecutorCompletion {
         let started = std::time::Instant::now();
-        let argv = match &ctx.job.payload {
-            JobPayload::Test { argv, .. } => argv.clone(),
+        let (argv, parent_run_id) = match &ctx.job.payload {
+            JobPayload::Test {
+                argv,
+                parent_run_id,
+                ..
+            } => (argv.clone(), parent_run_id.clone()),
             _ => {
                 return failure_completion(
                     started,
@@ -138,12 +142,14 @@ impl JobExecutor for TestJobExecutor {
             stall_timeout_secs: Some(450),
             max_report_bytes: None,
             session_id: ctx.job.session_id.clone(),
+            parent_run_id,
+            cancellation: Some(ctx.cancellation.clone()),
         };
 
         let result = crate::test_runner::runner::resolve_and_run_test(
             request,
             self.sink.as_deref(),
-            self.run_store.as_ref(),
+            self.run_store.as_ref().or(ctx.run_store.as_ref()),
         )
         .await;
 
@@ -1477,6 +1483,7 @@ mod tests {
                 argv,
                 cwd,
                 scope: None,
+                parent_run_id: None,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

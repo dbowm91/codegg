@@ -476,6 +476,7 @@ mod tests {
                 argv: vec!["echo".into(), "ok".into()],
                 cwd: Some("/tmp".into()),
                 scope: None,
+                parent_run_id: None,
             },
             resource_request: ResourceRequest::default(),
             timeout: None,

@@ -279,6 +279,18 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::OpenRunDetailError { error } => {
             app.messages_state.toasts.error(&error);
         }
+        TuiCommand::RunRerunFinished {
+            parent_run_id,
+            child_job_id,
+            error,
+        } => {
+            crate::tui::commands::run_rerun::apply_run_rerun_finished(
+                app,
+                parent_run_id,
+                child_job_id,
+                error,
+            );
+        }
         TuiCommand::RunDoctor => {
             start_run_doctor(app);
         }

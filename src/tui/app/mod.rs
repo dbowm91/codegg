@@ -326,6 +326,12 @@ pub enum TuiCommand {
     OpenRunDetailError {
         error: String,
     },
+    /// Completion for a daemon-owned historical run rerun request.
+    RunRerunFinished {
+        parent_run_id: String,
+        child_job_id: Option<String>,
+        error: Option<String>,
+    },
     /// Completion: sessions have been reloaded from core.
     SessionsReloaded {
         request_id: u64,
@@ -4508,51 +4514,7 @@ impl App {
                 });
             }
             TuiMsg::RunRerun { run_id } => {
-                if let Some(ref run_store) = self.run_store {
-                    let run_id_val = codegg_core::run_store::RunId(run_id.clone());
-                    let run_store = Arc::clone(run_store);
-                    let tx = self.tui_cmd_tx.clone();
-                    tokio::spawn(async move {
-                        match run_store.get_run(&run_id_val).await {
-                            Ok(Some(manifest)) => {
-                                if manifest.rerun.is_some() {
-                                    if let Some(ref tx) = tx {
-                                        let _ = send_tui(tx, TuiCommand::ShellRerun { id: 0 });
-                                    }
-                                } else {
-                                    if let Some(ref tx) = tx {
-                                        let _ = send_tui(
-                                            tx,
-                                            TuiCommand::OpenRunDetailError {
-                                                error: "Run has no rerun descriptor".to_string(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(None) => {
-                                if let Some(ref tx) = tx {
-                                    let _ = send_tui(
-                                        tx,
-                                        TuiCommand::OpenRunDetailError {
-                                            error: format!("Run not found: {}", run_id),
-                                        },
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                if let Some(ref tx) = tx {
-                                    let _ = send_tui(
-                                        tx,
-                                        TuiCommand::OpenRunDetailError {
-                                            error: format!("Failed to load run: {}", e),
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    });
-                }
+                crate::tui::commands::run_rerun::start_run_rerun(self, run_id);
             }
             TuiMsg::RunPromote { run_id } => {
                 self.messages_state

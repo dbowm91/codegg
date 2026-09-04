@@ -531,6 +531,7 @@ pub fn event_session_id(event: &AppEvent) -> Option<String> {
         | AppEvent::TestRunStarted { session_id, .. }
         | AppEvent::TestRunProgress { session_id, .. }
         | AppEvent::TestRunCompleted { session_id, .. }
+        | AppEvent::RunRerunLinked { session_id, .. }
         | AppEvent::CompactionTriggered { session_id, .. }
         | AppEvent::ToolCallStarted { session_id, .. }
         | AppEvent::AgentFinished { session_id, .. } => Some(session_id.clone()),

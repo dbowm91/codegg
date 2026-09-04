@@ -13,7 +13,7 @@ pub struct BusEventSink;
 impl TestEventSink for BusEventSink {
     fn started(&self, snapshot: TestRunStartedSnapshot) {
         GlobalEventBus::publish(AppEvent::TestRunStarted {
-            session_id: snapshot.session_id,
+            session_id: snapshot.session_id.clone(),
             job_id: snapshot.job_id,
             command: snapshot.command,
             cwd: snapshot.cwd,
@@ -22,7 +22,7 @@ impl TestEventSink for BusEventSink {
 
     fn progress(&self, snapshot: TestRunProgressSnapshot) {
         GlobalEventBus::publish(AppEvent::TestRunProgress {
-            session_id: snapshot.session_id,
+            session_id: snapshot.session_id.clone(),
             job_id: snapshot.job_id,
             message: snapshot.message,
         });
@@ -30,11 +30,21 @@ impl TestEventSink for BusEventSink {
 
     fn completed(&self, snapshot: TestRunCompletedSnapshot) {
         GlobalEventBus::publish(AppEvent::TestRunCompleted {
-            session_id: snapshot.session_id,
+            session_id: snapshot.session_id.clone(),
             job_id: snapshot.job_id,
             status: snapshot.status,
             summary: snapshot.summary,
             log_dir: snapshot.log_dir,
+            run_id: snapshot.run_id.clone(),
+            parent_run_id: snapshot.parent_run_id.clone(),
         });
+        if let (Some(parent_run_id), Some(child_run_id)) = (snapshot.parent_run_id, snapshot.run_id)
+        {
+            GlobalEventBus::publish(AppEvent::RunRerunLinked {
+                session_id: snapshot.session_id,
+                parent_run_id,
+                child_run_id,
+            });
+        }
     }
 }

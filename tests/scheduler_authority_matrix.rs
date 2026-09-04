@@ -329,6 +329,7 @@ fn test_payload() -> JobPayload {
         argv: vec!["echo".into(), "ok".into()],
         cwd: Some("/tmp".into()),
         scope: None,
+        parent_run_id: None,
     }
 }
 

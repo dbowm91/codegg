@@ -412,6 +412,8 @@ async fn test_runner_canonical_api_owns_record_as_delegated_backend() {
         stall_timeout_secs: Some(15),
         max_report_bytes: Some(8_000),
         session_id: None,
+        parent_run_id: None,
+        cancellation: None,
     };
 
     let store_dyn: Arc<dyn RunStore> = store.clone();

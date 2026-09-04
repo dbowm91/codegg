@@ -231,6 +231,9 @@ variants:
 - `CoreRequest::RunGet { workspace_id, run_id }` — fetches a single run.
 - `CoreRequest::RunArtifactRead { workspace_id, artifact_id, start,
   end }` — reads a base64-encoded chunk from a run artifact.
+- `CoreRequest::RunRerun { workspace_id, parent_run_id, session_id }` —
+  validates a supported historical test run against the current bound
+  session/workspace and submits a fresh child job through the daemon scheduler.
 - `CoreResponse::WorkspaceServicesSnapshot { services:
   Vec<WorkspaceServiceHealthDto> }`.
 - `CoreResponse::WorkspaceConfigReload { workspace_id, previous_revision,
@@ -238,6 +241,9 @@ variants:
 - `CoreResponse::RunList { runs: Vec<RunSummaryDto> }`.
 - `CoreResponse::RunGet { run: Option<RunRecordDto> }`.
 - `CoreResponse::RunArtifactChunk { data_b64, byte_offset, total_bytes }`.
+- `CoreResponse::RunRerunAccepted { workspace_id, parent_run_id,
+  child_job_id }` — acknowledges scheduler admission; the child RunStore
+  identity and `RunRerunLinked` event arrive through normal execution events.
 
 `WorkspaceSnapshot` (Phase 2) gains:
 

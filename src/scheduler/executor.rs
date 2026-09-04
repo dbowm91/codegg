@@ -129,6 +129,10 @@ pub struct JobExecutionContext {
     /// Canonical workspace root captured from the scheduler-owned lease.
     /// Executors must use this instead of consulting process-global CWD.
     pub workspace_root: std::path::PathBuf,
+    /// Workspace-scoped artifact store captured by the scheduler lease.
+    /// `None` is retained for lightweight executor unit tests; production
+    /// scheduler dispatch always supplies it.
+    pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     pub cancellation: CancellationToken,
     pub progress: Arc<dyn JobProgressSink>,
     pub resources: ResourcePermitGuard,
@@ -413,6 +417,7 @@ mod tests {
             daemon_generation: codegg_core::jobs::DaemonGeneration::new_unchecked("generation"),
             workspace_id: WorkspaceId::new_unchecked(""),
             workspace_root: std::path::PathBuf::from("/tmp"),
+            run_store: None,
             cancellation: tokio_util::sync::CancellationToken::new(),
             progress: Arc::new(NoopProgressSink),
             resources: crate::scheduler::permit::ResourcePermitGuard::new_orphan(
@@ -436,6 +441,7 @@ mod tests {
                 argv: vec!["cargo".into(), "test".into()],
                 cwd: None,
                 scope: None,
+                parent_run_id: None,
             },
         );
         let r = ExecutorRegistry::new();

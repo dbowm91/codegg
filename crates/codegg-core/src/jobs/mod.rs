@@ -985,6 +985,10 @@ pub enum JobPayload {
         argv: Vec<String>,
         cwd: Option<String>,
         scope: Option<String>,
+        /// Historical parent run for an explicit rerun. Credentials and
+        /// other sensitive inputs are never carried in this payload.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_run_id: Option<crate::run_store::RunId>,
     },
     ManagedArgv {
         argv: Vec<String>,

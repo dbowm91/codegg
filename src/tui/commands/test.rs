@@ -82,6 +82,8 @@ fn build_test_request(
         stall_timeout_secs: None,
         max_report_bytes: None,
         session_id: None,
+        parent_run_id: None,
+        cancellation: None,
     })
 }
 
@@ -89,6 +91,11 @@ fn build_test_request(
 pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
     let tx = app.tui_cmd_tx.clone();
     let request_id = app.dialog_state.test_run_request.begin();
+    let session_id = app
+        .session_state
+        .session
+        .as_ref()
+        .map(|session| session.id.clone());
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
             .toasts
@@ -113,6 +120,8 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                     });
                 }
             };
+            let mut request = request;
+            request.session_id = session_id;
             let workspace = match core_client
                 .request(crate::core::new_request(
                     format!("test-workspace-{}", uuid::Uuid::new_v4()),
@@ -169,6 +178,7 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
                 argv: resolved.argv,
                 cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                 scope: Some(resolved.scope_label),
+                parent_run_id: None,
             }) {
                 Ok(payload) => payload,
                 Err(e) => {

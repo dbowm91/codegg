@@ -25,6 +25,7 @@ fn test_spec(workspace_id: WorkspaceId) -> NewJob {
             argv: vec!["echo".into(), "ok".into()],
             cwd: Some("/tmp".into()),
             scope: None,
+            parent_run_id: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,
@@ -249,6 +250,7 @@ async fn same_key_different_argv_returns_conflict() {
         argv: vec!["echo".into(), "ok".into()],
         cwd: Some("/tmp".into()),
         scope: None,
+        parent_run_id: None,
     };
 
     let mut spec_b = test_spec(ws_id);
@@ -257,6 +259,7 @@ async fn same_key_different_argv_returns_conflict() {
         argv: vec!["echo".into(), "fail".into()],
         cwd: Some("/tmp".into()),
         scope: None,
+        parent_run_id: None,
     };
 
     let key = SubmissionKey::new("argv-conflict-key").expect("key");
@@ -402,6 +405,7 @@ async fn payload_too_large_rejects_without_creating_job() {
             argv: large_argv,
             cwd: Some("/tmp".into()),
             scope: None,
+            parent_run_id: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

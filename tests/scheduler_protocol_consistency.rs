@@ -739,6 +739,7 @@ async fn invalid_payload_for_kind_is_rejected() {
                     argv: vec!["echo".into(), "ok".into()],
                     cwd: None,
                     scope: None,
+                    parent_run_id: None,
                 },
                 resource_request: ResourceRequest::default(),
                 timeout: None,

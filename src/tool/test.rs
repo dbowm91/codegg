@@ -192,6 +192,7 @@ impl TestTool {
                         argv: resolved.argv,
                         cwd: Some(resolved.cwd.to_string_lossy().into_owned()),
                         scope: Some(resolved.scope_label),
+                        parent_run_id: None,
                     },
                     resource_request: codegg_core::jobs::ResourceRequest::for_kind(
                         codegg_core::jobs::JobKind::Test,
@@ -343,6 +344,8 @@ fn parse_test_request(input: &serde_json::Value) -> Result<TestRunRequest, ToolE
         stall_timeout_secs,
         max_report_bytes,
         session_id: None,
+        parent_run_id: None,
+        cancellation: None,
     })
 }
 

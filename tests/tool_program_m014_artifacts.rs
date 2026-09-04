@@ -200,6 +200,7 @@ fn c41_executor_fixture(
         daemon_generation: DaemonGeneration::new_unchecked("generation-c41"),
         workspace_id: WorkspaceId::new_unchecked("ws-1"),
         workspace_root: workspace.to_path_buf(),
+        run_store: None,
         cancellation: tokio_util::sync::CancellationToken::new(),
         progress: Arc::new(NoopProgressSink),
         resources: ResourcePermitGuard::new_orphan(Default::default()),

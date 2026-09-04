@@ -2233,23 +2233,20 @@ async fn run_smoke_suite(
 
     // 6. Readiness wait — use production readiness primitives.
     let readiness_start = std::time::Instant::now();
-    let readiness_passed;
-    match &profile.readiness_policy {
+    let readiness_passed = match &profile.readiness_policy {
         egglsp::compatibility::LspReadinessPolicy::WaitForDiagnosticsOrTimeout { timeout } => {
             let effective = std::cmp::min(*timeout, READINESS_TIMEOUT);
-            readiness_passed = client.wait_for_first_diagnostics(effective).await;
+            client.wait_for_first_diagnostics(effective).await
         }
         egglsp::compatibility::LspReadinessPolicy::WaitForProgressEndOrTimeout { timeout } => {
             let effective = std::cmp::min(*timeout, READINESS_TIMEOUT);
-            readiness_passed = client.wait_for_progress_end(effective).await;
+            client.wait_for_progress_end(effective).await
         }
         egglsp::compatibility::LspReadinessPolicy::WarmupDelay { duration } => {
             tokio::time::sleep(*duration).await;
-            readiness_passed = true;
+            true
         }
-        egglsp::compatibility::LspReadinessPolicy::InitializedIsReady => {
-            readiness_passed = true;
-        }
+        egglsp::compatibility::LspReadinessPolicy::InitializedIsReady => true,
     };
     let readiness_ms = readiness_start.elapsed().as_millis() as u64;
     if readiness_passed {

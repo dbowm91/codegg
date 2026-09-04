@@ -313,6 +313,8 @@ mod tests {
             stall_timeout_secs: None,
             max_report_bytes: None,
             session_id: None,
+            parent_run_id: None,
+            cancellation: None,
         }
     }
 

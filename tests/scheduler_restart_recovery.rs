@@ -38,6 +38,7 @@ fn default_new_job(workspace_id: &WorkspaceId) -> NewJob {
             argv: vec!["cargo".into(), "test".into()],
             cwd: None,
             scope: None,
+            parent_run_id: None,
         },
         resource_request: ResourceRequest::default(),
         timeout: None,

@@ -390,7 +390,10 @@ impl JobScheduler {
             ManagedArgvExecutor, SubagentJobExecutor, TestJobExecutor,
         };
         let mut registry = crate::scheduler::executor::ExecutorRegistry::new();
-        registry.register(Arc::new(TestJobExecutor::new(None, None)))?;
+        registry.register(Arc::new(TestJobExecutor::new(
+            None,
+            Some(Arc::new(crate::test_runner::BusEventSink)),
+        )))?;
         // One typed executor owns the Build/Lint/Format family. Registering
         // three instances under the same ExecutorKind silently discarded
         // the latter two in the old construction path.
@@ -978,6 +981,7 @@ impl JobScheduler {
             daemon_generation: self.daemon_generation.clone(),
             workspace_id: job.workspace_id.clone(),
             workspace_root: lease.path_policy().canonical_root.clone(),
+            run_store: Some(lease.run_store()),
             cancellation: cancellation.clone(),
             progress: Arc::new(DurableProgressSink {
                 store: self.store.clone(),

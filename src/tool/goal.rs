@@ -495,6 +495,7 @@ mod tests {
                     argv: vec!["cargo".into(), "test".into()],
                     cwd: Some("/tmp/test".into()),
                     scope: Some("workspace".into()),
+                    parent_run_id: None,
                 },
                 resource_request: ResourceRequest::for_kind(codegg_core::jobs::JobKind::Test),
                 timeout: None,

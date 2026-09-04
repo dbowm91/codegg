@@ -189,6 +189,25 @@ pub trait RunStore: Send + Sync {
 | `src/tui/app/mod.rs:872-877` | Initializes `FsRunStore` at `.codegg/runs/` |
 | `src/tui/components/dialogs/run_detail.rs` | `RunDetailDialog` — 7-tab detail view |
 
+### Durable rerun
+
+Rerun is a fresh scheduler submission, never an in-place mutation of the
+historical manifest. The current supported class is a completed, failed, or
+timed-out `RunKind::Test` whose `RerunDescriptor` has a non-empty
+`test_runner`/audit-safe argv and no script source reference. `RunCellView`
+derives `can_rerun` from those reconstructability properties; the daemon
+revalidates status, session authority, canonical workspace identity, and cwd
+before submission.
+
+The child job is `JobKind::Test`, `SafeRepeat`, and carries the parent
+`RunId`. The scheduler supplies the leased workspace RunStore to the test
+executor, which persists a fresh child manifest with `parent_run_id` and
+`RunOwnership::ChildOf`. Completion publishes `RunRerunLinked`. Redacted or
+credential-dependent argv is rejected with an actionable reacquisition code;
+raw secrets are never restored from durable metadata. Unsupported Git,
+Python, shell, and worktree-dependent runs remain ineligible until they have
+their own explicit reconstruction and credential contracts.
+
 ### Protocol events
 
 `CoreEvent` variants in `crates/codegg-protocol/src/core.rs`:

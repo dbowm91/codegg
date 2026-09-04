@@ -751,11 +751,25 @@ impl RunCellView {
         let summary = Self::summary_for_manifest(manifest);
         // Rollback is not implemented; disabled until a real handler exists.
         let can_rollback = false;
-        // Rerun requires a complete argv in the rerun descriptor.
-        let can_rerun = manifest
-            .rerun
-            .as_ref()
-            .is_some_and(|r| matches!(&r.argv, Some(v) if !v.as_slice().is_empty()));
+        // The UI may offer rerun only when the daemon can reconstruct a
+        // credential-free scheduler test job from durable data. Workspace
+        // and authority are revalidated at submission time.
+        let can_rerun = matches!(
+            (&manifest.kind, &manifest.status),
+            (
+                RunKind::Test,
+                RunStatus::Complete | RunStatus::Failed | RunStatus::TimedOut
+            )
+        ) && manifest.rerun.as_ref().is_some_and(|r| {
+            r.backend_family == "test_runner"
+                && r.script_source_ref.is_none()
+                && matches!(&r.argv, Some(v) if !v.as_slice().is_empty())
+                && !r.argv.as_ref().is_some_and(|argv| {
+                    argv.as_slice()
+                        .iter()
+                        .any(|arg| arg.contains("://redacted@"))
+                })
+        });
         let has_artifacts = !manifest.artifacts.is_empty();
         // Promote requires at least one safe_for_model artifact and completed redaction.
         let can_promote = has_artifacts

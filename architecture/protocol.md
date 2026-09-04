@@ -145,7 +145,7 @@ for identity-aware clients), `SessionAttach`, `SessionLoad`,
 `ProjectArchive`, `ProjectRestore`, `ProjectHealth`,
 `ProjectCatalogCapabilities`
 
-**Run (3)**: `RunList`, `RunGet`, `RunArtifactRead`
+**Run (4)**: `RunList`, `RunGet`, `RunArtifactRead`, `RunRerun`
 
 **Goal (9)**: `GoalSet`, `GoalFromFile`, `GoalShow`, `GoalPause`,
 `GoalResume`, `GoalClear`, `GoalDone`, `GoalCheckpoint`,
@@ -196,7 +196,7 @@ Tagged enum with ~60 variants. Major groups:
 `ProjectArchived`, `ProjectRestored`, `ProjectHealth`,
 `ProjectCatalogCapabilities`
 
-**Run Responses**: `RunList`, `RunGet`, `RunArtifactChunk`
+**Run Responses**: `RunList`, `RunGet`, `RunArtifactChunk`, `RunRerunAccepted`
 
 **Job Responses**: `JobGet`, `JobList`, `JobAttempts`, `JobCancelResult`,
 `JobSubmitted`, `JobWaited`, `JobRetryStarted`

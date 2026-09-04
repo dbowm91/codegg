@@ -642,12 +642,22 @@ pub(crate) fn map_app_event_to_core_event(
             status,
             summary,
             log_dir,
+            ..
         } => Some(CoreEvent::TestRunCompleted {
             session_id,
             job_id,
             status,
             summary,
             log_dir,
+        }),
+        crate::bus::events::AppEvent::RunRerunLinked {
+            session_id,
+            parent_run_id,
+            child_run_id,
+        } => Some(CoreEvent::RunRerunLinked {
+            session_id,
+            parent_run_id,
+            child_run_id,
         }),
         _ => None,
     }
@@ -1046,6 +1056,8 @@ mod tests {
             status: "passed".into(),
             summary: "5 passed".into(),
             log_dir: Some("/tmp/logs".into()),
+            run_id: None,
+            parent_run_id: None,
         });
         match ev {
             Some(crate::protocol::core::CoreEvent::TestRunCompleted {

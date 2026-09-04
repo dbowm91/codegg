@@ -294,6 +294,14 @@ pub enum CoreResponse {
         byte_offset: usize,
         total_bytes: u64,
     },
+    /// A rerun was accepted by the daemon scheduler. The child RunStore
+    /// identity is emitted by the normal completion projection after the
+    /// executor persists it.
+    RunRerunAccepted {
+        workspace_id: String,
+        parent_run_id: String,
+        child_job_id: String,
+    },
     Error {
         code: String,
         message: String,
@@ -888,6 +896,13 @@ pub enum CoreRequest {
         artifact_id: String,
         start: usize,
         end: usize,
+    },
+    /// Re-execute a supported historical run as a fresh durable child.
+    RunRerun {
+        workspace_id: String,
+        parent_run_id: String,
+        #[serde(default)]
+        session_id: Option<String>,
     },
     GoalSet {
         session_id: String,

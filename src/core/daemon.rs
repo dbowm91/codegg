@@ -5987,6 +5987,87 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::RunRerun {
+                workspace_id,
+                parent_run_id,
+                session_id,
+            } => {
+                let workspace = codegg_core::workspace::WorkspaceId::new_unchecked(workspace_id);
+                let Some(current_session_id) = session_id.as_deref() else {
+                    return Ok(CoreResponse::Error {
+                        code: "ineligible_authority_changed".to_string(),
+                        message: "rerun requires a current bound session".to_string(),
+                    });
+                };
+                let Some(runtime) = self.sessions.get(current_session_id) else {
+                    return Ok(CoreResponse::Error {
+                        code: "ineligible_authority_changed".to_string(),
+                        message: format!("current session is not bound: {current_session_id}"),
+                    });
+                };
+                if runtime.workspace_id != workspace {
+                    return Ok(CoreResponse::Error {
+                        code: "ineligible_authority_changed".to_string(),
+                        message: "current session is bound to a different workspace".to_string(),
+                    });
+                }
+                let lease = match self.workspace_services.acquire(&workspace).await {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "ineligible_missing_or_invalid_base".to_string(),
+                            message: format!("workspace unavailable for rerun: {error}"),
+                        });
+                    }
+                };
+                let parent_id = codegg_core::run_store::RunId::new_unchecked(parent_run_id.clone());
+                let parent = match lease.run_store().get_run(&parent_id).await {
+                    Ok(Some(parent)) => parent,
+                    Ok(None) => {
+                        return Ok(CoreResponse::Error {
+                            code: "ineligible_missing_spec".to_string(),
+                            message: format!("historical run not found: {parent_run_id}"),
+                        });
+                    }
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "ineligible_missing_spec".to_string(),
+                            message: format!("failed to load historical run: {error}"),
+                        });
+                    }
+                };
+                let validated = match crate::run_rerun::validate(
+                    &parent,
+                    &lease.path_policy().canonical_root,
+                    Some(current_session_id),
+                ) {
+                    Ok(validated) => validated,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: error.code().to_string(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let Some(submission) = self.deps.submission.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "scheduler_denied".to_string(),
+                        message: "daemon scheduler is unavailable for rerun".to_string(),
+                    });
+                };
+                let child_job = crate::run_rerun::to_job(validated, workspace.clone());
+                match submission.submit(None, child_job).await {
+                    Ok(submitted) => Ok(CoreResponse::RunRerunAccepted {
+                        workspace_id: workspace.to_string(),
+                        parent_run_id,
+                        child_job_id: submitted.job_id.to_string(),
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "scheduler_denied".to_string(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::NotificationSpeak {
                 text,
                 kind,
