@@ -13,12 +13,6 @@
 //! - `ExecutionLimits` - bounds on turns, tokens, timeouts
 //! - `ContextTracker` - monitors token usage for compaction
 
-use crate::agent::compaction::{
-    auto_compact_async, compact_messages_sync, compact_with_policy, detect_overflow,
-    prune_tool_outputs, CompactionInput, CompactionStrategy, ContextTracker,
-    ResolvedCompactionConfig,
-};
-use crate::agent::context_runtime::ContextPolicyRuntimeState;
 use crate::agent::processor::EventProcessor;
 use crate::agent::progress_recovery::{
     ActionClass, AutonomyState, ProgressObservation, RecoveryAction, RecoveryController,
@@ -28,6 +22,11 @@ use crate::agent::router::ModelRouter;
 use crate::agent::Agent;
 use crate::bus::events::AppEvent;
 use crate::config::schema::Config;
+use crate::context::compaction::{
+    compact_context, context_tokens, needs_context_compaction, CompactionStatus,
+    ContextCompactionRequest, ContextTracker,
+};
+use crate::context::policy::ContextPolicyRuntimeState;
 use crate::error::{AgentError, AppError};
 use crate::model_profile::policy::push_control_instruction;
 use crate::permission::{PermissionChecker, PermissionDecisionReceipt};
@@ -110,7 +109,6 @@ fn redact_local_paths(input: &str, local_paths: &(Option<String>, Option<String>
 
     result.into_owned()
 }
-
 fn replace_path_prefixes<'a>(input: &'a str, path: &str, replacement: &str) -> Cow<'a, str> {
     let mut output = String::with_capacity(input.len());
     let mut copied_until = 0;
@@ -2132,268 +2130,175 @@ impl AgentLoop {
         messages: &mut Vec<Message>,
         model_profile: &crate::model_profile::types::ResolvedModelProfile,
     ) {
+        let Some(policy) = self.execution_policy.as_ref() else {
+            return;
+        };
+        let context_limit = policy.context_window;
+        let threshold = policy.compaction_threshold;
+        let reserved_output_tokens = policy.reserved_output_tokens;
+        let max_tool_result_tokens = policy.max_tool_result_tokens;
         let auto = self
             .config
             .compaction
             .as_ref()
-            .and_then(|c| c.auto)
+            .and_then(|config| config.auto)
             .unwrap_or(false);
         let prune = self
             .config
             .compaction
             .as_ref()
-            .and_then(|c| c.prune)
+            .and_then(|config| config.prune)
             .unwrap_or(false);
-        let reserved = self
-            .execution_policy
-            .as_ref()
-            .map_or(10_000, |p| p.reserved_output_tokens);
 
-        if detect_overflow(messages, self.context_tracker.context_limit(), reserved) {
-            tracing::warn!("Context overflow detected, applying pruning");
-            let max_tokens = self
-                .execution_policy
-                .as_ref()
-                .map_or(10_000, |p| p.max_tool_result_tokens);
-            *messages = prune_tool_outputs(messages, max_tokens);
-            self.context_tracker.reset();
-            self.context_tracker.add_messages(messages);
+        if self.cancel_rx.as_ref().is_some_and(|rx| *rx.borrow()) {
+            tracing::info!("Skipping context compaction after cancellation");
+            return;
+        }
+        if !needs_context_compaction(
+            messages,
+            context_limit,
+            threshold,
+            reserved_output_tokens,
+            Some(model_profile.model.as_str()),
+        ) {
+            return;
         }
 
-        if self.context_tracker.needs_compaction() {
-            let hook_result = if let Some(ref plugin_svc) = self.plugin_service {
-                let compaction_input = serde_json::json!({
-                    "messages": messages.iter().map(|m| {
-                        match m {
-                            Message::System { content } => serde_json::json!({"role": "system", "content": content}),
-                            Message::User { content } => serde_json::json!({"role": "user", "content": content.iter().map(|p| match p {
-                                ContentPart::Text { text } => serde_json::json!({"type": "text", "text": text}),
-                                _ => serde_json::json!({"type": "unknown"}),
-                            }).collect::<Vec<_>>()}),
-                            Message::Assistant { content, tool_calls } => {
-                                let mut json = serde_json::json!({
-                                    "role": "assistant",
-                                    "content": content.iter().map(|p| match p {
-                                        ContentPart::Text { text } => serde_json::json!({"type": "text", "text": text}),
-                                        _ => serde_json::json!({"type": "unknown"}),
-                                    }).collect::<Vec<_>>()
-                                });
-                                if !tool_calls.is_empty() {
-                                    json["tool_calls"] = serde_json::json!(tool_calls.iter().map(|tc| {
-                                        serde_json::json!({
-                                            "id": tc.id,
-                                            "name": tc.name,
-                                            "arguments": tc.arguments
-                                        })
-                                    }).collect::<Vec<_>>());
-                                }
-                                json
-                            },
-                            Message::Tool { tool_call_id, content } => serde_json::json!({
-                                "role": "tool",
-                                "tool_call_id": tool_call_id,
-                                "content": content
-                            }),
-                        }
-                    }).collect::<Vec<_>>(),
-                    "context_limit": self.context_tracker.context_limit(),
-                    "current_tokens": self.context_tracker.current_tokens(),
-                    "strategy": if auto { "auto_compact" } else { "drop_middle" },
-                });
-                let ctx = HookContext {
+        if let Some(ref plugin_svc) = self.plugin_service {
+            let hook_result = plugin_svc
+                .dispatch_hook(HookContext {
                     hook_type: HookType::SessionCompacting,
-                    input: compaction_input,
-                };
-                plugin_svc.dispatch_hook(ctx).await
-            } else {
-                HookResult::ok(serde_json::Value::Null)
-            };
-
+                    input: serde_json::json!({
+                        "messages": messages,
+                        "context_limit": context_limit,
+                        "current_tokens": context_tokens(messages, Some(model_profile.model.as_str())),
+                        "reserved_output_tokens": reserved_output_tokens,
+                        "strategy": if auto { "auto_compact" } else { "drop_middle" },
+                    }),
+                })
+                .await;
             match hook_result {
                 HookResult { blocked: true, .. } => {
                     tracing::info!("Compaction blocked by plugin");
                     return;
                 }
                 HookResult {
-                    error: Some(err), ..
+                    error: Some(error), ..
                 } => {
-                    tracing::warn!("Compaction hook error: {}", err);
+                    tracing::warn!("Compaction hook error: {}", error);
                 }
                 _ => {}
             }
+        }
 
-            // Check if new hybrid engine should be used
-            let has_new_config = self
-                .config
-                .compaction
-                .as_ref()
-                .map(|c| c.mode.is_some())
-                .unwrap_or(false);
+        let result = compact_context(ContextCompactionRequest {
+            messages,
+            context_limit,
+            threshold,
+            reserved_output_tokens,
+            max_tool_result_tokens,
+            auto,
+            prune,
+            compaction_config: self.config.compaction.as_ref(),
+            active_model: Some(model_profile.model.as_str()),
+            provider: Some(self.provider.as_ref()),
+            provider_context: ProviderRequestContext {
+                session_id: Some(Arc::from(self.session_id.as_str())),
+            },
+            cancellation: None,
+        })
+        .await;
 
-            if has_new_config && auto {
-                // Use new hybrid engine
-                let active_model = Some(model_profile.model.as_str());
-                let resolved_config = self
-                    .config
-                    .compaction
-                    .as_ref()
-                    .map(|c| {
-                        ResolvedCompactionConfig::from_config(
-                            c,
-                            self.context_tracker.context_limit(),
-                            active_model,
-                        )
-                    })
-                    .unwrap_or_default();
-
-                let input = CompactionInput {
-                    messages,
-                    config: resolved_config,
-                    active_model,
-                };
-
-                let compaction_context = ProviderRequestContext {
-                    session_id: Some(Arc::from(self.session_id.as_str())),
-                };
-                match compact_with_policy(
-                    input,
-                    Some(self.provider.as_ref()),
-                    compaction_context.clone(),
-                )
-                .await
-                {
-                    Ok(output) => {
-                        *messages = output.messages;
-                        tracing::info!(
-                            "Hybrid compaction: {} -> {} tokens",
-                            output.tokens_before,
-                            output.tokens_after,
-                        );
-                    }
-                    Err(err) => {
-                        tracing::error!("Hybrid compaction failed: {}, using legacy", err);
-                        let limit = self.context_tracker.context_limit();
-                        let threshold = self.context_tracker.threshold();
-                        let model = self
-                            .config
-                            .compaction
-                            .as_ref()
-                            .and_then(|c| c.summarize_model.as_deref());
-                        let compacted = auto_compact_async(
-                            messages,
-                            limit,
-                            threshold,
-                            prune,
-                            Some(self.provider.as_ref()),
-                            model,
-                            compaction_context,
-                        )
-                        .await;
-                        *messages = compacted;
-                    }
-                }
-            } else {
-                // Legacy path
-                if auto {
-                    let limit = self.context_tracker.context_limit();
-                    let threshold = self.context_tracker.threshold();
-                    let model = self
-                        .config
-                        .compaction
-                        .as_ref()
-                        .and_then(|c| c.summarize_model.as_deref());
-                    let compacted = auto_compact_async(
-                        messages,
-                        limit,
-                        threshold,
-                        prune,
-                        Some(self.provider.as_ref()),
-                        model,
-                        ProviderRequestContext {
-                            session_id: Some(Arc::from(self.session_id.as_str())),
-                        },
-                    )
-                    .await;
-                    *messages = compacted;
-                } else {
-                    *messages = compact_messages_sync(
-                        messages.clone(),
-                        CompactionStrategy::DropMiddleMessages,
-                    );
-                }
+        match result.status {
+            CompactionStatus::Ready => return,
+            CompactionStatus::Cancelled => {
+                tracing::info!("Context compaction cancelled");
+                return;
             }
-
-            let tokens_before = self.context_tracker.current_tokens();
-            let tokens_after = self.context_tracker.estimate_tokens_for_messages(messages);
-            self.context_tracker.reset();
-            self.context_tracker.add_messages(messages);
-
-            // Skip context frame injection if already injected by compaction
-            let already_has_frame = messages.iter().any(|m| {
-                matches!(m, Message::System { content } if content.contains("[codegg compacted session state]"))
-            });
-
-            if !already_has_frame {
-                let frame = self.build_context_frame().await;
-                if !frame.is_empty() {
-                    let frame_text = frame.to_control_text();
-                    tracing::debug!(
-                        "Inserting context frame after compaction: {} chars",
-                        frame_text.len()
-                    );
-                    push_control_instruction(messages, model_profile, &frame_text);
-                }
-            }
-
-            if self.task_state_policy.inject_after_compaction {
-                let mut todo = self.todo_state.lock().await;
-                if !todo.is_all_done() {
-                    if let Some(reminder) =
-                        crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
-                    {
-                        push_control_instruction(messages, model_profile, &reminder);
-                        todo.reminder_pending = false;
-                        todo.tool_calls_since_injection = 0;
-                    }
-                }
-            }
-
-            crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
-                session_id: self.session_id.clone(),
-                tokens_before,
-                tokens_after,
-            });
-
-            // Dispatch event observation hook for compaction.
-            if let Some(ref ps) = self.plugin_service {
-                use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
-                let hooks = LifecycleHooks::new(
-                    ps.clone(),
-                    crate::plugin::policy::PluginLifecyclePolicy::default(),
+            CompactionStatus::InsufficientCapacity | CompactionStatus::InvalidHistoryOrBudget => {
+                tracing::error!(
+                    status = ?result.status,
+                    diagnostics = ?result.diagnostics,
+                    "Context compaction could not produce a safe result"
                 );
-                let event_input = EventHookInput {
-                    event_type: "session.compacted".into(),
-                    session_id: Some(self.session_id.clone()),
-                    event: serde_json::json!({
-                        "session_id": self.session_id,
-                        "tokens_before": tokens_before,
-                        "tokens_after": tokens_after,
-                    }),
-                };
-                tokio::spawn(async move {
-                    let result = AssertUnwindSafe(async move {
-                        hooks.emit_event(event_input).await;
-                    })
-                    .catch_unwind()
-                    .await;
-                    if let Err(e) = result {
-                        tracing::error!(panic = ?e, "hook emission task panicked");
-                    }
-                });
+                return;
+            }
+            CompactionStatus::ProviderFailure => {
+                tracing::warn!(
+                    failure = ?result.provider_failure,
+                    "Provider-backed compaction used its conservative fallback"
+                );
+            }
+            CompactionStatus::CompactionRequired => {
+                tracing::warn!(
+                    tokens_after = result.tokens_after,
+                    available = result.capacity.available_context_tokens,
+                    "Context remains above effective capacity after compaction"
+                );
+            }
+            CompactionStatus::Compacted => {}
+        }
+
+        let tokens_before = result.tokens_before;
+        let tokens_after = result.tokens_after;
+        *messages = result.messages;
+        self.context_tracker.reset();
+        self.context_tracker.add_messages(messages);
+
+        let already_has_frame = messages.iter().any(|message| {
+            matches!(message, Message::System { content } if content.contains("[codegg compacted session state]"))
+        });
+        if !already_has_frame {
+            let frame = self.build_context_frame().await;
+            if !frame.is_empty() {
+                push_control_instruction(messages, model_profile, &frame.to_control_text());
             }
         }
-    }
+        if self.task_state_policy.inject_after_compaction {
+            let mut todo = self.todo_state.lock().await;
+            if !todo.is_all_done() {
+                if let Some(reminder) =
+                    crate::task_state::build_todo_reminder(&todo, &self.task_state_policy)
+                {
+                    push_control_instruction(messages, model_profile, &reminder);
+                    todo.reminder_pending = false;
+                    todo.tool_calls_since_injection = 0;
+                }
+            }
+        }
 
+        crate::bus::global::GlobalEventBus::publish(AppEvent::CompactionTriggered {
+            session_id: self.session_id.clone(),
+            tokens_before,
+            tokens_after,
+        });
+        if let Some(ref ps) = self.plugin_service {
+            use crate::plugin::lifecycle::{EventHookInput, LifecycleHooks};
+            let hooks = LifecycleHooks::new(
+                ps.clone(),
+                crate::plugin::policy::PluginLifecyclePolicy::default(),
+            );
+            let event_input = EventHookInput {
+                event_type: "session.compacted".into(),
+                session_id: Some(self.session_id.clone()),
+                event: serde_json::json!({
+                    "session_id": self.session_id,
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
+                }),
+            };
+            tokio::spawn(async move {
+                let result = AssertUnwindSafe(async move {
+                    hooks.emit_event(event_input).await;
+                })
+                .catch_unwind()
+                .await;
+                if let Err(error) = result {
+                    tracing::error!(panic = ?error, "hook emission task panicked");
+                }
+            });
+        }
+    }
     #[instrument(skip(self, request), fields(session_id = %self.session_id, turn_count = self.state.turn_count))]
     pub async fn run(&mut self, request: ChatRequest) -> Result<Vec<ChatEvent>, AppError> {
         match self.run_inner(request).await {

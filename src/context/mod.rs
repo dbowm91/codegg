@@ -2,6 +2,7 @@ pub mod artifact;
 pub mod block;
 pub mod block_builder;
 pub mod cache_stats;
+pub mod compaction;
 pub mod effective_cost;
 pub mod handle;
 pub mod packer;
@@ -19,6 +20,11 @@ pub use artifact::{
 };
 pub use block::{CacheClass, ContextBlock, ContextBlockId, ContextBlockKind, Lossiness};
 pub use cache_stats::{CacheStatsEntry, ContextCacheStats};
+pub use compaction::{
+    compact_context, compact_with_policy_cancellable, context_tokens, needs_context_compaction,
+    CompactionStatus, ContextCapacity, ContextCompactionRequest, ContextCompactionResult,
+    ContextTracker,
+};
 pub use effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 pub use handle::{clamp_to_char_boundary, ContextHandle, ContextHandleError, ContextHandleKind};
 pub use packer::{ContextPackBudget, ContextPackResult, OmissionReason, OmittedContextBlock};
@@ -27,7 +33,7 @@ pub use plan::{
 };
 pub use policy::{
     decide_policy, detect_palette_starvation, reduce_tool_palette, ContextPolicyDecision,
-    ContextPolicyDecisionKind, ToolPaletteReduction,
+    ContextPolicyDecisionKind, ContextPolicyRuntimeState, ToolPaletteReduction,
 };
 pub use projection::{
     project_tool_output, ProjectionConfig, ProjectionStatus, ToolOutputProjection,

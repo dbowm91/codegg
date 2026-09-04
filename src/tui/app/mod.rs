@@ -12387,7 +12387,7 @@ impl App {
     pub fn add_live_output_delta(&mut self, delta: &str) {
         self.session_state.live_output_text.push_str(delta);
         self.session_state.live_output_tokens =
-            crate::agent::compaction::ContextTracker::estimate_tokens(
+            crate::context::compaction::ContextTracker::estimate_tokens(
                 &self.session_state.live_output_text,
             ) as u64;
     }

@@ -4,16 +4,19 @@
 
 The compaction module manages context window overflow by reducing
 conversation history while preserving tool call/output invariants and
-session state. It supports a legacy strategy-based path (truncate,
-summarize, drop-middle) and a newer hybrid engine with programmatic
-evidence extraction, optional LLM-based semantic enrichment, and
-invariant validation with emergency fallback.
+session state. The canonical production owner is `src/context/compaction.rs`;
+the former `src/agent/compaction.rs` path is only a compatibility re-export.
+It supports a legacy strategy-based path (truncate, summarize, drop-middle)
+and a newer hybrid engine with programmatic evidence extraction, optional
+LLM-based semantic enrichment, and invariant validation with emergency
+fallback.
 
 ## Where It Lives
 
 | File | Role |
 |------|------|
-| `src/agent/compaction.rs` | `ContextTracker`, all compaction strategies, hybrid engine, invariant validation |
+| `src/context/compaction.rs` | `ContextTracker`, capacity policy, all compaction strategies, hybrid engine, invariant validation, typed outcomes |
+| `src/agent/compaction.rs` | Compatibility re-export only; no production implementation |
 | `src/agent/context_frame.rs` | `ContextFrame`, `ContextLedgerState` — post-compaction context snapshot |
 | `src/agent/loop.rs:1838` | `compact_if_needed()` — integration point called each turn |
 | `src/config/schema.rs` | `CompactionConfig`, `CompactionModeConfig`, `CompactionPolicyConfig` |
@@ -21,9 +24,14 @@ invariant validation with emergency fallback.
 
 ## How It Works
 
-### Two Paths
+### Canonical entry point and two strategies
 
-1. **Legacy path** (no `compaction.mode` in config): Uses
+`AgentLoop::compact_if_needed()` is sequencing glue. It invokes
+`context::compaction::compact_context(ContextCompactionRequest)` and consumes
+the typed `ContextCompactionResult`; hooks, context-frame injection, and
+events remain at the agent boundary.
+
+1. **Legacy strategy path** (no `compaction.mode` in config): Uses
    `auto_compact_async()` / `auto_compact_sync()` with strategy
    selection (TruncateToolOutputs, SummarizeOldTurns, DropMiddleMessages).
    Entry: `compact_if_needed()` → `detect_overflow()` → `prune_tool_outputs()`
@@ -88,7 +96,7 @@ an emergency marker system message. Preserves tool call/result pairs.
 
 ## Key Types & APIs
 
-### ContextTracker (`src/agent/compaction.rs:22`)
+### ContextTracker (`src/context/compaction.rs`)
 
 ```rust
 pub struct ContextTracker {
@@ -105,7 +113,7 @@ pub struct ContextTracker {
 Key methods: `add_message()`, `needs_compaction()`, `needs_overflow_protection()`,
 `remaining_tokens()`, `estimate_tokens_for_messages()`, `reset()`.
 
-### CompactionStrategy (Legacy) (`src/agent/compaction.rs:197`)
+### CompactionStrategy (Legacy) (`src/context/compaction.rs`)
 
 ```rust
 pub enum CompactionStrategy {
@@ -115,7 +123,7 @@ pub enum CompactionStrategy {
 }
 ```
 
-### CompactionMode (`src/agent/compaction.rs:670`)
+### CompactionMode (`src/context/compaction.rs`)
 
 ```rust
 pub enum CompactionMode {
@@ -125,7 +133,7 @@ pub enum CompactionMode {
 }
 ```
 
-### CompactionPolicy (`src/agent/compaction.rs:678`)
+### CompactionPolicy (`src/context/compaction.rs`)
 
 | Policy | Max Tool Output Tokens | Keep Recent | Max Summary Tokens |
 |--------|----------------------|-------------|-------------------|
@@ -135,13 +143,13 @@ pub enum CompactionMode {
 | `Emergency` | 200 | 1 | 200 |
 | `LosslessDebug` | MAX | 999 | 2000 |
 
-### ResolvedCompactionConfig (`src/agent/compaction.rs:718`)
+### ResolvedCompactionConfig (`src/context/compaction.rs`)
 
 All config fields resolved to concrete values. `from_config()` maps from
 `CompactionConfig` schema with policy-based defaults. Model resolution:
 `compaction.model` → `summarize_model` → `active_model`.
 
-### CompactionInput / CompactionOutput (`src/agent/compaction.rs:872`)
+### CompactionInput / CompactionOutput (`src/context/compaction.rs`)
 
 ```rust
 pub struct CompactionInput<'a> {
@@ -159,7 +167,7 @@ pub struct CompactionOutput {
 }
 ```
 
-### ProgrammaticCompactionState (`src/agent/compaction.rs:864`)
+### ProgrammaticCompactionState (`src/context/compaction.rs`)
 
 ```rust
 pub struct ProgrammaticCompactionState {
@@ -170,7 +178,7 @@ pub struct ProgrammaticCompactionState {
 }
 ```
 
-### EvidenceRef (`src/agent/compaction.rs:842`)
+### EvidenceRef (`src/context/compaction.rs`)
 
 ```rust
 pub struct EvidenceRef {
@@ -181,7 +189,7 @@ pub struct EvidenceRef {
 }
 ```
 
-### Invariant Validation (`src/agent/compaction.rs:1257`)
+### Invariant Validation (`src/context/compaction.rs`)
 
 `validate_message_invariants()` checks:
 1. No orphan `Message::Tool` without matching assistant tool_call

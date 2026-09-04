@@ -4,17 +4,6 @@ use super::r#loop::{AgentLoop, ContextPackObservationPhase};
 use crate::agent::processor::EventProcessor;
 use crate::provider::{ChatRequest, Message, ToolCall};
 
-/// Ephemeral backoff/starvation state for context policy decisions.
-#[derive(Debug, Clone, Default)]
-pub(super) struct ContextPolicyRuntimeState {
-    pub(super) reduction_disabled_until_turn: Option<usize>,
-    pub(super) consecutive_reductions: usize,
-    pub(super) last_selected_tool_count: usize,
-    pub(super) last_omitted_tools: Vec<String>,
-    pub(super) last_reason: Option<String>,
-    pub(super) last_selected_tools: Vec<String>,
-}
-
 impl AgentLoop {
     pub(super) fn build_packer_candidates(
         &self,

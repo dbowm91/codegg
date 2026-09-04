@@ -1,6 +1,6 @@
 # Architecture Convergence and Incomplete Verticals Roadmap
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `3c4890035513cd4d74430b6f64523c8be676024e`
 

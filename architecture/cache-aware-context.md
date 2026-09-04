@@ -187,9 +187,17 @@ Stats are session-local and in-memory. They allow the packer (and diagnostics) t
 
 ## ContextPlan and Agent Loop Integration (`src/context/plan.rs`, `src/agent/loop.rs`)
 
-`ContextPlan` is the provider-facing source of truth. It is built after
-prompt/profile setup, palette policy, compaction, plugin transforms, and
-history hardening, and is applied immediately before every provider call.
+Context budget policy and compaction are owned by
+`src/context/compaction.rs`. `ContextPlan` is the lossless provider-facing
+projection adapter after that owner has returned a bounded result; it does
+not trigger compaction or provide a competing token policy. See
+`architecture/context-compaction-ownership.md` for the complete production
+path inventory.
+
+`ContextPlan` is the provider-facing source of truth for chronology and
+projection. It is built after prompt/profile setup, palette policy, canonical
+compaction, plugin transforms, and history hardening, and is applied
+immediately before every provider call.
 Full mode is lossless: `PlannedMessage.sequence` preserves chronological
 transcript order, including assistant tool calls and matching tool results.
 Tier lists are diagnostic/cache metadata and never reconstruct or reorder the

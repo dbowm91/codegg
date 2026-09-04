@@ -18,10 +18,11 @@ asset management.
 | `src/agent/loop.rs:76` | `ToolDefCache` tuple type for cached tool definitions |
 | `src/agent/loop.rs:403` | `AgentLoop` struct definition |
 | `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
-| `src/agent/context_runtime.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
+| `src/context/policy.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
 | `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — provider retry and stream normalization |
 | `src/agent/processor.rs` | `EventProcessor` — accumulates `ChatEvent` stream into messages |
-| `src/agent/compaction.rs` | `ContextTracker`, compaction strategies, hybrid/programmatic engine |
+| `src/context/compaction.rs` | Canonical `ContextTracker`, budget policy, compaction engine, typed results |
+| `src/agent/compaction.rs` | Compatibility re-export for the canonical context compaction owner |
 | `src/agent/worker.rs` | `SubAgentPool`, `SubAgentSpawner`, `SubAgentReport`, descendant admission |
 | `src/agent/router.rs` | `ModelRouter` — automatic model selection by task complexity |
 | `src/agent/policy.rs` | `ExecutionPolicy`, `ToolExposureMode`, profile-aware defaults |
@@ -61,7 +62,7 @@ TurnSubmit (daemon)
       Main Loop:
       5. Check limits (turns, tokens, timeout, steering)
       6. Pre-turn hooks (AgentStart)
-      7. compact_if_needed() — overflow detection → pruning → hybrid/legacy compaction
+      7. compact_if_needed() — delegates typed context preparation to the canonical context owner
       8. History hardening (fix orphan tool messages)
       9. ProviderTurnAdapter::stream_with_retry()
       10. EventProcessor accumulates streaming events

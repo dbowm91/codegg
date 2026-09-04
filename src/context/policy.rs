@@ -1,4 +1,17 @@
 use crate::config::schema::ContextPolicyConfig;
+
+/// Ephemeral state owned by the context-policy runtime.  AgentLoop stores the
+/// value for turn lifetime, but policy code remains the sole owner of its
+/// meaning and transition rules.
+#[derive(Debug, Clone, Default)]
+pub struct ContextPolicyRuntimeState {
+    pub(crate) reduction_disabled_until_turn: Option<usize>,
+    pub(crate) consecutive_reductions: usize,
+    pub(crate) last_selected_tool_count: usize,
+    pub(crate) last_omitted_tools: Vec<String>,
+    pub(crate) last_reason: Option<String>,
+    pub(crate) last_selected_tools: Vec<String>,
+}
 use crate::context::effective_cost::{EffectiveCostAction, EffectiveCostAnalysis};
 use crate::provider::ToolDefinition;
 
