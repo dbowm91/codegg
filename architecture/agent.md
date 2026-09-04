@@ -243,7 +243,7 @@ pub enum AgentRuntimeKind {
 
 ### AgentLoop (`src/agent/loop.rs:403`)
 
-The loop has 29 direct fields. Service and policy handles are grouped in
+The loop has 32 direct fields. Service and policy handles are grouped in
 `AgentLoopServices` so the coordinator cannot accidentally initialize one
 canonical concern independently of the others.
 

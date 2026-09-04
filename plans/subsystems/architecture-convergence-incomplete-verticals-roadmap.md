@@ -121,9 +121,10 @@ M002 ---------------------> M007 controlled LSP mutation apply
 session-projection closure -> M008 headless projection consumer + legacy transport disposition
 ```
 
-M002, M003, and M008 are dependency-ready; M002 and M003 may execute in
+M001-M004 are conditionally closed and M005-M008 are dependency-ready; M002
+and M003 may execute in
 parallel if separate implementation agents avoid overlapping root wiring edits,
-and M008 is independent. M004 is now hard-dependent on M002 and M003 because
+and M008 is independent. M004 was hard-dependent on M001-M003 because
 it should consume the converged owners rather than invent temporary extraction
 targets.
 
@@ -162,6 +163,8 @@ Clarify the boundary among `egggit`, `codegg-git`, and root adapters. Generic sa
 Exit condition: new Git behavior has one obvious home and production mutation/worktree/rerun code does not independently reconstruct Git safety/provenance rules in the root crate.
 
 ### M004 — AgentLoop coordinator reduction
+
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/004-status.md`
 
 Primary class: infrastructure / polish.
 
