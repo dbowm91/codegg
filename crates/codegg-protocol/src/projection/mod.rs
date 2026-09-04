@@ -38,6 +38,7 @@
 
 pub mod adapters;
 pub mod caps;
+pub mod consumer;
 pub mod controller;
 pub mod dto;
 pub mod event;
@@ -50,6 +51,10 @@ pub mod snapshot;
 pub use caps::{
     ProjectionCapabilities, PROJECTION_CAPABILITY, PROJECTION_PROTOCOL_VERSION,
     PROJECTION_PROTOCOL_VERSION_MIN,
+};
+pub use consumer::{
+    HeadlessConnectionState, HeadlessConsumerError, HeadlessEventOutcome,
+    HeadlessProjectionConsumer, HeadlessReplayOutcome, MAX_HEADLESS_DIAGNOSTICS,
 };
 pub use controller::{
     ControllerApplyOutcome, ControllerDiagnostic, ControllerSubscribeFailure,

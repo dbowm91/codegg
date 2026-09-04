@@ -40,6 +40,7 @@ journal event as a provider turn or tool invocation.
 | `crates/codegg-protocol/src/projection/fixtures.rs` | Golden fixtures for tests |
 | `crates/codegg-protocol/src/projection/replay.rs` | Durable replay transport types |
 | `crates/codegg-protocol/src/projection/controller.rs` | Frontend projection client controller |
+| `crates/codegg-protocol/src/projection/consumer.rs` | Non-TUI headless reference consumer |
 
 ## How It Works
 
@@ -202,6 +203,25 @@ that:
 Key constants: `MAX_CONTROLLER_SUBSCRIPTIONS = 16`,
 `MAX_OUTSTANDING_LAG = 1024`, `DEFAULT_ACK_CADENCE = 16`.
 
+### Headless Reference Consumer (M008)
+
+`projection::consumer::HeadlessProjectionConsumer` is a small non-TUI
+consumer of the canonical `CoreResponse` projection surface. It is intended
+for automation, observer clients, and protocol acceptance tests. The
+authenticated transport remains responsible for establishing the connection;
+the consumer negotiates projection capabilities, installs a single-session
+snapshot, applies ordered events, and emits typed subscribe/resume/ack/artifact
+requests for the transport to send.
+
+The consumer retains only bounded ephemeral state and the last accepted
+`ProjectionCursor` across a disconnect. It treats duplicate events as
+idempotent, turns sequence gaps and stream mismatches into explicit resync
+state, ignores internal reasoning and non-public diagnostics, and accepts
+artifact bodies only when the handle is project-scoped and the read is within
+the 64 KiB protocol limit. `session_is_terminal()` and
+`run_is_terminal()` expose terminal observation without creating execution
+authority or importing TUI state.
+
 ### Remote Transport Isolation (M005)
 
 `ProjectionConnectionState` is a transport-neutral transient owner
@@ -261,12 +281,18 @@ additive fields/events through the existing negotiated protocol.
 `file_change_event_script`, `job_event_script`,
 `question_event_script`, `project_summary_fixture`.
 
-Two independent consumers produce equivalent logical state:
+The canonical reducer and the headless consumer are the production owners of
+projection interpretation. Two independent consumers are exercised by the
+test corpus:
 
 1. In-crate reducer tests in `projection::reducer::tests`.
-2. Root integration test `tests/session_projection_consumer.rs`
-   re-implements a minimal `FakeTuiState` that consumes the same
-   fixture scripts.
+2. Root integration test `tests/headless_projection_consumer.rs` drives
+   `HeadlessProjectionConsumer` with typed capability, subscribe, replay,
+   resume, terminal-state, and artifact responses.
+
+`tests/session_projection_consumer.rs` remains a bounded equivalence fixture
+for the existing TUI-shaped adapter; it is not the headless consumer or a
+second projection protocol.
 
 ## Key Types & APIs
 
@@ -281,6 +307,7 @@ Two independent consumers produce equivalent logical state:
 | `ProjectionEnvelope` | `event.rs:53` | Event envelope with metadata |
 | `ProjectionStreamScope` | `event.rs:38` | Session/Project/Workspace/Daemon |
 | `ProjectionClientController` | `controller.rs` | Frontend state machine |
+| `HeadlessProjectionConsumer` | `consumer.rs` | Non-TUI snapshot/replay/resume/artifact consumer |
 | `ProjectionMode` | `controller.rs:82` | ProjectionPrimary/RawCompat/Unsupported |
 | `ProjectionStreamId` | `replay.rs:41` | Opaque stream identifier |
 | `ProjectionCursor` | `replay.rs:106` | Client cursor for resume |
@@ -332,6 +359,9 @@ cargo test -p codegg-protocol
 
 # Independent consumer equivalence test
 cargo test --test session_projection_consumer
+
+# Headless reference consumer and canonical CoreResponse flow
+cargo test --test headless_projection_consumer
 
 # Adversarial tests
 cargo test --test context_projection_adversarial

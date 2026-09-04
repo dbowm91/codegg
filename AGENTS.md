@@ -268,6 +268,23 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 - **Git sidebar is cached, not rendered live**: `GitSidebarState` caches git info. Stale generations dropped silently.
 - **Remote TUI protocol is event/state-driven**: The `/tui` WebSocket uses `TuiCommand` enum. `RenderFrame` is unsupported.
 
+### Headless Projection Consumer
+
+- `codegg_protocol::projection::consumer::HeadlessProjectionConsumer` is the
+  non-TUI reference consumer for canonical session projections. It consumes
+  typed `CoreResponse` snapshots/replays, preserves a bounded cursor across
+  reconnect, emits typed resume/ack/artifact requests, and exposes terminal
+  session/run observation.
+- The underlying transport must authenticate before capability negotiation.
+  The consumer is not a durable state owner and must not import TUI state or
+  interpret raw compatibility events as projection state.
+- Internal reasoning and non-public diagnostics are ignored; artifact handles
+  must be project-scoped opaque IDs and reads are capped by the protocol's
+  64 KiB window.
+- Legacy `/ws` JSON-RPC is externally-supported, deprecated compatibility
+  with a bounded queue and no projection authority. Raw `/tui` fallback is
+  bounded, session-scoped, non-authoritative compatibility for older peers.
+
 ### Tool Registry
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.

@@ -111,6 +111,23 @@ Retained for bounded legacy compatibility. 256-message outbound capacity.
 Supported methods: `sessions.list`, `sessions.get`, `sessions.create`,
 `providers.list`, `tools.list`.
 
+M008 caller disposition: no in-repository production or test client invokes
+`/ws`; the public route is therefore retained as externally-supported
+compatibility rather than removed on absence-of-evidence. It is not a
+projection transport, has no subscription/resume authority, and remains
+bounded and authenticated. Removal requires an explicit compatibility-window
+decision plus evidence that supported external clients have migrated to
+`/core` or `/tui`.
+
+Legacy caller matrix:
+
+| Surface | In-repository callers | Disposition |
+|---|---|---|
+| `/ws` JSON-RPC route/handler and `RpcRequest` types | Server route and handler only; no production/test client | Retain as externally-supported compatibility; bounded/authenticated, no projection authority |
+| `/tui` raw event/state fallback | `src/client/attach.rs`, `src/server/ws.rs`, and TUI projection mode fallback | Retain temporarily; bounded/session-scoped/non-authoritative until a future protocol compatibility decision |
+| `CoreRequest::ProjectionSnapshotGet` | Daemon decoding/explicit rejection only; no caller | Retain as wire compatibility; reject with `projection_snapshot_requires_subscription` |
+| Projection-private raw event fallback | No caller; filtered by `convert_core_event_to_tui` and raw forwarders | Remove-now behavior already landed: private projection envelopes are discarded |
+
 #### `/core` — CoreFrame Protocol
 
 For non-TUI clients. Negotiates `ClientHello` → `ServerHello`, carries
@@ -224,6 +241,12 @@ origins = ["http://localhost:3000"]
   No daemon-wide event broadcast carries `ProjectionStreamEvent`.
 - **`/ws` is deprecated**: New clients should use `/tui` or `/core`.
   Its outbound queue is finite (256); overflow closes the connection.
+- **Raw `/tui` compatibility is retained temporarily**: clients that cannot
+  negotiate the canonical projection mode continue to receive only the
+  bounded, session-scoped raw event surface. It is non-authoritative and
+  cannot carry private projection envelopes. The removal condition is a
+  future `/tui` protocol compatibility decision after legacy clients have
+  migrated.
 - **`RenderFrame` unsupported**: Both `/tui` and remote clients see
   `Error { code: "unsupported_render_frame" }`.
 

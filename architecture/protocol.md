@@ -215,6 +215,13 @@ scheduler/test-run completion projections.
 `ProjectionSubscriptionStatusResponse`, `ProjectionArtifactRead`,
 `ProjectionArtifactList`
 
+The non-TUI reference consumer in
+`codegg_protocol::projection::consumer::HeadlessProjectionConsumer` consumes
+these typed responses directly. It is transport-neutral and assumes the
+underlying socket/WebSocket has already authenticated the caller. It retains
+only a bounded snapshot and cursor, emits `ProjectionResume` after an
+interruption, and never treats raw compatibility events as projection state.
+
 **Tool Program Responses**: `ToolProgramList`, `ToolProgramInspect`,
 `ToolProgramCallPage`, `ToolProgramNotificationReinjectReport`,
 `ToolProgramRecoveryDebugInspectReport`
@@ -394,6 +401,7 @@ resolve through deterministic lookup of an existing unique locator.
 ```bash
 cargo test -p codegg-protocol              # all protocol tests
 cargo test --test session_projection_consumer  # projection consumer
+cargo test --test headless_projection_consumer # non-TUI CoreResponse consumer
 ```
 
 ## Related Docs
