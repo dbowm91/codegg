@@ -121,7 +121,8 @@ M002 ---------------------> M007 controlled LSP mutation apply
 session-projection closure -> M008 headless projection consumer + legacy transport disposition
 ```
 
-M001-M004 are conditionally closed and M005-M008 are dependency-ready; M002
+M001-M004 are conditionally closed, M005 is closed, M006 is conditionally
+closed, and M007-M008 are dependency-ready; M002
 and M003 may execute in
 parallel if separate implementation agents avoid overlapping root wiring edits,
 and M008 is independent. M004 was hard-dependent on M001-M003 because
@@ -184,7 +185,7 @@ Exit condition: an eligible completed run can be rerun end-to-end, produces a ne
 
 ### M006 — Command pipeline convergence
 
-Status: active — `plans/implementation/architecture-convergence-incomplete-verticals/006-command-pipeline-convergence.md`
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/006-status.md`
 
 Primary class: infrastructure / polish.
 
