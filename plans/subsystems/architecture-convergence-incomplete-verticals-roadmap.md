@@ -122,7 +122,7 @@ session-projection closure -> M008 headless projection consumer + legacy transpo
 ```
 
 M001-M004 are conditionally closed, M005 is closed, M006 is conditionally
-closed, and M007-M008 are dependency-ready; M002
+closed, M007 is closed, and M008 is dependency-ready; M002
 and M003 may execute in
 parallel if separate implementation agents avoid overlapping root wiring edits,
 and M008 is independent. M004 was hard-dependent on M001-M003 because
@@ -194,6 +194,8 @@ Audit `command`, `command_intent`, planner, routing, and outcome layers and coll
 Exit condition: command routing has one canonical state/data flow and no duplicate planner/router interpretation path remains in production.
 
 ### M007 — Controlled LSP mutation application
+
+Status: closed — `plans/closure/architecture-convergence-incomplete-verticals/007-status.md`
 
 Primary class: capability.
 

@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M006 conditionally closed; M007/M008 ready | Hosted test completion for M006 |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M007 closed; M008 ready | Hosted test completion for M006 |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -50,15 +50,14 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M007 — controlled LSP mutation application | `plans/implementation/architecture-convergence-incomplete-verticals/007-controlled-lsp-mutation-application.md` | M002's canonical process/edit integration boundary is stable; existing checked edit-history and LSP preview ownership remain unchanged. |
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | `plans/implementation/architecture-convergence-incomplete-verticals/008-headless-projection-consumer-legacy-transport-disposition.md` | Session projections are already closed; a second consumer can validate the existing contract independently of M001-M007. |
 
 ## Architecture convergence execution order
 
-1. M001-M004 are conditionally closed; M005 is closed and M006 is conditionally closed; M007 and M008 remain dependency-ready. M001's named host-toolchain focused-test rerun remains an operational condition, not a blocker to the stable context interface.
+1. M001-M004 are conditionally closed; M005 is closed; M006 is conditionally closed; M007 is closed; and M008 remains dependency-ready. M001's named host-toolchain focused-test rerun remains an operational condition, not a blocker to the stable context interface.
 2. M004 is conditionally closed with its coordinator/service boundary available for consumers; M006 can now target the final AgentLoop lifecycle contract instead of an unstable interface.
 3. M005 is closed from M003's stable Git/worktree/provenance boundary; its supported initial slice intentionally excludes Git-mutating/worktree-dependent reconstruction.
-4. M007 is dependency-ready after M002's stable execution/edit integration contract; checked edit-history and LSP preview ownership remain otherwise unchanged.
+4. M007 is closed after consuming M002's stable execution/edit integration contract; checked edit-history and LSP preview ownership remain the mutation authorities.
 6. The roadmap does not register new packaging/release automation, Windows support expansion, another scheduler/tool/plugin runtime, another memory subsystem, or another verification framework.
 7. Verification for every milestone remains focused tests plus the existing `scripts/verify.sh quick` posture and existing hosted CI only where strict closure requires exact-head evidence.
 
@@ -92,6 +91,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Architecture convergence and incomplete verticals | M004 — AgentLoop coordinator reduction | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/004-status.md` |
 | Architecture convergence and incomplete verticals | M005 — durable run rerun/replay completion | closed | `plans/closure/architecture-convergence-incomplete-verticals/005-status.md` |
 | Architecture convergence and incomplete verticals | M006 — command pipeline convergence | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/006-status.md` |
+| Architecture convergence and incomplete verticals | M007 — controlled LSP mutation application | closed | `plans/closure/architecture-convergence-incomplete-verticals/007-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmap, must receive a new milestone/addendum under the normal planning process.
 

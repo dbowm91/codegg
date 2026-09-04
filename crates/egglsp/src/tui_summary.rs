@@ -856,8 +856,8 @@ pub struct PreviewApplyCandidate {
 ///
 /// This is a **read-only** operation: it reads from the registry without
 /// calling `mark_applied` or any other mutating method. The caller is
-/// responsible for the actual apply via a separate mutating path (e.g.
-/// `apply_patch` with user approval).
+/// responsible for the actual apply via the daemon-owned checked mutation
+/// service with explicit user approval.
 pub fn export_preview_apply_candidate(
     registry: &crate::preview_registry::PreviewArtifactRegistry,
     preview_id: &str,
