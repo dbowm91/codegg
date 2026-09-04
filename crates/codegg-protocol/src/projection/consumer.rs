@@ -373,10 +373,9 @@ impl HeadlessProjectionConsumer {
                 self.connection_state = HeadlessConnectionState::ResyncRequired;
                 self.last_resync_reason = Some(*reason);
                 if let (Some(descriptor), Some(snapshot)) = (descriptor, snapshot) {
-                    let subscription_id = self
-                        .subscription_id
-                        .clone()
-                        .unwrap_or_else(|| ProjectionSubscriptionId::new("resync"));
+                    let Some(subscription_id) = self.subscription_id.clone() else {
+                        return Err(HeadlessConsumerError::InvalidResponse);
+                    };
                     self.accept_subscribed(
                         subscription_id,
                         descriptor.clone(),
