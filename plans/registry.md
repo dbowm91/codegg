@@ -39,7 +39,7 @@ Canonical direction remains in:
 | Memory-to-skill promotion | active | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M005 active; M004 corrective pass required | M004 fixed the two M001-owned habit lock opens, but hosted run `33836217483` / job `100909174354` on `7ef387aa` exposed six older M002/M003 publication/proposal Clippy findings; M005 owns those findings. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
-| Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
+| Development verification and release | active | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | M008 active; M007 remains closed | Hosted M005 candidate exposed the independent pre-existing `items_after_test_module` Clippy finding in `src/tool/review.rs`; M008 owns the separate ordering correction. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | `plans/closure/runtime-safety-resource-footprint/013-status.md`; exact candidate `f314c38e` passed hosted `CI / verify` run `33712437859` / job `100514597927`. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | `plans/closure/post-audit-correctness-simplification/012-status.md`; C001/C002 remain historical closed evidence. |
@@ -65,6 +65,8 @@ Canonical direction remains in:
 
 - Memory-to-skill M005 is active; its production correction and focused
   evidence are being prepared for exact-head hosted closure.
+- Development verification M008 is active; it owns the separate hosted Clippy
+  ordering correction exposed by the M005 candidate.
 
 Agent-run/worktree M001–M008 remain historical closure records and MUST NOT be rewritten to conceal the accepted implementation history. M006 was superseded by the M007/M008 corrective work; the later M008 strict subsystem disposition was superseded by `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` after the post-M008 production-path and exact-head CI audit. Provider M009 is now closed through `plans/closure/provider-connections/009-status.md`.
 
@@ -88,6 +90,7 @@ Verification remains deliberately light: Provider M009 was accepted with focused
 
 - The historical supported-Linux Landlock evidence condition remains unchanged under the existing runtime-safety conditional closure and does not block M004.
 - Memory-to-skill M005 is in progress after M004's strict closure was blocked by the six publication/proposal findings. M001–M004 historical records remain unchanged.
+- Development verification M008 is in progress for the separate hosted Clippy `items_after_test_module` finding in `src/tool/review.rs`; it is not part of memory-to-skill M005 scope.
 
 No newly registered corrective plan is hard-blocked. Provider M009 is closed; runtime-safety M013, runtime-assets M007, goal-verification M013, and Provider M008 are closed historical control points.
 

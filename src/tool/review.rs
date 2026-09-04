@@ -114,116 +114,6 @@ impl ReviewTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Arc, Mutex};
-
-    struct ContextCaptureProvider {
-        contexts: Arc<Mutex<Vec<Option<String>>>>,
-    }
-
-    #[async_trait]
-    impl Provider for ContextCaptureProvider {
-        fn id(&self) -> &str {
-            "context-capture"
-        }
-
-        fn name(&self) -> &str {
-            "Context Capture"
-        }
-
-        fn clone_box(&self) -> Box<dyn Provider> {
-            Box::new(Self {
-                contexts: self.contexts.clone(),
-            })
-        }
-
-        async fn stream(
-            &self,
-            request: &ChatRequest,
-        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
-            self.contexts
-                .lock()
-                .unwrap()
-                .push(request.context.session_id.as_deref().map(ToOwned::to_owned));
-            Ok(Box::pin(futures_util::stream::iter(vec![Ok(
-                ChatEvent::TextDelta(Arc::new("review".to_string())),
-            )])))
-        }
-
-        async fn models(
-            &self,
-        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
-            Ok(Vec::new())
-        }
-    }
-
-    #[tokio::test]
-    async fn nested_review_request_uses_tool_execution_session() {
-        let contexts = Arc::new(Mutex::new(Vec::new()));
-        let provider = Arc::new(ContextCaptureProvider {
-            contexts: contexts.clone(),
-        });
-        let mut execution =
-            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
-        execution.session_id = Some("session-review".to_string());
-        let tool = ReviewTool::new().with_provider(provider);
-
-        let result = tool
-            .analyze_diff_with_context(
-                "diff --git a/src/lib.rs b/src/lib.rs",
-                provider_request_context(Some(&execution)),
-            )
-            .await
-            .expect("capture provider should return a review");
-
-        assert_eq!(result, "review");
-        assert_eq!(
-            contexts.lock().unwrap().as_slice(),
-            &[Some("session-review".to_string())]
-        );
-    }
-
-    #[tokio::test]
-    async fn structured_review_execution_preserves_tool_execution_session() {
-        let workspace = tempfile::tempdir().expect("temporary workspace");
-        let run_git = |args: &[&str]| {
-            // execution-ownership: test_only
-            let status = std::process::Command::new("git")
-                .args(args)
-                .current_dir(workspace.path())
-                .status()
-                .expect("git should be installed");
-            assert!(status.success(), "git command failed: {args:?}");
-        };
-        run_git(&["init", "-q"]);
-        std::fs::write(workspace.path().join("lib.rs"), "pub fn test() {}\n")
-            .expect("write staged file");
-        run_git(&["add", "lib.rs"]);
-
-        let contexts = Arc::new(Mutex::new(Vec::new()));
-        let provider = Arc::new(ContextCaptureProvider {
-            contexts: contexts.clone(),
-        });
-        let mut execution =
-            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
-        execution.session_id = Some("session-review-structured".to_string());
-        let tool = ReviewTool::new()
-            .with_workdir(workspace.path().to_path_buf())
-            .with_provider(provider);
-
-        tool.execute_structured(json!({"staged": true}), Some(execution))
-            .await
-            .expect("structured review should succeed");
-
-        assert_eq!(
-            contexts.lock().unwrap().as_slice(),
-            &[Some("session-review-structured".to_string())]
-        );
-    }
-}
-
 async fn analyze_diff_with_provider(
     diff: &str,
     provider: &dyn Provider,
@@ -361,5 +251,115 @@ impl ReviewTool {
             .analyze_diff_with_context(&diff, provider_context)
             .await?;
         Ok(format!("## Code Review Results\n\n{}", review))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct ContextCaptureProvider {
+        contexts: Arc<Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait]
+    impl Provider for ContextCaptureProvider {
+        fn id(&self) -> &str {
+            "context-capture"
+        }
+
+        fn name(&self) -> &str {
+            "Context Capture"
+        }
+
+        fn clone_box(&self) -> Box<dyn Provider> {
+            Box::new(Self {
+                contexts: self.contexts.clone(),
+            })
+        }
+
+        async fn stream(
+            &self,
+            request: &ChatRequest,
+        ) -> Result<crate::provider::EventStream, crate::provider::ProviderError> {
+            self.contexts
+                .lock()
+                .unwrap()
+                .push(request.context.session_id.as_deref().map(ToOwned::to_owned));
+            Ok(Box::pin(futures_util::stream::iter(vec![Ok(
+                ChatEvent::TextDelta(Arc::new("review".to_string())),
+            )])))
+        }
+
+        async fn models(
+            &self,
+        ) -> Result<Vec<crate::provider::ModelInfo>, crate::provider::ProviderError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_review_request_uses_tool_execution_session() {
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ContextCaptureProvider {
+            contexts: contexts.clone(),
+        });
+        let mut execution =
+            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        execution.session_id = Some("session-review".to_string());
+        let tool = ReviewTool::new().with_provider(provider);
+
+        let result = tool
+            .analyze_diff_with_context(
+                "diff --git a/src/lib.rs b/src/lib.rs",
+                provider_request_context(Some(&execution)),
+            )
+            .await
+            .expect("capture provider should return a review");
+
+        assert_eq!(result, "review");
+        assert_eq!(
+            contexts.lock().unwrap().as_slice(),
+            &[Some("session-review".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn structured_review_execution_preserves_tool_execution_session() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let run_git = |args: &[&str]| {
+            // execution-ownership: test_only
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .expect("git should be installed");
+            assert!(status.success(), "git command failed: {args:?}");
+        };
+        run_git(&["init", "-q"]);
+        std::fs::write(workspace.path().join("lib.rs"), "pub fn test() {}\n")
+            .expect("write staged file");
+        run_git(&["add", "lib.rs"]);
+
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(ContextCaptureProvider {
+            contexts: contexts.clone(),
+        });
+        let mut execution =
+            ToolExecutionContext::with_backend(crate::tool::ToolBackendKind::Native);
+        execution.session_id = Some("session-review-structured".to_string());
+        let tool = ReviewTool::new()
+            .with_workdir(workspace.path().to_path_buf())
+            .with_provider(provider);
+
+        tool.execute_structured(json!({"staged": true}), Some(execution))
+            .await
+            .expect("structured review should succeed");
+
+        assert_eq!(
+            contexts.lock().unwrap().as_slice(),
+            &[Some("session-review-structured".to_string())]
+        );
     }
 }
