@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002/M003/M008 ready | M004 waits on M002/M003; M005 waits on M003; M006 waits on M004; M007 waits on M002's stable execution/edit boundary. |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M001 conditionally closed; M002 active; M003/M008 ready | M004 waits on M002/M003; M005 waits on M003; M006 waits on M004; M007 waits on M002's stable execution/edit boundary. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -50,9 +50,14 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/002-process-tool-execution-ownership-convergence.md` | Tool Programs, runtime safety, and daemon/process lifecycle dependencies are closed; no new scheduler/tool runtime is required. |
 | Architecture convergence and incomplete verticals | M003 — Git ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/003-git-ownership-convergence.md` | Agent-run/worktree and edit-history dependencies are closed; ownership can be converged without changing durable Git/worktree semantics. |
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | `plans/implementation/architecture-convergence-incomplete-verticals/008-headless-projection-consumer-legacy-transport-disposition.md` | Session projections are already closed; a second consumer can validate the existing contract independently of M001-M007. |
+
+## Active implementation plans
+
+| Subsystem | Milestone | Plan | Closure work |
+|---|---|---|---|
+| Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | `plans/implementation/architecture-convergence-incomplete-verticals/002-process-tool-execution-ownership-convergence.md` | Implementation in progress; closure record will be added after focused safety and ownership verification. |
 
 ## Architecture convergence execution order
 
