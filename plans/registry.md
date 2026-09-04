@@ -36,7 +36,7 @@ Canonical direction remains in:
 | Agent runtime — goal verification corrective follow-up | closed | `plans/subsystems/agent-runtime-goal-verification-corrective-addendum.md` | M013 closed | Exact-goal provenance, conservative criteria, and cross-goal evidence isolation accepted in `plans/closure/agent-runtime-correctness-autonomy-simplification/013-status.md`. |
 | Agent runs, async delegation, and worktree concurrency | closed | `plans/subsystems/agent-run-worktree-concurrency-final-corrective-closure-addendum.md` | M009 closed | Root-turn completion, invocation scope, group-terminal projection, and exact-head CI corrections accepted; hosted run `33588719613` / job `100118138199` passed through Workspace tests. |
 | Agent convergence and independent verification | closed | `plans/subsystems/agent-convergence-roadmap.md` | M003 closed | `plans/closure/agent-convergence/003-status.md`; bounded repair/replan, explicit commit chaining, conservative model gating, and projection closure accepted. |
-| Memory-to-skill promotion | ready | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M004 ready | Exact `4ea4eaa` hosted run `33813852632` / job `100841494152` failed Workspace Clippy on the M001-owned habit advisory-lock opens; M004 owns the narrow correction and exact-head closure evidence. |
+| Memory-to-skill promotion | active | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M004 active | Exact `4ea4eaa` hosted run `33813852632` / job `100841494152` failed Workspace Clippy on the M001-owned habit advisory-lock opens; M004 owns the narrow correction and exact-head closure evidence. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | M010 closure accepted; durable TUI schedule identity and labels are reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
 | Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | Milestone 007 closed | — |
@@ -49,13 +49,12 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Memory-to-skill promotion | M004 — habit lock OpenOptions and hosted closure corrective pass | `plans/implementation/memory-skill-promotion/004-habit-lock-open-options-and-hosted-closure-corrective-pass.md` | M001–M003 implementation/closure evidence exists; the exact hosted failure is localized to two M001-owned advisory-lock opens and requires no external dependency or architecture decision. |
 
 ## Newly registered feature execution order
 
 1. Agent-convergence M001–M003 remain closed under their accepted closure records.
 2. Memory-to-skill M001–M003 remain immutable historical closure evidence, but the current strict subsystem disposition is reopened under M004 because exact `main` head `4ea4eaa` failed hosted Workspace Clippy on M001-owned code.
-3. Memory-to-skill M004 is the sole ready corrective milestone. It owns explicit non-truncating advisory-lock open semantics plus exact-head hosted closure; it must not broaden into habit, proposal, publication, asset-refresh, or generic filesystem redesign.
+3. Memory-to-skill M004 is the active corrective milestone. It owns explicit non-truncating advisory-lock open semantics plus exact-head hosted closure; it must not broaden into habit, proposal, publication, asset-refresh, or generic filesystem redesign.
 4. Convergence must continue to compose existing `AgentRun`, run-group, run-control, `WorktreeService`, structured run results, and host goal verification. It must not extend the legacy file-backed team inbox/outbox path or create a second scheduler.
 5. Habit promotion must retain structural privacy bounds: no raw shell/tool output/arguments in automatic habit fingerprints, no automatic model drafting, and no skill publication without explicit user approval.
 6. No new ADR is required because scheduler/authorization/foreign-asset/storage ownership remain unchanged. If M004 discovers a need to change those boundaries, work stops for a separately registered follow-up rather than widening the milestone.

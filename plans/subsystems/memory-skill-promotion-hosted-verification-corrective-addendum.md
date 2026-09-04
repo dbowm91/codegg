@@ -1,6 +1,6 @@
 # Memory-to-Skill Promotion Hosted Verification Corrective Addendum
 
-Status: ready
+Status: active
 
 Repository baseline reviewed: `4ea4eaa000ecf65b0e70ed7278cf071a57cf2197`
 
@@ -133,7 +133,7 @@ Agent convergence is independent and remains closed. The unrelated supported-Lin
 
 ## 7. Milestone M004 — Habit lock-open policy and hosted closure
 
-Status: ready
+Status: active
 
 Plan:
 

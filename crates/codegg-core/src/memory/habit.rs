@@ -404,10 +404,7 @@ impl HabitStore {
         let namespace = workflow.project_namespace.clone();
         let path = self.path_for_namespace(&namespace)?;
         let lock_path = path.with_extension("json.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(lock_path)?;
+        let lock = open_lock_file(&lock_path)?;
         flock_lock(&lock)?;
         let result = (|| {
             let mut candidates = self.load_namespace_unlocked(&namespace)?;
@@ -548,10 +545,7 @@ impl HabitStore {
         let namespace = project_namespace(project_identity);
         let path = self.path_for_namespace(&namespace)?;
         let lock_path = path.with_extension("json.lock");
-        let lock = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(lock_path)?;
+        let lock = open_lock_file(&lock_path)?;
         flock_lock(&lock)?;
         let result = (|| {
             let mut candidates = self.load_namespace_unlocked(&namespace)?;
@@ -695,6 +689,14 @@ fn is_safe_namespace(namespace: &str) -> bool {
 
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
 }
 
 fn default_revision() -> u64 {
