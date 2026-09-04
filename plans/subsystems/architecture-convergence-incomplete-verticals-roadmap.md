@@ -143,7 +143,7 @@ Exit condition: a contributor can answer “where does context policy live?” w
 
 ### M002 — Process and tool execution ownership convergence
 
-Status: closing — implementation landed; formal closure evidence is being recorded.
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/002-status.md`
 
 Primary class: invariant / infrastructure.
 
