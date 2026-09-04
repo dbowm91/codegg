@@ -174,6 +174,8 @@ Exit condition: the root loop no longer owns substantial context policy, subproc
 
 ### M005 — Durable run rerun/replay completion
 
+Status: closed — `plans/closure/architecture-convergence-incomplete-verticals/005-status.md`
+
 Primary class: capability.
 
 Complete the existing run-rerun vertical slice from TUI/request through daemon/service/run-store execution. A rerun creates a fresh run, reacquires any required credentials, reconstructs safe execution inputs from durable non-secret state, records parent/child linkage, and emits existing projection events. Remove the current placeholder behavior.
