@@ -1,6 +1,7 @@
 pub mod core;
 pub mod dto;
 pub mod frames;
+pub mod lsp;
 pub mod plugin;
 pub mod projection;
 pub mod provider;

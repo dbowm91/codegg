@@ -187,6 +187,12 @@ pub enum TuiCommand {
         report: Option<crate::protocol::core::AssetRefreshReportDto>,
         error: Option<String>,
     },
+    /// Completion of a daemon-owned controlled LSP preview application.
+    LspPreviewApplyFinished {
+        session_id: String,
+        result: Option<crate::protocol::lsp::LspPreviewApplyResultDto>,
+        error: Option<String>,
+    },
     ReloadSessions,
     OpenTreeDialog,
     /// Completion of an async project catalog refresh
@@ -6942,158 +6948,85 @@ impl App {
                         .toasts
                         .info("Usage: /lsp-preview-apply <id>");
                 } else if let Some(ref lsp_tool) = self.lsp_tool {
-                    // Phase 9: Refresh stale-base status before validation.
                     let (is_stale, refresh_detail) = lsp_tool
                         .refresh_preview_staleness(id)
                         .unwrap_or((true, "preview not found".to_string()));
-
                     if is_stale {
-                        let mut msg = format!(
+                        self.messages_state.toasts.info(&format!(
                             "Preview is STALE — base content has changed since creation.\n\
                              Refresh/recompute the preview before applying.\n\n\
                              Detail: {refresh_detail}"
-                        );
-                        // Pull a candidate to surface how many patches are blocked.
-                        let patch_count = {
-                            let registry = lsp_tool.preview_registry();
-                            egglsp::tui_summary::export_preview_apply_candidate(&registry, id)
-                                .map(|c| c.patches.len())
-                                .unwrap_or(0)
-                        };
-                        if patch_count > 0 {
-                            msg.push_str(&format!(
-                                "\n\n{patch_count} patch(es) available but stale. \
-                                 Re-run the original LSP preview command to generate a fresh preview."
-                            ));
-                        }
-                        self.messages_state.toasts.info(&msg);
+                        ));
                     } else {
-                        // Phase 9 / 12 hardening: route through the testable
-                        // validation boundary. validate_preview_apply performs
-                        // all gating checks (not-found, stale, no-patches,
-                        // already-applied, hash mismatch, patch failure) and
-                        // computes the new file content in memory.
-                        let validation = {
-                            let registry = lsp_tool.preview_registry();
-                            egglsp::tui_summary::validate_preview_apply(
-                                &registry,
-                                id,
-                                &crate::tool::patch_util::apply_unified_diff,
-                            )
+                        let Some(session_id) = self.active_session_id().map(str::to_string) else {
+                            self.messages_state
+                                .toasts
+                                .info("LSP preview apply requires an active session");
+                            return;
                         };
-
-                        match validation {
-                            Ok(plan) => {
-                                // Phase 12 hardening: use the tested
-                                // write-side helper that rechecks each
-                                // file's SHA-256 before writing. The
-                                // caller MUST NOT call mark_applied
-                                // unless all_succeeded is true.
-                                match egglsp::tui_summary::write_preview_apply_plan_atomically_enough(&plan) {
-                                    Ok(report) => {
-                                        if report.all_succeeded {
-                                            lsp_tool.mark_preview_applied(&plan.preview_id);
-                                            self.messages_state.toasts.info(&format!(
-                                                "Applied {} patch(es) for preview {} successfully.\nFiles: {}",
-                                                report.written.len(),
-                                                plan.preview_id,
-                                                report.written.join(", ")
-                                            ));
-                                        } else if report.written.is_empty() {
-                                            self.messages_state.toasts.info(&format!(
-                                                "Failed to apply all {} patch(es) for preview {}.",
-                                                plan.files.len(),
-                                                plan.preview_id,
-                                            ));
-                                        } else {
-                                            self.messages_state.toasts.info(&format!(
-                                                "Partial apply for preview {}: {} succeeded, {} failed.\nSucceeded: {}",
-                                                plan.preview_id,
-                                                report.written.len(),
-                                                plan.files.len() - report.written.len(),
-                                                report.written.join(", "),
-                                            ));
-                                        }
-                                    }
-                                    Err(egglsp::tui_summary::PreviewApplyWriteError::StaleDuringWrite {
-                                        path,
-                                        expected_hash,
-                                        actual_hash,
-                                    }) => {
-                                        self.messages_state.toasts.info(&format!(
-                                            "Write blocked: {path} changed since validation.\n\
-                                             Expected: {expected_hash}\nActual: {actual_hash}\n\n\
-                                             Re-run the LSP preview command to generate a fresh preview."
-                                        ));
-                                    }
-                                    Err(egglsp::tui_summary::PreviewApplyWriteError::WriteFailed {
-                                        path,
-                                        error,
-                                        completed,
-                                    }) => {
-                                        self.messages_state.toasts.info(&format!(
-                                            "Write failed for {path}: {error}\n\
-                                             {} file(s) completed before failure.",
-                                            completed.len(),
-                                        ));
-                                    }
-                                }
-                            }
-                            Err(err) => {
-                                // Map error variants to user-facing toast text.
-                                let msg = match &err {
-                                    egglsp::tui_summary::PreviewApplyError::NotFound {
-                                        preview_id,
-                                    } => {
-                                        format!("Preview not found: {preview_id}")
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::Stale {
-                                        preview_id,
-                                        detail,
-                                        ..
-                                    } => {
-                                        format!(
-                                        "Preview {preview_id} is STALE — base content changed.\n\n{detail}"
-                                    )
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::NoPatches {
-                                        preview_id,
-                                    } => {
-                                        format!(
-                                        "Preview {preview_id} has no patches — re-run the original LSP preview command."
-                                    )
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::AlreadyApplied {
-                                        preview_id,
-                                    } => {
-                                        format!(
-                                        "Preview {preview_id} has already been applied. Re-apply requires an explicit confirmation flow."
-                                    )
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::FileReadError {
-                                        path,
-                                        error,
-                                    } => {
-                                        format!("Failed to read {path}: {error}")
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::HashMismatch {
-                                        path,
-                                        ..
-                                    } => {
-                                        format!(
-                                        "{path} changed since preview was created — refresh/recompute before applying."
-                                    )
-                                    }
-                                    egglsp::tui_summary::PreviewApplyError::PatchError {
-                                        path,
-                                        error,
-                                    } => {
-                                        format!("Patch failed for {path}: {error}")
-                                    }
+                        let Some(workspace_id) = self.active_workspace_id().map(str::to_string)
+                        else {
+                            self.messages_state
+                                .toasts
+                                .info("LSP preview apply requires an active workspace");
+                            return;
+                        };
+                        let Some(request) = lsp_tool.preview_apply_request(
+                            id,
+                            workspace_id,
+                            session_id.clone(),
+                            None,
+                        ) else {
+                            self.messages_state.toasts.info(
+                                "Preview not found or already applied; generate a fresh preview",
+                            );
+                            return;
+                        };
+                        let Some(core_client) = self.core_client.clone() else {
+                            self.messages_state
+                                .toasts
+                                .info("LSP preview apply requires the daemon core client");
+                            return;
+                        };
+                        self.messages_state
+                            .toasts
+                            .info("Applying LSP preview through the checked edit service…");
+                        crate::tui::async_cmd::spawn_registered_tui_task(
+                            self.tui_cmd_tx.clone(),
+                            &mut self.task_registry,
+                            crate::tui::task_lifecycle::TuiTaskKind::Command,
+                            "lsp_preview_apply",
+                            async move {
+                                let response = core_client
+                                    .request(crate::core::new_request(
+                                        uuid::Uuid::new_v4().to_string(),
+                                        crate::protocol::core::CoreRequest::LspPreviewApply {
+                                            request,
+                                        },
+                                    ))
+                                    .await;
+                                let (result, error) = match response {
+                                    Ok(crate::protocol::core::CoreResponse::LspPreviewApplyResult {
+                                        result,
+                                    }) => (Some(result), None),
+                                    Ok(crate::protocol::core::CoreResponse::Error {
+                                        message, ..
+                                    }) => (None, Some(message)),
+                                    Ok(other) => (
+                                        None,
+                                        Some(format!(
+                                            "unexpected core response: {other:?}"
+                                        )),
+                                    ),
+                                    Err(error) => (None, Some(error.to_string())),
                                 };
-                                self.messages_state.toasts.info(&msg);
-                            }
-                        }
+                                Some(crate::tui::app::TuiCommand::LspPreviewApplyFinished {
+                                    session_id,
+                                    result,
+                                    error,
+                                })
+                            },
+                        );
                     }
                 } else {
                     self.messages_state.toasts.info("LSP not available");

@@ -130,8 +130,8 @@ impl SourceActionPreviewKind {
 ///
 /// Rules:
 /// - Raw `Command` variants are rejected.
-/// - `CodeAction` with `command: Some(_)` but `edit: None` is command-only
-///   (command execution is disabled).
+/// - Any `CodeAction` with `command: Some(_)` is rejected, including mixed
+///   edit-and-command actions (command execution is disabled).
 /// - `CodeAction` values without `edit` or `command` are rejected.
 /// - Actions whose kind is not hierarchically compatible with the
 ///   requested kind are rejected.
@@ -174,14 +174,14 @@ pub fn select_source_action_edit(
                     );
                     continue;
                 }
-                if let Some(_edit) = &ca.edit {
-                    edit_bearing.push((ca, title));
-                } else if ca.command.is_some() {
+                if ca.command.is_some() {
                     trace!(
-                        "source action: rejecting action '{}' (command-only, no edit)",
+                        "source action: rejecting action '{}' (opaque command payload)",
                         ca.title
                     );
                     matching_command_only += 1;
+                } else if let Some(_edit) = &ca.edit {
+                    edit_bearing.push((ca, title));
                 } else {
                     trace!(
                         "source action: rejecting action '{}' (no edit, no command)",
@@ -339,9 +339,8 @@ impl LspOperations {
     /// `code_action_summaries`.
     ///
     /// Returns [`LspError::CommandOnlyCodeAction`] when the
-    /// resolved action is a raw `Command` (the surface never
-    /// executes commands) or when the resolved `CodeAction` has
-    /// `command: Some(_)` but no `edit` payload. The on-disk
+    /// resolved action is a raw `Command` or has an opaque command
+    /// payload (the surface never executes commands). The on-disk
     /// file is never mutated.
     #[allow(clippy::too_many_arguments)]
     pub async fn preview_code_action(
@@ -387,10 +386,14 @@ impl LspOperations {
                 return Err(LspError::CommandOnlyCodeAction(cmd.title.clone()));
             }
             CodeActionOrCommand::CodeAction(ca) => {
+                if ca.command.is_some() {
+                    // Mixed and command-only CodeActions are both
+                    // rejected: the command may have side effects
+                    // that cannot be represented by a checked edit.
+                    return Err(LspError::CommandOnlyCodeAction(ca.title.clone()));
+                }
                 if ca.edit.is_none() {
-                    // Command-only (or empty) CodeAction. The
-                    // surface never executes commands; reject
-                    // with the same error type.
+                    // Empty CodeAction.
                     return Err(LspError::CommandOnlyCodeAction(ca.title.clone()));
                 }
                 (
@@ -570,6 +573,28 @@ mod tests {
             s.disabled_reason.as_deref(),
             Some("cursor not on a function")
         );
+    }
+
+    #[test]
+    fn mixed_edit_and_command_source_action_is_rejected() {
+        let mut action = code_action_with_edit(
+            "Organize imports",
+            Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
+            false,
+            None,
+        );
+        if let CodeActionOrCommand::CodeAction(code_action) = &mut action {
+            code_action.command = Some(Command {
+                title: "also run a command".to_string(),
+                command: "server.side_effect".to_string(),
+                arguments: None,
+            });
+        }
+
+        let error =
+            select_source_action_edit(SourceActionPreviewKind::OrganizeImports, vec![action])
+                .expect_err("opaque mixed command must not reach the edit path");
+        assert!(matches!(error, LspError::CommandOnlySourceAction(_)));
     }
 
     #[test]

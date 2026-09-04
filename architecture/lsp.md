@@ -4139,6 +4139,40 @@ Do not add parallel context packet types. All LSP evidence flows through `LspCon
 
 ## Troubleshooting
 
+## Controlled mutation application
+
+The LSP surface is preview-first. `renamePreview`, `formatPreview`,
+`sourceActionPreview`, and `codeActionPreview` produce bounded, read-only
+workspace-edit previews. A preview is applied only after an explicit user
+invocation of `/lsp-preview-apply`; the model-facing `LspTool` remains
+read-only and exposes no internal apply helper as a model operation.
+
+The controlled apply boundary currently supports this exact subset:
+
+| LSP shape | Disposition |
+|---|---|
+| `WorkspaceEdit.changes` text edits | Supported when the preview normalizes them into bounded UTF-8 text patches. |
+| `WorkspaceEdit.documentChanges` `TextDocumentEdit` text edits | Supported through the same normalizer; current document/file fingerprints are revalidated before writing. |
+| Create, rename, or delete resource operations | Explicitly rejected/deferred; they do not bypass checked edit history. |
+| Change annotations and server-specific edit metadata | Not an authority source. The supported text edits are applied, while unsupported shapes are rejected by preview normalization. |
+| Raw `Command` code actions | Denied. `workspace/executeCommand` is not exposed. |
+| `CodeAction` with an opaque `command`, including edit-plus-command actions | Denied unless a future implementation explicitly maps the command to a typed CodeGG operation. |
+
+The apply request carries the preview ID, monotonic preview revision, digest,
+provenance, workspace/session identity, affected paths, patches, and original
+content hashes. The daemon canonicalizes every path against the active
+workspace, acquires the workspace edit lock, rechecks all hashes, applies the
+whole bounded batch with rollback on failure, and persists one checked edit
+checkpoint before publishing file-change projection events. The existing
+checkpoint undo/reapply semantics therefore remain the authority for recovery.
+
+After commit, the LSP service receives `didChange` updates for every written
+file. A synchronization failure is reported as a bounded warning in the
+result; it never causes an untracked or second file mutation. A stale hash,
+revision/digest mismatch, path escape, unsupported operation, lost workspace
+identity, or cancellation before commit fails closed without a partial
+visible apply.
+
 ### Binary not found
 The LSP server binary is not on `PATH` or not installed. Install the server using its recommended method (e.g., `rustup component add rust-analyzer`, `npm install -g pyright`, `go install golang.org/x/tools/gopls@latest`). Check `server.rs` for the expected binary name.
 

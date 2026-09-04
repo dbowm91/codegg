@@ -5863,6 +5863,68 @@ impl CoreDaemon {
                     }),
                 }
             }
+            CoreRequest::LspPreviewApply { request } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "LSP preview apply requires a durable database pool".into(),
+                    });
+                };
+                if request.workspace_id.is_empty() || request.session_id.is_empty() {
+                    return Ok(CoreResponse::Error {
+                        code: "invalid_lsp_preview_apply".into(),
+                        message: "workspace_id and session_id are required".into(),
+                    });
+                }
+                let workspace_id = codegg_core::workspace::WorkspaceId::new_unchecked(
+                    request.workspace_id.clone(),
+                );
+                let Some(record) = self.workspaces.resolve(&workspace_id).await else {
+                    return Ok(CoreResponse::Error {
+                        code: "workspace_not_found".into(),
+                        message: format!("workspace {} not found", request.workspace_id),
+                    });
+                };
+                let session_workspace = sqlx::query_scalar::<_, Option<String>>(
+                    "SELECT workspace_id FROM session WHERE id = ?",
+                )
+                .bind(&request.session_id)
+                .fetch_optional(&pool)
+                .await
+                .map_err(|error| AppError::Other(anyhow::anyhow!(error)))?;
+                if session_workspace.as_ref().and_then(|id| id.as_deref())
+                    != Some(request.workspace_id.as_str())
+                {
+                    return Ok(CoreResponse::Error {
+                        code: "session_workspace_mismatch".into(),
+                        message: "session is not bound to the requested workspace".into(),
+                    });
+                }
+                let lease = match self.workspace_services.acquire(&workspace_id).await {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "workspace_not_active".into(),
+                            message: error.to_string(),
+                        })
+                    }
+                };
+                match crate::lsp::mutation::apply_preview(
+                    request,
+                    record.canonical_root.clone(),
+                    lease.locks(),
+                    pool,
+                    self.deps.lsp_service.clone(),
+                )
+                .await
+                {
+                    Ok(result) => Ok(CoreResponse::LspPreviewApplyResult { result }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: "lsp_preview_apply_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
             CoreRequest::RunList {
                 workspace_id,
                 query,

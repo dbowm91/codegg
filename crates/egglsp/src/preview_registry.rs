@@ -59,6 +59,10 @@ pub struct PreviewArtifactEntry {
     pub created_at: u64,
     /// Whether this preview has been applied via the mutating apply path.
     pub applied: bool,
+    /// Monotonic session-local revision tying apply to this exact preview.
+    pub revision: u64,
+    /// Digest of the bounded artifact, paths, hashes, and provenance.
+    pub digest: String,
 }
 
 /// Per-file stale-base evidence for a preview artifact.
@@ -113,6 +117,25 @@ impl PreviewArtifactRegistry {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
         let id = format!("preview-{seq}-{now}");
+        let (kind, title, patches) = match &artifact {
+            LspPreviewArtifact::Rename {
+                description,
+                patches,
+                ..
+            } => ("rename", description.as_str(), patches),
+            LspPreviewArtifact::Formatting {
+                description,
+                patches,
+                ..
+            } => ("formatting", description.as_str(), patches),
+            LspPreviewArtifact::CodeAction {
+                description,
+                patches,
+                ..
+            } => ("code_action", description.as_str(), patches),
+        };
+        let digest =
+            preview_digest_for_candidate(kind, title, &provenance, &edits, &hashes, patches);
 
         self.entries.push(PreviewArtifactEntry {
             id: id.clone(),
@@ -124,6 +147,8 @@ impl PreviewArtifactRegistry {
             capability_provenance: provenance,
             created_at: now,
             applied: false,
+            revision: seq,
+            digest,
         });
 
         // Evict oldest entries when cap is exceeded.
@@ -235,6 +260,16 @@ impl PreviewArtifactRegistry {
         self.entries.iter().filter(|e| e.applied).count()
     }
 
+    /// Return the immutable revision assigned when this preview was registered.
+    pub fn preview_revision(entry: &PreviewArtifactEntry) -> u64 {
+        entry.revision
+    }
+
+    /// Return the digest tying an apply request to the reviewed preview.
+    pub fn preview_digest(entry: &PreviewArtifactEntry) -> &str {
+        &entry.digest
+    }
+
     /// Preview kind label derived from the artifact.
     pub fn preview_kind(entry: &PreviewArtifactEntry) -> &'static str {
         match &entry.artifact {
@@ -280,6 +315,27 @@ impl PreviewArtifactRegistry {
         }
         count
     }
+}
+
+pub fn preview_digest_for_candidate(
+    kind: &str,
+    title: &str,
+    provenance: &str,
+    edits: &[String],
+    hashes: &HashMap<String, String>,
+    patches: &[crate::context::PreviewFilePatch],
+) -> String {
+    let mut sorted_hashes: Vec<_> = hashes.iter().collect();
+    sorted_hashes.sort_by_key(|(path, _)| *path);
+    let input = serde_json::json!({
+        "kind": kind,
+        "title": title,
+        "file_edits": edits,
+        "original_hashes": sorted_hashes,
+        "provenance": provenance,
+        "patches": patches,
+    });
+    crate::edit::sha256_hex(&serde_json::to_vec(&input).unwrap_or_default())
 }
 
 impl Default for PreviewArtifactRegistry {

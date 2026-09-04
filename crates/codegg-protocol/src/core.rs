@@ -521,6 +521,9 @@ pub enum CoreResponse {
     EditCheckpointReapplyResult {
         result: crate::dto::EditRestoreResultDto,
     },
+    LspPreviewApplyResult {
+        result: crate::lsp::LspPreviewApplyResultDto,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1143,6 +1146,11 @@ pub enum CoreRequest {
     EditCheckpointReapplyLatest {
         workspace_id: String,
         session_id: String,
+    },
+    /// Apply a reviewed LSP preview through the daemon-owned checked edit
+    /// history and workspace synchronization boundary.
+    LspPreviewApply {
+        request: crate::lsp::LspPreviewApplyRequestDto,
     },
 }
 

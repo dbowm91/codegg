@@ -762,6 +762,43 @@ impl LspTool {
         Some((stale, egglsp::tui_summary::render_preview_detail(entry)))
     }
 
+    /// Export a bounded, digest-bound candidate for the daemon-owned apply
+    /// path.  The LSP tool itself remains read-only; this method only copies
+    /// the reviewed preview into a transport DTO.
+    pub fn preview_apply_request(
+        &self,
+        id: &str,
+        workspace_id: String,
+        session_id: String,
+        turn_id: Option<String>,
+    ) -> Option<crate::protocol::lsp::LspPreviewApplyRequestDto> {
+        let registry = self.preview_registry();
+        let candidate = egglsp::tui_summary::export_preview_apply_candidate(&registry, id)?;
+        if candidate.applied {
+            return None;
+        }
+        Some(crate::protocol::lsp::LspPreviewApplyRequestDto {
+            preview_id: candidate.preview_id,
+            preview_revision: candidate.preview_revision,
+            preview_digest: candidate.preview_digest,
+            kind: candidate.kind,
+            title: candidate.title,
+            provenance: candidate.provenance,
+            workspace_id,
+            session_id,
+            turn_id,
+            patches: candidate
+                .patches
+                .into_iter()
+                .map(|patch| crate::protocol::lsp::LspPreviewPatchDto {
+                    path: patch.path,
+                    patch: patch.patch,
+                    original_hash: patch.original_hash,
+                })
+                .collect(),
+        })
+    }
+
     /// Access the underlying LSP service for context assembly and status queries.
     pub fn service(&self) -> &Arc<crate::lsp::service::LspService> {
         &self.service

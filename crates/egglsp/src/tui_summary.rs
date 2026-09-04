@@ -750,6 +750,8 @@ pub fn render_preview_detail(entry: &crate::preview_registry::PreviewArtifactEnt
     lines.push(format!("Preview: {}", entry.id));
     lines.push(format!("Kind: {kind}"));
     lines.push(format!("Title: {title}"));
+    lines.push(format!("Revision: {}", entry.revision));
+    lines.push(format!("Digest: {}", entry.digest));
     lines.push(format!("Provenance: {}", entry.capability_provenance));
     lines.push(format!("Created: {}", format_age(entry.created_at)));
     lines.push(format!("Edit count: {edit_count}"));
@@ -790,10 +792,7 @@ pub fn render_preview_detail(entry: &crate::preview_registry::PreviewArtifactEnt
         lines.push("Applied: no — this preview has not been applied.".to_string());
     }
 
-    lines.push(
-        "To apply: use the separate mutating apply path (e.g. apply_patch) with user approval."
-            .to_string(),
-    );
+    lines.push("To apply: use /lsp-preview-apply with explicit user approval.".to_string());
     lines.push("Export does not mark as applied — it is a read-only handoff.".to_string());
 
     lines.join("\n")
@@ -828,6 +827,10 @@ pub fn render_preview_list(registry: &crate::preview_registry::PreviewArtifactRe
 pub struct PreviewApplyCandidate {
     /// Preview artifact ID.
     pub preview_id: String,
+    /// Monotonic revision assigned when the preview was registered.
+    pub preview_revision: u64,
+    /// Digest tying the candidate to the reviewed preview contents.
+    pub preview_digest: String,
     /// Operation kind (rename, formatting, code_action).
     pub kind: String,
     /// Human-readable title.
@@ -869,6 +872,9 @@ pub fn export_preview_apply_candidate(
 
     Some(PreviewApplyCandidate {
         preview_id: entry.id.clone(),
+        preview_revision: crate::preview_registry::PreviewArtifactRegistry::preview_revision(entry),
+        preview_digest: crate::preview_registry::PreviewArtifactRegistry::preview_digest(entry)
+            .to_string(),
         kind: crate::preview_registry::PreviewArtifactRegistry::preview_kind(entry).to_string(),
         title: crate::preview_registry::PreviewArtifactRegistry::preview_title(entry).to_string(),
         affected_files: entry.file_edits.clone(),

@@ -78,6 +78,44 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::AssetRefreshFinished { report, error } => {
             apply_asset_refresh_finished(app, report, error);
         }
+        TuiCommand::LspPreviewApplyFinished {
+            session_id,
+            result,
+            error,
+        } => {
+            if app.active_session_id() != Some(session_id.as_str()) {
+                return;
+            }
+            match (result, error) {
+                (Some(result), None) => {
+                    if let Some(tool) = app.lsp_tool.as_ref() {
+                        tool.mark_preview_applied(&result.preview_id);
+                    }
+                    let mut message = format!(
+                        "Applied {} patch(es) for preview {}.\nCheckpoint: {}\nFiles: {}",
+                        result.written_files.len(),
+                        result.preview_id,
+                        result.checkpoint_id,
+                        result.written_files.join(", ")
+                    );
+                    if !result.synchronization_errors.is_empty() {
+                        message.push_str(&format!(
+                            "\nLSP synchronization warnings: {}",
+                            result.synchronization_errors.join("; ")
+                        ));
+                    }
+                    app.messages_state.toasts.info(&message);
+                }
+                (_, Some(error)) => app
+                    .messages_state
+                    .toasts
+                    .info(&format!("LSP preview apply blocked: {error}")),
+                _ => app
+                    .messages_state
+                    .toasts
+                    .info("LSP preview apply did not return a result"),
+            }
+        }
         TuiCommand::DeleteSession { session_id } => {
             start_delete_session(app, session_id);
         }
