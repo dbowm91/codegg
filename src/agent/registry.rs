@@ -1026,7 +1026,7 @@ mod tests {
     fn test_registry_loads_builtins() {
         let config = Config::default();
         let registry = AgentRegistry::load(&config).unwrap();
-        assert_eq!(registry.list().count(), 9);
+        assert_eq!(registry.list().count(), 10);
     }
 
     #[test]
@@ -1072,7 +1072,7 @@ mod tests {
         let config = Config::default();
         let registry = AgentRegistry::load(&config).unwrap();
         let agents = registry.into_agents();
-        assert_eq!(agents.len(), 9);
+        assert_eq!(agents.len(), 10);
     }
 
     #[test]

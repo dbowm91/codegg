@@ -1401,7 +1401,7 @@ mod tests {
     #[test]
     fn test_builtin_agents_count() {
         let agents = builtin_agents();
-        assert_eq!(agents.len(), 9);
+        assert_eq!(agents.len(), 10);
     }
 
     #[test]
@@ -1433,7 +1433,7 @@ mod tests {
     fn test_resolve_agents_empty_config() {
         let config = Config::default();
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 9);
+        assert_eq!(agents.len(), 10);
     }
 
     #[test]
@@ -1473,7 +1473,7 @@ mod tests {
             ..Default::default()
         };
         let agents = resolve_agents(&config).unwrap();
-        assert_eq!(agents.len(), 10);
+        assert_eq!(agents.len(), 11);
         let reviewer = agents.iter().find(|a| a.name == "Reviewer").unwrap();
         assert_eq!(reviewer.mode, AgentMode::Primary);
     }
@@ -2044,8 +2044,8 @@ The full body prompt.
     }
 
     #[test]
-    fn test_builtin_count_is_nine() {
-        assert_eq!(builtin_agents().len(), 9);
+    fn test_builtin_count_is_ten() {
+        assert_eq!(builtin_agents().len(), 10);
     }
 
     #[test]
@@ -2200,7 +2200,7 @@ The full body prompt.
     fn test_builtin_hidden_agents_have_no_prompt_except_compaction() {
         let agents = builtin_agents();
         for agent in &agents {
-            if agent.hidden && agent.name != "compaction" {
+            if agent.hidden && !matches!(agent.name.as_str(), "compaction" | "verifier") {
                 assert!(
                     agent.system_prompt.is_none(),
                     "hidden agent '{}' should not have a prompt",
@@ -2368,7 +2368,7 @@ The full body prompt.
         let agents = builtin_agents();
         assert_eq!(
             agents.len(),
-            9,
+            10,
             "built-in agent count changed — update TOML definitions or this test"
         );
         let expected_names = [
@@ -2381,6 +2381,7 @@ The full body prompt.
             "security-review",
             "summary",
             "title",
+            "verifier",
         ];
         let actual_names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(actual_names, expected_names, "built-in agent names changed");
