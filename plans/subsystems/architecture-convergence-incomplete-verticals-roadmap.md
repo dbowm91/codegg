@@ -1,6 +1,6 @@
 # Architecture Convergence and Incomplete Verticals Roadmap
 
-Status: active
+Status: closed
 
 Repository baseline reviewed: `3c4890035513cd4d74430b6f64523c8be676024e`
 
@@ -122,7 +122,7 @@ session-projection closure -> M008 headless projection consumer + legacy transpo
 ```
 
 M001-M004 are conditionally closed, M005 is closed, M006 is conditionally
-closed, M007 is closed, and M008 is dependency-ready; M002
+closed, M007 is closed, and M008 is closed; M002
 and M003 may execute in
 parallel if separate implementation agents avoid overlapping root wiring edits,
 and M008 is independent. M004 was hard-dependent on M001-M003 because
@@ -204,6 +204,8 @@ Extend the existing preview-oriented LSP surface so supported rename/code-action
 Exit condition: at least rename plus one edit-only code-action path can run preview -> authorize -> apply -> edit-history/projection end-to-end without bypassing normal mutation controls.
 
 ### M008 — Headless projection reference consumer and legacy transport disposition
+
+Status: closed — `plans/closure/architecture-convergence-incomplete-verticals/008-status.md`
 
 Primary class: capability / polish.
 

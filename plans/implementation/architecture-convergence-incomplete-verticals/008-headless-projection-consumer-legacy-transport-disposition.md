@@ -1,6 +1,6 @@
 # Architecture Convergence M008 — Headless Projection Consumer and Legacy Transport Disposition
 
-Status: active
+Status: implemented
 
 Repository baseline: `3c4890035513cd4d74430b6f64523c8be676024e`
 
