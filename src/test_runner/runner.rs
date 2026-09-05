@@ -106,6 +106,66 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
     }
 }
 
+fn elapsed_ms_saturating(start: &Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn usize_to_u64_saturating(v: usize) -> u64 {
+    u64::try_from(v).unwrap_or(u64::MAX)
+}
+
+fn redact_text(text: &str) -> String {
+    crate::git_network_policy::redact_url_credentials_in_text(text)
+}
+
+fn redact_bytes(data: Vec<u8>) -> Vec<u8> {
+    let text = String::from_utf8_lossy(&data);
+    redact_text(&text).into_bytes()
+}
+
+/// Read at most `cap` bytes from `path` without loading a runaway log
+/// fully into memory. Oversized logs return a head/tail window with a
+/// truncation marker so the persisted size stays bounded by `cap`.
+fn read_capped_bytes(path: &Path, cap: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let cap_u64 = u64::try_from(cap).unwrap_or(u64::MAX);
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    if cap == 0 {
+        return Ok(Vec::new());
+    }
+    if len <= cap_u64 {
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        // Defensive: the file may have grown between metadata and read.
+        if buf.len() > cap {
+            buf.truncate(cap);
+        }
+        return Ok(buf);
+    }
+    let marker = format!("\n... [truncated {len} bytes total, showing head/tail] ...\n");
+    let marker_bytes = marker.as_bytes();
+    if cap <= marker_bytes.len() + 16 {
+        let mut buf = vec![0u8; cap];
+        file.read_exact(&mut buf)?;
+        return Ok(buf);
+    }
+    let budget = cap - marker_bytes.len();
+    let head_len = budget / 2;
+    let tail_len = budget - head_len;
+    let mut out = Vec::with_capacity(cap);
+    let mut head = vec![0u8; head_len];
+    file.read_exact(&mut head)?;
+    out.extend_from_slice(&head);
+    out.extend_from_slice(marker_bytes);
+    let tail_start = len.saturating_sub(u64::try_from(tail_len).unwrap_or(u64::MAX));
+    file.seek(SeekFrom::Start(tail_start))?;
+    let mut tail = vec![0u8; tail_len];
+    file.read_exact(&mut tail)?;
+    out.extend_from_slice(&tail);
+    Ok(out)
+}
+
 fn create_log_dir(workdir: &Path) -> Result<PathBuf, TestRunError> {
     let now = Utc::now().format("%Y%m%dT%H%M%SZ");
     let short_uuid = &Uuid::new_v4().to_string()[..8];
@@ -220,7 +280,7 @@ pub async fn run_resolved_test(
     )
     .await;
 
-    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let elapsed_ms = elapsed_ms_saturating(&start);
     let parse_state = shared.parse_state.lock().await.clone();
 
     let report = build_report(
@@ -257,9 +317,16 @@ pub async fn run_resolved_test(
     // successful, untraceable child.
     let run_id = if let (Some(store), Some(handle)) = (run_store, run_handle) {
         Some(
-            persist_to_run_store(store, handle, request, &report, &audit_resolved)
-                .await
-                .map_err(|e| TestRunError::RunStore(e.to_string()))?,
+            persist_to_run_store(
+                store,
+                handle,
+                request,
+                &report,
+                &audit_resolved,
+                max_report_bytes,
+            )
+            .await
+            .map_err(|e| TestRunError::RunStore(e.to_string()))?,
         )
     } else {
         None
@@ -341,18 +408,23 @@ fn spawn_reader_task(
         loop {
             match lines.next_line().await {
                 Ok(Some(line)) => {
-                    let _ = writeln_raw_line(&mut log_file, &line);
-
+                    // Redact URL credentials before persisting to the log
+                    // file, before parser ingestion (which feeds the
+                    // model-safe TestReport), and before the stall/timeout
+                    // excerpt. Raw output never reaches durable surfaces.
                     let lossy_line = String::from_utf8_lossy(line.as_bytes()).to_string();
+                    let redacted = redact_text(&lossy_line);
+                    let _ = writeln_raw_line(&mut log_file, &redacted);
+
                     let mut state = shared.parse_state.lock().await;
                     if is_stdout {
-                        ingest_stdout_line(&mut state, &lossy_line);
+                        ingest_stdout_line(&mut state, &redacted);
                     } else {
-                        ingest_stderr_line(&mut state, &lossy_line);
+                        ingest_stderr_line(&mut state, &redacted);
                     }
                     drop(state);
 
-                    shared.record_output(&lossy_line).await;
+                    shared.record_output(&redacted).await;
                 }
                 Ok(None) => break,
                 Err(_) => break,
@@ -428,7 +500,7 @@ async fn supervisor_loop(
                 stderr_done = true;
             }
             _ = tokio::time::sleep_until(wall_clock_deadline.into()) => {
-                let elapsed = start.elapsed().as_millis() as u64;
+                let elapsed = elapsed_ms_saturating(&start);
                 let excerpt = shared.last_output_excerpt.lock().await.clone();
                 kill_child(child).await;
                 let _ = stdout_task.await;
@@ -456,7 +528,7 @@ async fn supervisor_loop(
                 let last_at = *shared.last_output_at.lock().await;
                 let since_last = last_at.elapsed();
                 if since_last > Duration::from_secs(stall_deadline_secs) {
-                    let elapsed = start.elapsed().as_millis() as u64;
+                    let elapsed = elapsed_ms_saturating(&start);
                     let excerpt = shared.last_output_excerpt.lock().await.clone();
                     kill_child(child).await;
                     let _ = stdout_task.await;
@@ -471,9 +543,9 @@ async fn supervisor_loop(
                 if let Some(sink) = ctx.sink {
                     if last_progress.elapsed() >= progress_throttle {
                         let state = shared.parse_state.lock().await;
-                        let tests_seen = state.tests_seen as u64;
-                        let tests_failed = state.tests_failed as u64;
-                        let tests_passed = state.tests_passed as u64;
+                        let tests_seen = usize_to_u64_saturating(state.tests_seen);
+                        let tests_failed = usize_to_u64_saturating(state.tests_failed);
+                        let tests_passed = usize_to_u64_saturating(state.tests_passed);
                         drop(state);
 
                         let changed = tests_seen != last_tests_seen
@@ -565,7 +637,7 @@ fn build_report(
             let timeout = TestTimeout {
                 kind: TimeoutKind::WallClock,
                 elapsed_ms: *elapsed_ms,
-                last_output: last_output.clone(),
+                last_output: last_output.clone().map(|s| redact_text(&s)),
             };
             (TestStatus::TimedOut, None, Some(timeout))
         }
@@ -576,7 +648,7 @@ fn build_report(
             let timeout = TestTimeout {
                 kind: TimeoutKind::NoOutput,
                 elapsed_ms: *elapsed_ms,
-                last_output: last_output.clone(),
+                last_output: last_output.clone().map(|s| redact_text(&s)),
             };
             (TestStatus::TimedOut, None, Some(timeout))
         }
@@ -585,7 +657,7 @@ fn build_report(
             let timeout = TestTimeout {
                 kind: TimeoutKind::WallClock,
                 elapsed_ms,
-                last_output: Some(format!("child process error: {msg}")),
+                last_output: Some(redact_text(&format!("child process error: {msg}"))),
             };
             (TestStatus::Error, None, Some(timeout))
         }
@@ -596,6 +668,10 @@ fn build_report(
         .iter()
         .chain(parse_state.compile_errors.iter())
         .cloned()
+        .map(|mut f| {
+            f.message = redact_text(&f.message);
+            f
+        })
         .collect();
 
     if failures.is_empty() && exit_code != Some(0) && status != TestStatus::Passed {
@@ -608,12 +684,12 @@ fn build_report(
         });
     }
 
-    let summary = build_summary(parse_state, exit_code);
+    let summary = redact_text(&build_summary(parse_state, exit_code));
 
     let output_truncated = {
         let total_bytes = std::fs::metadata(stdout_log).map(|m| m.len()).unwrap_or(0)
             + std::fs::metadata(stderr_log).map(|m| m.len()).unwrap_or(0);
-        total_bytes > max_report_bytes as u64
+        total_bytes > u64::try_from(max_report_bytes).unwrap_or(u64::MAX)
     };
 
     TestReport {
@@ -720,6 +796,7 @@ async fn persist_to_run_store(
     request: &TestRunRequest,
     report: &TestReport,
     resolved: &ResolvedTestCommand,
+    max_report_bytes: usize,
 ) -> Result<codegg_core::run_store::RunId, codegg_core::error::RunStoreError> {
     use codegg_core::run_store::*;
 
@@ -731,10 +808,21 @@ async fn persist_to_run_store(
         TestStatus::Cancelled => RunStatus::Cancelled,
     };
 
+    // Bound persisted output by `max_report_bytes` (BUG-002) and redact
+    // URL credentials defense-in-depth (BUG-001). Logs on disk are
+    // already redacted at write time; this covers pre-existing raw logs
+    // and keeps `write_artifact` from loading GB-scale files fully.
+    // Never persist more than the RunStore absolute limit either.
+    let artifact_cap = std::cmp::min(
+        max_report_bytes,
+        usize::try_from(codegg_core::run_store::MAX_ARTIFACT_BYTES).unwrap_or(usize::MAX),
+    );
+
     // Write stdout artifact
     if let Some(ref stdout_path) = report.stdout_log {
-        if let Ok(data) = std::fs::read(stdout_path) {
+        if let Ok(data) = read_capped_bytes(stdout_path, artifact_cap) {
             if !data.is_empty() {
+                let data = redact_bytes(data);
                 let _ = store
                     .write_artifact(
                         &handle,
@@ -755,8 +843,9 @@ async fn persist_to_run_store(
 
     // Write stderr artifact
     if let Some(ref stderr_path) = report.stderr_log {
-        if let Ok(data) = std::fs::read(stderr_path) {
+        if let Ok(data) = read_capped_bytes(stderr_path, artifact_cap) {
             if !data.is_empty() {
+                let data = redact_bytes(data);
                 let _ = store
                     .write_artifact(
                         &handle,

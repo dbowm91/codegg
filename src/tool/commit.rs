@@ -28,7 +28,8 @@ pub struct CommitTool {
 impl CommitTool {
     pub fn new() -> Self {
         Self {
-            workdir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            workdir: std::env::current_dir()
+                .unwrap_or_else(|e| panic!("commit tool: daemon CWD unreadable: {e}")),
             run_store: None,
             provider: None,
         }

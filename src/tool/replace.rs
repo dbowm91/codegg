@@ -22,7 +22,8 @@ pub struct ReplaceTool {
 impl ReplaceTool {
     pub fn new() -> Self {
         Self {
-            allowed_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            allowed_root: std::env::current_dir()
+                .unwrap_or_else(|e| panic!("replace tool: daemon CWD unreadable: {e}")),
             unrestricted: false,
             preflight: None,
         }
@@ -224,7 +225,7 @@ impl Tool for ReplaceTool {
 
             let metadata = std::fs::metadata(&canonical)
                 .map_err(|e| ToolError::Execution(format!("failed to read file metadata: {}", e)))?;
-            if metadata.len() as usize > MAX_FILE_SIZE {
+            if metadata.len() > MAX_FILE_SIZE as u64 {
                 return Err(ToolError::Execution(format!(
                     "file too large (max {} bytes): {}",
                     MAX_FILE_SIZE,
@@ -248,6 +249,20 @@ impl Tool for ReplaceTool {
             }
 
             let new_content = re.replace_all(&content, replacement_clone.as_str()).to_string();
+
+            // Narrow the check-then-write window (BUG-005): re-verify the
+            // file is unchanged immediately before write. True concurrent
+            // writers remain last-writer-wins by design; this turns a
+            // stale-preflight overwrite into an explicit retry error in
+            // the common interleaving.
+            let current = std::fs::read_to_string(&canonical).map_err(|e| {
+                ToolError::Execution(format!("read failed for '{}': {}", canonical.display(), e))
+            })?;
+            if current != content {
+                return Err(ToolError::Execution(
+                    "file changed while replace preflight was running; retry".to_string(),
+                ));
+            }
 
             std::fs::write(&canonical, new_content.as_bytes())
                 .map_err(|e| ToolError::Execution(format!("write failed for '{}': {}", canonical.display(), e)))?;

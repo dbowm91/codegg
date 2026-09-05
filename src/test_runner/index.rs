@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -125,6 +126,21 @@ pub async fn append_to_index(report: &TestReport, workdir: &Path) {
 
     let mut index = match load_index(workdir) {
         Ok(idx) => idx,
+        Err(TestIndexError::IndexMalformed(path, e)) => {
+            // Preserve history instead of silently discarding up to
+            // MAX_INDEX_ENTRIES on a single corrupt write (BUG-003).
+            backup_corrupt_index(&path);
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "previous-failures index malformed; backed up corrupt file and starting fresh"
+            );
+            TestRunIndex {
+                version: INDEX_VERSION,
+                updated_at: String::new(),
+                runs: Vec::new(),
+            }
+        }
         Err(_) => TestRunIndex {
             version: INDEX_VERSION,
             updated_at: String::new(),
@@ -143,20 +159,57 @@ pub async fn append_to_index(report: &TestReport, workdir: &Path) {
 
     index.updated_at = chrono::Utc::now().to_rfc3339();
 
-    let _ = write_index_atomic(workdir, &index);
+    if let Err(e) = write_index_atomic(workdir, &index) {
+        tracing::warn!(
+            error = %e,
+            workdir = %workdir.display(),
+            "failed to persist previous-failures index"
+        );
+    }
 }
+
+fn backup_corrupt_index(path: &Path) {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let backup = path.with_extension(format!("json.corrupt.{stamp}.{}", std::process::id()));
+    if let Err(e) = std::fs::rename(path, &backup) {
+        // Rename across filesystems can fail; fall back to copy+truncate
+        // semantics via copy then leave the original for overwrite.
+        tracing::warn!(
+            error = %e,
+            path = %path.display(),
+            backup = %backup.display(),
+            "failed to back up corrupt previous-failures index"
+        );
+    }
+}
+
+static INDEX_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn write_index_atomic(workdir: &Path, index: &TestRunIndex) -> Result<(), std::io::Error> {
     let path = index_path(workdir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp_path = path.with_extension("json.tmp");
+    // Unique tmp suffix per process + write (BUG-004): the previous fixed
+    // `index.json.tmp` let two concurrent processes race on the same tmp
+    // file before rename. The in-process INDEX_LOCK still serializes
+    // threads in this process; RunStore remains authoritative for
+    // cross-process durability (last-writer-wins on this legacy index).
+    let nonce = INDEX_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp_path = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce));
 
     let data = serde_json::to_string_pretty(index).unwrap_or_default();
-    std::fs::write(&tmp_path, data)?;
-    std::fs::rename(&tmp_path, &path)?;
-    Ok(())
+    let result = (|| {
+        std::fs::write(&tmp_path, data)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    })();
+    // Best-effort tmp cleanup on failure (a crashed peer may still leave
+    // its own uniquely-named tmp behind; it never collides).
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
