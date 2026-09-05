@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 ready | Strict closure reconciliation for M001-M004/M006 plus bounded triage of the three M008 guard findings. |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 active | Strict closure reconciliation for M001-M004/M006 plus bounded triage of the three M008 guard findings. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
