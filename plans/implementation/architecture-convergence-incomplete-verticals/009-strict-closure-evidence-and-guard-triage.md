@@ -1,6 +1,6 @@
 # Architecture Convergence M009 — Strict Closure Evidence and Guard Triage
 
-Status: active
+Status: implemented
 
 Repository baseline: `1b0f8d076c71b5783769d9dae2b4efd5afa1d047`
 

@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 active | Strict closure reconciliation for M001-M004/M006 plus bounded triage of the three M008 guard findings. |
+| Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Guard findings resolved; compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -50,12 +50,11 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Architecture convergence and incomplete verticals | M009 — strict closure evidence and guard triage | `plans/implementation/architecture-convergence-incomplete-verticals/009-strict-closure-evidence-and-guard-triage.md` | M001-M008 production work and closure records already exist; M009 requires only current-main evidence reconciliation and bounded corrective triage. |
 
 ## Architecture convergence execution order
 
 1. M001-M004 remain historically conditionally closed; M005 is closed; M006 remains historically conditionally closed; M007 and M008 are closed. Their predecessor closure records are immutable evidence and must not be rewritten.
-2. M009 is the sole active corrective handoff. It must rebuild the current M001-M004/M006 condition matrix, use existing focused/current-head evidence, and avoid reopening accepted architecture absent a demonstrated correctness defect.
+2. M009 is conditionally closed by `plans/closure/architecture-convergence-incomplete-verticals/009-status.md`; its compatible-host root runtime evidence condition remains explicit and is not a new architecture pass.
 3. M009 must reproduce/disposition the historical M004 shell timeout and triage the three M008 guard findings: daemon cwd usage, project-catalog invariant drift, and direct ReviewTool execution.
 4. Small directly owned defects may be corrected inside M009. Any migration, protocol change, broad subsystem redesign, or new verification infrastructure requires a separate registered corrective plan rather than scope expansion.
 5. The architecture-convergence subsystem returns to `closed` only if M009 establishes that no architecture-convergence condition remains; otherwise it must remain `conditionally closed` with the remaining condition named explicitly.
@@ -94,6 +93,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Architecture convergence and incomplete verticals | M006 — command pipeline convergence | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/006-status.md` |
 | Architecture convergence and incomplete verticals | M007 — controlled LSP mutation application | closed | `plans/closure/architecture-convergence-incomplete-verticals/007-status.md` |
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | closed | `plans/closure/architecture-convergence-incomplete-verticals/008-status.md` |
+| Architecture convergence and incomplete verticals | M009 — strict closure evidence and guard triage | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/009-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmap, must receive a new milestone/addendum under the normal planning process.
 

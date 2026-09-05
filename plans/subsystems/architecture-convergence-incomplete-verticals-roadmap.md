@@ -1,6 +1,6 @@
 # Architecture Convergence and Incomplete Verticals Roadmap
 
-Status: closed
+Status: conditionally closed — M009 closure recorded; compatible-host root runtime evidence remains
 
 Repository baseline reviewed: `3c4890035513cd4d74430b6f64523c8be676024e`
 
@@ -212,6 +212,15 @@ Primary class: capability / polish.
 Add a small non-TUI reference consumer for the canonical frontend-neutral session projection protocol, covering snapshot, incremental events, reconnect/resume, bounded artifact access, and terminal state. Use it to identify and remove TUI-specific leakage. Re-audit deprecated `/ws` JSON-RPC and raw compatibility channels and either remove unsupported production paths or document/test the bounded compatibility period.
 
 Exit condition: session projections have a second real consumer and every deprecated transport path has an explicit keep/remove disposition backed by caller evidence.
+
+### M009 — Strict closure evidence and guard triage
+
+Status: conditionally closed — `plans/closure/architecture-convergence-incomplete-verticals/009-status.md`
+
+M009 reconciles the aggregate status semantics, resolves the daemon-cwd,
+project-catalog expectation, and ReviewTool guard findings, and records the
+remaining compatible-host root runtime evidence condition. The historical
+M001-M004 and M006 records remain unchanged.
 
 ## 7. Cross-cutting security and failure semantics
 

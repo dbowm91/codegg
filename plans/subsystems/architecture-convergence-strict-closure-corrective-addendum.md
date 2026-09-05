@@ -1,6 +1,6 @@
 # Architecture Convergence Strict Closure Corrective Addendum
 
-Status: active — M009 dependency-ready
+Status: conditionally closed — M009 closure recorded; compatible-host root runtime evidence remains
 
 Repository baseline reviewed: `1b0f8d076c71b5783769d9dae2b4efd5afa1d047`
 
@@ -131,7 +131,7 @@ The unrelated runtime-safety C002 supported-Linux Landlock fixture condition rem
 
 ## 8. Milestone M009 — Strict closure evidence and guard triage
 
-Status: ready
+Status: conditionally closed
 
 Plan:
 
