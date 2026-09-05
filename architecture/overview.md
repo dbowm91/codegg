@@ -272,7 +272,7 @@ Counts below were re-verified against the current tree (see source column).
 | Built-in slash commands | 108 | `src/tui/command.rs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
 | Database tables | 63 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 48 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Storage layout version | 49 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
 | Integration test files | 168 | `tests/*.rs` |
 | Architecture docs | 72 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
@@ -298,7 +298,7 @@ Counts below were re-verified against the current tree (see source column).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (63, STORAGE_LAYOUT_VERSION = 48)                          │
+│ Tables (63, STORAGE_LAYOUT_VERSION = 49)                          │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │

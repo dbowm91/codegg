@@ -222,15 +222,10 @@ main()
 /// Run the AST scanner by spawning `python3 -I` with the script piped via stdin.
 /// Returns a fallback result if Python is unavailable or parsing fails.
 fn ast_scan_python(code: &str) -> AstScanResult {
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(_) => {
-            return AstScanResult {
-                fallback: true,
-                ..Default::default()
-            }
-        }
-    };
+    // The scanner receives the source over stdin and does not inspect the
+    // workspace. Run it from a neutral temporary directory so daemon-owned
+    // execution never infers a workspace from process-global cwd.
+    let cwd = std::env::temp_dir();
     let mut request = crate::managed_process::ManagedProcessRequest::new(
         vec![
             "python3".into(),

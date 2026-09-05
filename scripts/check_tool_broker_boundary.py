@@ -48,14 +48,20 @@ TEST_PATTERNS = [
 
 
 def is_test_context(lines: list[str], line_idx: int) -> bool:
-    """Check if a line is inside a #[cfg(test)] block or test function."""
-    # Simple heuristic: look backwards for #[cfg(test)] or test attributes
-    for i in range(line_idx, max(line_idx - 20, -1), -1):
-        line = lines[i].strip()
-        if line.startswith("#[cfg(test)]"):
-            return True
-        if line.startswith("#[test]") or line.startswith("#[tokio::test]"):
-            return True
+    """Check if a line is inside a test module or test function.
+
+    Walk back to the nearest test attribute while tracking braces. The old
+    fixed-line lookback misclassified longer test bodies as production code.
+    """
+    brace_depth = 0
+    for i in range(line_idx, -1, -1):
+        line = lines[i]
+        brace_depth += line.count("{") - line.count("}")
+        stripped = line.strip()
+        if stripped.startswith("#[cfg(test)]"):
+            return brace_depth > 0
+        if stripped.startswith("#[test]") or stripped.startswith("#[tokio::test]"):
+            return brace_depth > 0
     return False
 
 

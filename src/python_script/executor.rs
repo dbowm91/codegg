@@ -519,29 +519,28 @@ fn build_landlock_paths(
 
     // This is a bounded interpreter-discovery probe, not the user script
     // execution path. Keep it synchronous and capped because it runs before
-    // the canonical managed launch is assembled.
-    if let Ok(cwd) = std::env::current_dir() {
-        let mut request = crate::managed_process::ManagedProcessRequest::new(
-            vec![
-                interpreter.into(),
-                "-c".into(),
-                "import sys; print(sys.prefix)".into(),
-            ],
-            cwd,
-            crate::managed_process::ProcessProvenance::default(),
-        );
-        request.timeout = Some(Duration::from_secs(5));
-        request.output_policy = crate::managed_process::OutputPolicy::new(64 * 1024);
-        let prefix = crate::managed_process::ManagedProcessService::run_blocking(request)
-            .ok()
-            .filter(|result| result.exit_status.success())
-            .map(|result| result.stdout.to_string_lossy())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if !prefix.is_empty() {
-            read_paths.push(PathBuf::from(prefix));
-        }
+    // the canonical managed launch is assembled. It inherits the explicit
+    // workspace context rather than consulting the daemon process cwd.
+    let mut request = crate::managed_process::ManagedProcessRequest::new(
+        vec![
+            interpreter.into(),
+            "-c".into(),
+            "import sys; print(sys.prefix)".into(),
+        ],
+        workspace_root.to_path_buf(),
+        crate::managed_process::ProcessProvenance::default(),
+    );
+    request.timeout = Some(Duration::from_secs(5));
+    request.output_policy = crate::managed_process::OutputPolicy::new(64 * 1024);
+    let prefix = crate::managed_process::ManagedProcessService::run_blocking(request)
+        .ok()
+        .filter(|result| result.exit_status.success())
+        .map(|result| result.stdout.to_string_lossy())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if !prefix.is_empty() {
+        read_paths.push(PathBuf::from(prefix));
     }
     for lib_dir in &["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
         let path = Path::new(lib_dir);
