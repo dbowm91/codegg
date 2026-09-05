@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Architecture convergence and incomplete verticals | closed | `plans/subsystems/architecture-convergence-incomplete-verticals-roadmap.md` | M008 closed | — |
+| Architecture convergence and incomplete verticals | active | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 ready | Strict closure reconciliation for M001-M004/M006 plus bounded triage of the three M008 guard findings. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
@@ -48,22 +48,25 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-No implementation plan is currently dependency-ready.
+| Subsystem | Milestone | Plan | Why ready |
+|---|---|---|---|
+| Architecture convergence and incomplete verticals | M009 — strict closure evidence and guard triage | `plans/implementation/architecture-convergence-incomplete-verticals/009-strict-closure-evidence-and-guard-triage.md` | M001-M008 production work and closure records already exist; M009 requires only current-main evidence reconciliation and bounded corrective triage. |
 
 ## Architecture convergence execution order
 
-1. M001-M004 are conditionally closed; M005 is closed; M006 is conditionally closed; M007 is closed; and M008 is closed. M001's named host-toolchain focused-test rerun remains an operational condition, not a blocker to the stable context interface.
-2. M004 is conditionally closed with its coordinator/service boundary available for consumers; M006 can now target the final AgentLoop lifecycle contract instead of an unstable interface.
-3. M005 is closed from M003's stable Git/worktree/provenance boundary; its supported initial slice intentionally excludes Git-mutating/worktree-dependent reconstruction.
-4. M007 is closed after consuming M002's stable execution/edit integration contract; checked edit-history and LSP preview ownership remain the mutation authorities.
-6. The roadmap does not register new packaging/release automation, Windows support expansion, another scheduler/tool/plugin runtime, another memory subsystem, or another verification framework.
-7. Verification for every milestone remains focused tests plus the existing `scripts/verify.sh quick` posture and existing hosted CI only where strict closure requires exact-head evidence.
+1. M001-M004 remain historically conditionally closed; M005 is closed; M006 remains historically conditionally closed; M007 and M008 are closed. Their predecessor closure records are immutable evidence and must not be rewritten.
+2. M009 is the sole active corrective handoff. It must rebuild the current M001-M004/M006 condition matrix, use existing focused/current-head evidence, and avoid reopening accepted architecture absent a demonstrated correctness defect.
+3. M009 must reproduce/disposition the historical M004 shell timeout and triage the three M008 guard findings: daemon cwd usage, project-catalog invariant drift, and direct ReviewTool execution.
+4. Small directly owned defects may be corrected inside M009. Any migration, protocol change, broad subsystem redesign, or new verification infrastructure requires a separate registered corrective plan rather than scope expansion.
+5. The architecture-convergence subsystem returns to `closed` only if M009 establishes that no architecture-convergence condition remains; otherwise it must remain `conditionally closed` with the remaining condition named explicitly.
+6. The workstream still does not register packaging/release automation, Windows support expansion, another scheduler/tool/plugin runtime, another memory subsystem, or another verification framework.
+7. Verification remains focused tests plus the existing `scripts/verify.sh quick` posture and existing hosted CI only where current exact-head closure evidence genuinely requires it.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| Runtime safety, resource control, and footprint | C002 supported-Linux evidence | Historical supported-Linux Landlock fixture evidence remains outstanding; it does not block the new architecture-convergence roadmap. |
+| Runtime safety, resource control, and footprint | C002 supported-Linux evidence | Historical supported-Linux Landlock fixture evidence remains outstanding; it is independent of architecture-convergence M009. |
 
 No other newly registered plan is hard-blocked.
 
