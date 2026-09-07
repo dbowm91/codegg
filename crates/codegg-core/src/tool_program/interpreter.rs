@@ -976,15 +976,45 @@ impl MeteredInterpreter {
         match &instruction.op {
             // ── Constants ──
             IrOp::LoadInt { pool_idx } => {
-                let val = self.program.integers[*pool_idx as usize];
+                let val = self
+                    .program
+                    .integers
+                    .get(*pool_idx as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        InterpreterError::IndexError(format!(
+                            "integer pool index {} out of range",
+                            pool_idx
+                        ))
+                    })?;
                 self.push(ProgramValue::Int(val))?;
             }
             IrOp::LoadFloat { pool_idx } => {
-                let val = self.program.floats[*pool_idx as usize];
+                let val = self
+                    .program
+                    .floats
+                    .get(*pool_idx as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        InterpreterError::IndexError(format!(
+                            "float pool index {} out of range",
+                            pool_idx
+                        ))
+                    })?;
                 self.push(ProgramValue::Float(val))?;
             }
             IrOp::LoadString { pool_idx } => {
-                let val = self.program.strings[*pool_idx as usize].clone();
+                let val = self
+                    .program
+                    .strings
+                    .get(*pool_idx as usize)
+                    .cloned()
+                    .ok_or_else(|| {
+                        InterpreterError::IndexError(format!(
+                            "string pool index {} out of range",
+                            pool_idx
+                        ))
+                    })?;
                 self.push(ProgramValue::String(val))?;
             }
             IrOp::LoadTrue => self.push(ProgramValue::Bool(true))?,
@@ -993,26 +1023,39 @@ impl MeteredInterpreter {
 
             // ── Locals ──
             IrOp::LoadLocal { slot } => {
-                let val = self.locals[*slot as usize]
-                    .clone()
+                let val = self
+                    .locals
+                    .get(*slot as usize)
+                    .and_then(|v| v.clone())
                     .unwrap_or(ProgramValue::None);
                 self.push(val)?;
             }
             IrOp::StoreLocal { slot } => {
                 let val = self.pop()?;
-                self.locals[*slot as usize] = Some(val);
+                let locals_len = self.locals.len();
+                let cell = self.locals.get_mut(*slot as usize).ok_or_else(|| {
+                    InterpreterError::IndexError(format!(
+                        "local slot {} out of range (locals={})",
+                        slot, locals_len
+                    ))
+                })?;
+                *cell = Some(val);
             }
 
             // ── Collections ──
             IrOp::MakeList { count } => {
-                let mut items = Vec::with_capacity(*count as usize);
+                // Grow incrementally so a hostile u32 count cannot pre-allocate
+                // up to ~4 GiB before the first pop? underflows. The stack
+                // underflow itself is still caught by pop?; we only need to
+                // avoid the unbounded Vec::with_capacity allocation.
+                let mut items = Vec::new();
                 for _ in 0..*count {
                     items.insert(0, self.pop()?);
                 }
                 self.push(ProgramValue::List(items))?;
             }
             IrOp::MakeTuple { count } => {
-                let mut items = Vec::with_capacity(*count as usize);
+                let mut items = Vec::new();
                 for _ in 0..*count {
                     items.insert(0, self.pop()?);
                 }
@@ -1020,7 +1063,7 @@ impl MeteredInterpreter {
                 self.push(ProgramValue::List(items))?;
             }
             IrOp::MakeDict { count } => {
-                let mut pairs = Vec::with_capacity(*count as usize);
+                let mut pairs = Vec::new();
                 for _ in 0..*count {
                     let val = self.pop()?;
                     let key = self.pop()?;

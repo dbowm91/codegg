@@ -778,11 +778,19 @@ impl JobScheduler {
                 tracing::debug!(%workspace_id, "skipping orphan cleanup for unknown workspace");
                 continue;
             };
-            let active: Vec<&str> = digests.iter().map(|s| s.as_str()).collect();
-            let removed = crate::python_script::source_store::PythonSourceStore::cleanup_stale(
-                &workspace.canonical_root,
-                &active,
-            );
+            let active: Vec<String> = digests.iter().map(|s| s.to_string()).collect();
+            let removed = tokio::task::spawn_blocking({
+                let root = workspace.canonical_root.clone();
+                move || {
+                    let active_refs: Vec<&str> = active.iter().map(|s| s.as_str()).collect();
+                    crate::python_script::source_store::PythonSourceStore::cleanup_stale(
+                        &root,
+                        &active_refs,
+                    )
+                }
+            })
+            .await
+            .unwrap_or(0);
             if removed > 0 {
                 tracing::info!(
                     %workspace_id,

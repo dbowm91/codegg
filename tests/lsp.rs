@@ -2087,12 +2087,15 @@ async fn security_context_patch_does_not_write_disk() {
 
 #[tokio::test]
 async fn security_context_returns_risk_markers_for_source_file() {
-    let tool = make_live_tool();
+    let (_dir, path) = temp_rs_file(
+        "fn spawn_shell(cmd: &str) {\n    let output = std::process::Command::new(\"sh\")\n        .arg(cmd)\n        .output()\n        .unwrap();\n    let _ = output;\n}\n",
+    );
+    let tool = make_tool_with_root(_dir.path());
     let result = tool
         .execute(serde_json::json!({
             "operation": "securityContext",
-            "file_path": "src/ide/mod.rs",
-            "line": 4,
+            "file_path": path.to_str().unwrap(),
+            "line": 2,
             "column": 1
         }))
         .await

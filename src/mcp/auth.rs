@@ -84,11 +84,20 @@ pub struct TokenSet {
 impl TokenSet {
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            now >= expires_at
+            match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(duration) => duration.as_secs() >= expires_at,
+                // Fail closed: a clock earlier than UNIX_EPOCH (or any
+                // other duration_since error) must not be treated as a
+                // 0-second "now", which would otherwise leave every
+                // non-zero `expires_at` looking valid.
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "system clock before UNIX_EPOCH; treating token as expired"
+                    );
+                    true
+                }
+            }
         } else {
             false
         }

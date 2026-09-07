@@ -6,10 +6,12 @@
 //! and unsupported operations.
 
 use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
 
 use codegg_git::{render_argv, GitOperation};
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt;
 
 use crate::git_mutations::GitEnvPolicy;
 use crate::git_network_policy::redact_url_credentials_in_text;
@@ -832,7 +834,39 @@ impl GitExecutionService {
 
         let output = tokio::time::timeout(timeout, async {
             let mut cmd = env.apply(&argv_owned, &root);
-            cmd.output().await
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| GitServiceError::Execution(format!("failed to spawn git: {e}")))?;
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| GitServiceError::Execution("missing git stdout pipe".into()))?;
+            let mut stderr = child
+                .stderr
+                .take()
+                .ok_or_else(|| GitServiceError::Execution("missing git stderr pipe".into()))?;
+            // Read in parallel with a hard byte cap so adversarial repos
+            // (huge `git log -p`, binary blobs) cannot OOM the daemon.
+            // We read one extra byte to detect truncation.
+            let stdout_cap = MAX_GIT_OUTPUT_BYTES + 1;
+            let stderr_cap = MAX_GIT_OUTPUT_BYTES + 1;
+            let (stdout_bytes, stderr_bytes, status) = tokio::join!(
+                read_bounded(&mut stdout, stdout_cap),
+                read_bounded(&mut stderr, stderr_cap),
+                child.wait()
+            );
+            let status = status
+                .map_err(|e| GitServiceError::Execution(format!("failed to wait on git: {e}")))?;
+            let stdout_bytes = stdout_bytes.map_err(|e| {
+                GitServiceError::Execution(format!("failed to read git stdout: {e}"))
+            })?;
+            let stderr_bytes = stderr_bytes.map_err(|e| {
+                GitServiceError::Execution(format!("failed to read git stderr: {e}"))
+            })?;
+            Ok::<_, GitServiceError>((status, stdout_bytes, stderr_bytes))
         })
         .await
         .map_err(|_| {
@@ -842,7 +876,9 @@ impl GitExecutionService {
                 argv.join(" ")
             ))
         })?
-        .map_err(|e| GitServiceError::Execution(format!("failed to spawn git: {e}")))?;
+        .map_err(|e| GitServiceError::Execution(format!("failed to run git: {e}")))?;
+
+        let (status, stdout_bytes, stderr_bytes) = output;
 
         Ok(RawGitOutput {
             // Defense-in-depth: redact any URL-embedded credentials from
@@ -850,11 +886,39 @@ impl GitExecutionService {
             // parsers, projection, or RunStore. The corresponding argv
             // boundary in `codegg-git::render_argv` keeps the raw URL only
             // long enough to invoke the child process.
-            stdout: redact_url_credentials_in_text(&String::from_utf8_lossy(&output.stdout)),
-            stderr: redact_url_credentials_in_text(&String::from_utf8_lossy(&output.stderr)),
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout: redact_url_credentials_in_text(&String::from_utf8_lossy(&stdout_bytes)),
+            stderr: redact_url_credentials_in_text(&String::from_utf8_lossy(&stderr_bytes)),
+            exit_code: status.code().unwrap_or(-1),
         })
     }
+}
+
+/// Hard cap on bytes captured from a single git subprocess stream.
+/// Adversarial repos can otherwise OOM the daemon on huge `git log -p`
+/// or binary-blob listings.
+const MAX_GIT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Read up to `limit + 1` bytes from `reader` so callers can detect
+/// truncation without over-allocating.
+async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(limit.min(8 * 1024));
+    let mut chunk = vec![0u8; 8 * 1024];
+    loop {
+        if buf.len() >= limit {
+            break;
+        }
+        let remaining = limit - buf.len();
+        let to_read = remaining.min(chunk.len());
+        let n = reader.read(&mut chunk[..to_read]).await?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    Ok(buf)
 }
 
 impl Default for GitExecutionService {

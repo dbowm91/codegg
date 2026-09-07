@@ -166,10 +166,10 @@ impl WsRateLimiter {
             !requests.is_empty()
         });
 
-        if cache.len() > MAX_WS_RATE_LIMITER_KEYS {
+        if cache.len() >= MAX_WS_RATE_LIMITER_KEYS && !cache.contains_key(key) {
             if let Some(oldest_key) = cache
                 .iter()
-                .filter(|(candidate, _)| candidate.as_str() != key)
+                .filter(|(_, requests)| !requests.is_empty())
                 .min_by_key(|(_, requests)| requests.last().copied())
                 .map(|(candidate, _)| candidate.clone())
             {

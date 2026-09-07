@@ -1527,7 +1527,12 @@ pub(crate) fn validate_child_workspace_command(
     args: &[String],
     root: &Path,
 ) -> Result<(), ToolError> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = std::fs::canonicalize(root).map_err(|error| {
+        ToolError::Permission(format!(
+            "isolated child shell root {} cannot be canonicalized: {error}",
+            root.display()
+        ))
+    })?;
     let mut tokens = vec![command.to_string()];
     tokens.extend(args.iter().cloned());
     for token in tokens
@@ -2214,10 +2219,16 @@ mod tests {
 
     #[test]
     fn isolated_child_shell_rejects_parent_paths_and_directory_changes() {
-        let root = std::env::temp_dir().join("codegg-isolated-child-test");
+        let root = std::env::temp_dir();
         assert!(validate_child_workspace_command("echo ok", &[], &root).is_ok());
         assert!(validate_child_workspace_command("cd ..", &[], &root).is_err());
         assert!(validate_child_workspace_command("echo ok > /tmp/parent.txt", &[], &root).is_err());
+    }
+
+    #[test]
+    fn isolated_child_shell_fails_closed_when_root_canonicalize_fails() {
+        let root = std::env::temp_dir().join("codegg-isolated-child-missing-root");
+        assert!(validate_child_workspace_command("echo ok", &[], &root).is_err());
     }
 
     #[test]

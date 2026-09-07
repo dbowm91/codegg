@@ -80,6 +80,10 @@ pub struct CoreDaemon {
     /// Handle for the background projection replay maintenance task.
     /// `None` when no pool is available. Held to keep the task alive.
     _projection_maintenance_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Total events the event bridge was forced to drop because the
+    /// broadcast receiver lagged behind publishers. Exposed for metrics
+    /// and the request to manually resync after a sustained spike.
+    pub dropped_event_bridge_events: std::sync::atomic::AtomicU64,
 }
 
 impl Drop for CoreDaemon {
@@ -422,6 +426,7 @@ impl CoreDaemon {
             project_activation,
             projection_seam,
             _projection_maintenance_handle: projection_maintenance_handle,
+            dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1791,7 +1796,15 @@ impl CoreDaemon {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("Event bridge lagged, {} events dropped", n);
+                        let total = daemon
+                            .dropped_event_bridge_events
+                            .fetch_add(n, std::sync::atomic::Ordering::Relaxed)
+                            + n;
+                        tracing::warn!(
+                            dropped = n,
+                            total_dropped = total,
+                            "Event bridge lagged, events dropped; clients may need to resync"
+                        );
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

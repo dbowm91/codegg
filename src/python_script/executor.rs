@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -191,9 +191,18 @@ pub async fn execute_python_script_with_cancellation(
     // Materialize script to temp file BEFORE snapshot so the script file
     // itself is not detected as a workspace change.
     let tmp_dir = cwd.join(".codegg").join("python_runs");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-    let script_id = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    if let Err(error) = tokio::fs::create_dir_all(&tmp_dir).await {
+        tracing::debug!(?error, path = %tmp_dir.display(), "python script tmp dir create_dir_all failed");
+    }
+    let script_id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            tracing::warn!(
+                ?error,
+                "system clock before UNIX_EPOCH; aborting python script"
+            );
+            error
+        })
         .unwrap_or_default()
         .as_nanos();
     let script_file = tmp_dir.join(format!("script_{script_id}.py"));
@@ -208,7 +217,7 @@ pub async fn execute_python_script_with_cancellation(
     }
     let _cleanup_guard = TempScriptCleanup(script_file.clone());
 
-    if let Err(e) = std::fs::write(&script_file, &request.code) {
+    if let Err(e) = tokio::fs::write(&script_file, &request.code).await {
         return make_result(
             PythonRunStatus::SpawnError,
             String::new(),
@@ -226,7 +235,14 @@ pub async fn execute_python_script_with_cancellation(
     let pre_snapshot = Some(WorkspaceSnapshot::capture(&cwd));
 
     // Pre-execution content capture for diff generation (Transform mode).
-    let pre_contents = capture_file_contents(&cwd);
+    // Off-runtime: this walks the workspace and reads up to 2 MiB per file
+    // through blocking std::fs, so it must not run on the async worker.
+    let pre_contents = {
+        let cwd_for_blocking = cwd.clone();
+        tokio::task::spawn_blocking(move || capture_file_contents(&cwd_for_blocking))
+            .await
+            .unwrap_or_default()
+    };
 
     // Find python interpreter
     let interpreter = find_python_interpreter();
