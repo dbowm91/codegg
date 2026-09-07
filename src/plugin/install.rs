@@ -123,6 +123,40 @@ pub async fn install_from_path(path: &Path) -> Result<PathBuf, InstallError> {
 /// copied into `<dest_root>/<plugin_name>`. Exposing the destination
 /// explicitly keeps tests hermetic and gives callers (e.g. sandboxes)
 /// control over the install root.
+/// Per-plugin-name install lock to close the check-then-act window.
+///
+/// Concurrent installs of the same name previously both passed
+/// `dest.exists()` then collided in `copy_dir_all`/`rename`. The lock
+/// file is created atomically (`O_CREAT|O_EXCL`); the second installer
+/// fails fast with `AlreadyInstalled`. Held for the duration of the
+/// install and removed on drop.
+struct InstallLock {
+    path: PathBuf,
+}
+
+impl InstallLock {
+    fn acquire(root: &Path, name: &str, plugin_name: String) -> Result<Self, InstallError> {
+        let path = root.join(format!(".{name}.lock"));
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(_) => Ok(Self { path }),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(InstallError::AlreadyInstalled(plugin_name))
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 pub async fn install_from_path_into(
     path: &Path,
     dest_root: &Path,
@@ -159,8 +193,20 @@ pub async fn install_from_path_into(
     }
 
     let dest = dest_root.join(&plugin_name);
+    // Serialize concurrent installs of the same name; the second fails
+    // fast with AlreadyInstalled instead of colliding mid-copy.
+    let _lock = InstallLock::acquire(dest_root, &plugin_name, plugin_name.clone())?;
     if dest.exists() {
         return Err(InstallError::AlreadyInstalled(plugin_name));
+    }
+    // Exclusive create so a manually-created concurrent directory also
+    // fails closed instead of being merged into.
+    match std::fs::create_dir(&dest) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(InstallError::AlreadyInstalled(plugin_name));
+        }
+        Err(e) => return Err(e.into()),
     }
 
     if let Err(error) = copy_dir_all(&path, &dest) {
@@ -207,6 +253,11 @@ pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
     }
 
     let dest = plugins_dir.join(name);
+    // Same per-name lock as path installs: concurrent URL installs of
+    // the same name serialize; the loser fails with AlreadyInstalled.
+    // Re-check `dest.exists()` immediately before rename while holding
+    // the lock so the commit window is closed.
+    let _lock = InstallLock::acquire(&plugins_dir, name, name.to_string())?;
     if dest.exists() {
         return Err(InstallError::AlreadyInstalled(name.to_string()));
     }
@@ -241,6 +292,11 @@ pub async fn install_from_url(url: &str) -> Result<PathBuf, InstallError> {
         return Err(error);
     }
 
+    // Re-check under the lock immediately before commit.
+    if dest.exists() {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return Err(InstallError::AlreadyInstalled(name.to_string()));
+    }
     if let Err(error) = tokio::fs::rename(&staging, &dest).await {
         let _ = tokio::fs::remove_dir_all(&staging).await;
         return Err(error.into());

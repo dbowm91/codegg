@@ -962,6 +962,10 @@ pub struct App {
     pub session_store: Option<Arc<SessionStore>>,
     pub message_store: Option<Arc<MessageStore>>,
     pub memory_store: Option<Arc<MemoryStore>>,
+    /// Cached `memory_auto_consolidate` flag. Refreshed at session start
+    /// (`new_session`) so the per-turn `AgentFinished` handler does not
+    /// re-parse the config TOML on every turn.
+    pub memory_auto_consolidate: bool,
     /// Run store for querying run history. Set externally after App creation.
     pub run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
     /// User preferences backed by SQLite. Holds the active theme id and
@@ -1406,6 +1410,11 @@ impl App {
             session_store: None,
             message_store: None,
             memory_store: None,
+            memory_auto_consolidate: crate::config::schema::Config::load()
+                .ok()
+                .and_then(|c| c.experimental)
+                .and_then(|e| e.memory_auto_consolidate)
+                .unwrap_or(false),
             viewport_area: None,
             scrollbar_area: None,
             prompt_area: None,
@@ -1865,6 +1874,11 @@ impl App {
             session_store: None,
             message_store: None,
             memory_store: None,
+            memory_auto_consolidate: crate::config::schema::Config::load()
+                .ok()
+                .and_then(|c| c.experimental)
+                .and_then(|e| e.memory_auto_consolidate)
+                .unwrap_or(false),
             viewport_area: None,
             scrollbar_area: None,
             prompt_area: None,
@@ -10259,6 +10273,13 @@ impl App {
     }
 
     fn new_session(&mut self) {
+        // Refresh the cached consolidation flag at session start so the
+        // per-turn handler does not re-parse the config TOML.
+        self.memory_auto_consolidate = crate::config::schema::Config::load()
+            .ok()
+            .and_then(|c| c.experimental)
+            .and_then(|e| e.memory_auto_consolidate)
+            .unwrap_or(false);
         if let Some(config_watcher) = self.config_watcher.as_ref() {
             if let Ok(config) = config_watcher.reload_now() {
                 if let Some(templates) = config.templates.as_ref() {

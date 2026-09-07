@@ -477,13 +477,13 @@ fn parse_bedrock_sse(chunk: &str) -> Option<Result<ChatEvent, ProviderError>> {
                 let mut usage = TokenUsage::default();
                 if let Some(u) = val.get("usage") {
                     if let Some(input) = u.get("inputTokens").and_then(|v| v.as_u64()) {
-                        usage.input_tokens = input as usize;
+                        usage.input_tokens = usize::try_from(input).unwrap_or(usize::MAX);
                     }
                     if let Some(output) = u.get("outputTokens").and_then(|v| v.as_u64()) {
-                        usage.output_tokens = output as usize;
+                        usage.output_tokens = usize::try_from(output).unwrap_or(usize::MAX);
                     }
                     if let Some(total) = u.get("totalTokens").and_then(|v| v.as_u64()) {
-                        usage.total_tokens = total as usize;
+                        usage.total_tokens = usize::try_from(total).unwrap_or(usize::MAX);
                     } else {
                         usage.total_tokens = usage.input_tokens + usage.output_tokens;
                     }

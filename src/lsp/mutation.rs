@@ -303,11 +303,31 @@ mod tests {
 
     async fn pool() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
-            .max_connections(2)
+            .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .expect("pool");
         migrate(&pool).await.expect("migrate");
+        // `edit_checkpoint.session_id` references `session(id)` with FK
+        // enforcement on (sqlx enables foreign_keys by default). Seed the
+        // minimal parent rows so checkpoint persistence succeeds, mirroring
+        // production where the session always exists.
+        sqlx::query(
+            "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) \
+             VALUES ('project-test', '/tmp', 0, 0, '[]') \
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed project");
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) \
+             VALUES ('session-test', 'project-test', 'test', '/tmp', 'test', '1', 0, 0) \
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed session");
         pool
     }
 

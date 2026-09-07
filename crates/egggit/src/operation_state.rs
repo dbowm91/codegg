@@ -346,9 +346,10 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> RepositoryOperationS
             action,
             subject,
             current_step: None,
-            total_steps: todo_content
-                .as_ref()
-                .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count() as u32),
+            total_steps: todo_content.as_ref().map(|t| {
+                u32::try_from(t.lines().filter(|l| !l.trim().is_empty()).count())
+                    .unwrap_or(u32::MAX)
+            }),
         });
     }
 
@@ -413,14 +414,17 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> RepositoryOperationS
         let onto_branch = read_trimmed(&rebase_merge.join("onto"));
         let current_step = read_optional_u32(&rebase_merge.join("msgnum"));
         let total_steps = std::fs::read_dir(&rebase_merge).ok().map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .map(|s| s.starts_with("000") && s.len() == 3)
-                        .unwrap_or(false)
-                })
-                .count() as u32
+            u32::try_from(
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|s| s.starts_with("000") && s.len() == 3)
+                            .unwrap_or(false)
+                    })
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
         });
         return RepositoryOperationState::Rebase(RebaseState {
             original_head,
@@ -439,14 +443,17 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> RepositoryOperationS
         let upstream = read_trimmed(&rebase_apply.join("onto-name"));
         let current_step = read_optional_u32(&rebase_apply.join("next"));
         let total_steps = std::fs::read_dir(&rebase_apply).ok().map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.file_name()
-                        .to_str()
-                        .map(|s| s.starts_with("000") && s.len() == 3)
-                        .unwrap_or(false)
-                })
-                .count() as u32
+            u32::try_from(
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| {
+                        e.file_name()
+                            .to_str()
+                            .map(|s| s.starts_with("000") && s.len() == 3)
+                            .unwrap_or(false)
+                    })
+                    .count(),
+            )
+            .unwrap_or(u32::MAX)
         });
         return RepositoryOperationState::Rebase(RebaseState {
             original_head,
@@ -495,14 +502,17 @@ pub fn detect_repository_operation_state(git_dir: &Path) -> RepositoryOperationS
         let total_steps = std::fs::read_dir(git_dir.join("rebase-apply"))
             .ok()
             .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter(|e| {
-                        e.file_name()
-                            .to_str()
-                            .map(|s| s.starts_with("000") && s.len() == 3)
-                            .unwrap_or(false)
-                    })
-                    .count() as u32
+                u32::try_from(
+                    rd.filter_map(|e| e.ok())
+                        .filter(|e| {
+                            e.file_name()
+                                .to_str()
+                                .map(|s| s.starts_with("000") && s.len() == 3)
+                                .unwrap_or(false)
+                        })
+                        .count(),
+                )
+                .unwrap_or(u32::MAX)
             });
         return RepositoryOperationState::ApplyMailbox(ApplyState {
             original_head: read_trimmed(&git_dir.join("ORIG_HEAD")),

@@ -516,7 +516,9 @@ fn restore_file_unix(root: &Path, relative_path: &str, content: &str) -> Result<
         let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
         return Err(format!("failed to rename restored file: {error}"));
     }
-    let _ = fsync(&directory);
+    if let Err(error) = fsync(&directory) {
+        tracing::warn!(error = %error, "dir fsync after rename failed; restore may not be durable");
+    }
     Ok(())
 }
 
@@ -524,7 +526,9 @@ fn restore_file_unix(root: &Path, relative_path: &str, content: &str) -> Result<
 fn sync_parent_dir(path: &Path) {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
+            if let Err(e) = dir.sync_all() {
+                tracing::warn!(path = %path.display(), error = %e, "parent dir fsync failed");
+            }
         }
     }
 }

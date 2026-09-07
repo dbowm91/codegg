@@ -1039,8 +1039,12 @@ impl HostedProgramAdapter {
                         // Reserve call (step 4)
                         match self.reserve_call(&call_id, &name, &input_hash) {
                             Ok(_normalized) => {
-                                let sequence = self.completed_calls.len() as u32
-                                    + self.reserved_calls.len() as u32;
+                                let sequence = u32::try_from(
+                                    self.completed_calls
+                                        .len()
+                                        .saturating_add(self.reserved_calls.len()),
+                                )
+                                .unwrap_or(u32::MAX);
                                 emitted.push(HostedProgramEvent::NestedCall {
                                     call_id,
                                     tool_name: name,
@@ -1375,9 +1379,12 @@ impl ResponsesTransport {
                                     ResponsesStreamEvent::ResponseCompleted { response } => {
                                         let usage = response.usage.as_ref().map(|u| {
                                             crate::provider_core::TokenUsage {
-                                                input_tokens: u.input_tokens as usize,
-                                                output_tokens: u.output_tokens as usize,
-                                                total_tokens: u.total_tokens as usize,
+                                                input_tokens: usize::try_from(u.input_tokens)
+                                                    .unwrap_or(usize::MAX),
+                                                output_tokens: usize::try_from(u.output_tokens)
+                                                    .unwrap_or(usize::MAX),
+                                                total_tokens: usize::try_from(u.total_tokens)
+                                                    .unwrap_or(usize::MAX),
                                                 reasoning_tokens: u.reasoning_tokens.unwrap_or(0)
                                                     as usize,
                                                 cached_tokens: None,

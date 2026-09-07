@@ -84,7 +84,14 @@ pub fn apply_unified_diff(original: &str, patch: &str) -> Result<String, String>
         orig_idx += 1;
     }
 
-    Ok(output.join("\n"))
+    let mut result = output.join("\n");
+    // `str::lines()` strips the trailing newline; restore it so a patch
+    // that does not touch the final newline preserves it (e.g. "old\n"
+    // with "old"->"new" must become "new\n", not "new").
+    if original.ends_with('\n') && !result.is_empty() && !result.ends_with('\n') {
+        result.push('\n');
+    }
+    Ok(result)
 }
 
 fn parse_hunk_old_start(header: &str) -> Option<usize> {

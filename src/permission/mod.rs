@@ -492,6 +492,10 @@ fn load_decisions(path: Option<&std::path::Path>) -> Vec<PersistentDecision> {
 }
 
 fn canonicalize_tool_rules(rules: &[ToolRule]) -> Vec<CanonicalizedToolRule> {
+    // Cache canonicalizations: the same path string often appears in
+    // multiple rules, and each `canonicalize()` is a syscall chain.
+    let mut cache: std::collections::HashMap<&str, Option<PathBuf>> =
+        std::collections::HashMap::new();
     rules
         .iter()
         .map(|r| {
@@ -500,7 +504,12 @@ fn canonicalize_tool_rules(rules: &[ToolRule]) -> Vec<CanonicalizedToolRule> {
                 .as_ref()
                 .map(|p| {
                     p.iter()
-                        .filter_map(|path_str| Path::new(path_str).canonicalize().ok())
+                        .filter_map(|path_str| {
+                            cache
+                                .entry(path_str.as_str())
+                                .or_insert_with(|| Path::new(path_str).canonicalize().ok())
+                                .clone()
+                        })
                         .collect()
                 })
                 .unwrap_or_default();

@@ -77,7 +77,9 @@ fn parse_porcelain(stdout: &str) -> Vec<BlameEntry> {
 
         // Content line starts with a tab
         if let Some(content) = line.strip_prefix('\t') {
-            let lineno = entries.len() as u32 + 1;
+            let lineno = u32::try_from(entries.len())
+                .unwrap_or(u32::MAX)
+                .saturating_add(1);
             entries.push(BlameEntry {
                 commit: current_commit.clone(),
                 short_commit: current_short.clone(),
@@ -231,7 +233,10 @@ mod tests {
         let result = blame_file(dir.path(), "a.txt").await.unwrap();
         assert_eq!(result.entries.len(), 5);
         for (i, e) in result.entries.iter().enumerate() {
-            assert_eq!(e.lineno, i as u32 + 1);
+            assert_eq!(
+                e.lineno,
+                u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1)
+            );
         }
         assert_eq!(result.entries[4].content, "fifth");
     }

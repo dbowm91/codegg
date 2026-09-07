@@ -161,12 +161,6 @@ impl CratesIoSource {
     }
 }
 
-impl Default for CratesIoSource {
-    fn default() -> Self {
-        Self::try_new().unwrap()
-    }
-}
-
 impl ResearchSourceAdapter for CratesIoSource {
     fn name(&self) -> &'static str {
         "crates_io"

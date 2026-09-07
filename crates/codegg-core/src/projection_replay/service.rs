@@ -333,8 +333,7 @@ impl ProjectionReplayService {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        sqlx::query("COMMIT")
-            .execute(&mut *tx)
+        tx.commit()
             .await
             .map_err(|e| StorageError::Database(e.to_string()))?;
 

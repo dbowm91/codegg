@@ -6,6 +6,42 @@
 use crate::memory::Memory;
 use crate::session::message::{Message, PartData};
 
+use std::sync::LazyLock;
+
+static PREF_RE_0: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)I prefer ([^.]+)").unwrap());
+static PREF_RE_1: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)I always ([^.]+)").unwrap());
+static PREF_RE_2: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)don't use ([^.]+)").unwrap());
+static PREF_RE_3: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)never use ([^.]+)").unwrap());
+static PREF_RE_4: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)use ([^.]+) instead").unwrap());
+static PREF_RE_5: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)([^ ]+) is deprecated").unwrap());
+static PREF_RE_6: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)we use ([^.]+)").unwrap());
+static PREF_RE_7: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)our ([^ ]+) follows ([^.]+)").unwrap());
+static CONV_RE_0: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"snake_case").unwrap());
+static CONV_RE_1: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"camelCase").unwrap());
+static CONV_RE_2: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"PascalCase").unwrap());
+static CONV_RE_3: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"kebab-case").unwrap());
+static CONV_RE_4: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)barrel file").unwrap());
+static CONV_RE_5: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)index\.([^ ]+)").unwrap());
+static CONV_RE_6: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)test in ([^.]+)").unwrap());
+static CONV_RE_7: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"mock\(").unwrap());
+static CONV_RE_8: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)linter|ESLint|clippy|ruff").unwrap());
+
 #[derive(Debug, Clone)]
 pub struct PatternMatch {
     pub pattern_type: PatternType,
@@ -59,89 +95,89 @@ impl PatternDetector {
         Self {
             preference_patterns: vec![
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)I prefer ([^.]+)").unwrap(),
+                    regex: PREF_RE_0.clone(),
                     base_score: 10.0,
                     negation_modifier: -3.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)I always ([^.]+)").unwrap(),
+                    regex: PREF_RE_1.clone(),
                     base_score: 12.0,
                     negation_modifier: -3.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)don't use ([^.]+)").unwrap(),
+                    regex: PREF_RE_2.clone(),
                     base_score: 8.0,
                     negation_modifier: -3.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)never use ([^.]+)").unwrap(),
+                    regex: PREF_RE_3.clone(),
                     base_score: 10.0,
                     negation_modifier: -3.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)use ([^.]+) instead").unwrap(),
+                    regex: PREF_RE_4.clone(),
                     base_score: 9.0,
                     negation_modifier: 0.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)([^ ]+) is deprecated").unwrap(),
+                    regex: PREF_RE_5.clone(),
                     base_score: 7.0,
                     negation_modifier: 0.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)we use ([^.]+)").unwrap(),
+                    regex: PREF_RE_6.clone(),
                     base_score: 8.0,
                     negation_modifier: 0.0,
                 },
                 PreferencePattern {
-                    regex: regex::Regex::new(r"(?i)our ([^ ]+) follows ([^.]+)").unwrap(),
+                    regex: PREF_RE_7.clone(),
                     base_score: 9.0,
                     negation_modifier: 0.0,
                 },
             ],
             convention_patterns: vec![
                 ConventionPattern {
-                    regex: regex::Regex::new(r"snake_case").unwrap(),
+                    regex: CONV_RE_0.clone(),
                     pattern_type: PatternType::NamingPattern,
                     base_score: 5.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"camelCase").unwrap(),
+                    regex: CONV_RE_1.clone(),
                     pattern_type: PatternType::NamingPattern,
                     base_score: 5.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"PascalCase").unwrap(),
+                    regex: CONV_RE_2.clone(),
                     pattern_type: PatternType::NamingPattern,
                     base_score: 5.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"kebab-case").unwrap(),
+                    regex: CONV_RE_3.clone(),
                     pattern_type: PatternType::NamingPattern,
                     base_score: 5.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"(?i)barrel file").unwrap(),
+                    regex: CONV_RE_4.clone(),
                     pattern_type: PatternType::Architecture,
                     base_score: 6.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"(?i)index\.([^ ]+)").unwrap(),
+                    regex: CONV_RE_5.clone(),
                     pattern_type: PatternType::Architecture,
                     base_score: 4.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"(?i)test in ([^.]+)").unwrap(),
+                    regex: CONV_RE_6.clone(),
                     pattern_type: PatternType::CodingConvention,
                     base_score: 5.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"mock\(").unwrap(),
+                    regex: CONV_RE_7.clone(),
                     pattern_type: PatternType::ToolPreference,
                     base_score: 4.0,
                 },
                 ConventionPattern {
-                    regex: regex::Regex::new(r"(?i)linter|ESLint|clippy|ruff").unwrap(),
+                    regex: CONV_RE_8.clone(),
                     pattern_type: PatternType::ToolPreference,
                     base_score: 5.0,
                 },

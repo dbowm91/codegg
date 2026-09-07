@@ -175,12 +175,6 @@ impl DocsRsSource {
     }
 }
 
-impl Default for DocsRsSource {
-    fn default() -> Self {
-        Self::try_new().unwrap()
-    }
-}
-
 impl ResearchSourceAdapter for DocsRsSource {
     fn name(&self) -> &'static str {
         "docs_rs"

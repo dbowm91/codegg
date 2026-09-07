@@ -90,12 +90,6 @@ impl AdvisorySource {
     }
 }
 
-impl Default for AdvisorySource {
-    fn default() -> Self {
-        Self::try_new().unwrap()
-    }
-}
-
 impl ResearchSourceAdapter for AdvisorySource {
     fn name(&self) -> &'static str {
         "advisory"
@@ -168,8 +162,8 @@ mod tests {
     }
 
     #[test]
-    fn default_creates_client() {
-        let source = AdvisorySource::default();
+    fn try_new_creates_client() {
+        let source = AdvisorySource::try_new().expect("advisory client should build");
         assert_eq!(source.name(), "advisory");
     }
 }

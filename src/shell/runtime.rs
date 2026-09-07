@@ -46,7 +46,7 @@ impl ShellRuntime {
         let id = req.id;
         let command = req.command.clone();
         let cwd = req.cwd.clone();
-        let timeout_dur = if req.timeout.as_secs() == 0 {
+        let timeout_dur = if req.timeout.is_zero() {
             Duration::from_secs(DEFAULT_TIMEOUT_SECS)
         } else {
             req.timeout
@@ -136,54 +136,95 @@ impl ShellRuntime {
                     result = &mut process_task => break result,
                 }
             };
-            while let Some(chunk) = output_rx.recv().await {
-                forward_output(&tx_exit, id, chunk).await;
+            // Bounded drain: if stdout/stderr readers hang, do not delay
+            // the terminal event indefinitely behind the drain.
+            loop {
+                match tokio::time::timeout(Duration::from_secs(2), output_rx.recv()).await {
+                    Ok(Some(chunk)) => forward_output(&tx_exit, id, chunk).await,
+                    Ok(None) => break,
+                    Err(_) => {
+                        tracing::warn!(
+                            command_id = id.0,
+                            "shell output drain timed out; emitting terminal event"
+                        );
+                        break;
+                    }
+                }
             }
 
             match result {
                 Ok(Ok(result)) => match result.termination {
                     crate::managed_process::TerminationReason::Exited => {
-                        let _ = tx_exit
+                        if let Err(e) = tx_exit
                             .send(ShellEvent::Exited {
                                 id,
                                 status: result.exit_status.code(),
                                 elapsed: start.elapsed(),
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(command_id = id.0, error = %e, "shell Exited event lost: receiver dropped");
+                        }
                     }
                     crate::managed_process::TerminationReason::TimedOut => {
-                        let _ = tx_exit
+                        if let Err(e) = tx_exit
                             .send(ShellEvent::TimedOut {
                                 id,
                                 elapsed: start.elapsed(),
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(command_id = id.0, error = %e, "shell TimedOut event lost: receiver dropped");
+                        }
                     }
-                    crate::managed_process::TerminationReason::Cancelled => {}
+                    crate::managed_process::TerminationReason::Cancelled => {
+                        // Cancellation previously emitted nothing, leaving
+                        // the TUI showing "still running". Emit Exited with
+                        // no status so termination is observable.
+                        if let Err(e) = tx_exit
+                            .send(ShellEvent::Exited {
+                                id,
+                                status: None,
+                                elapsed: start.elapsed(),
+                            })
+                            .await
+                        {
+                            tracing::warn!(command_id = id.0, error = %e, "shell Cancelled event lost: receiver dropped");
+                        }
+                    }
                     crate::managed_process::TerminationReason::OutputLimitExceeded { stream } => {
-                        let _ = tx_exit
+                        if let Err(e) = tx_exit
                             .send(ShellEvent::FailedToStart {
                                 id,
                                 error: format!("managed shell output limit exceeded on {stream:?}"),
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(command_id = id.0, error = %e, "shell output-limit event lost: receiver dropped");
+                        }
                     }
                 },
                 Ok(Err(error)) => {
-                    let _ = tx_exit
+                    if let Err(e) = tx_exit
                         .send(ShellEvent::FailedToStart {
                             id,
                             error: error.to_string(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(command_id = id.0, error = %e, "shell FailedToStart event lost: receiver dropped");
+                    }
                 }
                 Err(error) => {
-                    let _ = tx_exit
+                    if let Err(e) = tx_exit
                         .send(ShellEvent::FailedToStart {
                             id,
                             error: format!("managed shell task failed: {error}"),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(command_id = id.0, error = %e, "shell task-failure event lost: receiver dropped");
+                    }
                 }
             }
         });
@@ -246,7 +287,9 @@ async fn forward_output(
             bytes: chunk.bytes,
         },
     };
-    let _ = tx.send(event).await;
+    if let Err(e) = tx.send(event).await {
+        tracing::warn!(command_id = id.0, error = %e, "shell output event lost: receiver dropped");
+    }
 }
 
 #[cfg(test)]

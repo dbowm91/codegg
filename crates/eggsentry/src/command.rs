@@ -165,6 +165,14 @@ static SYSTEM_PATH_RE: LazyLock<Regex> =
 static FILE_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^file://").unwrap());
 static JS_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^javascript:").unwrap());
 
+// Download-to-system-directory patterns (hot: every classify_command call)
+static CURL_ETC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"curl\b.*(-o|--output)\s+/etc/").unwrap());
+static WGET_ETC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"wget\b.*(-O|--output-document)\s*/etc/").unwrap());
+static WGET_ETC_EQ_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"wget\b.*(-O|--output-document)=/etc/").unwrap());
+
 fn finding_for_command(
     command: &str,
     category: SecurityCategory,
@@ -403,15 +411,9 @@ pub fn classify_bash_command(command: &str) -> CommandClassification {
         }
 
         // Curl/wget to sensitive output
-        if Regex::new(r"curl\b.*(-o|--output)\s+/etc/")
-            .unwrap()
-            .is_match(command)
-            || Regex::new(r"wget\b.*(-O|--output-document)\s*/etc/")
-                .unwrap()
-                .is_match(command)
-            || Regex::new(r"wget\b.*(-O|--output-document)=/etc/")
-                .unwrap()
-                .is_match(command)
+        if CURL_ETC_RE.is_match(command)
+            || WGET_ETC_RE.is_match(command)
+            || WGET_ETC_EQ_RE.is_match(command)
         {
             risk = risk.max(CommandRisk::High);
             categories.push(SecurityCategory::DangerousCommand);

@@ -195,10 +195,13 @@ pub fn apply_file_state(
                 }
                 std::fs::remove_file(&full)
                     .map_err(|e| format!("failed to delete {}: {}", relative_path, e))?;
-                // best-effort fsync parent dir
+                // Directory fsync makes the delete durable; warn (don't
+                // silently drop) so a crash-induced loss leaves a signal.
                 if let Some(parent) = full.parent() {
                     if let Ok(dir) = std::fs::File::open(parent) {
-                        let _ = dir.sync_all();
+                        if let Err(e) = dir.sync_all() {
+                            tracing::warn!(path = %relative_path, error = %e, "parent dir fsync after delete failed");
+                        }
                     }
                 }
             }
@@ -280,7 +283,9 @@ fn restore_file_checked(root: &Path, relative_path: &str, content: &str) -> Resu
         let _ = rustix::fs::unlinkat(&directory, &temp_name, AtFlags::empty());
         return Err(format!("failed to rename restored file: {error}"));
     }
-    let _ = fsync(&directory);
+    if let Err(error) = fsync(&directory) {
+        tracing::warn!(path = %relative_path, error = %error, "dir fsync after rename failed; restore may not be durable");
+    }
     Ok(())
 }
 
@@ -336,7 +341,9 @@ fn restore_file_checked(root: &Path, relative_path: &str, content: &str) -> Resu
     })?;
     if let Some(parent) = full_path.parent() {
         if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
+            if let Err(e) = dir.sync_all() {
+                tracing::warn!(path = %relative_path, error = %e, "parent dir fsync after rename failed");
+            }
         }
     }
     Ok(())

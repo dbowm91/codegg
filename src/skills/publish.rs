@@ -325,7 +325,23 @@ impl SkillPublicationService {
             {
                 return Err(SkillPublicationError::StaleApproval);
             }
-            fs::rename(&temp, destination)?;
+            // Atomic no-replace commit: `hard_link` fails with
+            // AlreadyExists if a concurrent publisher created the
+            // destination after our `exists()` recheck above, instead of
+            // silently overwriting via `rename`.
+            match fs::hard_link(&temp, destination) {
+                Ok(()) => {
+                    // `temp` and `destination` now share one inode; unlink
+                    // the temp name, leaving the destination durable.
+                    let _ = fs::remove_file(&temp);
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    return Err(SkillPublicationError::SkillAlreadyExists(
+                        relative_path.to_string(),
+                    ));
+                }
+                Err(e) => return Err(e.into()),
+            }
             sync_directory(package)?;
             Ok(())
         })();

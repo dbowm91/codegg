@@ -144,7 +144,19 @@ fn build_cors(config: &Option<crate::config::schema::ServerConfig>) -> CorsLayer
 
     match origins {
         Some(origins) if !origins.is_empty() => {
-            let origins: Vec<_> = origins.into_iter().filter_map(|o| o.parse().ok()).collect();
+            let origins: Vec<_> = origins
+                .into_iter()
+                .filter_map(|o| match o.parse() {
+                    Ok(origin) => Some(origin),
+                    Err(e) => {
+                        warn!("ignoring malformed CORS origin {o:?}: {e}");
+                        None
+                    }
+                })
+                .collect();
+            if origins.is_empty() {
+                warn!("all configured CORS origins were malformed; falling back to defaults");
+            }
             CorsLayer::new()
                 .allow_origin(origins)
                 .allow_methods([http::Method::GET, http::Method::POST, http::Method::DELETE])

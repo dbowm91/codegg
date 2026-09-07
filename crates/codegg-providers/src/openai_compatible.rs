@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::json;
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -36,6 +37,10 @@ struct RequestPolicy {
 // a model-name substring heuristic.
 const LAGUNA_TOOL_ALIASES: &[(&str, &str)] = &[("bash", "shell")];
 const LAGUNA_ARGUMENT_ALIASES: &[(&str, &str, &str)] = &[("shell", "command", "cmd")];
+static LAGUNA_MODEL_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"laguna-(m|xs|s)").expect("built-in adapter regex"));
+static LAGUNA_EXCLUSION_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(base|embed)").expect("built-in adapter exclusion regex"));
 
 fn request_policy(provider: &str, model: &str) -> RequestPolicy {
     let provider = provider.to_ascii_lowercase();
@@ -44,12 +49,7 @@ fn request_policy(provider: &str, model: &str) -> RequestPolicy {
         provider.as_str(),
         "local" | "vllm" | "sglang" | "openai" | "openai-compatible" | "poolside"
     );
-    let laguna_model = regex::Regex::new(r"laguna-(m|xs|s)")
-        .expect("built-in adapter regex")
-        .is_match(&model)
-        && !regex::Regex::new(r"(base|embed)")
-            .expect("built-in adapter exclusion regex")
-            .is_match(&model);
+    let laguna_model = LAGUNA_MODEL_RE.is_match(&model) && !LAGUNA_EXCLUSION_RE.is_match(&model);
     if supported_provider && laguna_model {
         RequestPolicy {
             reasoning_field: Some("reasoning_content"),

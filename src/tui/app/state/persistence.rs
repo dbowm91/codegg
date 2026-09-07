@@ -324,8 +324,11 @@ fn write_serialized(temp: &Path, manifest: &TuiWorkspaceManifest) -> Result<(), 
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(temp, perms).map_err(PersistenceError::Io)?;
     }
-    // fsync best-effort: ignored on platforms where it is unsupported.
-    let _ = sync_file(temp);
+    // fsync durability: warn instead of silently dropping so a crash
+    // that loses the manifest leaves a signal.
+    if let Err(e) = sync_file(temp) {
+        tracing::warn!(path = %temp.display(), error = %e, "manifest fsync failed");
+    }
     Ok(())
 }
 

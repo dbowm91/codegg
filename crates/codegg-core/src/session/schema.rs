@@ -169,67 +169,71 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 49 {
         migrate_and_record(pool, 49).await?;
     }
+    if current_version < 50 {
+        migrate_and_record(pool, 50).await?;
+    }
 
     Ok(())
 }
 
 async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), StorageError> {
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(pool)
+    let mut tx = pool
+        .begin()
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     let result = async {
         match version {
-            1 => migrate_v1(pool).await?,
-            2 => migrate_v2(pool).await?,
-            3 => migrate_v3(pool).await?,
-            4 => migrate_v4(pool).await?,
-            5 => migrate_v5(pool).await?,
-            6 => migrate_v6(pool).await?,
-            7 => migrate_v7(pool).await?,
-            8 => migrate_v8(pool).await?,
-            9 => migrate_v9(pool).await?,
-            10 => migrate_v10(pool).await?,
-            11 => migrate_v11(pool).await?,
-            12 => migrate_v12(pool).await?,
-            13 => migrate_v13(pool).await?,
-            14 => migrate_v14(pool).await?,
-            15 => migrate_v15(pool).await?,
-            16 => migrate_v16(pool).await?,
-            17 => migrate_v17(pool).await?,
-            18 => migrate_v18(pool).await?,
-            19 => migrate_v19(pool).await?,
-            20 => migrate_v20(pool).await?,
-            21 => migrate_v21(pool).await?,
-            22 => migrate_v22(pool).await?,
-            23 => migrate_v23(pool).await?,
-            24 => migrate_v24(pool).await?,
-            25 => migrate_v25(pool).await?,
-            26 => migrate_v26(pool).await?,
-            27 => migrate_v27(pool).await?,
-            28 => migrate_v28(pool).await?,
-            29 => migrate_v29(pool).await?,
-            30 => migrate_v30(pool).await?,
-            31 => migrate_v31(pool).await?,
-            32 => migrate_v32(pool).await?,
-            33 => migrate_v33(pool).await?,
-            34 => migrate_v34(pool).await?,
-            35 => migrate_v35(pool).await?,
-            36 => migrate_v36(pool).await?,
-            37 => migrate_v37(pool).await?,
-            38 => migrate_v38(pool).await?,
-            39 => migrate_v39(pool).await?,
-            40 => migrate_v40(pool).await?,
-            41 => migrate_v41(pool).await?,
-            42 => migrate_v42(pool).await?,
-            43 => migrate_v43(pool).await?,
-            44 => migrate_v44(pool).await?,
-            45 => migrate_v45(pool).await?,
-            46 => migrate_v46(pool).await?,
-            47 => migrate_v47(pool).await?,
-            48 => migrate_v48(pool).await?,
-            49 => migrate_v49(pool).await?,
+            1 => migrate_v1(&mut tx).await?,
+            2 => migrate_v2(&mut tx).await?,
+            3 => migrate_v3(&mut tx).await?,
+            4 => migrate_v4(&mut tx).await?,
+            5 => migrate_v5(&mut tx).await?,
+            6 => migrate_v6(&mut tx).await?,
+            7 => migrate_v7(&mut tx).await?,
+            8 => migrate_v8(&mut tx).await?,
+            9 => migrate_v9(&mut tx).await?,
+            10 => migrate_v10(&mut tx).await?,
+            11 => migrate_v11(&mut tx).await?,
+            12 => migrate_v12(&mut tx).await?,
+            13 => migrate_v13(&mut tx).await?,
+            14 => migrate_v14(&mut tx).await?,
+            15 => migrate_v15(&mut tx).await?,
+            16 => migrate_v16(&mut tx).await?,
+            17 => migrate_v17(&mut tx).await?,
+            18 => migrate_v18(&mut tx).await?,
+            19 => migrate_v19(&mut tx).await?,
+            20 => migrate_v20(&mut tx).await?,
+            21 => migrate_v21(&mut tx).await?,
+            22 => migrate_v22(&mut tx).await?,
+            23 => migrate_v23(&mut tx).await?,
+            24 => migrate_v24(&mut tx).await?,
+            25 => migrate_v25(&mut tx).await?,
+            26 => migrate_v26(&mut tx).await?,
+            27 => migrate_v27(&mut tx).await?,
+            28 => migrate_v28(&mut tx).await?,
+            29 => migrate_v29(&mut tx).await?,
+            30 => migrate_v30(&mut tx).await?,
+            31 => migrate_v31(&mut tx).await?,
+            32 => migrate_v32(&mut tx).await?,
+            33 => migrate_v33(&mut tx).await?,
+            34 => migrate_v34(&mut tx).await?,
+            35 => migrate_v35(&mut tx).await?,
+            36 => migrate_v36(&mut tx).await?,
+            37 => migrate_v37(&mut tx).await?,
+            38 => migrate_v38(&mut tx).await?,
+            39 => migrate_v39(&mut tx).await?,
+            40 => migrate_v40(&mut tx).await?,
+            41 => migrate_v41(&mut tx).await?,
+            42 => migrate_v42(&mut tx).await?,
+            43 => migrate_v43(&mut tx).await?,
+            44 => migrate_v44(&mut tx).await?,
+            45 => migrate_v45(&mut tx).await?,
+            46 => migrate_v46(&mut tx).await?,
+            47 => migrate_v47(&mut tx).await?,
+            48 => migrate_v48(&mut tx).await?,
+            49 => migrate_v49(&mut tx).await?,
+            50 => migrate_v50(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -242,7 +246,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
              ON CONFLICT(id) DO UPDATE SET version = excluded.version",
         )
         .bind(version)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
         Ok::<(), StorageError>(())
@@ -251,28 +255,20 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
 
     match result {
         Ok(()) => {
-            sqlx::query("COMMIT")
-                .execute(pool)
+            tx.commit()
                 .await
                 .map_err(|e| StorageError::Migration(e.to_string()))?;
             Ok(())
         }
         Err(e) => {
-            if let Err(rollback_err) = sqlx::query("ROLLBACK").execute(pool).await {
-                tracing::warn!(
-                    migration_version = version,
-                    original_error = %e,
-                    rollback_error = %rollback_err,
-                    "migration failed and ROLLBACK also failed"
-                );
-            }
+            // `tx` rolls back on drop; no explicit ROLLBACK needed.
             Err(e)
         }
     }
 }
 
 /// M011: durable Tool Program terminal notifications and delivery claims.
-async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v34(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS tool_program_notification (
@@ -297,7 +293,7 @@ async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_tool_program_notification_program ON tool_program_notification(program_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -309,10 +305,10 @@ async fn migrate_v34(pool: &SqlitePool) -> Result<(), StorageError> {
 /// propagating genuine failures (disk full, corruption, ...) so the
 /// schema is never marked complete with a missing column.
 async fn add_column_ignore_duplicate(
-    pool: &SqlitePool,
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     statement: String,
 ) -> Result<(), StorageError> {
-    match sqlx::query(&statement).execute(pool).await {
+    match sqlx::query(&statement).execute(&mut **tx).await {
         Ok(_) => Ok(()),
         Err(sqlx::Error::Database(db_err)) => {
             if db_err.message().contains("duplicate column name") {
@@ -327,7 +323,7 @@ async fn add_column_ignore_duplicate(
 
 /// Tool Programs M003: durable program domain, source/IR references,
 /// capability manifests, checkpoints, call ledger, and results.
-async fn migrate_v33(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v33(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS tool_program (
@@ -384,14 +380,14 @@ async fn migrate_v33(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_tool_program_call_tool ON tool_program_call(tool_name)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
     Ok(())
 }
 
-async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v1(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS project (
@@ -408,7 +404,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -438,7 +434,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -454,7 +450,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -471,7 +467,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -490,7 +486,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -505,7 +501,7 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -522,65 +518,65 @@ async fn migrate_v1(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS session_project_idx ON session(project_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS session_workspace_idx ON session(workspace_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS session_parent_idx ON session(parent_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS todo_session_idx ON todo(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS message_session_time_created_id_idx ON message(session_id, time_created, id)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS part_message_id_id_idx ON part(message_id, id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS part_session_idx ON part(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v2(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v2(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS session_title_idx ON session(title)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS session_slug_idx ON session(slug)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v3(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v3(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS cached_models (
@@ -595,85 +591,85 @@ async fn migrate_v3(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS cached_models_provider_idx ON cached_models(provider)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v4(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v4(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS session_time_updated_idx ON session(time_updated)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v5(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v5(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE session_share ADD COLUMN share_expires_at INTEGER")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v6(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v6(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS permission_time_idx ON permission(time_created, time_updated)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS session_project_archived_idx ON session(project_id, time_archived)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v7(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v7(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE session ADD COLUMN tags TEXT")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS session_tags_idx ON session(tags)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v8(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v8(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         "ALTER TABLE part ADD COLUMN part_type TEXT GENERATED ALWAYS AS (json_extract(data, '$.type')) STORED",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS part_type_idx ON part(part_type)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v9(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v9(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS task (
@@ -691,24 +687,24 @@ async fn migrate_v9(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS task_session_idx ON task(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS task_parent_idx ON task(parent_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v10(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v10(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS checkpoints (
@@ -720,37 +716,37 @@ async fn migrate_v10(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS checkpoint_session_idx ON checkpoints(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v11(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v11(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_directory ON session(directory)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v12(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v12(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE session ADD COLUMN time_deleted INTEGER DEFAULT NULL")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v13(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v13(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS snapshot (
@@ -763,28 +759,28 @@ async fn migrate_v13(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS snapshot_session_idx ON snapshot(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v14(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v14(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query("ALTER TABLE task ADD COLUMN allowed_paths TEXT")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v15(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v15(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS usage (
@@ -801,19 +797,19 @@ async fn migrate_v15(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS usage_session_idx ON usage(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v16(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v16(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS goal (
@@ -845,24 +841,24 @@ async fn migrate_v16(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS goal_session_status_idx ON goal(session_id, status)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS goal_project_status_idx ON goal(project_id, status)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v17(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v17(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS session_events (
@@ -875,21 +871,21 @@ async fn migrate_v17(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_session_events_session_created ON session_events(session_id, created_at)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v18(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v18(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS research_run (
@@ -910,31 +906,31 @@ async fn migrate_v18(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_research_run_status ON research_run(status)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_research_run_started ON research_run(started_at)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_research_run_project ON research_run(project_root)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v19(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v19(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     // Generic key/value preferences for things that must outlive config
     // changes and survive a config file reset. Currently used for the
     // active theme id and the last-used model id.
@@ -947,14 +943,14 @@ async fn migrate_v19(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v20(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v20(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS core_event_log (
@@ -969,26 +965,26 @@ async fn migrate_v20(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_core_event_log_session ON core_event_log(session_id)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_core_event_log_seq ON core_event_log(event_seq)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     Ok(())
 }
 
-async fn migrate_v21(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v21(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS notification_history (
@@ -1002,21 +998,21 @@ async fn migrate_v21(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_notification_history_session ON notification_history(session_id)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_notification_history_kind ON notification_history(kind)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1041,7 +1037,7 @@ async fn migrate_v21(pool: &SqlitePool) -> Result<(), StorageError> {
 /// `project_id`: the latter is a stable string identity, while `directory`
 /// carries the filesystem intent. Legacy compatibility fields stay in
 /// place; new code reads `workspace_id`.
-async fn migrate_v22(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v22(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS workspace (
@@ -1054,17 +1050,17 @@ async fn migrate_v22(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_workspace_archived ON workspace(time_archived)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_session_workspace_repair ON session(workspace_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1074,7 +1070,7 @@ async fn migrate_v22(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Phase 4 of the single-daemon plan: introduce durable jobs, attempts,
 /// dependencies, schedules, and schedule occurrences. This migration
 /// creates the full set of tables required by [`crate::jobs`].
-async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v23(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS job (
@@ -1107,13 +1103,13 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     // M012-F04/F06: Add parent lineage columns to existing databases.
     for col in &["parent_job_id", "parent_attempt_id", "parent_call_id"] {
-        add_column_ignore_duplicate(pool, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+        add_column_ignore_duplicate(&mut *tx, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
             .await?;
     }
 
@@ -1124,7 +1120,7 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_job_parent_attempt ON job(parent_attempt_id)",
         "CREATE INDEX IF NOT EXISTS idx_job_parent_call ON job(parent_call_id)",
     ] {
-        if let Err(error) = sqlx::query(idx).execute(pool).await {
+        if let Err(error) = sqlx::query(idx).execute(&mut **tx).await {
             tracing::warn!(index = %idx, %error, "failed to create lineage index");
         }
     }
@@ -1149,7 +1145,7 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1164,7 +1160,7 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1187,7 +1183,7 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1203,53 +1199,53 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     // Queue-scan indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_state ON job(state)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_priority ON job(priority)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_workspace ON job(workspace_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_session ON job(session_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_schedule ON job(schedule_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_not_before ON job(not_before)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_time_updated ON job(time_updated DESC)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     // Attempt indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_attempt_job ON job_attempt(job_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_attempt_state ON job_attempt(state)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_job_attempt_generation ON job_attempt(daemon_generation)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1257,21 +1253,21 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_job_dependency_depends ON job_dependency(depends_on_job_id)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
     // Schedule indexes
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_workspace ON schedule(workspace_id)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_state ON schedule(state)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_schedule_next_run ON schedule(next_run_at)")
-        .execute(pool)
+        .execute(&mut **tx)
         .await
         .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1281,7 +1277,7 @@ async fn migrate_v23(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Durable daemon-owned provider connection metadata. Secret material is
 /// deliberately absent; the three binding columns contain only opaque
 /// references and account/provider locators.
-async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v24(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS provider_connections (
@@ -1316,7 +1312,7 @@ async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
         )
         "#,
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1324,21 +1320,21 @@ async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_provider_connections_scope \
          ON provider_connections(scope_kind, scope_ref)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_provider_connections_state \
          ON provider_connections(state)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_provider_connections_updated \
          ON provider_connections(time_updated DESC)",
     )
-    .execute(pool)
+    .execute(&mut **tx)
     .await
     .map_err(|e| StorageError::Migration(e.to_string()))?;
 
@@ -1348,7 +1344,7 @@ async fn migrate_v24(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Domain Identity Milestone 002: additive canonical project/repository
 /// authority. The historical `project` table and string-backed session
 /// fields intentionally remain untouched compatibility projections.
-async fn migrate_v25(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v25(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS logical_project (
@@ -1453,7 +1449,7 @@ async fn migrate_v25(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_identity_diagnostic_status ON identity_diagnostic(status, time_updated DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1464,7 +1460,7 @@ async fn migrate_v25(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Provider Connections Milestone 2: crash-recoverable provisioning state
 /// and bounded health/model catalog metadata. No credential material is
 /// stored in these tables.
-async fn migrate_v26(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v26(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS provider_provisioning (
@@ -1518,7 +1514,7 @@ async fn migrate_v26(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_provider_connection_models_lookup ON provider_connection_models(connection_id, revision, model_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1530,7 +1526,7 @@ async fn migrate_v26(pool: &SqlitePool) -> Result<(), StorageError> {
 /// authoritative connection ID + revision + model catalog revision + model
 /// ID. All columns are nullable; existing rows migrate unchanged and the
 /// legacy compatibility adapter resolves them lazily on read.
-async fn migrate_v27(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v27(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         "ALTER TABLE session ADD COLUMN provider_connection_id TEXT",
         "ALTER TABLE session ADD COLUMN provider_connection_revision INTEGER",
@@ -1542,7 +1538,7 @@ async fn migrate_v27(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_session_selected_model ON session(selected_model_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1553,7 +1549,7 @@ async fn migrate_v27(pool: &SqlitePool) -> Result<(), StorageError> {
 /// description/tags/registration-source columns on logical_project, and the
 /// legacy catalog association marker table. All tables and columns are
 /// additive and idempotent across restart.
-async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v28(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         "ALTER TABLE logical_project ADD COLUMN archived_at INTEGER",
         "ALTER TABLE logical_project ADD COLUMN description TEXT",
@@ -1608,7 +1604,7 @@ async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_project_health_status ON project_health(status)",
     ] {
         if statement.starts_with("ALTER TABLE") {
-            if let Err(e) = sqlx::query(statement).execute(pool).await {
+            if let Err(e) = sqlx::query(statement).execute(&mut **tx).await {
                 let msg = e.to_string();
                 if !msg.contains("duplicate column name") {
                     return Err(StorageError::Migration(msg));
@@ -1616,7 +1612,7 @@ async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
             }
         } else {
             sqlx::query(statement)
-                .execute(pool)
+                .execute(&mut **tx)
                 .await
                 .map_err(|e| StorageError::Migration(e.to_string()))?;
         }
@@ -1628,7 +1624,7 @@ async fn migrate_v28(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Project Catalog Milestone 2: bounded discovery roots, scan generations,
 /// and metadata-only observations. The tables are additive and retain catalog
 /// authority when a root becomes unavailable or a scan is cancelled.
-async fn migrate_v29(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v29(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS discovery_root (
@@ -1707,7 +1703,7 @@ async fn migrate_v29(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_discovery_observation_lineage ON discovery_observation(lineage_key)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1718,7 +1714,7 @@ async fn migrate_v29(pool: &SqlitePool) -> Result<(), StorageError> {
 /// remain reconstructible from an explicit workspace context; this table only
 /// preserves the last successful generation, fingerprint, and diagnostics
 /// needed for restart/operator continuity.
-async fn migrate_v30(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v30(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS runtime_asset_refresh (
@@ -1735,7 +1731,7 @@ async fn migrate_v30(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_runtime_asset_refresh_updated ON runtime_asset_refresh(time_updated DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1746,7 +1742,7 @@ async fn migrate_v30(pool: &SqlitePool) -> Result<(), StorageError> {
 /// tombstone, and audit metadata. The historical provider_connections.state
 /// CHECK constraint remains a compatibility projection; extended lifecycle
 /// states are authoritative in provider_connection_lifecycle.
-async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v31(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS provider_connection_lifecycle (
@@ -1796,7 +1792,7 @@ async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_provider_connection_audit_connection ON provider_connection_audit_events(connection_id, time_created DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1807,26 +1803,26 @@ async fn migrate_v31(pool: &SqlitePool) -> Result<(), StorageError> {
 /// correlation (parent_program_id, parent_instruction_sequence,
 /// relation_kind). These columns are additive and nullable; existing
 /// rows are unaffected.
-async fn migrate_v35(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v35(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for col in &[
         "parent_program_id",
         "parent_instruction_sequence",
         "relation_kind",
     ] {
-        add_column_ignore_duplicate(pool, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
+        add_column_ignore_duplicate(&mut *tx, format!("ALTER TABLE job ADD COLUMN {} TEXT", col))
             .await?;
     }
     let _ =
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_job_parent_program ON job(parent_program_id)")
-            .execute(pool)
+            .execute(&mut **tx)
             .await;
     Ok(())
 }
 
 /// Persist the optional per-job execution timeout for durable jobs.
-async fn migrate_v36(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v36(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     add_column_ignore_duplicate(
-        pool,
+        &mut *tx,
         "ALTER TABLE job ADD COLUMN timeout_ms INTEGER".to_string(),
     )
     .await
@@ -1835,7 +1831,7 @@ async fn migrate_v36(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Durable delegated-agent ownership. These tables intentionally remain
 /// separate from the legacy numeric `task` table: old rows do not contain
 /// enough provenance to be safely promoted to AgentTask/AgentRun records.
-async fn migrate_v37(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v37(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS agent_task (
@@ -1895,7 +1891,7 @@ async fn migrate_v37(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_status ON agent_run(status, updated_at)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1903,7 +1899,7 @@ async fn migrate_v37(pool: &SqlitePool) -> Result<(), StorageError> {
 }
 
 /// M002: ordered delegated-run control mailbox and bounded stable journal.
-async fn migrate_v38(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v38(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS agent_run_mailbox (
@@ -1945,7 +1941,7 @@ async fn migrate_v38(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_journal_recent ON agent_run_journal(run_id, sequence)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -1955,7 +1951,7 @@ async fn migrate_v38(pool: &SqlitePool) -> Result<(), StorageError> {
 /// M003: durable CodeGG-managed worktree records and lease history.  Manual
 /// Git worktrees are intentionally not backfilled: without an authoritative
 /// owner and repository relation, claiming them would make cleanup unsafe.
-async fn migrate_v39(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v39(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS managed_worktree (
@@ -1998,7 +1994,7 @@ async fn migrate_v39(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_worktree_lease_owner ON worktree_lease(owner_run_id, released_at)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2008,7 +2004,7 @@ async fn migrate_v39(pool: &SqlitePool) -> Result<(), StorageError> {
 /// M004: durable structured results are separate from the bounded legacy
 /// result reference on `agent_run`, so callers can retrieve machine-derived
 /// repository facts without treating transcript text as authority.
-async fn migrate_v40(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v40(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS agent_run_result (
@@ -2023,7 +2019,7 @@ async fn migrate_v40(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_result_updated ON agent_run_result(updated_at)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2031,7 +2027,7 @@ async fn migrate_v40(pool: &SqlitePool) -> Result<(), StorageError> {
 }
 
 /// M005: durable bounded run-group membership and join state.
-async fn migrate_v41(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v41(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS agent_run_group (
@@ -2063,7 +2059,7 @@ async fn migrate_v41(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_run_group_member_run ON agent_run_group_member(run_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2071,31 +2067,30 @@ async fn migrate_v41(pool: &SqlitePool) -> Result<(), StorageError> {
 }
 
 /// M007: make delegated execution depth durable and authoritative.
-async fn migrate_v42(pool: &SqlitePool) -> Result<(), StorageError> {
-    add_column_ignore_duplicate(
-        pool,
+async fn migrate_v42(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    add_column_ignore_duplicate(&mut *tx,
         "ALTER TABLE agent_run ADD COLUMN depth INTEGER NOT NULL DEFAULT 1 CHECK (depth >= 1 AND depth <= 64)".to_string(),
     )
     .await
 }
 
 /// M007: persist whether a group is owned by a root turn or a durable run.
-async fn migrate_v43(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v43(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         "ALTER TABLE agent_run_group ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'run'",
         "ALTER TABLE agent_run_group ADD COLUMN owner_session_id TEXT",
         "ALTER TABLE agent_run_group ADD COLUMN owner_turn_id TEXT",
     ] {
-        add_column_ignore_duplicate(pool, statement.to_string()).await?;
+        add_column_ignore_duplicate(&mut *tx, statement.to_string()).await?;
     }
     Ok(())
 }
 
 /// M008: retain a bounded immutable request fingerprint beside the canonical
 /// call/delegation identity so incompatible idempotent replays fail closed.
-async fn migrate_v44(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v44(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     add_column_ignore_duplicate(
-        pool,
+        &mut *tx,
         "ALTER TABLE agent_task ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''"
             .to_string(),
     )
@@ -2104,16 +2099,16 @@ async fn migrate_v44(pool: &SqlitePool) -> Result<(), StorageError> {
 
 /// M012: add a durable monotonic goal revision used to reject stale
 /// host-verification proposals after progress, pause, cancel, or replacement.
-async fn migrate_v45(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v45(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     add_column_ignore_duplicate(
-        pool,
+        &mut *tx,
         "ALTER TABLE goal ADD COLUMN revision INTEGER NOT NULL DEFAULT 0".to_string(),
     )
     .await
 }
 
 /// M012: durable checked undo/reapply audit log.
-async fn migrate_v48(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v48(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     // H11: hot query patterns — ORDER BY time_updated DESC (project-scoped
     // listing/search) and per-session event/part scans. The single-column
     // variants already exist (v4/v32/v1); this adds the composite used by
@@ -2124,7 +2119,7 @@ async fn migrate_v48(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS part_session_idx ON part(session_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2134,7 +2129,7 @@ async fn migrate_v48(pool: &SqlitePool) -> Result<(), StorageError> {
 /// Agent convergence M001: durable bounded convergence specifications and
 /// cycle references. Execution remains owned by AgentRun/group/scheduler
 /// services; these tables contain coordination state only.
-async fn migrate_v49(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v49(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS agent_convergence (
@@ -2183,14 +2178,31 @@ async fn migrate_v49(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_agent_convergence_cycle_verifier ON agent_convergence_cycle(verifier_run_id)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
     Ok(())
 }
 
-async fn migrate_v47(pool: &SqlitePool) -> Result<(), StorageError> {
+/// Hot-path lookup indexes: `job_attempt.run_id` backs the
+/// `JobAttempt.run_id → RunStore` linkage query and `schedule_occurrence`
+/// status scans filter by status. Additive `IF NOT EXISTS`, safe on
+/// existing databases.
+async fn migrate_v50(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        "CREATE INDEX IF NOT EXISTS idx_job_attempt_run_id ON job_attempt(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_occurrence_status ON schedule_occurrence(status)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+async fn migrate_v47(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS edit_restore_operation (
@@ -2215,7 +2227,7 @@ async fn migrate_v47(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_edit_restore_operation_created ON edit_restore_operation(created_at DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2223,7 +2235,7 @@ async fn migrate_v47(pool: &SqlitePool) -> Result<(), StorageError> {
 }
 
 /// M011: durable edit checkpoints for mutation attribution.
-async fn migrate_v46(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v46(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS edit_checkpoint (
@@ -2243,7 +2255,7 @@ async fn migrate_v46(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_edit_checkpoint_created ON edit_checkpoint(created_at DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }
@@ -2252,7 +2264,7 @@ async fn migrate_v46(pool: &SqlitePool) -> Result<(), StorageError> {
 
 /// Session Projections Milestone 2: durable projection stream,
 /// event, and checkpoint tables for scoped subscriptions and replay.
-async fn migrate_v32(pool: &SqlitePool) -> Result<(), StorageError> {
+async fn migrate_v32(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in [
         r#"
         CREATE TABLE IF NOT EXISTS projection_stream (
@@ -2308,7 +2320,7 @@ async fn migrate_v32(pool: &SqlitePool) -> Result<(), StorageError> {
         "CREATE INDEX IF NOT EXISTS idx_projection_checkpoint_stream ON projection_checkpoint(stream_id, checkpoint_seq DESC)",
     ] {
         sqlx::query(statement)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .map_err(|e| StorageError::Migration(e.to_string()))?;
     }

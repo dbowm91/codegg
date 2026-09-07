@@ -196,7 +196,7 @@ impl SseParser {
                     let idx = tc
                         .get("index")
                         .and_then(|v| v.as_u64())
-                        .map(|n| n as usize)
+                        .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
                         .unwrap_or(arr_idx);
                     let state = self.openai_tool_states.entry(idx).or_default();
 
@@ -340,19 +340,20 @@ impl SseParser {
                     let mut usage = TokenUsage::default();
                     if let Some(u) = val.get("usage") {
                         if let Some(prompt) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                            usage.input_tokens = prompt as usize;
+                            usage.input_tokens = usize::try_from(prompt).unwrap_or(usize::MAX);
                         }
                         if let Some(completion) =
                             u.get("completion_tokens").and_then(|v| v.as_u64())
                         {
-                            usage.output_tokens = completion as usize;
+                            usage.output_tokens = usize::try_from(completion).unwrap_or(usize::MAX);
                         }
                         if let Some(cached) = u
                             .get("prompt_tokens_details")
                             .and_then(|v| v.get("cached_tokens"))
                             .and_then(|v| v.as_u64())
                         {
-                            usage.cached_tokens = Some(cached as usize);
+                            usage.cached_tokens =
+                                Some(usize::try_from(cached).unwrap_or(usize::MAX));
                         }
                         usage.total_tokens = usage.input_tokens + usage.output_tokens;
                     }
@@ -367,17 +368,17 @@ impl SseParser {
         if let Some(usage) = val.get("usage") {
             let mut u = TokenUsage::default();
             if let Some(prompt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                u.input_tokens = prompt as usize;
+                u.input_tokens = usize::try_from(prompt).unwrap_or(usize::MAX);
             }
             if let Some(completion) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-                u.output_tokens = completion as usize;
+                u.output_tokens = usize::try_from(completion).unwrap_or(usize::MAX);
             }
             if let Some(cached) = usage
                 .get("prompt_tokens_details")
                 .and_then(|v| v.get("cached_tokens"))
                 .and_then(|v| v.as_u64())
             {
-                u.cached_tokens = Some(cached as usize);
+                u.cached_tokens = Some(usize::try_from(cached).unwrap_or(usize::MAX));
             }
             u.total_tokens = u.input_tokens + u.output_tokens;
             return Some(Ok(ChatEvent::Finish {
@@ -664,17 +665,17 @@ fn parse_anthropic_event_with_state(
                 if let Some(usage) = val.get("usage") {
                     let mut u = TokenUsage::default();
                     if let Some(input_tokens) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
-                        u.input_tokens = input_tokens as usize;
+                        u.input_tokens = usize::try_from(input_tokens).unwrap_or(usize::MAX);
                     }
                     if let Some(output_tokens) = usage.get("output_tokens").and_then(|v| v.as_u64())
                     {
-                        u.output_tokens = output_tokens as usize;
+                        u.output_tokens = usize::try_from(output_tokens).unwrap_or(usize::MAX);
                     }
                     if let Some(cached) = usage
                         .get("cache_read_input_tokens")
                         .and_then(|v| v.as_u64())
                     {
-                        u.cached_tokens = Some(cached as usize);
+                        u.cached_tokens = Some(usize::try_from(cached).unwrap_or(usize::MAX));
                     }
                     u.total_tokens = u.input_tokens + u.output_tokens;
                     if std::env::var("CODEGG_DIAG_USAGE").is_ok() {
@@ -753,17 +754,17 @@ pub fn parse_openai_chunk_standalone(
                 let mut usage = TokenUsage::default();
                 if let Some(u) = val.get("usage") {
                     if let Some(prompt) = u.get("prompt_tokens").and_then(|v| v.as_u64()) {
-                        usage.input_tokens = prompt as usize;
+                        usage.input_tokens = usize::try_from(prompt).unwrap_or(usize::MAX);
                     }
                     if let Some(completion) = u.get("completion_tokens").and_then(|v| v.as_u64()) {
-                        usage.output_tokens = completion as usize;
+                        usage.output_tokens = usize::try_from(completion).unwrap_or(usize::MAX);
                     }
                     if let Some(cached) = u
                         .get("prompt_tokens_details")
                         .and_then(|v| v.get("cached_tokens"))
                         .and_then(|v| v.as_u64())
                     {
-                        usage.cached_tokens = Some(cached as usize);
+                        usage.cached_tokens = Some(usize::try_from(cached).unwrap_or(usize::MAX));
                     }
                     usage.total_tokens = usage.input_tokens + usage.output_tokens;
                 }
@@ -796,17 +797,17 @@ pub fn parse_openai_chunk_standalone(
     if let Some(usage) = val.get("usage") {
         let mut u = TokenUsage::default();
         if let Some(prompt) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
-            u.input_tokens = prompt as usize;
+            u.input_tokens = usize::try_from(prompt).unwrap_or(usize::MAX);
         }
         if let Some(completion) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
-            u.output_tokens = completion as usize;
+            u.output_tokens = usize::try_from(completion).unwrap_or(usize::MAX);
         }
         if let Some(cached) = usage
             .get("prompt_tokens_details")
             .and_then(|v| v.get("cached_tokens"))
             .and_then(|v| v.as_u64())
         {
-            u.cached_tokens = Some(cached as usize);
+            u.cached_tokens = Some(usize::try_from(cached).unwrap_or(usize::MAX));
         }
         u.total_tokens = u.input_tokens + u.output_tokens;
         return Some(Ok(ChatEvent::Finish {

@@ -1168,10 +1168,14 @@ async fn execute_agent_task(
         && !request.denied_tools.iter().any(|tool| tool == "task")
         && config.subagent.as_ref().and_then(|s| s.enabled) != Some(false);
     if can_delegate {
-        let durable_submission = subagent_pool.durable_submission.lock().await.clone();
-        let durable_agent_runs = subagent_pool.durable_agent_runs.lock().await.clone();
-        let durable_run_control = subagent_pool.durable_run_control.lock().await.clone();
-        let durable_run_groups = subagent_pool.durable_run_groups.lock().await.clone();
+        // Acquire the four option slots concurrently rather than in
+        // sequence; each is uncontended and the clones are cheap Arcs.
+        let (durable_submission, durable_agent_runs, durable_run_control, durable_run_groups) = tokio::join!(
+            async { subagent_pool.durable_submission.lock().await.clone() },
+            async { subagent_pool.durable_agent_runs.lock().await.clone() },
+            async { subagent_pool.durable_run_control.lock().await.clone() },
+            async { subagent_pool.durable_run_groups.lock().await.clone() },
+        );
         let mut inherited_denied = request.denied_tools.clone();
         if parent_is_read_only {
             inherited_denied.extend(read_only_blocked_tools());

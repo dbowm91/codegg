@@ -504,6 +504,6 @@ mod tests {
         let patch = &preview.files[0].patch;
         let updated = crate::tool::patch_util::apply_unified_diff(original, patch)
             .expect("patch should apply");
-        assert_eq!(updated, "fn main() {\n    new_name();\n}");
+        assert_eq!(updated, "fn main() {\n    new_name();\n}\n");
     }
 }

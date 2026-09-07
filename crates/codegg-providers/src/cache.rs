@@ -1,6 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 
@@ -40,11 +40,11 @@ impl ProviderCache {
         let key = (provider.to_string(), model.to_string(), input_hash);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         if let Some(entry) = self.cache.get(&key) {
-            if now - entry.timestamp_secs < entry.ttl_secs {
+            if now.saturating_sub(entry.timestamp_secs) < entry.ttl_secs {
                 return Some(entry.response_text.clone());
             } else {
                 drop(entry);
@@ -59,7 +59,7 @@ impl ProviderCache {
         let key = (provider.to_string(), model.to_string(), input_hash);
         let timestamp_secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::ZERO)
             .as_secs();
 
         self.cache.insert(
@@ -75,9 +75,9 @@ impl ProviderCache {
     pub fn evict_expired(&self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(Duration::ZERO)
             .as_secs();
         self.cache
-            .retain(|_, entry| now - entry.timestamp_secs < entry.ttl_secs);
+            .retain(|_, entry| now.saturating_sub(entry.timestamp_secs) < entry.ttl_secs);
     }
 }

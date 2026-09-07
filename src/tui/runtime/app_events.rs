@@ -250,12 +250,7 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                     app.session_state.reasoning_tokens += rt;
                 }
 
-                let should_consolidate = app.memory_store.is_some()
-                    && crate::config::schema::Config::load()
-                        .ok()
-                        .and_then(|c| c.experimental)
-                        .and_then(|e| e.memory_auto_consolidate)
-                        .unwrap_or(false);
+                let should_consolidate = app.memory_store.is_some() && app.memory_auto_consolidate;
                 if should_consolidate {
                     let session_id = app.session_state.session.as_ref().map(|s| s.id.clone());
                     let message_store = app.message_store.clone();

@@ -281,7 +281,9 @@ impl Tool for ReplaceTool {
         // Config format validation after write
         if let Some(ref svc) = self.preflight {
             if is_config_file(&path_str_out) {
-                let content_after = std::fs::read_to_string(&path_str_out).unwrap_or_default();
+                let content_after = tokio::fs::read_to_string(&path_str_out)
+                    .await
+                    .unwrap_or_default();
                 let ext = std::path::Path::new(&path_str_out)
                     .extension()
                     .and_then(|e| e.to_str())

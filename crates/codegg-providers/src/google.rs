@@ -389,14 +389,14 @@ fn parse_google_chunk(val: &serde_json::Value) -> Option<Result<ChatEvent, Provi
                 let mut usage = TokenUsage::default();
                 if let Some(u) = val.get("usageMetadata") {
                     if let Some(prompt) = u.get("promptTokenCount").and_then(|v| v.as_u64()) {
-                        usage.input_tokens = prompt as usize;
+                        usage.input_tokens = usize::try_from(prompt).unwrap_or(usize::MAX);
                     }
                     if let Some(completion) = u.get("candidatesTokenCount").and_then(|v| v.as_u64())
                     {
-                        usage.output_tokens = completion as usize;
+                        usage.output_tokens = usize::try_from(completion).unwrap_or(usize::MAX);
                     }
                     if let Some(total) = u.get("totalTokenCount").and_then(|v| v.as_u64()) {
-                        usage.total_tokens = total as usize;
+                        usage.total_tokens = usize::try_from(total).unwrap_or(usize::MAX);
                     } else {
                         usage.total_tokens = usage.input_tokens + usage.output_tokens;
                     }
