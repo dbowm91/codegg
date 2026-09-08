@@ -29,6 +29,7 @@ Canonical direction remains in:
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
+| Provider authentication capability closure | active | `plans/subsystems/provider-auth-capability-closure-addendum.md` | M010 ready | Existing auth/provider ownership is stable; stored bearer support is bounded to compatible credential-capable provider paths. |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001-004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -40,16 +41,24 @@ Canonical direction remains in:
 | Memory-to-skill promotion | closed | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M005 closed | Publication/proposal Clippy findings and exact-head hosted closure accepted. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | Durable TUI schedule identity and labels reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
-| Development verification and release | closed | `plans/subsystems/development-verification-release-final-evidence-closure-addendum.md` | M008/M009 closed; M007 remains closed | Minimal verification posture retained. |
+| Development verification and release | active | `plans/subsystems/development-verification-release-ci-reproducibility-corrective-addendum.md` | M010 ready | Exact baseline `15632a0` has a hosted workspace-test failure despite reported local success; root cause and exact-head green evidence required. |
+| Distribution and installation | active | `plans/subsystems/distribution-installation-roadmap.md` | M001 ready | Manual release authority and single-binary topology are stable; M002 waits on the artifact/checksum contract. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | Exact candidate `f314c38e` passed hosted `CI / verify`. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | Daemon startup/shutdown/process lifecycle corrective work accepted. |
+| Post-audit maintainability and surface | active | `plans/subsystems/post-audit-maintainability-surface-roadmap.md` | M001, M003, M004 ready | M002 hard-blocked on M001; M005 hard-blocked on M002 with an interface dependency on M003. |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
+| Development verification and release | M010 — hosted test reproducibility and mainline gate | `plans/implementation/development-verification-release/010-hosted-test-reproducibility-and-main-gate.md` | The exact hosted failing SHA/run and existing minimal CI contract are known; diagnosis can begin without architecture changes. |
+| Post-audit maintainability and surface | M001 — compatibility-surface rationalization | `plans/implementation/post-audit-maintainability-surface/001-compatibility-surface-rationalization.md` | Canonical subsystem owners already exist; the work is an evidence-backed compatibility census/disposition. |
+| Post-audit maintainability and surface | M003 — agent-runtime physical decomposition | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | Remaining problem is physical concentration inside canonical agent ownership; M001 is only a soft merge dependency. |
+| Post-audit maintainability and surface | M004 — Bash-tool physical decomposition | `plans/implementation/post-audit-maintainability-surface/004-bash-tool-physical-decomposition.md` | Bash execution/sandbox/scheduler owners are already stable; this is a behavior-preserving locality refactor. |
+| Provider authentication capability closure | M010 — auth capability matrix and stored bearer closure | `plans/implementation/provider-connections/010-auth-capability-matrix-and-stored-bearer-closure.md` | Credential kinds/store/factory seams already exist; the missing support matrix and stored-bearer mismatch are concrete. |
+| Distribution and installation | M001 — manual prebuilt artifact contract | `plans/implementation/distribution-installation/001-manual-prebuilt-artifact-contract.md` | Manual release governance and single-binary topology are closed; stable artifact/checksum packaging can be implemented independently of release automation. |
 
 ## Architecture convergence execution order
 
@@ -58,16 +67,27 @@ Canonical direction remains in:
 3. M009 must reproduce/disposition the historical M004 shell timeout and triage the three M008 guard findings: daemon cwd usage, project-catalog invariant drift, and direct ReviewTool execution.
 4. Small directly owned defects may be corrected inside M009. Any migration, protocol change, broad subsystem redesign, or new verification infrastructure requires a separate registered corrective plan rather than scope expansion.
 5. The architecture-convergence subsystem returns to `closed` only if M009 establishes that no architecture-convergence condition remains; otherwise it must remain `conditionally closed` with the remaining condition named explicitly.
-6. The workstream still does not register packaging/release automation, Windows support expansion, another scheduler/tool/plugin runtime, another memory subsystem, or another verification framework.
+6. The workstream still does not register release automation, Windows support expansion, another scheduler/tool/plugin runtime, another memory subsystem, or another verification framework. The separately registered distribution roadmap is manual and does not change this rule.
 7. Verification remains focused tests plus the existing `scripts/verify.sh quick` posture and existing hosted CI only where current exact-head closure evidence genuinely requires it.
+
+## Post-audit execution order
+
+1. CI M010, maintainability M001/M003/M004, provider-auth M010, and distribution M001 are independent dependency-ready handoffs. Agents implementing them in parallel must avoid overlapping edits rather than inventing cross-plan dependencies.
+2. Maintainability M002 begins only after M001 establishes canonical names and compatibility disposition.
+3. Maintainability M005 begins only after M002 closes and after M003 has stabilized the agent/runtime construction seams it consumes.
+4. Distribution M002 begins only after M001 fixes the release asset names, archive layout, checksum manifest, and completeness rules.
+5. The active distribution work does not authorize tag-triggered, scheduled, workflow-dispatch, or routine-CI release automation. Cadence/version/publication remain manual maintainer decisions.
+6. Provider-auth M010 must leave OAuth device flow and external-command credential execution explicitly unsupported; it is not a general auth expansion.
+7. Team roles/presence/chat, additional frontends, persistent indexing, new sandboxes, and Windows support-tier expansion remain outside this batch.
 
 ## Blocked work
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
 | Runtime safety, resource control, and footprint | C002 supported-Linux evidence | Historical supported-Linux Landlock fixture evidence remains outstanding; it is independent of architecture-convergence M009. |
-
-No other newly registered plan is hard-blocked.
+| Post-audit maintainability and surface | M002 — model-visible tool-surface minimization | Hard dependency on M001 canonical-name/compatibility disposition. |
+| Post-audit maintainability and surface | M005 — runtime-service context and mutable-global cleanup | Hard dependency on M002 final tool construction/disclosure contract; interface dependency on M003 agent construction seams. |
+| Distribution and installation | M002 — verified installer and end-user installation | Hard dependency on M001 stable target/asset/archive/checksum contract. |
 
 ## Closure work and recently completed control points
 
@@ -95,11 +115,11 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Architecture convergence and incomplete verticals | M008 — headless projection consumer and legacy transport disposition | closed | `plans/closure/architecture-convergence-incomplete-verticals/008-status.md` |
 | Architecture convergence and incomplete verticals | M009 — strict closure evidence and guard triage | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/009-status.md` |
 
-Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmap, must receive a new milestone/addendum under the normal planning process.
+Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmaps, must receive a new milestone/addendum under the normal planning process.
 
 ## Verification policy
 
-Verification remains deliberately light. New architecture-convergence milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add:
+Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add:
 
 - new CI lanes;
 - new security scanners;
@@ -116,13 +136,13 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 scripts/verify.sh quick
 ```
 
-Hosted `CI / verify` is closure evidence on exact candidates when the existing closure convention requires it; it is not a new architecture requirement.
+Hosted `CI / verify` is closure evidence on exact candidates when the existing closure convention requires it; it is not a new architecture requirement. Development-verification M010 specifically requires a green exact-head run because a current hosted/local reproducibility contradiction is its defect trigger.
 
 ## Deferred unregistered product work
 
 These remain outside active handoff unless a concrete product priority or new evidence makes them ready:
 
-- packaging/distribution improvements such as crates.io or prebuilt binaries;
+- distribution expansion beyond the active Linux/macOS binary+installer slice, including Homebrew/deb/rpm/Nix, Windows installer support, signing/notarization, SBOM/provenance, and package-manager automation;
 - expanding Windows from opportunistic compatibility to a guaranteed support tier;
 - full web/desktop/mobile frontends;
 - arbitrary LSP `workspace/executeCommand` support;
@@ -135,4 +155,5 @@ These remain outside active handoff unless a concrete product priority or new ev
 - seccomp, namespace, container, or remote-execution sandbox expansion;
 - persistent search indexing;
 - automatic dependency-update bots or continuous binary-size/audit gates;
+- OAuth device/PKCE or external-command provider auth until a concrete provider/security contract justifies activation;
 - release automation or a fixed release cadence.
