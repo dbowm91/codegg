@@ -13,6 +13,7 @@ FILES = [
     ROOT / "src/bin/codegg-sandbox-helper.rs",
     ROOT / "src/managed_process.rs",
     ROOT / "src/tool/bash.rs",
+    ROOT / "src/tool/bash/process.rs",
 ]
 FORBIDDEN = (
     r"landlock_create_ruleset",

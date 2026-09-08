@@ -45,7 +45,26 @@ src/tool/
 ├── contract.rs         # ToolContract, ToolCallerPolicy, ToolValue
 ├── util.rs             # Path validation helpers
 ├── disabled.rs         # DisabledTool stub for hidden/disabled backends
-├── bash.rs             # Shell command execution
+├── bash.rs             # BashTool facade: config/builders + high-level
+│                       # execute sequence (policy → execution → result);
+│                       # re-exports DispatchOutcome and the child-workspace
+│                       # validator for terminal.rs compatibility
+├── bash/
+│   ├── policy.rs       # Bash-owned classification/policy glue only
+│   │                   # (blocked patterns, blocked/allow lists, child
+│   │                   # worktree ceiling, kill switches, intent-family
+│   │                   # adapters). Invokes destructive/command-intent/
+│   │                   # sandbox owners; never spawns or submits.
+│   ├── process.rs      # Supervised execution: raw-shell spawn via
+│   │                   # ManagedProcessService, native/managed dispatch,
+│   │                   # scheduler-owned submissions, DispatchOutcome.
+│   │                   # No second shell executor; timeout/cancel/reap
+│   │                   # owned by the managed service.
+│   └── output.rs       # Bounded capture/truncation, routing metadata,
+│                       # caller-owned RunStore persistence (delegated
+│                       # backends with a run id are skipped), result
+│                       # shaping. Persistence failure never rewrites the
+│                       # terminal outcome.
 ├── read.rs             # File reading with image/PDF base64 support
 ├── write.rs            # File writing with auto-formatting
 ├── edit.rs             # 8-strategy edit matching
@@ -256,7 +275,7 @@ discoverable, `Hidden` = never advertised):
 
 | Tool | File | Description |
 |------|------|-------------|
-| **bash** | `bash.rs` | Shell commands with security (blocked patterns, allowlist, Landlock). 120s timeout. |
+| **bash** | `bash.rs` + `bash/{policy,process,output}.rs` | Shell commands with security (blocked patterns, allowlist, Landlock). 120s timeout. Facade sequences policy → execution → result; see module headers for the pre-spawn order. |
 | **read** | `read.rs` | Read file contents with line numbers. Images/PDFs as base64. |
 | **write** | `write.rs` | Create or overwrite files with auto-formatting. |
 | **edit** | `edit.rs` | Surgical search-and-replace with 8 matching strategies. |

@@ -40,7 +40,13 @@
 [[site]]
 path = "src/tool/bash.rs"
 owner = "scheduler"
-reason = "test/build/lint/format/managed/shell/python routes submit jobs through JobSubmissionService"
+reason = "BashTool facade sequencing; test/build/lint/format/managed/shell/python routes submit jobs through JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
+path = "src/tool/bash/process.rs"
+owner = "scheduler"
+reason = "M004 extraction of Bash supervised dispatch; scheduler-owned routes submit jobs through JobSubmissionService, direct paths use ManagedProcessService only"
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]

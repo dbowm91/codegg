@@ -1,316 +1,70 @@
+//! Model-facing `bash` tool facade.
+//!
+//! `BashTool` remains the single model-facing shell tool. This file owns
+//! only configuration/builders and the high-level execution sequence:
+//!
+//! ```text
+//! parse/classify
+//!  -> authorize/path/child policy
+//!  -> route to scheduler or local supervised process
+//!  -> collect bounded result
+//!  -> project/redact/persist
+//!  -> return structured tool result
+//! ```
+//!
+//! Responsibility owners:
+//!
+//! - policy/classification glue: [`policy`] (blocked patterns, allowlist,
+//!   child-workspace ceiling, kill switches, intent-family adapters).
+//! - supervised execution: [`process`] (raw-shell spawn, native/managed
+//!   dispatch, scheduler submission, [`process::DispatchOutcome`]).
+//! - output/result handling: [`output`] (truncation, routing metadata,
+//!   RunStore persistence, result shaping).
+//!
+//! Existing canonical owners are invoked, never duplicated:
+//! `tool::destructive`, scheduler services, shell/projector helpers,
+//! sandbox modules, and command-intent services.
+
+pub mod output;
+pub mod policy;
+pub mod process;
+
+pub(crate) use policy::validate_child_workspace_command;
+pub use process::DispatchOutcome;
+
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-
-use crate::command_intent::pipeline::{prepare_command, CommandPipelineResult};
-use crate::command_intent::plan::{
-    CommandDispatchTarget, CommandPlan, ExecutionBackend, NativeCommand,
-};
-use crate::command_intent::{CommandIntentContext, CommandIntentKind};
-use crate::command_outcome::{
-    ownership_for_outcome, run_kind_for_outcome, ActualExecutor, ExecutionOutcome,
-};
-use crate::config::schema::CommandIntentConfig;
-use crate::config::schema::CommandIntentFamily;
-use crate::config::schema::CommandIntentMode;
-use crate::error::ToolError;
-use crate::preflight::{PreflightDecision, PreflightService};
-use crate::python_script::{PythonExecutionMode, PythonScriptRequest};
-use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
-use crate::tool::{Tool, ToolCategory};
 use std::time::Duration;
 
-/// What a single dispatch returned: the result text, raw process output,
-/// the actual executor that ran it, and an optional `RunId` proving that
-/// a delegated subsystem owns a canonical RunStore record.
-///
-/// `delegated_run_id == None` paired with `ActualExecutor::TestRunner` or
-/// `PythonScript` means the backend executed without obtaining a canonical
-/// RunStore record. `BashTool::execute` keeps that result (never retries the
-/// command) and uses caller persistence only when a store is available.
-#[derive(Debug, Clone)]
-pub struct DispatchOutcome {
-    pub result: String,
-    pub output: std::process::Output,
-    pub executor: ActualExecutor,
-    pub delegated_run_id: Option<codegg_core::run_store::RunId>,
-}
-
-const MAX_COMMAND_LENGTH: usize = 100_000;
-
-fn bash_environment_policy() -> crate::managed_process::EnvironmentPolicy {
-    let preserved = [
-        "PATH",
-        "HOME",
-        "USER",
-        "SHELL",
-        "LANG",
-        "LC_ALL",
-        "TERM",
-        "CARGO_HOME",
-        "RUSTUP_HOME",
-        "CARGO_INCREMENTAL",
-        "CARGO_TERM_COLOR",
-        "CARGO_TERM_PROGRESS",
-        "RUSTFLAGS",
-        "RUSTDOCFLAGS",
-        "NVM_DIR",
-        "PYENV_ROOT",
-        "VIRTUAL_ENV",
-        "PYTHONPATH",
-        "JAVA_HOME",
-        "GOPATH",
-        "GOBIN",
-    ];
-    let mut policy = crate::managed_process::EnvironmentPolicy::sanitized();
-    for name in preserved {
-        policy = policy.allow_inherited_var(OsString::from(name));
-    }
-    policy
-}
-
-/// Routing metadata attached to bash output when command intent routing is enabled.
-#[derive(Debug, Clone)]
-struct RoutingMetadata {
-    intent_kind: String,
-    backend_label: String,
-    projector_label: String,
-    rtk_eligible: bool,
-    confidence: String,
-    risk_level: String,
-    routing_enabled: bool,
-    routing_decision: String,
-    mode: CommandIntentMode,
-}
-
-/// Metrics for routing decisions — recorded per command execution.
-#[derive(Debug, Clone)]
-struct RoutingMetric {
-    family: CommandIntentFamily,
-    decision: String,
-    fallback: bool,
-}
-
-/// Compatibility helper for older tests/callers. The canonical family
-/// mapping is owned by `command_intent::plan`.
-#[cfg(test)]
-fn intent_kind_to_family(kind: CommandIntentKind) -> Option<CommandIntentFamily> {
-    crate::command_intent::plan::command_intent_family_for_kind(kind)
-}
-
-/// Compatibility helper delegating to the plan-owned family mapping.
-fn plan_family(plan: &CommandPlan) -> Option<CommandIntentFamily> {
-    plan.command_family()
-}
-
-/// Map an `ExecutionBackend` to a `PlannedBackend` for persistence provenance.
-fn plan_to_planned_backend(
-    plan_backend: Option<&ExecutionBackend>,
-) -> codegg_core::run_store::PlannedBackend {
-    use codegg_core::run_store::PlannedBackend;
-    match plan_backend {
-        None => PlannedBackend::Unrouted,
-        Some(ExecutionBackend::RawShell { .. }) => PlannedBackend::RawShell,
-        Some(ExecutionBackend::TestRunner { .. }) => PlannedBackend::TestRunner,
-        Some(ExecutionBackend::PythonScript { .. }) => PlannedBackend::PythonScript,
-        Some(ExecutionBackend::NativeTool { .. }) => PlannedBackend::NativeTool,
-        Some(ExecutionBackend::ManagedArgv { .. }) => PlannedBackend::ManagedArgv,
-        Some(ExecutionBackend::Git { .. }) => PlannedBackend::Git,
-        Some(ExecutionBackend::Reject { .. }) => PlannedBackend::Unrouted,
-    }
-}
-
-/// Clone the actual backend from an ExecutionOutcome. Used by the persistence
-/// path to set the `actual_backend` field on RunCompletion without consuming
-/// the outcome (which is also used for `fallback_record()`).
-fn execution_outcome_clone_actual(
-    outcome: &ExecutionOutcome,
-) -> codegg_core::run_store::ActualBackend {
-    outcome.actual.into_backend()
-}
-
-/// Named command-injection patterns. Each entry is a human-readable name
-/// plus a regex. We iterate them individually so we can return which
-/// pattern matched (helps users understand why a command was rejected)
-/// and so we can fix false positives (e.g. `find -exec`) without
-/// weakening security.
-static BLOCKED_PATTERNS: &[(&str, &str)] = &[
-    ("command substitution $(...)", r"\$\("),
-    ("braced command substitution ${...}", r"\$\{"),
-    ("backtick substitution", r"`"),
-    (
-        "variable expansion $VAR or special parameter",
-        r"\$([A-Za-z_][A-Za-z0-9_]*|[0-9!@#?*$-])",
-    ),
-    ("pipe to shell |/.*sh", r"\|/.*sh"),
-    ("pipe to shell |/.*bash", r"\|/.*bash"),
-    ("redirect to /dev", r"> /dev/"),
-    ("input redirect from /dev", r"< /dev/"),
-    ("stderr redirect to /dev", r"2> /dev/"),
-    (
-        "fork bomb with rm -rf",
-        r"&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf",
-    ),
-    ("|| rm -rf", r"\|\|[\s\n\r]*rm[\s\n\r]+-rf"),
-    ("printf injection %{...}|&", r"%\{[^}]*\|\s*&"),
-    ("eval(", r"eval\s*\("),
-    ("eval command", r"(?:^|[\s;&|()<>])eval(?:\s+|\(|$)"),
-    ("standalone exec command", r"(?:^|[\s;&|()<>])exec\s+"),
-    ("source shell script", r"source\s+.*\.sh"),
-    ("dot-source shell script", r"\.\s+.*\.sh"),
-    ("base64 -d", r"base64\s+-d"),
-    ("xxd -r", r"xxd\s+-r"),
-    ("perl -e", r"perl\s+-e"),
-    ("python -c", r"python\s+-c"),
-    ("ruby -e", r"ruby\s+-e"),
-    ("node -e", r"node\s+-e"),
-    ("nohup background (trailing &)", r"nohup\s+.*&\s*$"),
-    ("nohup with &", r"nohup\s+.*\s+&"),
-    ("disown -a", r"disown\s+-a"),
-    ("kill -9 -1", r"kill\s+-9\s+-1"),
-    ("killall -9", r"killall\s+-9"),
-    ("pkill -9", r"pkill\s+-9"),
-    ("chmod to /etc", r"chmod\s+[0-7]{4}\s+/etc"),
-    ("chmod to /home", r"chmod\s+[0-7]{4}\s+/home"),
-    ("chmod to /root", r"chmod\s+[0-7]{4}\s+/root"),
-    ("chmod to /var", r"chmod\s+[0-7]{4}\s+/var"),
-    ("chmod to /ssh", r"chmod\s+[0-7]{4}\s+/ssh"),
-    ("chmod to /proc", r"chmod\s+[0-7]{4}\s+/proc"),
-    ("chmod to /sys", r"chmod\s+[0-7]{4}\s+/sys"),
-    ("chmod 777 to /", r"chmod\s+777\s+/"),
-    ("chown to /etc", r"chown\s+.*\s+/etc"),
-    ("chown to /home", r"chown\s+.*\s+/home"),
-    ("chown to /root", r"chown\s+.*\s+/root"),
-    ("chown to /var", r"chown\s+.*\s+/var"),
-    ("chown to /ssh", r"chown\s+.*\s+/ssh"),
-    ("chown to /proc", r"chown\s+.*\s+/proc"),
-    ("chown to /sys", r"chown\s+.*\s+/sys"),
-    ("wget -O /", r"wget\s+.*-O\s+/"),
-    ("curl -o /", r"curl\s+.*-o\s+/"),
-    ("fork bomb :(){:|:", r":\(\)\s*:\s*\|"),
-    ("standalone &", r"(?:^|\s)&(?:[\s]|$)"),
-];
-
-static BLOCKED_PATTERN_REGEXES: Lazy<Vec<(&'static str, Regex)>> = Lazy::new(|| {
-    BLOCKED_PATTERNS
-        .iter()
-        .map(|(name, pat)| {
-            (
-                *name,
-                Regex::new(pat).expect("invalid blocked pattern regex"),
-            )
-        })
-        .collect()
-});
-
-/// Returns the name of the first matching blocked pattern, or None.
-fn find_blocked_pattern(command: &str) -> Option<&'static str> {
-    let sanitized = strip_quoted_heredoc_bodies(command);
-    for (name, re) in BLOCKED_PATTERN_REGEXES.iter() {
-        if re.is_match(&sanitized) {
-            return Some(*name);
-        }
-    }
-    None
-}
-
-fn strip_quoted_heredoc_bodies(command: &str) -> String {
-    let mut output = String::with_capacity(command.len());
-    let mut lines = command.lines();
-
-    while let Some(line) = lines.next() {
-        output.push_str(line);
-        output.push('\n');
-
-        let Some(delimiter) = quoted_heredoc_delimiter(line) else {
-            continue;
-        };
-
-        for body_line in lines.by_ref() {
-            if body_line.trim() == delimiter {
-                output.push_str(body_line);
-                output.push('\n');
-                break;
-            }
-        }
-    }
-
-    if !command.ends_with('\n') {
-        output.pop();
-    }
-    output
-}
-
-fn quoted_heredoc_delimiter(line: &str) -> Option<String> {
-    let marker = line.find("<<")?;
-    let mut rest = line[marker + 2..].trim_start();
-    if let Some(stripped) = rest.strip_prefix('-') {
-        rest = stripped.trim_start();
-    }
-
-    let quote = rest.chars().next()?;
-    if quote != '\'' && quote != '"' {
-        return None;
-    }
-
-    let end = rest[quote.len_utf8()..].find(quote)?;
-    let delimiter = &rest[quote.len_utf8()..quote.len_utf8() + end];
-    if delimiter.is_empty() {
-        None
-    } else {
-        Some(delimiter.to_string())
-    }
-}
-
-/// Derive risk capability flags from a command string for run store records.
-/// Returns (has_subprocess, has_git_mutation, has_destructive_mutation).
-fn routing_metadata_risk_caps(command: &str) -> (bool, bool, bool) {
-    let trimmed = command.trim();
-    let has_subprocess = trimmed.contains('|')
-        || trimmed.contains('$')
-        || trimmed.contains('`')
-        || trimmed.starts_with("sudo ");
-    let has_git_mutation = trimmed.starts_with("git ")
-        && ![
-            "git status",
-            "git log",
-            "git diff",
-            "git show",
-            "git branch",
-            "git remote",
-            "git tag",
-        ]
-        .iter()
-        .any(|prefix| trimmed.starts_with(prefix));
-    let has_destructive = trimmed.contains("rm -rf")
-        || trimmed.contains("rm -r ")
-        || trimmed.contains("git clean -f")
-        || trimmed.contains("git reset --hard")
-        || trimmed.contains("git checkout --");
-    (has_subprocess, has_git_mutation, has_destructive)
-}
+use crate::command_intent::pipeline::prepare_command;
+use crate::command_intent::CommandIntentContext;
+use crate::command_outcome::{ActualExecutor, ExecutionOutcome};
+use crate::config::schema::CommandIntentConfig;
+use crate::error::ToolError;
+use crate::preflight::{PreflightDecision, PreflightService};
+use crate::security::sandbox::{get_default_allowed_paths, get_sensitive_paths, SandboxConfig};
+use crate::tool::{Tool, ToolCategory};
 
 pub struct BashTool {
-    timeout: Duration,
-    max_output_lines: usize,
-    max_output_bytes: usize,
-    blocked_commands: HashSet<&'static str>,
-    allowed_paths: Option<Vec<String>>,
-    deny_all: bool,
-    allowlist: Option<HashSet<&'static str>>,
-    landlock_sandbox: Option<SandboxConfig>,
-    preflight: Option<Arc<PreflightService>>,
-    command_intent_config: Option<CommandIntentConfig>,
-    run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
-    submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
-    asset_pin: Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
-    routing_disabled_override: Option<bool>,
-    workspace_root: Option<PathBuf>,
+    pub(crate) timeout: Duration,
+    pub(crate) max_output_lines: usize,
+    pub(crate) max_output_bytes: usize,
+    pub(crate) blocked_commands: HashSet<&'static str>,
+    pub(crate) allowed_paths: Option<Vec<String>>,
+    pub(crate) deny_all: bool,
+    pub(crate) allowlist: Option<HashSet<&'static str>>,
+    pub(crate) landlock_sandbox: Option<SandboxConfig>,
+    pub(crate) preflight: Option<Arc<PreflightService>>,
+    pub(crate) command_intent_config: Option<CommandIntentConfig>,
+    pub(crate) run_store: Option<Arc<dyn codegg_core::run_store::RunStore>>,
+    pub(crate) submission: Option<Arc<crate::scheduler::JobSubmissionService>>,
+    pub(crate) asset_pin:
+        Option<Arc<std::sync::Mutex<crate::agent::asset_snapshot::RuntimeAssetPin>>>,
+    pub(crate) routing_disabled_override: Option<bool>,
+    pub(crate) workspace_root: Option<PathBuf>,
 }
 
 impl BashTool {
@@ -463,1138 +217,11 @@ impl BashTool {
         }
         self
     }
-
-    /// Check if active routing is disabled by any kill switch.
-    fn check_kill_switches(&self, family: CommandIntentFamily) -> bool {
-        // 1. Check env var emergency disable (or test override)
-        let env_disabled = self
-            .routing_disabled_override
-            .unwrap_or_else(|| std::env::var("CODEGG_ROUTING_DISABLE").unwrap_or_default() == "1");
-        if env_disabled {
-            return true;
-        }
-
-        // 2. Check per-family config level
-        if let Some(ref cic) = self.command_intent_config {
-            if cic.family_level(family) == crate::config::schema::RouteLevel::Off {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Record a routing metric for telemetry/debugging.
-    fn record_routing_metric(&self, metric: RoutingMetric) {
-        tracing::debug!(
-            family = ?metric.family,
-            decision = %metric.decision,
-            fallback = metric.fallback,
-            "routing metric"
-        );
-    }
-
-    /// Execute a command via raw shell (`sh -c`). This is the original behavior
-    /// used by observe mode and as a fallback when active routing is disabled
-    /// or dispatch fails.
-    async fn execute_via_raw_shell(
-        &self,
-        command: &str,
-        canonical_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<(String, std::process::Output), ToolError> {
-        let cwd_owned = canonical_workdir
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok());
-        let cwd = cwd_owned.clone().ok_or_else(|| {
-            ToolError::Execution("managed shell cwd could not be resolved".into())
-        })?;
-        let sandbox = if let Some(config) = self.landlock_sandbox.as_ref() {
-            if config.enabled {
-                let args = vec!["-c".to_string(), command.to_string()];
-                crate::managed_process::SandboxRequest::Required(config.launch_spec(
-                    "sh",
-                    &args,
-                    Some(&cwd),
-                )?)
-            } else {
-                crate::managed_process::SandboxRequest::Disabled
-            }
-        } else {
-            crate::managed_process::SandboxRequest::Disabled
-        };
-        let mut request = crate::managed_process::ManagedProcessRequest::new(
-            vec!["sh".into(), "-c".into(), command.into()],
-            cwd,
-            crate::managed_process::ProcessProvenance::default(),
-        );
-        request.environment_policy = bash_environment_policy();
-        request.timeout = Some(timeout);
-        request.output_policy = crate::managed_process::OutputPolicy::with_limits(
-            self.max_output_bytes,
-            self.max_output_bytes,
-        );
-        request.sandbox = sandbox;
-        let managed = crate::managed_process::ManagedProcessService::run(request)
-            .await
-            .map_err(|error| match error {
-                crate::managed_process::ManagedProcessError::SandboxFailed(reason) => {
-                    ToolError::Execution(format!("sandbox helper failed: {reason}"))
-                }
-                crate::managed_process::ManagedProcessError::CancelledBeforeSpawn => {
-                    ToolError::Execution("managed shell cancelled before spawn".into())
-                }
-                other => ToolError::Execution(other.to_string()),
-            })?;
-        if matches!(
-            managed.termination,
-            crate::managed_process::TerminationReason::TimedOut
-        ) {
-            return Err(ToolError::Timeout(command.to_string()));
-        }
-        let stdout = managed.stdout.to_string_lossy();
-        let stderr = managed.stderr.to_string_lossy();
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&truncate_output(
-                &stdout,
-                self.max_output_lines,
-                self.max_output_bytes,
-            ));
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&truncate_output(
-                &stderr,
-                self.max_output_lines,
-                self.max_output_bytes,
-            ));
-        }
-        if managed.stdout.is_truncated() || managed.stderr.is_truncated() {
-            result.push_str("\n[output truncated by managed process limits]");
-        }
-        result.push_str(&format!(
-            "\n\n[exit code: {}]",
-            managed.exit_status.code().unwrap_or(-1)
-        ));
-
-        let output = synth_output(
-            managed.exit_status.code().unwrap_or(-1),
-            managed.stdout.as_bytes(),
-            managed.stderr.as_bytes(),
-        );
-        Ok((result, output))
-    }
-
-    /// Submit a planner-validated test argv to the daemon scheduler. The
-    /// Bash translation layer never retries through the raw shell when this
-    /// boundary rejects or fails.
-    async fn submit_test_job(
-        &self,
-        argv: &[String],
-        cwd: Option<&Path>,
-        _validated_command: Option<&str>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        self.record_routing_metric(RoutingMetric {
-            family: CommandIntentFamily::Tests,
-            decision: "test_runner_dispatch".to_string(),
-            fallback: false,
-        });
-
-        let Some(submission) = self.submission.clone() else {
-            return Err(ToolError::Execution(
-                "test execution requires the daemon scheduler".into(),
-            ));
-        };
-        let run_cwd = cwd
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let workspace_id = submission
-            .workspace_id_for_root(&run_cwd)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let submitted = submission
-            .submit(
-                None,
-                codegg_core::jobs::NewJob {
-                    workspace_id,
-                    session_id: None,
-                    turn_id: None,
-                    kind: codegg_core::jobs::JobKind::Test,
-                    source: codegg_core::jobs::JobSource::Interactive,
-                    priority: codegg_core::jobs::JobPriority::Interactive,
-                    payload: codegg_core::jobs::JobPayload::Test {
-                        command: NativeCommand::from_argv(argv.to_vec())
-                            .map(|command| command.display())
-                            .unwrap_or_default(),
-                        argv: argv.to_vec(),
-                        cwd: Some(run_cwd.to_string_lossy().into_owned()),
-                        scope: Some("bash-dispatch".into()),
-                        parent_run_id: None,
-                    },
-                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
-                        codegg_core::jobs::JobKind::Test,
-                    ),
-                    timeout: Some(timeout),
-                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
-                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
-                    not_before: None,
-                    deadline: None,
-                    schedule_id: None,
-                    depends_on: Vec::new(),
-                    parent_job_id: None,
-
-                    parent_attempt_id: None,
-
-                    parent_call_id: None,
-                    parent_program_id: None,
-                    parent_instruction_sequence: None,
-                    relation_kind: None,
-                },
-            )
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let result = completion.summary;
-
-        // Synthesize a `std::process::Output`-shaped value for code paths
-        // that still inspect it (truncation, exit status, persistence).
-        let exit_code = match completion.status {
-            crate::scheduler::ExecutorStatus::Completed => 0,
-            _ => 1,
-        };
-        let stdout_bytes = result.as_bytes().to_vec();
-        let stderr_bytes: Vec<u8> = Vec::new();
-        let output = synth_output(exit_code, stdout_bytes, stderr_bytes);
-
-        let actual = ActualExecutor::TestRunner {
-            argv: argv.to_vec(),
-            cwd: run_cwd,
-        };
-
-        Ok(DispatchOutcome {
-            result,
-            output,
-            executor: actual,
-            delegated_run_id: completion.run_id,
-        })
-    }
-
-    /// Dispatch to native tool (e.g. egggit). Executes via direct `Command::new`
-    /// instead of `sh -c`, bypassing shell interpretation.
-    async fn dispatch_to_native_tool(
-        &self,
-        command: &NativeCommand,
-        canonical_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        if command.executable.is_empty() {
-            return Err(ToolError::Execution(
-                "native command has an empty executable".to_string(),
-            ));
-        }
-
-        let argv_owned = command.full_argv();
-        let tool_name = command.executable.clone();
-        let cwd = canonical_workdir
-            .map(Path::to_path_buf)
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| ToolError::Execution("native tool cwd could not be resolved".into()))?;
-        let mut request = crate::managed_process::ManagedProcessRequest::new(
-            argv_owned.iter().map(|arg| arg.into()).collect(),
-            cwd,
-            crate::managed_process::ProcessProvenance::default(),
-        );
-        request.timeout = Some(timeout);
-        request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
-        let managed = crate::managed_process::ManagedProcessService::run(request)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        if matches!(
-            managed.termination,
-            crate::managed_process::TerminationReason::TimedOut
-        ) {
-            return Err(ToolError::Timeout(command.display()));
-        }
-        let stdout = managed.stdout.to_string_lossy();
-        let stderr = managed.stderr.to_string_lossy();
-        let mut result = stdout;
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&stderr);
-        }
-        result.push_str(&format!(
-            "\n\n[exit code: {}]",
-            managed.exit_status.code().unwrap_or(-1)
-        ));
-        let output = synth_output(
-            managed.exit_status.code().unwrap_or(-1),
-            managed.stdout.as_bytes(),
-            managed.stderr.as_bytes(),
-        );
-
-        self.record_routing_metric(RoutingMetric {
-            family: CommandIntentFamily::GitRead,
-            decision: "native_tool_dispatch".to_string(),
-            fallback: false,
-        });
-
-        Ok(DispatchOutcome {
-            result,
-            output,
-            executor: ActualExecutor::NativeTool {
-                tool_name,
-                argv: argv_owned,
-            },
-            delegated_run_id: None,
-        })
-    }
-
-    /// Dispatch to canonical Python subsystem via the scheduler.
-    /// Submits a durable `JobKind::Python` through `JobSubmissionService`
-    /// so that policy resolution, sandbox, snapshots, and RunStore persistence
-    /// all run through the scheduler-owned path.
-    async fn dispatch_to_python_script(
-        &self,
-        script: &str,
-        mode: &str,
-        canonical_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        let exec_mode = match mode {
-            "analyze" => PythonExecutionMode::Analyze,
-            "transform" => PythonExecutionMode::Transform,
-            "verify" => PythonExecutionMode::Verify,
-            _ => PythonExecutionMode::Analyze,
-        };
-
-        let cwd = canonical_workdir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-
-        let request = PythonScriptRequest {
-            code: script.to_string(),
-            mode: exec_mode,
-            cwd,
-            workspace_root: None,
-            timeout_secs: Some(timeout.as_secs()),
-            session_id: None,
-            intent: Some(format!("command-intent:{mode}")),
-        };
-
-        self.record_routing_metric(RoutingMetric {
-            family: CommandIntentFamily::Python,
-            decision: "python_script_dispatch".to_string(),
-            fallback: false,
-        });
-
-        // Scheduler-owned path: submit through JobSubmissionService
-        if let Some(ref submission) = self.submission {
-            return self
-                .dispatch_python_via_scheduler(&request, submission, mode, timeout)
-                .await;
-        }
-
-        // No fallback: scheduler admission is required for production Python execution
-        Err(ToolError::Disabled(
-            "Python execution requires scheduler admission; scheduler is disabled".into(),
-        ))
-    }
-
-    /// Submit Python execution through the scheduler and wait for completion.
-    async fn dispatch_python_via_scheduler(
-        &self,
-        request: &PythonScriptRequest,
-        submission: &Arc<crate::scheduler::JobSubmissionService>,
-        mode: &str,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        use codegg_core::jobs::{
-            IdempotencyClass, JobKind, JobPayload, JobPriority, JobSource, NewJob, RetryPolicy,
-        };
-
-        let workspace_root = request
-            .workspace_root
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| request.cwd.clone());
-
-        let workspace_id = submission
-            .workspace_id_for_root(&workspace_root)
-            .await
-            .map_err(|e| ToolError::Execution(format!("workspace registration failed: {e}")))?;
-
-        let source_hash = crate::python_script::source_store::compute_digest(&request.code);
-
-        let idempotency = match request.mode {
-            PythonExecutionMode::Analyze | PythonExecutionMode::Verify => {
-                IdempotencyClass::SafeRepeat
-            }
-            PythonExecutionMode::Transform => IdempotencyClass::NonIdempotent,
-        };
-
-        let payload = JobPayload::Python {
-            script_path: String::new(),
-            args: vec![],
-            mode: request.mode.to_string(),
-            source: Some(request.code.clone()),
-            source_hash: Some(source_hash.clone()),
-            cwd: Some(request.cwd.to_string_lossy().to_string()),
-            timeout_secs: request.timeout_secs,
-        };
-
-        let mut labels = std::collections::HashMap::new();
-        labels.insert(
-            "workspace_root".to_string(),
-            workspace_root.to_string_lossy().to_string(),
-        );
-        if let Some(ref intent) = request.intent {
-            labels.insert("intent".to_string(), intent.clone());
-        }
-
-        let spec = NewJob {
-            workspace_id,
-            session_id: request.session_id.clone(),
-            turn_id: None,
-            kind: JobKind::Python,
-            source: JobSource::Interactive,
-            priority: JobPriority::Interactive,
-            payload,
-            resource_request: codegg_core::jobs::ResourceRequest::for_kind(JobKind::Python),
-            timeout: Some(timeout),
-            retry_policy: RetryPolicy::no_retry(),
-            idempotency,
-            not_before: None,
-            deadline: None,
-            parent_job_id: None,
-            parent_attempt_id: None,
-            parent_call_id: None,
-            parent_program_id: None,
-            parent_instruction_sequence: None,
-            relation_kind: None,
-            schedule_id: None,
-            depends_on: vec![],
-        };
-
-        let key = crate::scheduler::submission::SubmissionKey::new(format!("python:{source_hash}"))
-            .map_err(|e| ToolError::Execution(format!("invalid submission key: {e}")))?;
-
-        let submitted = submission
-            .submit(Some(key), spec)
-            .await
-            .map_err(|e| ToolError::Execution(format!("scheduler submission failed: {e}")))?;
-
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(30))
-            .await
-            .map_err(|e| ToolError::Execution(format!("scheduler wait failed: {e}")))?;
-
-        let result = crate::python_script::types::PythonRunResult {
-            status: match completion.status {
-                crate::scheduler::executor::ExecutorStatus::Completed => {
-                    crate::python_script::types::PythonRunStatus::Success
-                }
-                crate::scheduler::executor::ExecutorStatus::Cancelled => {
-                    crate::python_script::types::PythonRunStatus::Failed(-4)
-                }
-                crate::scheduler::executor::ExecutorStatus::TimedOut => {
-                    crate::python_script::types::PythonRunStatus::TimedOut
-                }
-                crate::scheduler::executor::ExecutorStatus::Failed
-                | crate::scheduler::executor::ExecutorStatus::Interrupted => {
-                    crate::python_script::types::PythonRunStatus::Failed(-1)
-                }
-            },
-            stdout: completion.summary.clone(),
-            stderr: String::new(),
-            duration: Duration::from_millis(completion.metrics.elapsed_ms),
-            mode: request.mode,
-            script_length: request.code.len(),
-            risk: crate::python_script::types::PythonRiskAssessment::safe(),
-            capabilities: crate::python_script::types::PythonCapabilityEnvelope::analyze(),
-            changed_files: vec![],
-            interpreter: "python3".to_string(),
-            diff: None,
-            script_body_hash: Some(source_hash),
-            stdout_label: completion
-                .run_id
-                .as_ref()
-                .map(|rid| format!("run://{rid}/stdout")),
-            stderr_label: completion
-                .run_id
-                .as_ref()
-                .map(|rid| format!("run://{rid}/stderr")),
-            diff_label: None,
-            policy_decision: None,
-            denied_capabilities: vec![],
-            os_filesystem_isolation: false,
-            os_network_isolation: false,
-            effective_read_roots: vec![],
-            effective_write_roots: vec![],
-            allowed_subprocesses: vec![],
-            enforcement_warnings: vec![],
-        };
-
-        let stdout = result.stdout.clone();
-        let stderr = result.stderr.clone();
-        let mut display = stdout;
-        if !stderr.is_empty() {
-            if !display.is_empty() {
-                display.push_str("\n--- stderr ---\n");
-            }
-            display.push_str(&stderr);
-        }
-        let exit_code = result.exit_code();
-        display.push_str(&format!("\n\n[exit code: {}]", exit_code.unwrap_or(-1)));
-
-        let exit_code_value = exit_code.unwrap_or(-1);
-        let output = synth_output(
-            exit_code_value,
-            result.stdout.as_bytes().to_vec(),
-            result.stderr.as_bytes().to_vec(),
-        );
-
-        let actual = ActualExecutor::PythonScript {
-            script_hash: result.script_body_hash.clone(),
-            mode: mode.to_string(),
-        };
-
-        Ok(DispatchOutcome {
-            result: display,
-            output,
-            executor: actual,
-            delegated_run_id: completion.run_id,
-        })
-    }
-
-    /// Dispatch a typed `GitExecutionRequest` through `GitMutationExecutor` —
-    /// the canonical Bash-tool path for active routing of Git operations.
-    ///
-    /// This is the Bash-translation counterpart to `src/tool/git.rs`'s typed
-    /// dispatch: it captures snapshots, applies `GitEnvPolicy`, computes state
-    /// deltas, sanitizes output, persists to `RunStore`, and projects the
-    /// result via `project_mutation`. Native and Bash-originated operations
-    /// share the same executor and projection; only the run-store
-    /// `backend_detail` differs ("git_native" vs. "git_bash_translation").
-    ///
-    /// Errors are returned to the caller — `BashTool::execute` MUST NOT retry
-    /// through raw shell after this method runs.
-    async fn dispatch_to_git(
-        &self,
-        request: &crate::command_intent::plan::GitExecutionRequest,
-        canonical_workdir: Option<&Path>,
-        input_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        use crate::git_mutation_projector::project_mutation;
-        use crate::git_mutations::{
-            resolve_repo_root, GitEnvPolicy, GitMutationError, GitMutationExecutor,
-        };
-
-        // Resolve the working directory. Precedence:
-        //   1. `canonical_workdir` (BashTool-resolved via allowed_paths).
-        //   2. `input_workdir` (the `workdir` JSON field — explicit caller
-        //      override, e.g. test harnesses running against a temp repo).
-        //   3. `-C <path>` extracted from argv (bash-translated `git -C`).
-        //   4. Process cwd.
-        // This ensures bash-translated commands like `git -C /repo add ...`
-        // find the right repository even when `allowed_paths` is unset.
-        let workdir = if let Some(dir) = canonical_workdir {
-            dir.to_path_buf()
-        } else if let Some(dir) = input_workdir {
-            dir.to_path_buf()
-        } else if let Some(c_path) = extract_cwd_from_argv(&request.argv) {
-            c_path
-        } else {
-            std::env::current_dir().map_err(|e| {
-                ToolError::Execution(format!("could not resolve working directory: {e}"))
-            })?
-        };
-
-        // Managed/unknown plumbing operations are not promoted through the
-        // typed executor — use managed argv with GitEnvPolicy for env hardening
-        // without snapshot/delta persistence (the parser already marked them
-        // as fallback candidates).
-        if let Some(managed_argv) = request.managed_argv.as_ref() {
-            return self
-                .dispatch_git_managed_argv(
-                    managed_argv,
-                    Some(&workdir),
-                    timeout,
-                    request.origin.label(),
-                )
-                .await;
-        }
-
-        let repo_root = match resolve_repo_root(&workdir) {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(ToolError::Execution(format!(
-                    "git dispatch: repository resolution failed: {e}"
-                )));
-            }
-        };
-
-        let exec = GitMutationExecutor::new()
-            .with_env_policy(GitEnvPolicy::default())
-            .with_timeout(timeout);
-
-        // Execute via the shared GitMutationExecutor. Errors include typed
-        // context but never leak credentials (redaction happens inside
-        // `MutationResult` projection).
-        let result = exec
-            .execute(&request.operation, repo_root.as_path())
-            .await
-            .map_err(|e: GitMutationError| {
-                ToolError::Execution(format!("git dispatch failed: {}", e))
-            })?;
-
-        // Persist to RunStore using the canonical `git_run_store` helper.
-        // Matches what the native GitTool writes for mutations, with
-        // `backend_detail` set to the origin label so audits can
-        // distinguish native vs. bash-translated runs. Read-only
-        // operations are NOT persisted (matches native tool behavior;
-        // they carry no state-delta or audit-worthy artifact).
-        let delegated_run_id = if request.is_read_only {
-            None
-        } else {
-            crate::git_run_store::persist_mutation(
-                &self.run_store,
-                &result,
-                &workdir,
-                repo_root.as_path(),
-                "git_bash_translation",
-                Some(request.origin.label().to_string()),
-            )
-            .await
-        };
-
-        let projection = project_mutation(&result);
-
-        // Compose output for the persistence layer. Stdout is the projection
-        // (model-safe summary); stderr carries the raw stderr from git (with
-        // URL credentials redacted inside `MutationResult.stderr`).
-        let output = synth_output(
-            result.exit_code,
-            projection.clone().into_bytes(),
-            result.stderr.clone().into_bytes(),
-        );
-
-        // Append `[exit code: N]` annotation to the model-visible summary
-        // so callers that key off this marker (e.g. tests) keep working.
-        let mut model_summary = projection;
-        model_summary.push_str(&format!(
-            "\n\n[exit code: {}] [origin: {}]",
-            result.exit_code,
-            request.origin.label(),
-        ));
-
-        Ok(DispatchOutcome {
-            result: model_summary,
-            output,
-            executor: ActualExecutor::Git {
-                argv: request.argv.clone(),
-                operation_label: result.subcommand.clone(),
-            },
-            delegated_run_id,
-        })
-    }
-
-    // eprintln!(
-    //     "[dispatch_to_git] argv={:?} intent_kind={:?}",
-    //     request.argv, intent_kind
-    // );
-
-    /// Managed argv fallback for git operations that don't have a typed
-    /// representation (e.g., `git remote show origin`). Uses `GitEnvPolicy`
-    /// for env hardening without snapshot/delta persistence.
-    async fn dispatch_git_managed_argv(
-        &self,
-        argv: &[String],
-        cwd: Option<&Path>,
-        timeout: Duration,
-        origin_label: &str,
-    ) -> Result<DispatchOutcome, ToolError> {
-        let argv_owned = argv.to_vec();
-        let cwd_owned = cwd
-            .map(|p| p.to_path_buf())
-            .or_else(|| std::env::current_dir().ok())
-            .ok_or_else(|| {
-                ToolError::Execution("git managed argv cwd could not be resolved".into())
-            })?;
-        let mut request = crate::managed_process::ManagedProcessRequest::new(
-            argv_owned.iter().map(OsString::from).collect(),
-            cwd_owned.clone(),
-            crate::managed_process::ProcessProvenance::default(),
-        );
-        request.timeout = Some(timeout);
-        request.output_policy = crate::managed_process::OutputPolicy::new(self.max_output_bytes);
-        request.environment_policy = crate::managed_process::EnvironmentPolicy::sanitized()
-            .with_var("GIT_EDITOR", "true")
-            .with_var("GIT_SEQUENCE_EDITOR", "true")
-            .with_var("GPG_TTY", "");
-        let managed = crate::managed_process::ManagedProcessService::run(request)
-            .await
-            .map_err(|e| ToolError::Execution(format!("git managed argv: {e}")))?;
-        if matches!(
-            managed.termination,
-            crate::managed_process::TerminationReason::TimedOut
-        ) {
-            return Err(ToolError::Timeout(argv.join(" ")));
-        }
-        let stdout = managed.stdout.to_string_lossy();
-        let stderr = managed.stderr.to_string_lossy();
-        let mut result = stdout;
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push_str("\n--- stderr ---\n");
-            }
-            result.push_str(&stderr);
-        }
-        result.push_str(&format!(
-            "\n\n[exit code: {}] [origin: {}]",
-            managed.exit_status.code().unwrap_or(-1),
-            origin_label
-        ));
-        let output = synth_output(
-            managed.exit_status.code().unwrap_or(-1),
-            managed.stdout.as_bytes(),
-            managed.stderr.as_bytes(),
-        );
-
-        Ok(DispatchOutcome {
-            result,
-            output,
-            executor: ActualExecutor::ManagedArgv {
-                argv: argv_owned,
-                cwd: Some(cwd_owned),
-            },
-            delegated_run_id: None,
-        })
-    }
-
-    /// Submit a managed argv process to the scheduler. Admission or executor
-    /// failure is returned to the caller; this path never falls back to shell.
-    async fn dispatch_to_managed_process(
-        &self,
-        command: &NativeCommand,
-        cwd: Option<&Path>,
-        timeout: Duration,
-        kind: codegg_core::jobs::JobKind,
-    ) -> Result<DispatchOutcome, ToolError> {
-        if command.executable.is_empty() {
-            return Err(ToolError::Execution("empty executable".to_string()));
-        }
-
-        let argv_owned = command.full_argv();
-        let Some(submission) = self.submission.clone() else {
-            return Err(ToolError::Execution(
-                "managed process execution requires the daemon scheduler".into(),
-            ));
-        };
-        let cwd_owned = cwd
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let workspace_id = submission
-            .workspace_id_for_root(&cwd_owned)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let submitted = submission
-            .submit(
-                None,
-                codegg_core::jobs::NewJob {
-                    workspace_id,
-                    session_id: None,
-                    turn_id: None,
-                    kind,
-                    source: codegg_core::jobs::JobSource::Interactive,
-                    priority: codegg_core::jobs::JobPriority::Interactive,
-                    payload: codegg_core::jobs::JobPayload::ManagedArgv {
-                        argv: argv_owned.clone(),
-                        cwd: Some(cwd_owned.to_string_lossy().into_owned()),
-                    },
-                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(kind),
-                    timeout: Some(timeout),
-                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
-                    parent_program_id: None,
-                    parent_instruction_sequence: None,
-                    relation_kind: None,
-                    idempotency: codegg_core::jobs::IdempotencyClass::SafeRepeat,
-                    not_before: None,
-                    deadline: None,
-                    schedule_id: None,
-                    depends_on: Vec::new(),
-                },
-            )
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let result = completion.summary;
-        let exit_code = if matches!(
-            completion.status,
-            crate::scheduler::ExecutorStatus::Completed
-        ) {
-            0
-        } else {
-            1
-        };
-        let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
-
-        self.record_routing_metric(RoutingMetric {
-            family: CommandIntentFamily::Search,
-            decision: "managed_process_dispatch".to_string(),
-            fallback: false,
-        });
-
-        Ok(DispatchOutcome {
-            result,
-            output,
-            executor: ActualExecutor::ManagedArgv {
-                argv: argv_owned,
-                cwd: Some(cwd_owned),
-            },
-            delegated_run_id: None,
-        })
-    }
-
-    /// Submit the explicit shell backend through the scheduler. The shell
-    /// remains the domain service here, but process creation and admission
-    /// are still daemon-owned and durable.
-    async fn dispatch_to_shell(
-        &self,
-        command: &str,
-        canonical_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        self.record_routing_metric(RoutingMetric {
-            family: CommandIntentFamily::Tests, // generic
-            decision: "shell_dispatch".to_string(),
-            fallback: false,
-        });
-        let Some(submission) = self.submission.clone() else {
-            return Err(ToolError::Execution(
-                "shell execution requires the daemon scheduler".into(),
-            ));
-        };
-        let cwd = canonical_workdir
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let workspace_id = submission
-            .workspace_id_for_root(&cwd)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let argv = vec!["sh".to_string(), "-c".to_string(), command.to_string()];
-        let submitted = submission
-            .submit(
-                None,
-                codegg_core::jobs::NewJob {
-                    workspace_id,
-                    session_id: None,
-                    turn_id: None,
-                    kind: codegg_core::jobs::JobKind::Shell,
-                    source: codegg_core::jobs::JobSource::Interactive,
-                    priority: codegg_core::jobs::JobPriority::Interactive,
-                    payload: codegg_core::jobs::JobPayload::Shell {
-                        command: command.to_string(),
-                        argv: Some(argv.clone()),
-                        cwd: Some(cwd.to_string_lossy().into_owned()),
-                    },
-                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
-                        codegg_core::jobs::JobKind::Shell,
-                    ),
-                    parent_job_id: None,
-                    parent_attempt_id: None,
-                    parent_call_id: None,
-                    parent_program_id: None,
-                    parent_instruction_sequence: None,
-                    relation_kind: None,
-                    timeout: Some(timeout),
-                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
-                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
-                    not_before: None,
-                    deadline: None,
-                    schedule_id: None,
-                    depends_on: Vec::new(),
-                },
-            )
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let completion = submission
-            .scheduler()
-            .wait_for_completion(&submitted.job_id, timeout + Duration::from_secs(5))
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let result = completion.summary;
-        let exit_code = if matches!(
-            completion.status,
-            crate::scheduler::ExecutorStatus::Completed
-        ) {
-            0
-        } else {
-            1
-        };
-        let output = synth_output(exit_code, result.as_bytes().to_vec(), Vec::new());
-        Ok(DispatchOutcome {
-            result,
-            output,
-            executor: ActualExecutor::RawShell {
-                command: command.to_string(),
-                argv,
-            },
-            delegated_run_id: None,
-        })
-    }
-
-    /// Dispatch the canonical command target to the appropriate backend.
-    async fn dispatch_command_target(
-        &self,
-        decision: &CommandDispatchTarget,
-        _plan: &CommandPlan,
-        canonical_workdir: Option<&Path>,
-        input_workdir: Option<&Path>,
-        timeout: Duration,
-    ) -> Result<DispatchOutcome, ToolError> {
-        match decision {
-            CommandDispatchTarget::RouteToTestRunner {
-                argv,
-                validated_command,
-                ..
-            } => {
-                self.submit_test_job(
-                    argv,
-                    canonical_workdir,
-                    validated_command.as_deref(),
-                    timeout,
-                )
-                .await
-            }
-            CommandDispatchTarget::RouteToNativeTool { command, .. } => {
-                self.dispatch_to_native_tool(command, canonical_workdir, timeout)
-                    .await
-            }
-            CommandDispatchTarget::RouteToPythonScripting { script, mode, .. } => {
-                let mode_str = match mode {
-                    crate::command_intent::plan::PythonModeGuess::Analyze => "analyze",
-                    crate::command_intent::plan::PythonModeGuess::Transform => "transform",
-                    crate::command_intent::plan::PythonModeGuess::Verify => "verify",
-                    crate::command_intent::plan::PythonModeGuess::Unknown => "analyze",
-                };
-                self.dispatch_to_python_script(script, mode_str, canonical_workdir, timeout)
-                    .await
-            }
-            CommandDispatchTarget::RouteToManagedProcess { command, cwd, .. } => {
-                let kind = match _plan.intent.kind {
-                    CommandIntentKind::Build => codegg_core::jobs::JobKind::Build,
-                    CommandIntentKind::Lint => codegg_core::jobs::JobKind::Lint,
-                    CommandIntentKind::Format => codegg_core::jobs::JobKind::Format,
-                    _ => codegg_core::jobs::JobKind::ManagedProcess,
-                };
-                self.dispatch_to_managed_process(command, Some(cwd), timeout, kind)
-                    .await
-            }
-            CommandDispatchTarget::RouteToGit { request, .. } => {
-                // Track U unified dispatch: route typed Git operations
-                // through `GitMutationExecutor` so they share the same
-                // env policy, snapshot/delta, projection, and RunStore
-                // semantics as native-tool invocations. Managed/unknown
-                // plumbing falls through to the managed-argv path inside
-                // `dispatch_to_git` without snapshot/delta persistence.
-                self.dispatch_to_git(request, canonical_workdir, input_workdir, timeout)
-                    .await
-            }
-            CommandDispatchTarget::RouteToShell { command, .. } => {
-                self.dispatch_to_shell(command, canonical_workdir, timeout)
-                    .await
-            }
-            CommandDispatchTarget::Rejected { reason } => Err(ToolError::Execution(format!(
-                "command rejected: {}",
-                reason
-            ))),
-        }
-    }
-
-    fn check_command_security(&self, command: &str, parts: &[&str]) -> Result<(), ToolError> {
-        if parts.is_empty() {
-            return Ok(());
-        }
-
-        let normalized = parts.join(" ");
-        let mut command_start = 0;
-        while command_start < parts.len()
-            && ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&parts[command_start])
-        {
-            command_start += 1;
-        }
-        let normalized_without_prefix = parts[command_start..].join(" ");
-
-        // Check blocked commands first (entire command string)
-        let blocked = &self.blocked_commands;
-        if !blocked.is_empty() {
-            for blocked_cmd in blocked {
-                if normalized.starts_with(blocked_cmd)
-                    || normalized_without_prefix.starts_with(blocked_cmd)
-                {
-                    return Err(ToolError::Permission(format!(
-                        "command matches blocked list: {}",
-                        blocked_cmd
-                    )));
-                }
-            }
-        }
-
-        // Check allowlist - must check entire command string
-        if let Some(ref allowlist) = self.allowlist {
-            let mut cmd_parts = parts.iter().copied();
-            let mut cmd = cmd_parts.next().unwrap_or("");
-
-            while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
-                cmd = cmd_parts.next().unwrap_or("");
-            }
-
-            if (cmd == "bash" || cmd == "sh" || cmd == "dash")
-                && parts.len() > 2
-                && parts[1] == "-c"
-            {
-                if !allowlist.contains(&cmd) {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        cmd
-                    )));
-                }
-
-                let full_match = allowlist
-                    .iter()
-                    .any(|allowed| normalized.starts_with(allowed));
-                if !full_match {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        normalized
-                    )));
-                }
-                return Ok(());
-            }
-
-            if !allowlist.contains(&cmd) {
-                let full_match = allowlist
-                    .iter()
-                    .any(|allowed| normalized.starts_with(allowed));
-                if !full_match {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        normalized
-                    )));
-                }
-            }
-        }
-
-        // Check blocked patterns (command injection)
-        if let Some(pat) = find_blocked_pattern(command) {
-            return Err(ToolError::Permission(format!(
-                "command matches blocked pattern: {} (in: {:.80})",
-                pat, command
-            )));
-        }
-
-        Ok(())
-    }
 }
 
 impl Default for BashTool {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub(crate) fn validate_child_workspace_command(
-    command: &str,
-    args: &[String],
-    root: &Path,
-) -> Result<(), ToolError> {
-    let root = std::fs::canonicalize(root).map_err(|error| {
-        ToolError::Permission(format!(
-            "isolated child shell root {} cannot be canonicalized: {error}",
-            root.display()
-        ))
-    })?;
-    let mut tokens = vec![command.to_string()];
-    tokens.extend(args.iter().cloned());
-    for token in tokens
-        .iter()
-        .flat_map(|value| value.split(|ch: char| ch.is_whitespace() || ";|&<>()".contains(ch)))
-    {
-        if matches!(token, ".." | "cd" | "pushd" | "popd") {
-            return Err(ToolError::Permission(
-                "isolated child shell cannot change or escape its worktree".into(),
-            ));
-        }
-        if token.starts_with('/') && !Path::new(token).starts_with(&root) {
-            return Err(ToolError::Permission(format!(
-                "isolated child shell path is outside worktree: {token}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Extract a `-C <path>` argument from a git argv. Returns the path if
-/// present and parseable. Used by bash-translated git dispatch to recover
-/// the repository root when `canonical_workdir` is unset (typical in tests
-/// where the workspace has no `allowed_paths` configured).
-fn extract_cwd_from_argv(argv: &[String]) -> Option<std::path::PathBuf> {
-    let mut iter = argv.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "-C" {
-            if let Some(p) = iter.next() {
-                return Some(std::path::PathBuf::from(p));
-            }
-        } else if let Some(rest) = arg.strip_prefix("-C") {
-            if !rest.is_empty() {
-                return Some(std::path::PathBuf::from(rest));
-            }
-        }
-    }
-    None
-}
-
-/// Synthesize a `std::process::Output` with the given exit code, stdout,
-/// and stderr bytes. Used by dispatchers that produce structured results
-/// but need to fit the legacy `Output` shape.
-fn synth_output(exit_code: i32, stdout: Vec<u8>, stderr: Vec<u8>) -> std::process::Output {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        std::process::Output {
-            status: std::process::ExitStatus::from_raw(exit_code),
-            stdout,
-            stderr,
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        // The bash tool is Unix-only; this branch is unreachable but
-        // keeps the type signature portable.
-        std::process::Output {
-            status: std::process::ExitStatus::default(),
-            stdout,
-            stderr,
-        }
     }
 }
 
@@ -1634,18 +261,22 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
+        use crate::command_intent::pipeline::CommandPipelineResult;
+        use policy::{plan_family, plan_to_planned_backend, RoutingMetric};
+
         let command = input["command"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("missing 'command' parameter".to_string()))?;
 
+        // 1. parse/classify gate: length and deterministic pre-spawn policy.
         if self.deny_all {
             return Err(ToolError::Permission("bash tool is disabled".to_string()));
         }
 
-        if command.len() > MAX_COMMAND_LENGTH {
+        if command.len() > policy::MAX_COMMAND_LENGTH {
             return Err(ToolError::Execution(format!(
                 "command exceeds maximum length of {} bytes",
-                MAX_COMMAND_LENGTH
+                policy::MAX_COMMAND_LENGTH
             )));
         }
 
@@ -1671,8 +302,9 @@ impl Tool for BashTool {
             None
         };
 
+        // 2. authorize/path/child policy (all fail-closed, all pre-spawn).
         if let Some(root) = self.workspace_root.as_ref() {
-            validate_child_workspace_command(command, &[], root)?;
+            policy::validate_child_workspace_command(command, &[], root)?;
         }
 
         let timeout_secs = input["timeout"].as_u64().unwrap_or(120);
@@ -1740,26 +372,8 @@ impl Tool for BashTool {
         };
         let pipeline: CommandPipelineResult = prepare_command(command, &context);
         let (intent, plan, decision, routing_metadata) = {
-            let metadata = self.command_intent_config.as_ref().map(|cic| {
-                let mode = cic.mode();
-                let family_enabled = pipeline
-                    .plan
-                    .command_family()
-                    .map(|f| cic.is_enabled(f))
-                    .unwrap_or(false);
-                let metadata = RoutingMetadata {
-                    intent_kind: pipeline.intent.kind.label().to_string(),
-                    backend_label: pipeline.plan.backend.label().to_string(),
-                    projector_label: pipeline.plan.projector.label().to_string(),
-                    rtk_eligible: pipeline.plan.rtk_policy.is_rtk_eligible(),
-                    confidence: format!("{:?}", pipeline.intent.confidence).to_lowercase(),
-                    risk_level: format!("{:?}", pipeline.intent.risk.level).to_lowercase(),
-                    routing_enabled: family_enabled,
-                    routing_decision: format!("{:?}", pipeline.dispatch),
-                    mode,
-                };
-                metadata
-            });
+            let metadata =
+                output::build_routing_metadata(self.command_intent_config.as_ref(), &pipeline);
             (
                 Some(pipeline.intent.clone()),
                 Some(pipeline.plan.clone()),
@@ -1771,7 +385,7 @@ impl Tool for BashTool {
         tracing::info!("Running: {command}");
         let start = std::time::Instant::now();
 
-        // Decide: active routing or raw shell
+        // 3. route to scheduler or local supervised process.
         let should_active_route = if let (Some(ref cic), Some(ref _intent), Some(ref plan)) =
             (&self.command_intent_config, &intent, &plan)
         {
@@ -1831,7 +445,8 @@ impl Tool for BashTool {
                         );
                         if let Some(ref plan) = plan {
                             self.record_routing_metric(RoutingMetric {
-                                family: plan_family(plan).unwrap_or(CommandIntentFamily::Tests),
+                                family: plan_family(plan)
+                                    .unwrap_or(crate::config::schema::CommandIntentFamily::Tests),
                                 decision: "active_routing_delegation_without_runid".to_string(),
                                 fallback: self.run_store.is_some(),
                             });
@@ -1853,7 +468,8 @@ impl Tool for BashTool {
                     // scheduler entirely.
                     if let Some(ref plan) = plan {
                         self.record_routing_metric(RoutingMetric {
-                            family: plan_family(plan).unwrap_or(CommandIntentFamily::Tests),
+                            family: plan_family(plan)
+                                .unwrap_or(crate::config::schema::CommandIntentFamily::Tests),
                             decision: "active_routing_rejected".to_string(),
                             fallback: false,
                         });
@@ -1883,310 +499,35 @@ impl Tool for BashTool {
         let elapsed = start.elapsed();
         tracing::info!("Completed in {elapsed:?}");
 
-        // Determine RunKind and ownership from the ACTUAL execution outcome (not
-        // the planned decision). Workstream B: persistence provenance must
-        // reflect what ran, not what was planned.
-        //
-        // Track U: Git mutations delegated through `dispatch_to_git` write
-        // their own `DelegatedBackend` record via `git_run_store::persist_mutation`
-        // and return a `delegated_run_id`. They MUST be treated as delegated
-        // executors here so BashTool does not write a duplicate caller-owned
-        // record (no-double-execution invariant). Git reads do NOT write a
-        // delegated record (no run id) and remain caller-owned.
-        let delegated_executor =
-            matches!(
-                &execution_outcome.actual,
-                ActualExecutor::TestRunner { .. } | ActualExecutor::PythonScript { .. }
-            ) || matches!(&execution_outcome.actual, ActualExecutor::Git { .. })
-                && delegated_run_id.is_some();
+        // 4. collect bounded result (already bounded by the process module)
+        // and persist with session/run/workspace attribution.
+        let intent_kind = intent
+            .as_ref()
+            .map(|i| i.kind)
+            .unwrap_or(crate::command_intent::CommandIntentKind::RawShell);
+        let (persist_run, ownership) =
+            self.persistence_decision(&execution_outcome, delegated_run_id.as_ref());
+        self.persist_caller_run(
+            command,
+            &output,
+            &execution_outcome,
+            intent_kind,
+            routing_metadata.as_ref(),
+            canonical_workdir.as_ref(),
+            workdir.as_deref(),
+            persist_run,
+            ownership,
+        )
+        .await;
 
-        // Workstream E: persistence suppression requires PROOF of delegated
-        // ownership — a delegated run_id. Without a run_id, the delegated
-        // record may not exist (or begin_run failed) and we MUST persist
-        // the caller-owned fallback record. This is the central invariant:
-        // one logical execution always produces exactly one canonical record.
-        //
-        // Track U: git mutations dispatched through `dispatch_to_git` write
-        // their own `DelegatedBackend` record via
-        // `git_run_store::persist_mutation`. A non-None `delegated_run_id`
-        // proves the delegated record exists, so BashTool must NOT persist
-        // a duplicate.
-        let persist_run = match (delegated_executor, delegated_run_id.as_ref()) {
-            (true, Some(_)) => false,
-            (true, None) => {
-                // The backend already executed. If a shared store exists,
-                // persist the result once from the caller; without a store
-                // there is nowhere for BashTool to persist it.
-                tracing::warn!(
-                    "delegated ownership without run_id — using caller persistence when available"
-                );
-                self.run_store.is_some()
-            }
-            (false, _) => true,
-        };
-        // Ownership is Copy (no, it's an enum without Copy). Recompute
-        // when used below in the persistence draft — the value was
-        // consumed by the match above. We rely on the fact that
-        // ownership_for_outcome is a pure function.
-        let ownership = if delegated_executor {
-            // Git mutations with a delegated run id own their record via
-            // `git_run_store::persist_mutation`. Caller fallback (no run id)
-            // is recorded under `Caller`.
-            if delegated_run_id.is_some() {
-                codegg_core::run_store::RunOwnership::DelegatedBackend
-            } else {
-                codegg_core::run_store::RunOwnership::Caller
-            }
-        } else {
-            ownership_for_outcome(&execution_outcome)
-        };
-
-        // Persist to run store if available and this is not a delegated backend.
-        if persist_run {
-            if let Some(ref store) = self.run_store {
-                use chrono::Utc;
-                use codegg_core::run_store::*;
-
-                let cwd = canonical_workdir
-                    .clone()
-                    .or_else(|| workdir.as_ref().map(PathBuf::from))
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                let workspace_root = cwd.clone();
-
-                // Extract risk info from routing metadata if available
-                let (risk_level, has_subprocess, has_git_mutation, has_destructive) =
-                    if let Some(ref rm) = routing_metadata {
-                        let caps = routing_metadata_risk_caps(command);
-                        (rm.risk_level.clone(), caps.0, caps.1, caps.2)
-                    } else {
-                        ("low".to_string(), true, false, false)
-                    };
-
-                // Workstream B: RunKind is derived from the actual executor
-                // and the intent, NOT the planned routing decision.
-                let intent_kind = intent
-                    .as_ref()
-                    .map(|i| i.kind)
-                    .unwrap_or(crate::command_intent::CommandIntentKind::RawShell);
-                let run_kind_str = run_kind_for_outcome(&execution_outcome, intent_kind);
-                let run_kind = match run_kind_str.as_str() {
-                    "raw_shell" => RunKind::RawShell,
-                    "managed_process" => RunKind::ManagedProcess,
-                    "test" => RunKind::Test,
-                    "git_read" => RunKind::GitRead,
-                    "git_mutation" => RunKind::GitMutation,
-                    "search" => RunKind::Search,
-                    "python" => RunKind::Python,
-                    "native_tool" => RunKind::NativeTool,
-                    _ => RunKind::RawShell,
-                };
-
-                // Workstream E: argv reflects the ACTUAL execution, not
-                // the planned decision. For raw shell: `[sh, -c, command]`.
-                // For managed argv / native tool / managed process: the
-                // actual argv that was used.
-                let invocation_argv: Vec<String> = match &execution_outcome.actual {
-                    ActualExecutor::RawShell { argv, .. } => argv.clone(),
-                    ActualExecutor::ManagedArgv { argv, .. } => argv.clone(),
-                    ActualExecutor::NativeTool { argv, .. } => argv.clone(),
-                    ActualExecutor::TestRunner { argv, .. } => argv.clone(),
-                    ActualExecutor::PythonScript { .. } => {
-                        vec!["python3".to_string(), "<script>".to_string()]
-                    }
-                    ActualExecutor::Git { argv, .. } => argv.clone(),
-                    ActualExecutor::Rejected { .. } => vec![],
-                };
-                let script_hash = match &execution_outcome.actual {
-                    ActualExecutor::PythonScript { script_hash, .. } => script_hash.clone(),
-                    _ => None,
-                };
-
-                // Workstream F: backend family/detail reflect the actual executor.
-                let (backend_family, backend_detail) = match &execution_outcome.actual {
-                    ActualExecutor::RawShell { .. } => {
-                        ("bash".to_string(), Some("raw_shell".to_string()))
-                    }
-                    ActualExecutor::ManagedArgv { .. } => {
-                        ("bash".to_string(), Some("managed_argv".to_string()))
-                    }
-                    ActualExecutor::NativeTool { tool_name, .. } => {
-                        ("native_tool".to_string(), Some(tool_name.clone()))
-                    }
-                    ActualExecutor::TestRunner { .. } => (
-                        "test_runner".to_string(),
-                        routing_metadata.as_ref().map(|m| m.intent_kind.clone()),
-                    ),
-                    ActualExecutor::PythonScript { mode, .. } => {
-                        ("python_script".to_string(), Some(mode.clone()))
-                    }
-                    ActualExecutor::Git {
-                        operation_label, ..
-                    } => ("git".to_string(), Some(operation_label.clone())),
-                    ActualExecutor::Rejected { reason } => {
-                        ("bash".to_string(), Some(format!("rejected:{reason}")))
-                    }
-                };
-
-                let draft = RunDraft {
-                    kind: run_kind,
-                    invocation: RunInvocation {
-                        command: command.to_string(),
-                        argv: Some(invocation_argv),
-                        script_hash,
-                    },
-                    session_id: None,
-                    parent_run_id: None,
-                    workspace_root,
-                    cwd,
-                    backend: BackendRecord {
-                        family: backend_family,
-                        detail: backend_detail,
-                    },
-                    risk: RiskRecord {
-                        level: risk_level,
-                        has_subprocess,
-                        has_git_mutation,
-                        has_destructive_mutation: has_destructive,
-                    },
-                    planned_backend: Some(execution_outcome.planned.clone()),
-                    actual_backend: Some(execution_outcome.actual.into_backend()),
-                    ownership,
-                    asset_provenance: self
-                        .asset_pin
-                        .as_ref()
-                        .and_then(|pin| pin.lock().ok().map(|pin| pin.to_run_provenance())),
-                };
-
-                let exit_code = output.status.code().unwrap_or(-1);
-                let status = if exit_code == 0 {
-                    RunStatus::Complete
-                } else {
-                    RunStatus::Failed
-                };
-
-                // Workstream H: persistence failure (begin_run error) must
-                // not change the actual execution outcome or result string.
-                // The `if let Ok(handle)` already swallows persistence errors.
-                if let Ok(handle) = store.begin_run(draft).await {
-                    if !output.stdout.is_empty() {
-                        if let Err(e) = store
-                            .write_artifact(
-                                &handle,
-                                ArtifactInput {
-                                    kind: ArtifactKind::Stdout,
-                                    data: output.stdout.clone(),
-                                    mime_type: "text/plain".to_string(),
-                                    // Workstream G: raw stdout is NOT model-safe.
-                                    safe_for_model: false,
-                                },
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %e, "failed to write stdout artifact to RunStore");
-                        }
-                    }
-
-                    if !output.stderr.is_empty() {
-                        if let Err(e) = store
-                            .write_artifact(
-                                &handle,
-                                ArtifactInput {
-                                    kind: ArtifactKind::Stderr,
-                                    data: output.stderr.clone(),
-                                    mime_type: "text/plain".to_string(),
-                                    // Workstream G: raw stderr is NOT model-safe.
-                                    safe_for_model: false,
-                                },
-                            )
-                            .await
-                        {
-                            tracing::warn!(error = %e, "failed to write stderr artifact to RunStore");
-                        }
-                    }
-
-                    if let Err(e) = store
-                        .complete_run(
-                            handle,
-                            RunCompletion {
-                                status,
-                                completed_at: Utc::now(),
-                                permissions: vec![],
-                                sandbox: None,
-                                projection: None,
-                                changes: vec![],
-                                rerun: None,
-                                actual_backend: Some(execution_outcome_clone_actual(
-                                    &execution_outcome,
-                                )),
-                                fallback: execution_outcome.fallback_record(),
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(error = %e, "failed to complete run in RunStore");
-                    }
-                }
-            }
-        }
-
+        // 5. project/redact/persist suffixes and return the structured result.
         if let Some(warning) = preflight_warning {
             result = format!("{}\n\n{}", warning, result);
         }
 
-        if let Some(meta) = routing_metadata {
-            result = format!(
-                "{}\n\n[intent: {} | backend: {} | projector: {} | confidence: {} | risk: {} | routing: {} | rtk: {} | route: {} | mode: {}]",
-                result,
-                meta.intent_kind,
-                meta.backend_label,
-                meta.projector_label,
-                meta.confidence,
-                meta.risk_level,
-                if meta.routing_enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                },
-                if meta.rtk_eligible { "eligible" } else { "off" },
-                meta.routing_decision,
-                match meta.mode {
-                    CommandIntentMode::Observe => "observe",
-                    CommandIntentMode::Active => "active",
-                    CommandIntentMode::Route => "route (fallback: observe)",
-                },
-            );
-        }
+        result = output::append_routing_suffix(result, routing_metadata.as_ref());
 
         Ok(result)
-    }
-}
-
-fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
-    let lines: Vec<&str> = output.lines().collect();
-    let truncated = if lines.len() > max_lines {
-        let head = &lines[..max_lines / 2];
-        let tail = &lines[lines.len() - max_lines / 2..];
-        let mut result = head.join("\n");
-        result.push_str(&format!(
-            "\n\n... [{} lines truncated] ...\n\n",
-            lines.len() - max_lines
-        ));
-        result.push_str(&tail.join("\n"));
-        result
-    } else {
-        output.to_string()
-    };
-
-    if truncated.len() > max_bytes {
-        let truncate_at = truncated
-            .char_indices()
-            .map(|(i, _)| i)
-            .take_while(|&i| i <= max_bytes)
-            .last()
-            .unwrap_or(0);
-        format!("{}... [output truncated]", &truncated[..truncate_at])
-    } else {
-        truncated
     }
 }
 
@@ -2194,329 +535,126 @@ fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-
-    fn assert_allowed(command: &str) {
-        assert!(
-            find_blocked_pattern(command).is_none(),
-            "expected allowed but matched: {} (cmd={})",
-            find_blocked_pattern(command).unwrap_or("?"),
-            command
-        );
-    }
-
-    fn assert_blocked(command: &str, expected_name_contains: &str) {
-        let pat = find_blocked_pattern(command);
-        assert!(pat.is_some(), "expected blocked but allowed: {}", command);
-        let pat = pat.unwrap();
-        assert!(
-            pat.contains(expected_name_contains),
-            "expected pattern containing '{}', got '{}' for cmd: {}",
-            expected_name_contains,
-            pat,
-            command
-        );
-    }
-
-    #[test]
-    fn isolated_child_shell_rejects_parent_paths_and_directory_changes() {
-        // The isolated root must be an owned subdirectory, never the shared
-        // temporary directory itself: on hosts where `temp_dir()` is a real
-        // directory (Linux `/tmp`), a sibling such as `/tmp/parent.txt` is
-        // inside `temp_dir()` and must not be expected to fail. `tempdir()`
-        // also guarantees the root exists so the fail-closed canonicalization
-        // path does not reject every command. See DVR M010.
-        let dir = tempfile::tempdir().expect("isolated child shell test root");
-        let root = dir.path();
-        assert!(validate_child_workspace_command("echo ok", &[], root).is_ok());
-        assert!(validate_child_workspace_command("cd ..", &[], root).is_err());
-        // Derive the outside path as a sibling of the canonical root so the
-        // expectation holds whether `temp_dir()` is a symlink (macOS
-        // `/tmp` -> `/private/tmp`) or a real directory (Linux `/tmp`).
-        let canonical_root = std::fs::canonicalize(root).expect("test root must canonicalize");
-        let outside = canonical_root
-            .parent()
-            .expect("test root must have a parent")
-            .join("codegg-isolated-child-parent.txt");
-        assert!(validate_child_workspace_command(
-            &format!("echo ok > {}", outside.display()),
-            &[],
-            root
-        )
-        .is_err());
-        // A redirect target inside the worktree stays allowed.
-        let inside = canonical_root.join("child.txt");
-        assert!(validate_child_workspace_command(
-            &format!("echo ok > {}", inside.display()),
-            &[],
-            root
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn isolated_child_shell_fails_closed_when_root_canonicalize_fails() {
-        let root = std::env::temp_dir().join("codegg-isolated-child-missing-root");
-        assert!(validate_child_workspace_command("echo ok", &[], &root).is_err());
-    }
-
-    #[test]
-    fn find_exec_is_allowed() {
-        // `find -exec` is a benign find flag, not the shell `exec` builtin.
-        assert_allowed("find . -name '*.rs' -exec grep -l 'fn ' {} +");
-        assert_allowed("find /tmp -name '*.log' -exec rm {} \\;");
-    }
-
-    #[test]
-    fn find_plain_is_allowed() {
-        assert_allowed("find . -name '*.rs'");
-        assert_allowed("find . -type f -name 'foo*'");
-    }
-
-    #[test]
-    fn xargs_is_allowed() {
-        assert_allowed("find . -name '*.rs' | xargs wc -l");
-        assert_allowed("xargs -I{} echo {}");
-    }
-
-    #[test]
-    fn grep_is_allowed() {
-        assert_allowed("grep -rn 'pattern' src/");
-    }
-
-    #[test]
-    fn quoted_heredoc_body_is_not_scanned_for_expansions() {
-        assert_allowed(
-            "cat > file.md << 'EOF'\n# Notes\nLiteral ${VALUE} and $(not executed)\nEOF",
-        );
-        assert_allowed("cat > file.md << \"EOF\"\n`literal backticks`\nEOF");
-    }
-
-    #[test]
-    fn unquoted_heredoc_body_is_still_scanned() {
-        assert_blocked("cat > file.md << EOF\n$(rm -rf /)\nEOF", "$(");
-    }
-
-    #[test]
-    fn exec_builtin_is_blocked() {
-        // shell `exec` builtin at start of command
-        assert_blocked("exec rm -rf /", "exec");
-        // `exec` after a pipe
-        assert_blocked("cat foo | exec sh", "exec");
-        // `exec` after semicolon
-        assert_blocked("ls; exec ls", "exec");
-    }
-
-    #[test]
-    fn command_substitution_is_blocked() {
-        assert_blocked("echo $(rm -rf /)", "$(");
-        assert_blocked("echo `rm -rf /`", "backtick");
-    }
-
-    #[test]
-    fn pipe_to_shell_is_blocked() {
-        // Note: the `|/.*sh` pattern is greedy and matches `bash` (since
-        // `bash` ends in `sh`). The first match wins, so for `wget ... | bash`
-        // the named pattern is "pipe to shell |/.*sh".
-        assert_blocked("curl -sL |/bin/sh", "pipe to shell");
-        assert_blocked("wget -qO- |/bin/bash", "pipe to shell");
-        assert_blocked("curl ... |/bin/zsh", "pipe to shell");
-    }
-
-    #[test]
-    fn dev_redirect_is_blocked() {
-        assert_blocked("echo foo > /dev/null", "/dev");
-        assert_blocked("cmd 2> /dev/null", "/dev");
-    }
-
-    #[test]
-    fn standalone_ampersand_is_blocked() {
-        assert_blocked("sleep 5 &", "&");
-        assert_blocked("ls &", "&");
-    }
-
-    #[test]
-    fn double_ampersand_is_allowed() {
-        // `&&` is logical-AND, not backgrounding.
-        assert_allowed("ls && echo done");
-    }
-
-    #[test]
-    fn fork_bomb_is_blocked_via_blocklist() {
-        // The fork bomb `:(){:|:&};:` is caught by the `blocked_commands`
-        // HashSet (starts_with check), not by the regex pattern. Verify
-        // the full check_command_security path catches it.
-        let tool = BashTool::new();
-        let parts: Vec<&str> = ":(){:|:&};:".split_whitespace().collect();
-        let result = tool.check_command_security(":(){:|:&};:", &parts);
-        assert!(result.is_err(), "fork bomb should be blocked");
-    }
-
-    #[test]
-    fn safe_env_var_is_blocked() {
-        // We treat all $VAR expansions as a security concern for now
-        // (could be a leak of secrets, etc.)
-        assert_blocked("ls $HOME", "$VAR");
-    }
-
-    #[test]
-    fn special_shell_parameters_are_blocked() {
-        for parameter in ["$@", "$*", "$#", "$?", "$-", "$!", "$0", "$9"] {
-            assert_blocked(&format!("echo {parameter}"), "variable expansion");
-        }
-    }
-
-    #[test]
-    fn blocked_commands_strip_execution_prefixes() {
-        let tool = BashTool::new();
-        for command in ["env rm -rf /", "nohup env rm -rf /", "sudo rm -rf /"] {
-            let parts: Vec<&str> = command.split_whitespace().collect();
-            assert!(
-                tool.check_command_security(command, &parts).is_err(),
-                "blocked command prefix should be rejected: {command}"
-            );
-        }
-    }
-
-    // ── Phase 04 routing metadata tests ────────────────────────────────
-
-    use crate::command_intent::classify_command;
-    use crate::command_intent::plan::{plan_execution, ExecutionBackend};
-    use crate::command_intent::IntentConfidence;
-    use crate::command_intent::RiskLevel;
-    use crate::command_routing::resolve_routing;
-    use crate::command_routing::RoutingDecision;
-    use crate::config::schema::CommandIntentConfig;
+    use crate::command_intent::CommandIntentKind;
     use crate::config::schema::CommandIntentFamily;
     use crate::config::schema::RouteLevel;
 
     #[test]
-    fn classify_test_command() {
-        let intent = classify_command("cargo test");
-        assert_eq!(intent.kind, CommandIntentKind::Test);
-        assert_eq!(intent.confidence, IntentConfidence::High);
-        assert_eq!(intent.risk.level, RiskLevel::Low);
+    fn builder_defaults_match_documented_contract() {
+        let tool = BashTool::new();
+        assert_eq!(tool.timeout, Duration::from_secs(120));
+        assert_eq!(tool.max_output_lines, 2000);
+        assert_eq!(tool.max_output_bytes, 50_000);
+        assert!(!tool.deny_all);
+        assert!(tool.allowed_paths.is_none());
+        assert!(tool.allowlist.is_none());
+        assert!(tool.landlock_sandbox.is_none());
+        assert!(tool.run_store.is_none());
+        assert!(tool.submission.is_none());
+        assert_eq!(tool.name(), "bash");
+        assert_eq!(tool.category(), ToolCategory::ShellExec);
     }
 
     #[test]
-    fn classify_git_readonly_command() {
-        let intent = classify_command("git status");
-        assert_eq!(intent.kind, CommandIntentKind::GitReadOnly);
-        assert_eq!(intent.confidence, IntentConfidence::High);
+    fn command_intent_mode_default_is_observe() {
+        let mode = crate::config::schema::CommandIntentMode::default();
+        assert_eq!(mode, crate::config::schema::CommandIntentMode::Observe);
     }
 
     #[test]
-    fn classify_git_mutable_command() {
-        let intent = classify_command("git commit -m 'foo'");
-        assert_eq!(intent.kind, CommandIntentKind::GitMutating);
-    }
-
-    #[test]
-    fn classify_search_command() {
-        let intent = classify_command("grep -rn 'pattern' src/");
-        assert_eq!(intent.kind, CommandIntentKind::SearchReadOnly);
-    }
-
-    #[test]
-    fn classify_python_command() {
-        let intent = classify_command("python3 script.py");
-        assert!(matches!(
-            intent.kind,
-            CommandIntentKind::PythonAnalyze
-                | CommandIntentKind::PythonTransform
-                | CommandIntentKind::PythonVerify
-        ));
-    }
-
-    #[test]
-    fn classify_empty_is_rejected() {
-        let intent = classify_command("");
-        assert_eq!(intent.kind, CommandIntentKind::Rejected);
-    }
-
-    #[test]
-    fn plan_test_routes_to_test_runner() {
-        let intent = classify_command("cargo test");
-        let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::TestRunner { .. }));
-        assert_eq!(plan.projector.label(), "test-report");
-    }
-
-    #[test]
-    fn plan_git_readonly_routes_to_git_backend() {
-        let intent = classify_command("git status");
-        let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::Git { .. }));
-    }
-
-    #[test]
-    fn plan_search_routes_to_managed_argv() {
-        let intent = classify_command("grep -rn 'pattern' src/");
-        let plan = plan_execution(&intent);
-        assert!(matches!(plan.backend, ExecutionBackend::ManagedArgv { .. }));
-        assert_eq!(plan.projector.label(), "file-search");
-    }
-
-    #[test]
-    fn resolve_test_routing() {
-        let intent = classify_command("cargo test");
-        let plan = plan_execution(&intent);
-        let decision = resolve_routing(&plan);
-        assert!(matches!(
-            decision,
-            RoutingDecision::RouteToTestRunner { .. }
-        ));
-    }
-
-    #[test]
-    fn resolve_git_readonly_routing() {
-        let intent = classify_command("git status");
-        let plan = plan_execution(&intent);
-        let decision = resolve_routing(&plan);
-        assert!(matches!(decision, RoutingDecision::RouteToGit { .. }));
-    }
-
-    #[test]
-    fn resolve_search_routing() {
-        let intent = classify_command("grep -rn 'pattern' src/");
-        let plan = plan_execution(&intent);
-        let decision = resolve_routing(&plan);
-        assert!(matches!(
-            decision,
-            RoutingDecision::RouteToManagedProcess { .. }
-        ));
-    }
-
-    #[test]
-    fn config_is_enabled_requires_master_toggle() {
+    fn command_intent_config_mode_helper() {
         let mut config = CommandIntentConfig::default();
-        config.route_safe_commands = Some(false);
-        config.route_tests = Some(RouteLevel::Observe);
-        assert!(!config.is_enabled(CommandIntentFamily::Tests));
+        assert_eq!(
+            config.mode(),
+            crate::config::schema::CommandIntentMode::Observe
+        );
+        assert!(!config.is_route_mode());
+        assert!(!config.is_active_mode());
 
-        config.route_safe_commands = Some(true);
-        assert!(config.is_enabled(CommandIntentFamily::Tests));
+        config.mode = Some(crate::config::schema::CommandIntentMode::Route);
+        assert_eq!(
+            config.mode(),
+            crate::config::schema::CommandIntentMode::Route
+        );
+        assert!(config.is_route_mode());
+        assert!(config.is_active_mode());
     }
 
     #[test]
-    fn config_is_enabled_per_family() {
+    fn active_mode_is_active() {
         let mut config = CommandIntentConfig::default();
-        config.route_safe_commands = Some(true);
-        config.route_tests = Some(RouteLevel::Observe);
-        config.route_git_read = Some(RouteLevel::Off);
-        config.route_search = Some(RouteLevel::Off);
-
-        assert!(config.is_enabled(CommandIntentFamily::Tests));
-        assert!(!config.is_enabled(CommandIntentFamily::GitRead));
-        assert!(!config.is_enabled(CommandIntentFamily::Search));
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert!(config.is_active_mode());
+        assert!(config.is_route_mode());
     }
 
     #[test]
-    fn config_all_disabled_by_default() {
+    fn family_level_defaults_to_observe_when_mode_is_observe() {
         let config = CommandIntentConfig::default();
-        assert!(!config.is_enabled(CommandIntentFamily::Tests));
-        assert!(!config.is_enabled(CommandIntentFamily::GitRead));
-        assert!(!config.is_enabled(CommandIntentFamily::Search));
-        assert!(!config.is_enabled(CommandIntentFamily::Python));
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Observe
+        );
+    }
+
+    #[test]
+    fn family_level_defaults_to_active_when_mode_is_active() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Active
+        );
+    }
+
+    #[test]
+    fn family_level_uses_override_when_set() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        config.route_tests = Some(RouteLevel::Off);
+        assert_eq!(
+            config.family_level(CommandIntentFamily::Tests),
+            RouteLevel::Off
+        );
+        assert_eq!(
+            config.family_level(CommandIntentFamily::GitRead),
+            RouteLevel::Active
+        );
+    }
+
+    #[test]
+    fn is_active_for_family_requires_active_mode() {
+        let mut config = CommandIntentConfig::default();
+        config.route_safe_commands = Some(true);
+        config.route_tests = Some(RouteLevel::Active);
+        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
+
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn is_active_for_family_requires_active_level() {
+        let mut config = CommandIntentConfig::default();
+        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
+        config.route_tests = Some(RouteLevel::Observe);
+        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
+
+        config.route_tests = Some(RouteLevel::Active);
+        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
+    }
+
+    #[test]
+    fn route_level_default_is_observe() {
+        assert_eq!(RouteLevel::default(), RouteLevel::Observe);
+    }
+
+    #[test]
+    fn config_all_new_families_default_to_off() {
+        let config = CommandIntentConfig::default();
+        assert!(!config.is_enabled(CommandIntentFamily::Build));
+        assert!(!config.is_enabled(CommandIntentFamily::Lint));
+        assert!(!config.is_enabled(CommandIntentFamily::Format));
     }
 
     #[tokio::test]
@@ -2626,12 +764,8 @@ mod tests {
         assert!(result.contains("routing: disabled"));
     }
 
-    // ── Workstream G: Observe-only mode tests ──────────────────────────
-
     #[tokio::test]
     async fn observe_mode_runs_raw_shell_for_test_command() {
-        // Even when tests are "enabled", observe mode must execute via sh -c,
-        // not route to TestRunner. The command must actually run.
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
@@ -2680,8 +814,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_mode_falls_back_to_observe_and_warns() {
-        // When mode = Route, the tool should fall back to observe behavior.
-        // The command must still execute via raw shell.
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
@@ -2702,8 +834,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_mode_does_not_change_execution_path() {
-        // Verify that even with route mode + all families enabled,
-        // the command still executes via raw shell (not routed to any backend).
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
@@ -2714,7 +844,6 @@ mod tests {
 
         let tool = BashTool::new().with_command_intent_config(cic);
 
-        // Test command — would route to TestRunner if active routing existed
         let input = serde_json::json!({"command": "echo routing-inactive"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -2722,7 +851,6 @@ mod tests {
             "must execute via raw shell"
         );
 
-        // Git command — would route to NativeTool if active routing existed
         let input = serde_json::json!({"command": "echo git-fallback"});
         let result = tool.execute(input).await.unwrap();
         assert!(
@@ -2743,15 +871,11 @@ mod tests {
 
     #[tokio::test]
     async fn route_safe_commands_true_alone_does_not_enable_routing() {
-        // Setting route_safe_commands = true does NOT mean active routing.
-        // The mode must be explicitly Route for that (and even then it falls back).
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_tests = Some(RouteLevel::Observe);
-        // mode is default (Observe)
 
         let tool = BashTool::new().with_command_intent_config(cic);
-        // Use a test command so family_enabled = true for metadata annotation.
         let input = serde_json::json!({"command": "cargo test --help"});
         let result = tool.execute(input).await.unwrap();
         assert!(result.contains("intent: test"), "must classify as test");
@@ -2765,116 +889,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn command_intent_mode_default_is_observe() {
-        let mode = crate::config::schema::CommandIntentMode::default();
-        assert_eq!(mode, crate::config::schema::CommandIntentMode::Observe);
-    }
-
-    #[test]
-    fn command_intent_config_mode_helper() {
-        let mut config = CommandIntentConfig::default();
-        assert_eq!(
-            config.mode(),
-            crate::config::schema::CommandIntentMode::Observe
-        );
-        assert!(!config.is_route_mode());
-        assert!(!config.is_active_mode());
-
-        config.mode = Some(crate::config::schema::CommandIntentMode::Route);
-        assert_eq!(
-            config.mode(),
-            crate::config::schema::CommandIntentMode::Route
-        );
-        assert!(config.is_route_mode());
-        assert!(config.is_active_mode());
-    }
-
-    #[test]
-    fn active_mode_is_active() {
-        let mut config = CommandIntentConfig::default();
-        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
-        assert!(config.is_active_mode());
-        assert!(config.is_route_mode());
-    }
-
-    #[test]
-    fn family_level_defaults_to_observe_when_mode_is_observe() {
-        let config = CommandIntentConfig::default();
-        assert_eq!(
-            config.family_level(CommandIntentFamily::Tests),
-            RouteLevel::Observe
-        );
-    }
-
-    #[test]
-    fn family_level_defaults_to_active_when_mode_is_active() {
-        let mut config = CommandIntentConfig::default();
-        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
-        assert_eq!(
-            config.family_level(CommandIntentFamily::Tests),
-            RouteLevel::Active
-        );
-    }
-
-    #[test]
-    fn family_level_uses_override_when_set() {
-        let mut config = CommandIntentConfig::default();
-        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
-        config.route_tests = Some(RouteLevel::Off);
-        assert_eq!(
-            config.family_level(CommandIntentFamily::Tests),
-            RouteLevel::Off
-        );
-        // Other families still use global default
-        assert_eq!(
-            config.family_level(CommandIntentFamily::GitRead),
-            RouteLevel::Active
-        );
-    }
-
-    #[test]
-    fn is_active_for_family_requires_active_mode() {
-        let mut config = CommandIntentConfig::default();
-        config.route_safe_commands = Some(true);
-        config.route_tests = Some(RouteLevel::Active);
-        // Mode is Observe (default), so active routing should be off
-        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
-
-        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
-        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
-    }
-
-    #[test]
-    fn is_active_for_family_requires_active_level() {
-        let mut config = CommandIntentConfig::default();
-        config.mode = Some(crate::config::schema::CommandIntentMode::Active);
-        config.route_tests = Some(RouteLevel::Observe);
-        // Level is Observe, not Active, so active routing should be off
-        assert!(!config.is_active_for_family(CommandIntentFamily::Tests));
-
-        config.route_tests = Some(RouteLevel::Active);
-        assert!(config.is_active_for_family(CommandIntentFamily::Tests));
-    }
-
-    #[test]
-    fn route_level_default_is_observe() {
-        assert_eq!(RouteLevel::default(), RouteLevel::Observe);
-    }
-
-    #[test]
-    fn config_all_new_families_default_to_off() {
-        let config = CommandIntentConfig::default();
-        assert!(!config.is_enabled(CommandIntentFamily::Build));
-        assert!(!config.is_enabled(CommandIntentFamily::Lint));
-        assert!(!config.is_enabled(CommandIntentFamily::Format));
-    }
-
-    // ── Workstream C/L/K: Active routing, kill switches, metrics ────
-
     #[tokio::test]
     async fn active_mode_routes_git_to_native_tool() {
-        // Ensure env kill switch is clear (may be polluted by other tests)
         std::env::remove_var("CODEGG_ROUTING_DISABLE");
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
@@ -2884,14 +900,11 @@ mod tests {
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
-        // Git status should execute via native tool (Command::new("git"))
-        // and produce output with [exit code: 0] or similar
         assert!(
             result.contains("[exit code:"),
             "command must produce exit code in output: {}",
             result
         );
-        // Metadata should show active mode
         assert!(
             result.contains("mode: active"),
             "metadata must show active mode: {}",
@@ -2926,7 +939,6 @@ mod tests {
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
-        // Observe mode must execute via raw shell
         assert!(result.contains("mode: observe"));
         assert!(result.contains("[exit code:"));
     }
@@ -2941,7 +953,6 @@ mod tests {
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
-        // Off level kills active routing, falls back to raw shell
         assert!(
             result.contains("mode: active"),
             "metadata shows active mode"
@@ -2961,7 +972,6 @@ mod tests {
             .with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
-        // Env kill switch forces raw shell
         assert!(result.contains("[exit code:"));
     }
 
@@ -3042,93 +1052,8 @@ mod tests {
         assert!(error.to_string().contains("requires the daemon scheduler"));
     }
 
-    #[test]
-    fn kill_switch_checks_env_var() {
-        let tool = BashTool::new().with_routing_disabled_env(true);
-        assert!(tool.check_kill_switches(CommandIntentFamily::Tests));
-    }
-
-    #[test]
-    fn kill_switch_checks_off_level() {
-        let mut cic = CommandIntentConfig::default();
-        cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(RouteLevel::Off);
-
-        let tool = BashTool::new().with_command_intent_config(cic);
-        assert!(tool.check_kill_switches(CommandIntentFamily::Tests));
-    }
-
-    #[test]
-    fn kill_switch_allows_active_level() {
-        let mut cic = CommandIntentConfig::default();
-        cic.route_safe_commands = Some(true);
-        cic.route_tests = Some(RouteLevel::Active);
-
-        let tool = BashTool::new()
-            .with_routing_disabled_env(false)
-            .with_command_intent_config(cic);
-        assert!(!tool.check_kill_switches(CommandIntentFamily::Tests));
-    }
-
-    #[test]
-    fn intent_kind_to_family_mapping() {
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::Test),
-            Some(CommandIntentFamily::Tests)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::GitReadOnly),
-            Some(CommandIntentFamily::GitRead)
-        );
-        // Track U: GitMutating now resolves to GitLocalMutation by default.
-        // The typed operation's risk set may still escalate to GitNetwork or
-        // GitDestructive in `git_operation_family()` for use by route-level
-        // gating — `intent_kind_to_family` is only the first-look mapper.
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::GitMutating),
-            Some(CommandIntentFamily::GitLocalMutation)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::SearchReadOnly),
-            Some(CommandIntentFamily::Search)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::FileRead),
-            Some(CommandIntentFamily::Search)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::PythonAnalyze),
-            Some(CommandIntentFamily::Python)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::PythonTransform),
-            Some(CommandIntentFamily::Python)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::PythonVerify),
-            Some(CommandIntentFamily::Python)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::Build),
-            Some(CommandIntentFamily::Build)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::Lint),
-            Some(CommandIntentFamily::Lint)
-        );
-        assert_eq!(
-            intent_kind_to_family(CommandIntentKind::Format),
-            Some(CommandIntentFamily::Format)
-        );
-        assert_eq!(intent_kind_to_family(CommandIntentKind::RawShell), None);
-        assert_eq!(intent_kind_to_family(CommandIntentKind::Rejected), None);
-        assert_eq!(intent_kind_to_family(CommandIntentKind::FileWrite), None);
-        assert_eq!(intent_kind_to_family(CommandIntentKind::FileEdit), None);
-    }
-
     #[tokio::test]
     async fn route_mode_still_falls_back_to_observe() {
-        // Route is a deprecated alias for Active — should still work for active routing
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.route_git_read = Some(RouteLevel::Active);
@@ -3137,7 +1062,6 @@ mod tests {
         let tool = BashTool::new().with_command_intent_config(cic);
         let input = serde_json::json!({"command": "git status"});
         let result = tool.execute(input).await.unwrap();
-        // Route mode should produce output (active routing since Route == Active)
         assert!(result.contains("[exit code:"));
         assert!(
             result.contains("mode: route (fallback: observe)"),
@@ -3147,7 +1071,6 @@ mod tests {
 
     #[tokio::test]
     async fn active_mode_raw_shell_falls_back_to_raw_shell() {
-        // RawShell commands (e.g., echo) cannot be active-routed — should use raw shell
         let mut cic = CommandIntentConfig::default();
         cic.route_safe_commands = Some(true);
         cic.mode = Some(crate::config::schema::CommandIntentMode::Active);
@@ -3161,57 +1084,32 @@ mod tests {
         );
     }
 
-    // ── Track U: plan_family resolution ─────────────────────────────────
-
-    use super::plan_family;
-
     #[test]
-    fn plan_family_resolves_typed_git_operation_families() {
-        let cases = [
-            ("git add src/main.rs", CommandIntentFamily::GitLocalMutation),
-            ("git commit -m fix", CommandIntentFamily::GitLocalMutation),
-            (
-                "git stash push -m wip",
-                CommandIntentFamily::GitLocalMutation,
-            ),
-            ("git fetch origin", CommandIntentFamily::GitNetwork),
-            ("git push origin main", CommandIntentFamily::GitNetwork),
-            (
-                "git reset --hard HEAD~1",
-                CommandIntentFamily::GitDestructive,
-            ),
-            ("git clean -f", CommandIntentFamily::GitDestructive),
-            (
-                "git push --force origin main",
-                CommandIntentFamily::GitDestructive,
-            ),
-        ];
-        for (cmd, expected) in cases {
-            let intent = classify_command(cmd);
-            let plan = plan_execution(&intent);
-            assert_eq!(
-                plan_family(&plan),
-                Some(expected),
-                "plan_family({:?}) = {:?}, expected {:?}",
-                cmd,
-                plan_family(&plan),
-                expected
-            );
-        }
+    fn pre_spawn_order_rejects_blocked_command_before_any_dispatch() {
+        // Regression guard for the extraction: policy checks must precede
+        // any process construction. A blocked command fails in the policy
+        // layer even when scheduler submission is configured.
+        let tool = BashTool::new();
+        let parts: Vec<&str> = "rm -rf /".split_whitespace().collect();
+        let err = tool
+            .check_command_security("rm -rf /", &parts)
+            .expect_err("blocked command must not reach spawn");
+        assert!(err.to_string().contains("blocked list"));
     }
 
     #[test]
-    fn plan_family_non_git_intents_delegate_to_intent_kind_to_family() {
-        let intent = classify_command("cargo test");
-        let plan = plan_execution(&intent);
-        assert_eq!(plan_family(&plan), Some(CommandIntentFamily::Tests));
+    fn child_git_ceiling_cannot_be_bypassed_by_shell_spelling() {
+        let dir = tempfile::tempdir().expect("child ceiling test root");
+        let root = dir.path();
+        assert!(super::policy::validate_child_workspace_command("echo ok", &[], root).is_ok());
+        assert!(super::policy::validate_child_workspace_command("cd /tmp", &[], root).is_err());
+        assert!(
+            super::policy::validate_child_workspace_command("echo hi; cd ..", &[], root).is_err()
+        );
+    }
 
-        let intent = classify_command("rg pattern src/");
-        let plan = plan_execution(&intent);
-        assert_eq!(plan_family(&plan), Some(CommandIntentFamily::Search));
-
-        let intent = classify_command("echo hi");
-        let plan = plan_execution(&intent);
-        assert_eq!(plan_family(&plan), None);
+    #[test]
+    fn unused_intent_import_stays_available_for_future_routing() {
+        let _ = CommandIntentKind::RawShell;
     }
 }

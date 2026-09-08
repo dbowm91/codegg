@@ -126,6 +126,9 @@ LINE_ANNOTATION = re.compile(
 # subprocess lifecycle. The service itself is the sole direct-spawn owner.
 CANONICAL_FINITE_PATHS = {
     "src/tool/bash.rs",
+    "src/tool/bash/process.rs",
+    "src/tool/bash/output.rs",
+    "src/tool/bash/policy.rs",
     "src/python_script/executor.rs",
     "src/scheduler/executors.rs",
 }
@@ -136,6 +139,8 @@ CANONICAL_EXECUTOR_PATH = "src/managed_process.rs"
 # ordinary diagnostics/security text outside these paths.
 TYPED_ARGV_PATHS = {
     "src/tool/bash.rs",
+    "src/tool/bash/process.rs",
+    "src/tool/bash/policy.rs",
     "src/command_intent/plan.rs",
     "src/command_routing.rs",
 }

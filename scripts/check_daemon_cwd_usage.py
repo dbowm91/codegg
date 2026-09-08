@@ -41,6 +41,7 @@ PROTECTED_GLOBS: list[str] = [
     "agent/turn_runtime.rs",
     "agent/worker.rs",
     "tool/bash.rs",
+    "tool/bash/*.rs",
     "tool/test.rs",
     "tool/git.rs",
     "tool/read.rs",
