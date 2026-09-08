@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Milestone 001 — Compatibility-Surface Rationalization
 
-Status: ready for handoff
+Status: implemented (closed by `plans/closure/post-audit-maintainability-surface/001-status.md`)
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

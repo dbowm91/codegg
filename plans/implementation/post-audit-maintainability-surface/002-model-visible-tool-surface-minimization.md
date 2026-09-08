@@ -1,8 +1,8 @@
 # Post-Audit Maintainability and Surface Milestone 002 — Model-Visible Tool-Surface Minimization
 
-Status: blocked
+Status: ready for handoff
 
-Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
+Repository baseline: `a11614a1` (M001 closed; canonical-name inventory in `plans/closure/post-audit-maintainability-surface/001-status.md#3-production-implementation-evidence`)
 
 Source roadmap:
 
@@ -10,7 +10,7 @@ Source roadmap:
 
 Hard dependency:
 
-- M001 — `plans/implementation/post-audit-maintainability-surface/001-compatibility-surface-rationalization.md`
+- M001 — `plans/implementation/post-audit-maintainability-surface/001-compatibility-surface-rationalization.md` (satisfied: closed by `plans/closure/post-audit-maintainability-surface/001-status.md`)
 
 Long-term requirements:
 
