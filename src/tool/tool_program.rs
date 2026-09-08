@@ -207,6 +207,13 @@ impl Tool for ToolProgramTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: program submission is specialist next to `task` delegation;
+    /// deferred for ordinary turns. Contract-based callability (DirectOnly
+    /// for the loop) is independent of prompt disclosure.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     fn contract(&self, tool_name: &str, input_schema: serde_json::Value) -> ToolContract {
         ToolContract {
             name: tool_name.to_string(),

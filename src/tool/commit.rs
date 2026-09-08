@@ -251,6 +251,12 @@ impl Tool for CommitTool {
         ToolCategory::Mutating
     }
 
+    /// M002: message-generation helper overlaps `git`; `git` stays core
+    /// while this helper remains discoverable.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         self.execute_with_context(input, None).await
     }

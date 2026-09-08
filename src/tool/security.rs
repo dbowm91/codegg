@@ -71,6 +71,12 @@ impl Tool for SecurityTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: deterministic scanning is specialist for ordinary coding;
+    /// deferred with immediate override for the `security-review` role.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let action = input["action"].as_str().ok_or_else(|| {
             ToolError::Execution("missing required 'action' parameter".to_string())

@@ -15,7 +15,8 @@ prompt and schema construction.
 |------|------|
 | `src/agent/tool_surface.rs` | `ResolvedToolSurface`, `Capability`, `AgentCapabilitySet`, resolver logic |
 | `src/agent/policy.rs` | `ToolExposureMode`, `ExecutionPolicy` — drives which tools enter the surface |
-| `src/agent/loop.rs:482` | `apply_tool_exposure_filter()` — applies mode + disabled_tools |
+| `src/agent/loop.rs` | `apply_tool_exposure_filter()` — applies mode + disabled_tools (palettes owned by disclosure) |
+| `src/tool/disclosure.rs` | **Canonical disclosure source (M002)**: `ToolDisclosure`, `CORE/CURATED/MINIMAL/PLAN` palettes, role overrides |
 | `src/tool/mod.rs` | `ToolRegistry` — canonical tool definitions |
 | `src/permission/mod.rs` | `tool_category_for_name()` — maps tool names to categories |
 
@@ -83,11 +84,40 @@ subagents from gaining capabilities the parent does not have.
 
 ### Plan Mode Filtering
 
-When plan mode is active, only these tools are allowed:
-`read`, `glob`, `grep`, `list`, `codesearch`, `webfetch`, `lsp`, `skill`,
-`todoread`, `todowrite`, `bash`, `plan_enter`, `plan_exit`, `tool_search`.
+Plan-mode surface is owned by `src/tool/disclosure.rs::PLAN_ALLOWED`
+(single source consumed by both `filter_tools_for_model` and the resolved
+surface). When plan mode is active, only these tools are allowed:
+`read`, `glob`, `grep`, `list`, `codesearch`, `repo_search`, `webfetch`,
+`lsp`, `skill`, `todoread`, `todowrite`, `bash`, `plan_enter`,
+`plan_exit`, `tool_search`.
 
 All other tools are omitted with `ToolOmissionReason::PlanMode`.
+
+### Disclosure States (M002 Progressive Disclosure)
+
+Four states distinguish capability from advertisement. One tool name maps
+to one state via `disclosure_for()`; registration, invocation, and policy
+remain with their existing owners.
+
+```text
+registered   — in ToolRegistry::with_options (callable via broker lookup)
+advertised   — in the immediate provider definitions for this turn
+discoverable — registered + policy-allowed, found via tool_search
+callable     — broker + permission + contract allow this caller/input
+```
+
+| State | Meaning | Mechanism |
+|---|---|---|
+| `Core` | Ordinary coding immediate | `defer_loading=false`, in `CORE_PALETTE` |
+| `Deferred` | Registered, deferred initially, discoverable | `defer_loading=true`, in catalog + `tool_search` |
+| `ProfileSpecific` | Deferred by default; immediate for named roles | `deferred` + `immediate_for_agent(name, role)` |
+| `Hidden` | Never model-visible (e.g. `invalid`) | `expose_in_definitions=false` |
+
+Runtime-unavailable (disabled backend, task without spawner) is separate:
+omitted as `MissingBackend`/`NonCallable`, never advertised as merely
+deferred. Specialist roles (`research`, `security-review`, `verifier`)
+receive their small role-appropriate immediate palette; ordinary coding
+keeps the core edit-loop primitives plus `tool_search`.
 
 ### Context Palette Reduction
 

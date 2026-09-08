@@ -94,6 +94,11 @@ impl Tool for ImageTool {
         ToolCategory::Mutating
     }
 
+    /// M002: specialist image generation is deferred; discover via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let api_key = self
             .api_key

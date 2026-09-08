@@ -86,6 +86,13 @@ impl Tool for CodeSearchTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: the M001 compatibility alias is deferred; the canonical
+    /// `repo_search` stays core. The alias remains registered and
+    /// discoverable via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = Self::request_input(input)?;
         search_backend::dispatch_repo_search(&request).await

@@ -224,6 +224,11 @@ impl Tool for ReviewTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: LLM synthesis review is deferred; discover via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         self.execute_with_context(input, None).await
     }

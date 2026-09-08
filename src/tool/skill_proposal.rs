@@ -54,6 +54,11 @@ impl Tool for SkillProposalTool {
         ToolCategory::SafeMutating
     }
 
+    /// M002: proposal submission is specialist; deferred for ordinary turns.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     fn contract(
         &self,
         tool_name: &str,

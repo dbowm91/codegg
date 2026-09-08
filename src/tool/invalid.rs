@@ -42,6 +42,12 @@ impl Tool for InvalidTool {
         ToolCategory::SafeMutating
     }
 
+    /// M002: malformed-call handler is internal diagnostics, never
+    /// model-advertised. It remains registered and callable by name.
+    fn expose_in_definitions(&self) -> bool {
+        false
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let parsed: InvalidInput = serde_json::from_value(input)
             .map_err(|e| ToolError::Execution(format!("invalid tool input: {e}")))?;

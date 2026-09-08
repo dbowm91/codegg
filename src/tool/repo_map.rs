@@ -53,6 +53,11 @@ impl Tool for RepoMapTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: specialist map variant is deferred; discover via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         search_backend::dispatch_repo_map(&input).await
     }

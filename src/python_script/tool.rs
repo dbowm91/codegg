@@ -470,6 +470,12 @@ impl Tool for PythonScriptTool {
         ToolCategory::ShellExec
     }
 
+    /// M002: mode-gated Python execution is specialist next to `bash`;
+    /// deferred for ordinary turns, still callable via the broker.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let request = build_python_request(&input)?;
 

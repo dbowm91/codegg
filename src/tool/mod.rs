@@ -20,6 +20,7 @@ pub mod destructive;
 pub mod deterministic;
 pub mod diff;
 pub mod disabled;
+pub mod disclosure;
 pub mod edit;
 pub mod evidence_bundle;
 pub mod factory;

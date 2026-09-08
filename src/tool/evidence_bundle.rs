@@ -65,6 +65,11 @@ impl Tool for EvidenceBundleTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: specialist bundle builder is deferred; discover via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         search_backend::dispatch_evidence_bundle(&input).await
     }

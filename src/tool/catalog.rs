@@ -107,21 +107,56 @@ fn bm25_score(query: &str, document: &str, avg_dl: f64, idf: &HashMap<String, f6
 }
 
 /// Metadata about a tool for catalog/registry purposes.
+///
+/// `category` and `disclosure` are denormalized at registration so
+/// `tool_search` can return effect/risk-relevant selection metadata
+/// without re-resolving tool instances. They contain no secrets,
+/// endpoints, credentials, or reasoning: only the static tool name,
+/// description, JSON schema, category label, and disclosure state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMetadata {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
     pub defer_load: bool,
+    /// Static safety category label (`ReadOnly`, `SafeMutating`,
+    /// `Mutating`, `ShellExec`).
+    #[serde(default = "default_category_label")]
+    pub category: String,
+    /// Canonical disclosure state (`core`, `deferred`,
+    /// `profile_specific`, `hidden`).
+    #[serde(default = "default_disclosure_label")]
+    pub disclosure: String,
+}
+
+fn default_category_label() -> String {
+    "Mutating".to_string()
+}
+
+fn default_disclosure_label() -> String {
+    "core".to_string()
 }
 
 impl ToolMetadata {
     pub fn from_tool(tool: &dyn Tool) -> Self {
+        let category = match tool.category() {
+            super::ToolCategory::ReadOnly => "ReadOnly",
+            super::ToolCategory::SafeMutating => "SafeMutating",
+            super::ToolCategory::Mutating => "Mutating",
+            super::ToolCategory::ShellExec => "ShellExec",
+        }
+        .to_string();
+        let name = tool.name().to_string();
+        let disclosure = super::disclosure::disclosure_for(&name)
+            .as_str()
+            .to_string();
         Self {
-            name: tool.name().to_string(),
+            name,
             description: tool.description().to_string(),
             parameters: tool.parameters(),
             defer_load: tool.defer_loading(),
+            category,
+            disclosure,
         }
     }
 }

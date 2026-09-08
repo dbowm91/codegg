@@ -2,6 +2,12 @@
 //!
 //! This tool allows the LLM to search for tools by name or description,
 //! enabling on-demand tool discovery without loading all tools at once.
+//!
+//! Discovery is monotonic: results are restricted to the already-allowed
+//! policy set (`available_tools` installed by the agent loop after
+//! deny/plan/disable/backend/ceiling filtering). Discovery never turns a
+//! prohibited tool into a callable one. Hidden/internal tools are never
+//! returned, even when the allow-list is unset (unit-test construction).
 
 use std::sync::Arc;
 
@@ -11,6 +17,10 @@ use serde_json::json;
 use crate::error::ToolError;
 use crate::tool::catalog::ToolCatalog;
 use crate::tool::{Tool, ToolCategory};
+
+/// Maximum tools returned per search so a broad query cannot move prompt
+/// bloat into the search result.
+pub const MAX_SEARCH_RESULTS: usize = 10;
 
 /// Tool for searching available tools by query.
 ///
@@ -77,14 +87,32 @@ impl Tool for ToolSearchTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("query required".into()))?;
 
+        // An empty query would match the whole catalog in keyword mode;
+        // return no results instead of dumping registered capability.
+        if query.trim().is_empty() {
+            return Ok(json!({
+                "status": "no_results",
+                "query": query,
+                "tools": []
+            })
+            .to_string());
+        }
+
         let results = self.catalog.search(query);
 
+        // Policy filtering first: only tools the current agent/session
+        // policy allows are discoverable. When no allow-list is installed
+        // (direct unit construction), still exclude hidden/internal tools.
         let filtered: Vec<&crate::tool::catalog::ToolMetadata> = match &self.available_tools {
             Some(available) => results
                 .into_iter()
                 .filter(|m| available.iter().any(|a| a == &m.name))
+                .filter(|m| !crate::tool::disclosure::is_hidden(&m.name))
                 .collect(),
-            None => results,
+            None => results
+                .into_iter()
+                .filter(|m| !crate::tool::disclosure::is_hidden(&m.name))
+                .collect(),
         };
 
         if filtered.is_empty() {
@@ -96,14 +124,28 @@ impl Tool for ToolSearchTool {
             .to_string());
         }
 
+        // Cap results so discovery stays a selection aid, not a catalog dump.
+        // `total_matches` preserves honesty about truncation.
+        let total_matches = filtered.len();
         let tools: Vec<serde_json::Value> = filtered
             .into_iter()
+            .take(MAX_SEARCH_RESULTS)
             .map(|metadata| {
+                // Selection metadata only: canonical name, purpose,
+                // category/risk/disclosure for correct choice among related
+                // research/evidence tools. No backend config, endpoints,
+                // credentials, reasoning, or plugin internals are returned.
+                let risk =
+                    crate::tool::risk::classify_tool_risk(&metadata.name, &serde_json::json!({}));
                 json!({
+                    "canonical_name": metadata.name,
                     "name": metadata.name,
                     "description": metadata.description,
                     "parameters": metadata.parameters,
-                    "defer_load": metadata.defer_load
+                    "defer_load": metadata.defer_load,
+                    "category": metadata.category,
+                    "risk": format!("{risk:?}"),
+                    "disclosure": metadata.disclosure
                 })
             })
             .collect();
@@ -112,6 +154,7 @@ impl Tool for ToolSearchTool {
             "status": "success",
             "query": query,
             "count": tools.len(),
+            "total_matches": total_matches,
             "tools": tools
         })
         .to_string())

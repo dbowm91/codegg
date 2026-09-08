@@ -469,53 +469,18 @@ impl AgentLoop {
             return definitions;
         };
 
-        // First apply exposure mode filter
+        // First apply exposure mode filter. Palettes are owned by the
+        // canonical disclosure module (M002); no second list lives here.
         let filtered = match policy.initial_tool_mode {
             crate::agent::policy::ToolExposureMode::Full => definitions,
-            crate::agent::policy::ToolExposureMode::Curated => {
-                let core_tools = [
-                    "read",
-                    "list",
-                    "grep",
-                    "glob",
-                    "codesearch",
-                    "edit",
-                    "apply_patch",
-                    "bash",
-                    "git",
-                    "diff",
-                    "todoread",
-                    "todowrite",
-                    "question",
-                    "tool_search",
-                    "skill",
-                    "websearch",
-                ];
-                definitions
-                    .into_iter()
-                    .filter(|t| core_tools.contains(&t.name.as_str()))
-                    .collect()
-            }
-            crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => {
-                let minimal_tools = [
-                    "read",
-                    "list",
-                    "grep",
-                    "codesearch",
-                    "edit",
-                    "apply_patch",
-                    "bash",
-                    "question",
-                    "todowrite",
-                    "todoread",
-                    "tool_search",
-                    "websearch",
-                ];
-                definitions
-                    .into_iter()
-                    .filter(|t| minimal_tools.contains(&t.name.as_str()))
-                    .collect()
-            }
+            crate::agent::policy::ToolExposureMode::Curated => definitions
+                .into_iter()
+                .filter(|t| crate::tool::disclosure::CURATED_PALETTE.contains(&t.name.as_str()))
+                .collect(),
+            crate::agent::policy::ToolExposureMode::MinimalWithDiscovery => definitions
+                .into_iter()
+                .filter(|t| crate::tool::disclosure::MINIMAL_PALETTE.contains(&t.name.as_str()))
+                .collect(),
         };
 
         // Then apply model profile disabled_tools filter
@@ -1997,8 +1962,14 @@ impl AgentLoop {
             let mut immediate = Vec::new();
             let mut deferred_tools = Vec::new();
 
+            // Specialist roles receive their role-appropriate deferred tools
+            // immediately (M002 profile-specific disclosure). This never
+            // widens authority: deny/plan/disable/backend/ceiling filtering
+            // already ran in the resolved surface above.
+            let agent_name = self.state.current_agent.clone();
             for def in all_definitions {
-                let is_always_loaded = always_loaded.iter().any(|n| n == &def.name);
+                let is_always_loaded = always_loaded.iter().any(|n| n == &def.name)
+                    || crate::tool::disclosure::immediate_for_agent(&def.name, &agent_name);
                 let should_defer = !is_always_loaded && def.defer_loading == Some(true);
 
                 if should_defer {
@@ -3938,27 +3909,15 @@ fn filter_tools_for_model<'a>(
     lsp_enabled: bool,
     flags: &ModelFlags,
 ) -> Vec<&'a dyn crate::tool::Tool> {
-    let plan_allowed_tools = [
-        "read",
-        "glob",
-        "grep",
-        "list",
-        "codesearch",
-        "webfetch",
-        "lsp",
-        "skill",
-        "todoread",
-        "todowrite",
-        "bash",
-        "plan_enter",
-        "plan_exit",
-    ];
-
+    // Plan-mode surface is owned by the canonical disclosure module
+    // (M002). It includes `tool_search` so deferred capability remains
+    // discoverable, and both the canonical `repo_search` and the retained
+    // `codesearch` alias (M001) for repo inspection.
     tools
         .iter()
         .filter(|t| {
             if plan_mode {
-                return plan_allowed_tools.contains(&t.name());
+                return crate::tool::disclosure::plan_allowed(t.name());
             }
 
             match t.name() {

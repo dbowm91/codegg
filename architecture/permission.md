@@ -376,6 +376,13 @@ allow_all_bash = false
 3. **Agent loop does not treat external origin as approval.** Unknown
    raw MCP tools follow the normal mutating default and remain `Ask`
    until explicit policy or user decision allows them.
+4. **Discovery never widens authority (M002).** `tool_search` may reveal
+   only tools the current agent/session policy already allows; a denied,
+   plan-excluded, model-disabled, backend-unavailable, or
+   parent-ceiling-exceeded tool stays undiscoverable and non-callable.
+   Deferred/profile-specific disclosure changes advertisement, never the
+   broker/permission/contract boundary. Hidden tools (`invalid`,
+   `DisabledTool` stubs) are never discoverable.
 4. **Path canonicalization TTL is 1 second** (`PATH_CANONICALIZE_CACHE_TTL_SECS`).
    Not-found entries also cache for 1s.
 5. **Session isolation.** Session-specific decisions are checked before

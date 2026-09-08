@@ -68,6 +68,11 @@ impl Tool for BatchFetchTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: specialist batch fetch is deferred; discover via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         search_backend::dispatch_batch_fetch(&input).await
     }

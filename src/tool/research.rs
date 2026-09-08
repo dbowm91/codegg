@@ -145,6 +145,12 @@ impl Tool for ResearchTool {
         ToolCategory::ReadOnly
     }
 
+    /// M002: specialist synthesis is deferred from the ordinary prompt;
+    /// it remains registered and discoverable via `tool_search`.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let question = input["question"]
             .as_str()

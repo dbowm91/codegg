@@ -233,9 +233,26 @@ set varies with configuration and optional features. Use the registry
 and `tool_search` documentation as the source of truth rather than a
 fixed count.
 
-### Always-Registered Core Tools (~31)
+### Registration vs Definitions vs Discovery vs Invocation (M002)
 
-Registered unconditionally in `with_options()`:
+Four questions have four different owners; do not conflate them.
+
+| Question | Owner | Notes |
+|---|---|---|
+| Registered? | `ToolRegistry::with_options` | Full capability set; includes deferred + hidden stubs. |
+| Advertised now? | Resolved surface + provider deferral | Immediate definitions for this turn; deferred flagged via `defer_loading`. See `src/tool/disclosure.rs`. |
+| Discoverable? | `ToolCatalog` + `tool_search` | Deferred but policy-allowed tools with canonical name, category, risk, disclosure metadata. Capped at 10; empty queries return none. |
+| Callable? | `ToolBroker` + permission + contracts | Disclosure never widens authority; denied/hidden tools stay non-callable. |
+
+Operator views (`/tool-backends`, diagnostics) report registered
+capability, not just the currently advertised prompt slice. Deferred
+tools are not hidden from operators.
+
+### Always-Registered Core Tools
+
+Registered unconditionally in `with_options()` (disclosure in
+`src/tool/disclosure.rs`; `Core` = ordinary immediate, `Deferred` =
+discoverable, `Hidden` = never advertised):
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -248,31 +265,33 @@ Registered unconditionally in `with_options()`:
 | **list** | `list.rs` | Directory tree listing, limited to 300 files. |
 | **task** | `task.rs` | Spawn subagents. Supports spawn/get actions. |
 | **webfetch** | `webfetch.rs` | URL content fetching via search_backend dispatch. |
-| **websearch** | `websearch.rs` | Web search via search_backend dispatch. |
-| **research** | `research.rs` | Deep research (may invoke websearch/webfetch). |
-| **image** | `image.rs` | DALL-E image generation (dall-e-3, size, quality). |
-| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused repo_search. |
-| **question** | `question.rs` | Ask user clarifying questions. |
-| **skill** | `skill.rs` | Load a skill (SKILL.md) by name into context. |
-| **skill_proposal** | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
-| **apply_patch** | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). |
-| **diff** | `diff.rs` | Show differences between two file versions. |
-| **replace** | `replace.rs` | Regex find/replace with capture groups. |
-| **review** | `review.rs` | LLM-based code review with emoji categorization. |
-| **terminal** | `terminal.rs` | Interactive terminal session (env var filtering). 60s timeout. |
-| **test** | `test.rs` | Supervised test runner with previous-failures index. Category: ShellExec. |
-| **python_script** | (python_script/) | Python script execution (analyze/transform/verify). |
-| **tool_program** | `tool_program.rs` | Foreground model tool for restricted-Python programs. |
-| **git** | `git.rs` | Git command execution with subcommand/args. 30s timeout. |
-| **commit** | `commit.rs` | LLM-generated commit messages from diff. |
-| **plan_enter** | `plan.rs` | Enter plan mode (reduced toolset). |
-| **plan_exit** | `plan.rs` | Exit plan mode. |
-| **invalid** | `invalid.rs` | Catch-all for malformed tool calls. |
-| **tool_search** | `tool_search.rs` | On-demand tool discovery via catalog search. |
+| **websearch** | `websearch.rs` | Web search via search_backend dispatch. Core. |
+| **research** | `research.rs` | Deep research (may invoke websearch/webfetch). Deferred; immediate for `research` role. |
+| **image** | `image.rs` | DALL-E image generation (dall-e-3, size, quality). Deferred. |
+| **codesearch** | `codesearch.rs` | Compatibility alias for coding-focused repo_search (M001 retained). Deferred; canonical `repo_search` stays core. |
+| **question** | `question.rs` | Ask user clarifying questions. Core. |
+| **skill** | `skill.rs` | Load a skill (SKILL.md) by name into context. Core. |
+| **skill_proposal** | `skill_proposal.rs` | Submit one user-authorized portable SKILL.md proposal for preview. Deferred. `SafeMutating`, `DirectOnly` (agent loop only; subagents and Tool Programs denied), `NonIdempotent`, no retry. Requires an active `/skill-promote` request ID plus matching session/project/habit scope and fresh fingerprint/revision; never writes a skill root. |
+| **apply_patch** | `apply_patch.rs` | Apply unified diff patches (update/create/delete/move). Core. |
+| **diff** | `diff.rs` | Show differences between two file versions. Core. |
+| **replace** | `replace.rs` | Regex find/replace with capture groups. Deferred (`edit`/`apply_patch` stay core). |
+| **review** | `review.rs` | LLM-based code review with emoji categorization. Deferred. |
+| **terminal** | `terminal.rs` | Interactive terminal session (env var filtering). 60s timeout. Deferred (`bash` stays core). |
+| **test** | `test.rs` | Supervised test runner with previous-failures index. Category: ShellExec. Core. |
+| **python_script** | (python_script/) | Python script execution (analyze/transform/verify). Deferred (`bash` stays core). |
+| **tool_program** | `tool_program.rs` | Foreground model tool for restricted-Python programs. Deferred (`task` delegation stays core). Contract callability independent of disclosure. |
+| **git** | `git.rs` | Git command execution with subcommand/args. 30s timeout. Core. |
+| **commit** | `commit.rs` | LLM-generated commit messages from diff. Deferred (`git` stays core). |
+| **plan_enter** | `plan.rs` | Enter plan mode (reduced toolset). Core. |
+| **plan_exit** | `plan.rs` | Exit plan mode. Core. |
+| **invalid** | `invalid.rs` | Catch-all for malformed tool calls. Hidden (M002): registered but never in definitions/discovery. |
+| **tool_search** | `tool_search.rs` | On-demand tool discovery via catalog search. Core; always retained where deferral exists. Returns canonical name, category, risk, disclosure; capped at 10; empty queries return none. |
 
 ### Conditional: Eggsearch Wrappers (7 tools)
 
-Registered only when `[search].backend = "eggsearch"` (evidence enabled):
+Registered only when `[search].backend = "eggsearch"` (evidence enabled).
+`repo_search` is core; the rest are deferred with role overrides for
+`research`/`security-review`/`verifier` (see `disclosure.rs`):
 
 | Tool | File | Description |
 |------|------|-------------|
@@ -292,8 +311,8 @@ Raw `mcp__eggsearch__*` tools hidden by default
 
 | Tool | Registration | Description |
 |------|-------------|-------------|
-| **lsp** | Native or DisabledTool | LSP client tools. Native when backend is Native/Builtin/fallback-MCP; DisabledTool when disabled or MCP-no-fallback. |
-| **security** | Native or DisabledTool | Security scanning. Same backend logic as LSP. |
+| **lsp** | Native or DisabledTool | LSP client tools. Native when backend is Native/Builtin/fallback-MCP; DisabledTool when disabled or MCP-no-fallback. Core when native. |
+| **security** | Native or DisabledTool | Security scanning. Same backend logic as LSP. Deferred for ordinary coding; immediate for `security-review` role. |
 
 ### Conditional: Todo Tools (0-2 tools)
 

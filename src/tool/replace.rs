@@ -95,6 +95,12 @@ impl Tool for ReplaceTool {
         ToolCategory::Mutating
     }
 
+    /// M002: regex replace overlaps `edit`/`apply_patch`; the single-edit
+    /// and batch primitives stay core while this variant is discoverable.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let path_str = input["path"]
             .as_str()

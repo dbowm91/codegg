@@ -371,23 +371,8 @@ fn category_for_name(name: &str) -> ToolCategory {
 }
 
 fn plan_allowed(name: &str) -> bool {
-    matches!(
-        name,
-        "read"
-            | "glob"
-            | "grep"
-            | "list"
-            | "codesearch"
-            | "webfetch"
-            | "lsp"
-            | "skill"
-            | "todoread"
-            | "todowrite"
-            | "bash"
-            | "plan_enter"
-            | "plan_exit"
-            | "tool_search"
-    )
+    // Canonical plan surface is owned by the tool disclosure module (M002).
+    crate::tool::disclosure::plan_allowed(name)
 }
 
 fn tool_capabilities(name: &str, category: ToolCategory) -> Vec<Capability> {

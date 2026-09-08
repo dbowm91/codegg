@@ -261,6 +261,11 @@ impl Tool for TerminalTool {
         ToolCategory::Mutating
     }
 
+    /// M002: interactive terminal overlaps `bash`; deferred for ordinary turns.
+    fn defer_loading(&self) -> bool {
+        crate::tool::disclosure::is_deferred_by_default(self.name())
+    }
+
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
         let command = input["command"]
             .as_str()
