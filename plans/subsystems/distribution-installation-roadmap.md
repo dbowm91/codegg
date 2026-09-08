@@ -1,6 +1,6 @@
 # Distribution and Installation Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -234,7 +234,7 @@ Exit conditions:
 
 Class: capability / polish.
 
-Status: ready — M001 closed; see `plans/closure/distribution-installation/001-status.md`.
+Status: closed — see `plans/closure/distribution-installation/002-status.md`.
 
 Implementation plan:
 
@@ -328,4 +328,4 @@ This roadmap closes when maintainers have a stable manual artifact/checksum cont
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/distribution-installation/001-manual-prebuilt-artifact-contract.md` | `plans/closure/distribution-installation/001-status.md` | — |
-| M002 | ready | `plans/implementation/distribution-installation/002-installer-and-end-user-installation.md` | — | — |
+| M002 | closed | `plans/implementation/distribution-installation/002-installer-and-end-user-installation.md` | `plans/closure/distribution-installation/002-status.md` | — |
