@@ -5,10 +5,11 @@ use crate::agent::asset_context::AssetContext;
 use crate::config::schema::{AgentConfig, Config};
 use crate::error::AgentError;
 
-use super::{
-    agent_from_config, builtin_agents, load_agents_from_dir, merge_agent_config, parse_mode, Agent,
-    AgentMode, AgentRuntimeKind,
+use super::definition::{
+    agent_from_config, builtin_agents, merge_agent_config, parse_mode, Agent, AgentMode,
+    AgentRuntimeKind,
 };
+use super::file_agents::load_agents_from_dir;
 
 /// Declarative agent source representation for future TOML/MD agents.
 ///

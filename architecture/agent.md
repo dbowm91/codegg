@@ -13,10 +13,20 @@ asset management.
 
 | File | Role |
 |------|------|
-| `src/agent/mod.rs` | `Agent`, `AgentMode`, `AgentRuntimeKind`, builtin agents, resolution, safety envelope |
-| `src/agent/loop.rs` | `AgentLoop` — turn identity, live controls, and lifecycle sequencing |
+| `src/agent/mod.rs` | Module declaration/re-export/composition surface; legacy `resolve_agents()` CLI boundary |
+| `src/agent/definition.rs` | `Agent`, `AgentMode`, `AgentRuntimeKind`, model aliases, execution profiles, config-layer resolution |
+| `src/agent/file_agents.rs` | Global/project agent-file loading (markdown/TOML), overlay flags, permission specs, lookup helpers |
+| `src/agent/loop.rs` | `AgentLoop` — turn identity, live controls, constructors, and high-level `run`/`run_inner` sequencing |
+| `src/agent/tool_inspect.rs` | Pure tool-call inspection/classification (paths, bash/test/git/MCP), timeouts, model-flag gating |
+| `src/agent/loop_output.rs` | Bounded `AgentLoopTerminalOutput` collector and local-path redaction |
+| `src/agent/request_preparation.rs` | Per-turn request preparation: policy, routing, research hints, context frames, tool definitions |
+| `src/agent/turn_completion.rs` | Terminal publication, goal accounting/continuation, limit checks, run-boundary journaling |
+| `src/agent/habit_observation.rs` | Host-owned habit observation adapter (allowlisted structural metadata only) |
+| `src/agent/snapshot_capture.rs` | Snapshot capture, file-change draining, security-review trigger dispatch |
+| `src/agent/follow_up.rs` | Notification injection and non-blocking follow-up drain |
 | `src/agent/coordinator.rs` | `AgentLoopServices` construction boundary and typed `TurnLifecycle` phases |
 | `src/agent/loop.rs` | `AgentLoop` struct definition; canonical service handles are grouped in `AgentLoopServices` |
+| `src/agent/context_runtime.rs` | Turn-lifecycle compaction (`compact_if_needed`) and pack-observation phase (context-owned) |
 | `src/agent/tool_batch.rs` | Typed permission/MCP/broker batch boundary for tool calls |
 | `src/context/policy.rs` | `ContextPolicyRuntimeState` — ephemeral context-policy backoff |
 | `src/agent/provider_turn.rs` | `ProviderTurnAdapter` — provider retry and stream normalization |

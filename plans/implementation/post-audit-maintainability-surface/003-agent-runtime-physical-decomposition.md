@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Milestone 003 — Agent-Runtime Physical Decomposition
 
-Status: ready for handoff
+Status: implemented (closure review pending)
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

@@ -86,6 +86,12 @@ reason = "AgentLoop dispatches subagent and security-review work; security-revie
 entrypoint = "JobSubmissionService::submit"
 
 [[site]]
+path = "src/agent/snapshot_capture.rs"
+owner = "scheduler"
+reason = "M003 extraction of AgentLoop snapshot/security-review helpers; security-review dispatch uses scheduler submission with the standalone-compat pool fallback preserved"
+entrypoint = "JobSubmissionService::submit"
+
+[[site]]
 path = "src/agent/specialized_runtime.rs"
 owner = "scheduler"
 reason = "Specialized research evidence children use the existing bounded SubAgentPool admission path"
