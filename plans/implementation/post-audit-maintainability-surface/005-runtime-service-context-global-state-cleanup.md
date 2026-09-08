@@ -10,8 +10,8 @@ Source roadmap:
 
 Dependencies:
 
-- hard: M002 — final model/tool construction and disclosure contract;
-- interface: M003 — final agent construction/module seams.
+- hard: M002 — final model/tool construction and disclosure contract (satisfied: closed by `plans/closure/post-audit-maintainability-surface/002-status.md`; disclosure contract is `src/tool/disclosure.rs` + `ToolRegistry::with_options` registration ownership);
+- interface: M003 — final agent construction/module seams (outstanding).
 
 Long-term requirements:
 

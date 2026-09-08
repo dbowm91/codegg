@@ -46,14 +46,13 @@ Canonical direction remains in:
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | Exact candidate `f314c38e` passed hosted `CI / verify`. |
 | Post-audit correctness, simplification, and footprint | closed | `plans/subsystems/post-audit-correctness-simplification-daemon-lifecycle-corrective-addendum.md` | C003 closed | Daemon startup/shutdown/process lifecycle corrective work accepted. |
-| Post-audit maintainability and surface | active | `plans/subsystems/post-audit-maintainability-surface-roadmap.md` | M001 closed, M002 ready | M005 hard-blocked on M002 with an interface dependency on M003. |
+| Post-audit maintainability and surface | active | `plans/subsystems/post-audit-maintainability-surface-roadmap.md` | M001 closed, M002 closed | M005 blocked on M003 interface (M002 hard dependency satisfied). |
 | Search and eggsearch integration | closed | `plans/subsystems/search-eggsearch-integration-roadmap.md` | M005 closed | — |
 
 ## Dependency-ready implementation plans
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Post-audit maintainability and surface | M002 — model-visible tool-surface minimization | `plans/implementation/post-audit-maintainability-surface/002-model-visible-tool-surface-minimization.md` | M001 closed with canonical-name/compatibility disposition; disclosure mechanisms already exist. |
 | Post-audit maintainability and surface | M003 — agent-runtime physical decomposition | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | Remaining problem is physical concentration inside canonical agent ownership; M001 is only a soft merge dependency. |
 | Post-audit maintainability and surface | M004 — Bash-tool physical decomposition | `plans/implementation/post-audit-maintainability-surface/004-bash-tool-physical-decomposition.md` | Bash execution/sandbox/scheduler owners are already stable; this is a behavior-preserving locality refactor. |
 | Provider authentication capability closure | M010 — auth capability matrix and stored bearer closure | `plans/implementation/provider-connections/010-auth-capability-matrix-and-stored-bearer-closure.md` | Credential kinds/store/factory seams already exist; the missing support matrix and stored-bearer mismatch are concrete. |
@@ -83,7 +82,7 @@ Canonical direction remains in:
 | Subsystem | Milestone | Blocker |
 |---|---|---|
 | Runtime safety, resource control, and footprint | C002 supported-Linux evidence | Historical supported-Linux Landlock fixture evidence remains outstanding; it is independent of architecture-convergence M009. |
-| Post-audit maintainability and surface | M005 — runtime-service context and mutable-global cleanup | Hard dependency on M002 final tool construction/disclosure contract; interface dependency on M003 agent construction seams. |
+| Post-audit maintainability and surface | M005 — runtime-service context and mutable-global cleanup | M002 hard dependency satisfied (closed); interface dependency on M003 agent construction seams remains. |
 
 ## Closure work and recently completed control points
 
@@ -113,6 +112,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Distribution and installation | M001 — manual prebuilt artifact contract | closed | `plans/closure/distribution-installation/001-status.md` |
 | Distribution and installation | M002 — verified installer and end-user installation | closed | `plans/closure/distribution-installation/002-status.md` |
 | Post-audit maintainability and surface | M001 — compatibility-surface rationalization | closed | `plans/closure/post-audit-maintainability-surface/001-status.md` |
+| Post-audit maintainability and surface | M002 — model-visible tool-surface minimization | closed | `plans/closure/post-audit-maintainability-surface/002-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective work, if discovered during the new roadmaps, must receive a new milestone/addendum under the normal planning process.
 

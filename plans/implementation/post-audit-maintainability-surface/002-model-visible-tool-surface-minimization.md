@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Milestone 002 — Model-Visible Tool-Surface Minimization
 
-Status: ready for handoff
+Status: closed
 
 Repository baseline: `a11614a1` (M001 closed; canonical-name inventory in `plans/closure/post-audit-maintainability-surface/001-status.md#3-production-implementation-evidence`)
 
