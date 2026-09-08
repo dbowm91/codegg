@@ -435,35 +435,6 @@ async fn test_replace_tool_with_preflight_blocks_on_no_match() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_multiedit_tool_with_preflight_blocks_on_edit() {
-    let svc = test_preflight_service();
-    let tool = codegg::tool::multiedit::MultiEditTool::new()
-        .with_allowed_root(std::env::temp_dir())
-        .with_preflight(svc);
-
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("test.txt");
-    std::fs::write(&file_path, "hello world").unwrap();
-
-    // Try multiedit with a non-matching old_string
-    let input = serde_json::json!({
-        "path": file_path.to_str().unwrap(),
-        "edits": [
-            {
-                "old_string": "nonexistent",
-                "new_string": "replacement"
-            }
-        ]
-    });
-
-    let result = tool.execute(input).await;
-    assert!(
-        result.is_err(),
-        "multiedit with non-matching old_string should fail"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn test_apply_patch_tool_with_preflight_blocks_on_invalid_config() {
     let policy = PreflightPolicy {
         config: true,

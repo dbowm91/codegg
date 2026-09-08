@@ -194,7 +194,7 @@ their primary operation. Current integration points:
 
 | Tool | Check Method | What It Validates |
 |------|-------------|-------------------|
-| `edit`, `replace`, `apply_patch`, `multiedit` | `check_text_replace` | Replacement exists, is unambiguous |
+| `edit`, `replace`, `apply_patch` | `check_text_replace` | Replacement exists, is unambiguous |
 | Config write operations | `check_json_valid`, `check_toml_valid`, `check_config` | Config syntax validity |
 | `bash` | `check_command` | Shell command risk patterns |
 | All tools | `check_text_security` | Unicode confusables, hidden chars |

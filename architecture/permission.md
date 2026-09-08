@@ -40,7 +40,9 @@ Categories with `is_permission_free() == true` (`ReadOnly`,
 `SafeMutating`) short-circuit `PermissionChecker::check()` to `Allow`
 before any store/rule/glob lookup, unless a persistent `Deny` is in
 the store. This covers `read`, `glob`, `grep`, `list`, `webfetch`,
-`websearch`, `codesearch`, `lsp`, `diff`, `security`, `skill`,
+`websearch`, `codesearch`, `repo_search`, `repo_fetch`, `repo_map`,
+`research`, `research_search`, `batch_fetch`, `security_search`,
+`evidence_bundle`, `lsp`, `diff`, `security`, `skill`,
 `tool_search`, `plan_enter`, `plan_exit`, `todowrite`, `todoread`,
 `question`.
 
@@ -271,7 +273,7 @@ pub struct ModeDefinition {
 
 | Mode | Default | Restricted Tools |
 |------|---------|------------------|
-| `review` | Ask | edit, apply_patch, replace, multiedit, write, bash, terminal, git, commit, image, task |
+| `review` | Ask | edit, apply_patch, replace, write, bash, terminal, git, commit, image, task |
 | `debug` | Allow | task, image, commit |
 | `docs` | Ask | bash, terminal, git, commit, task, image |
 
@@ -358,9 +360,11 @@ allow_all_bash = false
 
 ### PERMISSION_TYPES Constant (`src/permission/mod.rs:71`)
 
-19 recognized tool permission names: `read`, `edit`, `glob`, `grep`,
+27 recognized tool permission names: `read`, `edit`, `glob`, `grep`,
 `list`, `bash`, `git`, `task`, `todowrite`, `todoread`, `question`,
-`webfetch`, `websearch`, `codesearch`, `lsp`, `doom_loop`, `skill`,
+`webfetch`, `websearch`, `codesearch`, `repo_search`, `repo_fetch`,
+`repo_map`, `research`, `research_search`, `batch_fetch`,
+`security_search`, `evidence_bundle`, `lsp`, `doom_loop`, `skill`,
 `plan_enter`, `plan_exit`.
 
 ## Invariants & Gotchas

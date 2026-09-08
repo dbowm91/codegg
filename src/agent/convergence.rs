@@ -29,7 +29,6 @@ const VERIFIER_DENIED_TOOLS: &[&str] = &[
     "write",
     "edit",
     "replace",
-    "multiedit",
     "apply_patch",
     "bash",
     "terminal",

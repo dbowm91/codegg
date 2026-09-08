@@ -288,7 +288,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 ### Tool Registry
 
 - **ToolCatalog::register() takes `&dyn Tool`**, not `Box<dyn Tool>`.
-- **multiedit tool exists but NOT in default registry**: `src/tool/multiedit.rs` exists, `pub mod multiedit` is registered, but it's NOT in `ToolRegistry::with_defaults()`.
+- **multiedit was removed in M001**: the former `src/tool/multiedit.rs` was never in `ToolRegistry::with_defaults()` and has been deleted. Canonical replacements are `edit` (single) and `apply_patch` (batch). Historical-name readers (affected-paths, session-import redaction, eggsentry classification, workflow mapping, TUI target rendering) are intentionally retained for stored runs.
 - **~30 tools** in `ToolRegistry::with_options()` (`src/tool/mod.rs`). Count varies by config. Includes 8 always-visible eggsact deterministic tools plus the `tool_program` foreground model tool.
 - **Tool session constructor**: `with_session_config_defaults(&Config, ...)` is the production constructor. `with_session_defaults(...)` is the legacy all-native fallback.
 - **Integrated tool config (Phase 6)**: `src/tool/integrated_config.rs` resolves evidence/deterministic/preflight runtime configs once from `Config`. Subagents use `with_config(&config)` (`src/agent/worker.rs:949`) to inherit backend config.

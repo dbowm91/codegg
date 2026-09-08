@@ -9,10 +9,10 @@ use crate::util::truncate_prefix;
 /// Classify a tool call by risk level based on tool name and input.
 pub fn classify_tool_risk(tool_name: &str, input: &serde_json::Value) -> ToolRisk {
     match tool_name {
-        "read" | "grep" | "glob" | "list" | "codesearch" | "webfetch" | "websearch" => {
-            ToolRisk::Read
-        }
-        "write" | "edit" | "replace" | "multiedit" | "formatter" | "apply_patch" => ToolRisk::Write,
+        "read" | "grep" | "glob" | "list" | "codesearch" | "repo_search" | "repo_fetch"
+        | "repo_map" | "research" | "research_search" | "batch_fetch" | "security_search"
+        | "evidence_bundle" | "webfetch" | "websearch" => ToolRisk::Read,
+        "write" | "edit" | "replace" | "formatter" | "apply_patch" => ToolRisk::Write,
         "git" | "commit" => ToolRisk::GitMutation,
         "bash" | "terminal" => classify_bash_risk(input),
         _ => ToolRisk::Unknown,
@@ -354,11 +354,48 @@ mod tests {
     }
 
     #[test]
+    fn classify_canonical_evidence_tools_match_codesearch_alias() {
+        // M001 compatibility parity: the retained `codesearch` alias must not
+        // diverge from its canonical `repo_search` replacement, and the other
+        // read-only evidence tools must share the same Read classification.
+        for tool in &[
+            "repo_search",
+            "repo_fetch",
+            "repo_map",
+            "research",
+            "research_search",
+            "batch_fetch",
+            "security_search",
+            "evidence_bundle",
+        ] {
+            assert_eq!(
+                classify_tool_risk(tool, &json!({})),
+                classify_tool_risk("codesearch", &json!({})),
+                "evidence tool {tool} must share codesearch risk"
+            );
+            assert_eq!(
+                classify_tool_risk(tool, &json!({})),
+                ToolRisk::Read,
+                "evidence tool {tool} must be Read"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_removed_multiedit_alias_has_no_write_path() {
+        // M001: `multiedit` was removed from the registry. It must not retain
+        // a live Write classification that could shadow a future tool.
+        assert_eq!(
+            classify_tool_risk("multiedit", &json!({})),
+            ToolRisk::Unknown
+        );
+    }
+
+    #[test]
     fn classify_write_tools() {
         assert_eq!(classify_tool_risk("write", &json!({})), ToolRisk::Write);
         assert_eq!(classify_tool_risk("edit", &json!({})), ToolRisk::Write);
         assert_eq!(classify_tool_risk("replace", &json!({})), ToolRisk::Write);
-        assert_eq!(classify_tool_risk("multiedit", &json!({})), ToolRisk::Write);
         assert_eq!(
             classify_tool_risk("apply_patch", &json!({})),
             ToolRisk::Write

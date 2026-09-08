@@ -27,6 +27,8 @@ impl std::fmt::Display for AffectedPathError {
 impl std::error::Error for AffectedPathError {}
 
 /// Check if a tool is part of the restorable mutation surface.
+/// `multiedit` is retained here as historical name tolerance: it was removed
+/// from the model registry in M001, but stored runs may still name it.
 pub fn is_restorable_tool(name: &str) -> bool {
     matches!(
         name,
@@ -80,7 +82,8 @@ pub fn extract_affected_paths(
             if path.trim().is_empty() {
                 return Err(AffectedPathError::MissingField("path empty".into()));
             }
-            // multiedit applies multiple edits to single path; affected set is one path
+            // Historical name tolerance (M001): multiedit applies multiple
+            // edits to single path; affected set is one path
             Ok(vec![path.to_string()])
         }
         "apply_patch" => {

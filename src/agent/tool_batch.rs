@@ -68,7 +68,6 @@ impl AgentLoop {
             "codesearch" => self.timeout_for_tool(tool_name, cfg.codesearch),
             "diff" => self.timeout_for_tool(tool_name, cfg.diff),
             "replace" => self.timeout_for_tool(tool_name, cfg.replace),
-            "multiedit" => self.timeout_for_tool(tool_name, cfg.multiedit),
             "apply_patch" => self.timeout_for_tool(tool_name, cfg.apply_patch),
             "terminal" => self.timeout_for_tool(tool_name, cfg.terminal),
             "batch" => self.timeout_for_tool(tool_name, cfg.batch),

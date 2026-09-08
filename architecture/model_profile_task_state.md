@@ -185,8 +185,10 @@ Two tools in `src/tool/todo.rs` expose the task state to the model:
 - **`todoread`** (`TodoReadTool`): Returns the compact projection of
   the current task state.
 
-A legacy `TodoTool` wrapper exists for non-session callers (tests,
-`ToolRegistry::with_defaults()`).
+Non-session callers (tests, `ToolRegistry::with_defaults()`) receive the
+canonical `TodoWriteTool` with default in-memory state and the
+explicit-todo policy. The legacy `TodoTool` duplicate implementation was
+removed in M001.
 
 ## Task State (`crates/codegg-core/src/task_state/`)
 

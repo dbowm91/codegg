@@ -77,8 +77,7 @@ src/tool/
 ├── git.rs              # Git command execution (low-level wrapper)
 ├── commit.rs           # LLM-generated commit messages
 ├── plan.rs             # plan_enter and plan_exit tools
-├── invalid.rs          # Malformed call handler
-├── multiedit.rs        # Multi-edit tool (NOT registered by default)
+├── invalid.rs         # Malformed call handler
 ├── image.rs            # DALL-E image generation
 ├── tool_search.rs      # On-demand tool discovery
 ├── lsp.rs              # LSP client tools (wraps egglsp::LspService)
@@ -96,7 +95,7 @@ set handled by `ToolBatchExecutor` (`src/agent/tool_batch.rs`) and
 - `write` — one target path; absent→present or present→present
 - `edit` — one existing path
 - `replace` — one existing path
-- `multiedit` — one existing path (multiple sequential edits)
+- `multiedit` — historical name only (removed from the registry in M001; the affected-paths reader is retained for stored runs)
 - `apply_patch update` — one existing path
 - `apply_patch create` — one target path (normally absent→present)
 - `apply_patch delete` — one existing path (present→absent)
@@ -304,7 +303,7 @@ Policy-gated via `TaskStatePolicy`:
 |------|-----------|-------------|
 | **todowrite** | `allow_model_todo_write && mode != Disabled` | Create/update todo items with priority/status. |
 | **todoread** | `allow_model_todo_read` | Read todo items. |
-| **todo** (legacy) | No session context | Combined read/write todo tool. |
+| **todowrite** (no session context) | `todo_state` and `todo_policy` both `None` | Canonical `TodoWriteTool` with default in-memory state and the explicit-todo policy (no session persistence). The legacy `TodoTool` duplicate was removed in M001. |
 
 ### Conditional: Context Read (0-1 tool)
 
@@ -470,12 +469,17 @@ See `backend.rs` for `build_report()`.
 
 Status values: `ready`, `disabled`, `unavailable`, `error(<msg>)`.
 
-## NOT Registered (exists but excluded)
+## REMOVED in M001 (no supported consumer)
 
-**multiedit** (`src/tool/multiedit.rs`):
-- Module exists and is registered via `pub mod multiedit` in `mod.rs`
-- NOT included in `ToolRegistry::with_options()`
-- Applies multiple edit operations to a single file sequentially
+**multiedit** (former `src/tool/multiedit.rs`):
+- Module deleted; it was never in `ToolRegistry::with_options()`.
+- Canonical replacements: `edit` (single edit) or `apply_patch` (batch).
+- Coupled live references removed: risk classification, permission-mode
+  lists, built-in agent allow/deny entries, child-isolation/read-only
+  tool lists, per-tool timeout, and the pre-execution snapshot gate.
+- Historical-name readers retained for stored runs: `affected_paths`
+  extraction/restorable check, session-import redaction, eggsentry
+  classification, workflow-action mapping, and TUI target rendering.
 
 ## Path Validation
 

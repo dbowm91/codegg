@@ -83,6 +83,14 @@ pub const PERMISSION_TYPES: &[&str] = &[
     "webfetch",
     "websearch",
     "codesearch",
+    "repo_search",
+    "repo_fetch",
+    "repo_map",
+    "research",
+    "research_search",
+    "batch_fetch",
+    "security_search",
+    "evidence_bundle",
     "lsp",
     "doom_loop",
     "skill",
@@ -100,9 +108,9 @@ pub fn tool_category_for_name(name: &str) -> ToolCategory {
     match name {
         // Read-only
         "read" | "glob" | "grep" | "list" | "webfetch" | "websearch" | "codesearch" | "lsp"
-        | "diff" | "security" | "skill" | "tool_search" | "plan_enter" | "plan_exit" => {
-            ToolCategory::ReadOnly
-        }
+        | "diff" | "security" | "skill" | "tool_search" | "plan_enter" | "plan_exit"
+        | "repo_search" | "repo_fetch" | "repo_map" | "research" | "research_search"
+        | "batch_fetch" | "security_search" | "evidence_bundle" => ToolCategory::ReadOnly,
         // Safe-mutating (in-app state only)
         "todowrite" | "todoread" | "question" | "invalid" => ToolCategory::SafeMutating,
         // Shell
@@ -1831,6 +1839,14 @@ mod tests {
             "websearch",
             "image",
             "codesearch",
+            "repo_search",
+            "repo_fetch",
+            "repo_map",
+            "research",
+            "research_search",
+            "batch_fetch",
+            "security_search",
+            "evidence_bundle",
             "question",
             "todowrite",
             "todoread",
@@ -1863,6 +1879,30 @@ mod tests {
                 "tool {} has unexpected category {:?}",
                 tool,
                 cat
+            );
+        }
+    }
+    #[test]
+    fn codesearch_alias_matches_canonical_category() {
+        // M001 compatibility parity: retained `codesearch` must map to the
+        // same effective category as canonical `repo_search`, and the other
+        // read-only evidence tools must agree.
+        let alias = tool_category_for_name("codesearch");
+        assert_eq!(alias, ToolCategory::ReadOnly);
+        for tool in &[
+            "repo_search",
+            "repo_fetch",
+            "repo_map",
+            "research",
+            "research_search",
+            "batch_fetch",
+            "security_search",
+            "evidence_bundle",
+        ] {
+            assert_eq!(
+                tool_category_for_name(tool),
+                alias,
+                "evidence tool {tool} must share codesearch category"
             );
         }
     }

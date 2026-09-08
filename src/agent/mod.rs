@@ -1944,7 +1944,6 @@ The full body prompt.
             "bash",
             "apply_patch",
             "replace",
-            "multiedit",
             "terminal",
             "commit",
         ] {
@@ -1995,15 +1994,7 @@ The full body prompt.
                 "security-review should allow {tool}"
             );
         }
-        for tool in &[
-            "write",
-            "edit",
-            "apply_patch",
-            "replace",
-            "multiedit",
-            "commit",
-            "image",
-        ] {
+        for tool in &["write", "edit", "apply_patch", "replace", "commit", "image"] {
             assert_eq!(
                 sr.permissions.get(*tool),
                 Some(&"deny".to_string()),
@@ -2229,15 +2220,7 @@ The full body prompt.
     fn test_builtin_security_review_deny_list() {
         let agents = builtin_agents();
         let sr = agents.iter().find(|a| a.name == "security-review").unwrap();
-        for tool in &[
-            "write",
-            "edit",
-            "apply_patch",
-            "replace",
-            "multiedit",
-            "commit",
-            "image",
-        ] {
+        for tool in &["write", "edit", "apply_patch", "replace", "commit", "image"] {
             assert_eq!(
                 sr.permissions.get(*tool),
                 Some(&"deny".to_string()),

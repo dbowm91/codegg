@@ -193,7 +193,6 @@ pub struct ToolTimeoutConfig {
     pub codesearch: Duration,
     pub diff: Duration,
     pub replace: Duration,
-    pub multiedit: Duration,
     pub apply_patch: Duration,
     pub terminal: Duration,
     pub batch: Duration,
@@ -221,7 +220,6 @@ impl Default for ToolTimeoutConfig {
             codesearch: Duration::from_secs(60),
             diff: Duration::from_secs(30),
             replace: Duration::from_secs(30),
-            multiedit: Duration::from_secs(60),
             apply_patch: Duration::from_secs(60),
             terminal: Duration::from_secs(120),
             batch: Duration::from_secs(300),
@@ -237,10 +235,7 @@ impl Default for ToolTimeoutConfig {
 
 /// Check if a tool modifies files (requires snapshot before execution)
 pub(super) fn is_file_modifying_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "write" | "edit" | "replace" | "multiedit" | "apply_patch"
-    )
+    matches!(name, "write" | "edit" | "replace" | "apply_patch")
 }
 
 impl AgentLoop {}
@@ -1233,6 +1228,8 @@ impl AgentLoop {
             "read" => (WorkflowActionKind::FileRead, None),
             "glob" | "grep" | "list" | "diff" | "codesearch" | "repo_search" | "repo_map"
             | "security_search" | "websearch" | "webfetch" => (WorkflowActionKind::Search, None),
+            // Historical name tolerance: `multiedit` was removed from the
+            // registry in M001, but stored runs may still name it.
             "edit" | "write" | "replace" | "multiedit" => (WorkflowActionKind::Edit, None),
             "apply_patch" => (WorkflowActionKind::Patch, None),
             "test" => (WorkflowActionKind::Test, None),

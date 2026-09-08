@@ -34,7 +34,6 @@ pub mod invalid;
 pub mod list;
 pub mod lsp;
 pub(crate) mod lsp_security;
-pub mod multiedit;
 pub mod patch_util;
 pub mod plan;
 pub mod program_cache;
@@ -231,11 +230,12 @@ impl Default for ToolRegistry {
 /// `with_options`.
 #[derive(Default)]
 pub struct ToolRegistryOptions {
-    /// Optional shared todo state. When `None`, the legacy
-    /// `TodoTool::default()` is registered (no session persistence).
+    /// Optional shared todo state. When `None`, a `TodoWriteTool` with
+    /// default in-memory state and the explicit-todo policy is registered
+    /// (no session persistence).
     pub todo_state: Option<Arc<tokio::sync::Mutex<crate::task_state::TodoState>>>,
     /// Optional task-state policy. When `None` and `todo_state` is
-    /// also `None`, the legacy todo tool is used. When both are
+    /// also `None`, the default todo tool is used. When both are
     /// `Some`, the policy gates whether todowrite/todoread are
     /// registered.
     pub todo_policy: Option<crate::model_profile::types::TaskStatePolicy>,
@@ -444,8 +444,14 @@ impl ToolRegistry {
                 }
             }
             _ => {
-                // No session context: register the legacy default todo tool.
-                registry.register(crate::tool::todo::TodoTool::default());
+                // No session context: register the canonical write tool with
+                // default in-memory state (no session persistence).
+                registry.register(crate::tool::todo::TodoWriteTool::new(
+                    std::sync::Arc::new(tokio::sync::Mutex::new(
+                        crate::task_state::TodoState::new(),
+                    )),
+                    crate::model_profile::types::TaskStatePolicy::explicit_todo(),
+                ));
             }
         }
 
@@ -1426,5 +1432,48 @@ mod backend_report_tests {
             .expect("real lsp tool should be registered");
         // The description should match the real LspTool description.
         assert!(lsp.description().contains("LSP server"));
+    }
+}
+
+#[cfg(test)]
+mod compatibility_surface_tests {
+    use super::*;
+
+    #[test]
+    fn default_registry_serves_canonical_todo_write_without_legacy_duplicate() {
+        // M001: the `TodoTool` duplicate is gone. The no-session-context
+        // fallback registers the canonical `TodoWriteTool`.
+        let registry = ToolRegistry::with_options(ToolRegistryOptions::default());
+        let tool = registry
+            .get("todowrite")
+            .expect("todowrite should be registered without session context");
+        assert_eq!(tool.name(), "todowrite");
+    }
+
+    #[test]
+    fn removed_multiedit_has_no_registry_path() {
+        // M001: `multiedit` was deleted. Neither the default registry nor a
+        // session registry may resolve it, so no alternate registration path
+        // can bypass the canonical edit/apply_patch permission contracts.
+        let registry = ToolRegistry::with_defaults();
+        assert!(registry.get("multiedit").is_none());
+        let session_registry = ToolRegistry::with_options(ToolRegistryOptions::default());
+        assert!(session_registry.get("multiedit").is_none());
+    }
+
+    #[test]
+    fn retained_codesearch_alias_delegates_to_canonical_repo_search() {
+        // M001: `codesearch` is retained as a thin coding-profile alias.
+        // Both names must resolve through the default registry with the
+        // same read-only category.
+        let registry = ToolRegistry::with_defaults();
+        let alias = registry
+            .get("codesearch")
+            .expect("codesearch alias should be registered");
+        let canonical = registry
+            .get("repo_search")
+            .expect("canonical repo_search should be registered");
+        assert_eq!(alias.category(), canonical.category());
+        assert!(alias.description().contains("repo_search"));
     }
 }
