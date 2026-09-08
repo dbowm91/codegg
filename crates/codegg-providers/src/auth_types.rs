@@ -56,6 +56,59 @@ pub enum CredentialKind {
     BearerToken,
 }
 
+// --- CredentialCapability ---
+//
+// Provider-registration capability describing which stored credential kinds a
+// provider path can consume. Defined once in the auth owner so factories do
+// not duplicate the classification per call site. See
+// `crate::provider_core::credential_capability_for` for the built-in matrix.
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialCapability {
+    /// Static API-key string only (e.g. `x-api-key` transports and all
+    /// `String`-contract factories). Stored bearer records are rejected
+    /// explicitly and never reinterpreted as API keys.
+    #[default]
+    ApiKeyOnly,
+    /// Full `Credential` envelope; either an API key or a bearer token is
+    /// accepted and the kind is preserved end-to-end.
+    ApiKeyOrBearer,
+}
+
+impl CredentialCapability {
+    pub fn accepts(&self, kind: CredentialKind) -> bool {
+        match self {
+            CredentialCapability::ApiKeyOnly => kind == CredentialKind::ApiKey,
+            CredentialCapability::ApiKeyOrBearer => true,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CredentialCapability::ApiKeyOnly => "api_key_only",
+            CredentialCapability::ApiKeyOrBearer => "api_key_or_bearer",
+        }
+    }
+}
+
+/// Actionable diagnostic for an explicitly bound stored credential whose kind
+/// the target provider path cannot consume. Contains no secret material.
+pub fn incompatible_credential_message(
+    provider_id: &str,
+    kind: CredentialKind,
+    capability: CredentialCapability,
+) -> String {
+    let kind_label = match kind {
+        CredentialKind::ApiKey => "api-key",
+        CredentialKind::BearerToken => "bearer",
+    };
+    format!(
+        "stored {kind_label} credential for provider '{provider_id}' is not supported by this provider path (capability: {}); store an API-key credential for this provider/account",
+        capability.as_str()
+    )
+}
+
 // --- Credential ---
 
 #[derive(Clone)]
@@ -200,6 +253,12 @@ pub struct ResolverContext {
     pub legacy_decrypted: Option<String>,
     pub store: Option<std::sync::Arc<CredentialStore>>,
     pub env_override: Option<String>,
+    /// Accepted stored credential kinds for the target provider path.
+    /// Defaults to `ApiKeyOnly` so direct resolver callers preserve the
+    /// historical API-key-only store filtering unless they opt in.
+    /// `resolve_provider_credential` sets this from the executable
+    /// provider capability matrix.
+    pub capability: CredentialCapability,
 }
 
 #[derive(Debug, Clone)]
@@ -307,17 +366,37 @@ impl AuthResolver {
                         .as_ref()
                         .ok_or_else(|| AuthError::NotFound(ctx.provider_id.clone()))?;
                     let account = account_id.clone().or_else(|| ctx.account_id.clone());
-                    if let Some(plain) =
-                        store.get_plaintext(&ctx.provider_id, account.as_deref(), |s| {
-                            s.kind == CredentialKind::ApiKey
-                        })?
-                    {
-                        return Ok(Some(resolved(
-                            Credential::api_key(plain),
-                            ResolvedAuthSource::UserStore,
+                    let record = match store.find_record(&ctx.provider_id, account.as_deref()) {
+                        Some(record) => record,
+                        None => return Err(AuthError::NotFound(ctx.provider_id.clone())),
+                    };
+                    if is_expired(record.expires_at) {
+                        return Err(AuthError::Expired(ctx.provider_id.clone()));
+                    }
+                    if !ctx.capability.accepts(record.kind) {
+                        return Err(AuthError::Unsupported(incompatible_credential_message(
+                            &ctx.provider_id,
+                            record.kind,
+                            ctx.capability,
                         )));
                     }
-                    return Err(AuthError::NotFound(ctx.provider_id.clone()));
+                    match store.get_credential(&ctx.provider_id, account.as_deref())? {
+                        Some(credential) => {
+                            if is_expired(credential.expires_at) {
+                                return Err(AuthError::Expired(ctx.provider_id.clone()));
+                            }
+                            if credential.secret.is_empty() {
+                                return Err(AuthError::NotFound(ctx.provider_id.clone()));
+                            }
+                            return Ok(Some(resolved(credential, ResolvedAuthSource::UserStore)));
+                        }
+                        None => {
+                            // No master key to decrypt: preserve the historical
+                            // Stored-miss contract rather than inventing a new
+                            // fallback.
+                            return Err(AuthError::NotFound(ctx.provider_id.clone()));
+                        }
+                    }
                 }
                 AuthConfig::ExternalCommand { .. } => {
                     return Err(AuthError::Unsupported("ExternalCommand".to_string()));
@@ -362,15 +441,31 @@ impl AuthResolver {
             }
         }
         if let Some(store) = ctx.store.as_ref() {
-            if let Some(plain) =
-                store.get_plaintext(&ctx.provider_id, ctx.account_id.as_deref(), |s| {
-                    s.kind == CredentialKind::ApiKey
-                })?
-            {
-                return Ok(Some(resolved(
-                    Credential::api_key(plain),
-                    ResolvedAuthSource::UserStore,
-                )));
+            if let Some(record) = store.find_record(&ctx.provider_id, ctx.account_id.as_deref()) {
+                if is_expired(record.expires_at) {
+                    return Err(AuthError::Expired(ctx.provider_id.clone()));
+                }
+                if !ctx.capability.accepts(record.kind) {
+                    return Err(AuthError::Unsupported(incompatible_credential_message(
+                        &ctx.provider_id,
+                        record.kind,
+                        ctx.capability,
+                    )));
+                }
+                match store.get_credential(&ctx.provider_id, ctx.account_id.as_deref())? {
+                    Some(credential) => {
+                        if is_expired(credential.expires_at) {
+                            return Err(AuthError::Expired(ctx.provider_id.clone()));
+                        }
+                        if !credential.secret.is_empty() {
+                            return Ok(Some(resolved(credential, ResolvedAuthSource::UserStore)));
+                        }
+                    }
+                    None => {
+                        // No master key: fall through to Ok(None) so
+                        // env/config paths still work without a key.
+                    }
+                }
             }
         }
         Ok(None)
@@ -379,6 +474,10 @@ impl AuthResolver {
 
 fn resolved(credential: Credential, source: ResolvedAuthSource) -> ResolvedAuth {
     ResolvedAuth { credential, source }
+}
+
+fn is_expired(expires_at: Option<DateTime<Utc>>) -> bool {
+    expires_at.is_some_and(|expires_at| expires_at <= Utc::now())
 }
 
 fn read_env(name: &str) -> Option<String> {
@@ -564,6 +663,52 @@ impl CredentialStore {
         let plain = crate::crypto::decrypt_from_string(&rec.encrypted_secret, &master)?;
         Ok(Some(plain))
     }
+
+    /// Exact-match metadata lookup for one provider/account binding.
+    ///
+    /// The store enforces one record per `(provider_id, account_id)` binding
+    /// (`put` replaces in place), so this lookup is deterministic and never
+    /// guesses across accounts or kinds.
+    pub fn find_record(
+        &self,
+        provider_id: &str,
+        account_id: Option<&str>,
+    ) -> Option<StoredCredentialRecord> {
+        self.records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|r| r.provider_id == provider_id && r.account_id.as_deref() == account_id)
+            .cloned()
+    }
+
+    /// Decrypt one exact binding into a full [`Credential`], preserving
+    /// [`CredentialKind`] and `expires_at`.
+    ///
+    /// Returns `Ok(None)` when no record exists or when no master key is
+    /// configured (matching `get_plaintext` semantics so env/config paths
+    /// still work without a key). Expiry and capability checks are the
+    /// resolver's responsibility so it can return distinct typed errors.
+    pub fn get_credential(
+        &self,
+        provider_id: &str,
+        account_id: Option<&str>,
+    ) -> Result<Option<Credential>, AuthError> {
+        let rec = match self.find_record(provider_id, account_id) {
+            Some(rec) => rec,
+            None => return Ok(None),
+        };
+        let master = match codegg_config::encryption::get_master_key() {
+            Some(m) => m,
+            None => return Ok(None),
+        };
+        let plain = crate::crypto::decrypt_from_string(&rec.encrypted_secret, &master)?;
+        Ok(Some(Credential {
+            kind: rec.kind,
+            secret: plain,
+            expires_at: rec.expires_at,
+        }))
+    }
 }
 
 fn load_from_disk(path: &Path) -> Option<Vec<StoredCredentialRecord>> {
@@ -646,6 +791,7 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn credential_debug_masks_secret() {
@@ -667,5 +813,418 @@ mod tests {
 
         assert!(store.list().is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    struct MasterGuard {
+        prev_master: Option<String>,
+        prev_enc: Option<String>,
+        prev_opencode: Option<String>,
+        _env: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl MasterGuard {
+        fn with_master(master: &str) -> Self {
+            let env = test_support::lock_env();
+            let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+            let prev_enc = std::env::var("CODEGG_ENCRYPTION_KEY").ok();
+            let prev_opencode = std::env::var("OPENCODE_ENCRYPTION_KEY").ok();
+            std::env::set_var("CODEGG_MASTER_KEY", master);
+            std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+            std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+            Self {
+                prev_master,
+                prev_enc,
+                prev_opencode,
+                _env: env,
+            }
+        }
+    }
+
+    impl Drop for MasterGuard {
+        fn drop(&mut self) {
+            if let Some(v) = self.prev_master.take() {
+                std::env::set_var("CODEGG_MASTER_KEY", v);
+            } else {
+                std::env::remove_var("CODEGG_MASTER_KEY");
+            }
+            if let Some(v) = self.prev_enc.take() {
+                std::env::set_var("CODEGG_ENCRYPTION_KEY", v);
+            } else {
+                std::env::remove_var("CODEGG_ENCRYPTION_KEY");
+            }
+            if let Some(v) = self.prev_opencode.take() {
+                std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+            } else {
+                std::env::remove_var("OPENCODE_ENCRYPTION_KEY");
+            }
+        }
+    }
+
+    fn temp_store() -> (tempfile::TempDir, Arc<CredentialStore>) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store =
+            Arc::new(CredentialStore::at_path(dir.path().join("credentials.json")).expect("store"));
+        (dir, store)
+    }
+
+    fn stored_ctx(
+        provider: &str,
+        account: Option<&str>,
+        store: &Arc<CredentialStore>,
+        capability: CredentialCapability,
+    ) -> ResolverContext {
+        ResolverContext {
+            provider_id: provider.to_string(),
+            account_id: account.map(|s| s.to_string()),
+            store: Some(store.clone()),
+            capability,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bearer_debug_masks_secret() {
+        let credential = Credential::bearer("bearer-sentinel-123", None);
+        let rendered = format!("{credential:?}");
+        assert!(!rendered.contains("bearer-sentinel-123"));
+        assert!(rendered.contains("BearerToken"));
+    }
+
+    #[test]
+    fn stored_api_key_resolves_under_both_capabilities() {
+        let _master = MasterGuard::with_master("m010-api-key-both-caps");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_test",
+                Some("acct"),
+                CredentialKind::ApiKey,
+                "stored-api-sentinel",
+                None,
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let auth = AuthConfig::Stored {
+            account_id: Some("acct".to_string()),
+        };
+        for capability in [
+            CredentialCapability::ApiKeyOnly,
+            CredentialCapability::ApiKeyOrBearer,
+        ] {
+            let ctx = stored_ctx("cap_test", None, &store, capability);
+            let resolved = resolver
+                .resolve(Some(&auth), &ctx)
+                .expect("ok")
+                .expect("some");
+            assert_eq!(resolved.credential.secret, "stored-api-sentinel");
+            assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
+            assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+        }
+    }
+
+    #[test]
+    fn stored_bearer_resolves_under_compatible_capability() {
+        let _master = MasterGuard::with_master("m010-bearer-compatible");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_bearer",
+                Some("acct"),
+                CredentialKind::BearerToken,
+                "bearer-sentinel-compat",
+                None,
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let auth = AuthConfig::Stored {
+            account_id: Some("acct".to_string()),
+        };
+        let ctx = stored_ctx(
+            "cap_bearer",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOrBearer,
+        );
+        let resolved = resolver
+            .resolve(Some(&auth), &ctx)
+            .expect("ok")
+            .expect("some");
+        assert_eq!(resolved.credential.secret, "bearer-sentinel-compat");
+        assert_eq!(resolved.credential.kind, CredentialKind::BearerToken);
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+        assert_eq!(
+            resolved.credential.authorization_header_value(),
+            "Bearer bearer-sentinel-compat"
+        );
+    }
+
+    #[test]
+    fn stored_bearer_rejected_under_api_key_only_with_typed_error() {
+        let _master = MasterGuard::with_master("m010-bearer-incompat");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_incompat",
+                Some("acct"),
+                CredentialKind::BearerToken,
+                "bearer-sentinel-incompat",
+                None,
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let auth = AuthConfig::Stored {
+            account_id: Some("acct".to_string()),
+        };
+        let ctx = stored_ctx(
+            "cap_incompat",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOnly,
+        );
+        let err = match resolver.resolve(Some(&auth), &ctx) {
+            Ok(_) => panic!("bearer under ApiKeyOnly must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            matches!(err, AuthError::Unsupported(_)),
+            "expected Unsupported, got {err:?}"
+        );
+        let rendered = format!("{err}");
+        assert!(
+            !rendered.contains("bearer-sentinel-incompat"),
+            "error must not leak secret"
+        );
+        assert!(rendered.contains("cap_incompat"));
+    }
+
+    #[test]
+    fn fallback_bearer_rejected_under_api_key_only() {
+        let _master = MasterGuard::with_master("m010-fallback-incompat");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_fallback",
+                None,
+                CredentialKind::BearerToken,
+                "bearer-sentinel-fallback",
+                None,
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        // No AuthConfig: fallback store path with ApiKeyOnly must be explicit.
+        let ctx = stored_ctx(
+            "cap_fallback",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOnly,
+        );
+        let err = match resolver.resolve(None, &ctx) {
+            Ok(_) => panic!("fallback bearer under ApiKeyOnly must fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AuthError::Unsupported(_)));
+        assert!(!format!("{err}").contains("bearer-sentinel-fallback"));
+    }
+
+    #[test]
+    fn fallback_bearer_resolves_under_compatible() {
+        let _master = MasterGuard::with_master("m010-fallback-compat");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_fallback_ok",
+                None,
+                CredentialKind::BearerToken,
+                "bearer-sentinel-fallback-ok",
+                None,
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let ctx = stored_ctx(
+            "cap_fallback_ok",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOrBearer,
+        );
+        let resolved = resolver.resolve(None, &ctx).expect("ok").expect("some");
+        assert_eq!(resolved.credential.kind, CredentialKind::BearerToken);
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+    }
+
+    #[test]
+    fn expired_bearer_fails_before_transport() {
+        let _master = MasterGuard::with_master("m010-expired-bearer");
+        let (_dir, store) = temp_store();
+        let expired = Utc::now() - chrono::Duration::minutes(5);
+        store
+            .put(
+                "cap_expired",
+                Some("acct"),
+                CredentialKind::BearerToken,
+                "bearer-sentinel-expired",
+                Some(expired),
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let auth = AuthConfig::Stored {
+            account_id: Some("acct".to_string()),
+        };
+        let ctx = stored_ctx(
+            "cap_expired",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOrBearer,
+        );
+        let err = match resolver.resolve(Some(&auth), &ctx) {
+            Ok(_) => panic!("expired bearer must fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AuthError::Expired(_)));
+        assert!(!format!("{err}").contains("bearer-sentinel-expired"));
+    }
+
+    #[test]
+    fn expired_api_key_fails_before_transport() {
+        let _master = MasterGuard::with_master("m010-expired-apikey");
+        let (_dir, store) = temp_store();
+        let expired = Utc::now() - chrono::Duration::minutes(5);
+        store
+            .put(
+                "cap_expired_key",
+                None,
+                CredentialKind::ApiKey,
+                "api-sentinel-expired",
+                Some(expired),
+                vec![],
+            )
+            .expect("put");
+        let resolver = AuthResolver::new();
+        let ctx = stored_ctx(
+            "cap_expired_key",
+            None,
+            &store,
+            CredentialCapability::ApiKeyOnly,
+        );
+        let err = match resolver.resolve(None, &ctx) {
+            Ok(_) => panic!("expired api key must fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, AuthError::Expired(_)));
+    }
+
+    #[test]
+    fn external_command_and_oauth_remain_unsupported() {
+        let resolver = AuthResolver::new();
+        let ctx = ResolverContext {
+            provider_id: "cap_unsupported".to_string(),
+            ..Default::default()
+        };
+        let external = AuthConfig::ExternalCommand {
+            command: "some-cli".to_string(),
+            args: vec![],
+            timeout_ms: None,
+        };
+        assert!(matches!(
+            resolver.resolve(Some(&external), &ctx),
+            Err(AuthError::Unsupported(_))
+        ));
+        let oauth = AuthConfig::OAuthDevice {
+            client_id: "id".to_string(),
+            scopes: vec![],
+            auth_url: "https://example.invalid/auth".to_string(),
+            token_url: "https://example.invalid/token".to_string(),
+        };
+        assert!(matches!(
+            resolver.resolve(Some(&oauth), &ctx),
+            Err(AuthError::Unsupported(_))
+        ));
+        assert!(matches!(
+            ExternalCommandProvider::new().fetch(&ExternalCredential {
+                command: "some-cli".to_string(),
+                args: vec![],
+                timeout_ms: None,
+            }),
+            Err(AuthError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn store_reopen_retains_kind_and_expiry() {
+        let _master = MasterGuard::with_master("m010-reopen-kind");
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let path = dir.path().join("credentials.json");
+        let expires_at = Utc::now() + chrono::Duration::hours(1);
+        {
+            let store = CredentialStore::at_path(path.clone()).expect("store");
+            store
+                .put(
+                    "cap_reopen",
+                    Some("acct"),
+                    CredentialKind::BearerToken,
+                    "bearer-sentinel-reopen",
+                    Some(expires_at),
+                    vec![],
+                )
+                .expect("put");
+        }
+        let reopened = CredentialStore::at_path(path).expect("reopen");
+        let record = reopened
+            .find_record("cap_reopen", Some("acct"))
+            .expect("record");
+        assert_eq!(record.kind, CredentialKind::BearerToken);
+        assert_eq!(record.expires_at, Some(expires_at));
+        let credential = reopened
+            .get_credential("cap_reopen", Some("acct"))
+            .expect("ok")
+            .expect("some");
+        assert_eq!(credential.kind, CredentialKind::BearerToken);
+        assert_eq!(credential.secret, "bearer-sentinel-reopen");
+    }
+
+    #[test]
+    fn store_put_replaces_kind_for_same_binding() {
+        let _master = MasterGuard::with_master("m010-replace-kind");
+        let (_dir, store) = temp_store();
+        store
+            .put(
+                "cap_replace",
+                Some("acct"),
+                CredentialKind::ApiKey,
+                "api-first",
+                None,
+                vec![],
+            )
+            .expect("put api");
+        store
+            .put(
+                "cap_replace",
+                Some("acct"),
+                CredentialKind::BearerToken,
+                "bearer-second",
+                None,
+                vec![],
+            )
+            .expect("put bearer");
+        let records = store.list();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].kind, CredentialKind::BearerToken);
+    }
+
+    #[test]
+    fn capability_accepts_only_declared_kinds() {
+        assert!(CredentialCapability::ApiKeyOnly.accepts(CredentialKind::ApiKey));
+        assert!(!CredentialCapability::ApiKeyOnly.accepts(CredentialKind::BearerToken));
+        assert!(CredentialCapability::ApiKeyOrBearer.accepts(CredentialKind::ApiKey));
+        assert!(CredentialCapability::ApiKeyOrBearer.accepts(CredentialKind::BearerToken));
+        assert_eq!(
+            CredentialCapability::default(),
+            CredentialCapability::ApiKeyOnly
+        );
     }
 }

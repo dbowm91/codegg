@@ -1,6 +1,6 @@
 # Provider Connections Milestone 010 — Auth Capability Matrix and Stored Bearer Closure
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

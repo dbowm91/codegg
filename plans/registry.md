@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | Direct production provider callers receive owning session/run context; M008 transport/header behavior remains preserved. |
-| Provider authentication capability closure | active | `plans/subsystems/provider-auth-capability-closure-addendum.md` | M010 ready | Existing auth/provider ownership is stable; stored bearer support is bounded to compatible credential-capable provider paths. |
+| Provider authentication capability closure | closed | `plans/subsystems/provider-auth-capability-closure-addendum.md` | M010 closed | Executable capability matrix, stored bearer on compatible paths, explicit incompatible rejection; closure at `plans/closure/provider-connections/010-status.md`. |
 | Project catalog and lazy discovery | closed | `plans/subsystems/project-catalog-roadmap.md` | Milestone 4 closed | — |
 | Multi-project TUI and sessions | closed | `plans/subsystems/tui-project-sessions-roadmap.md` | Milestones 001-004 closed | — |
 | Frontend-neutral session projections | closed | `plans/subsystems/session-projections-roadmap.md` | Milestone 012 closed | — |
@@ -51,9 +51,7 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Plan | Why ready |
-|---|---|---|---|
-| Provider authentication capability closure | M010 — auth capability matrix and stored bearer closure | `plans/implementation/provider-connections/010-auth-capability-matrix-and-stored-bearer-closure.md` | Credential kinds/store/factory seams already exist; the missing support matrix and stored-bearer mismatch are concrete. |
+(none — provider-auth M010 closed this cycle; no registered successor lists it as a hard or interface dependency.)
 
 ## Architecture convergence execution order
 
@@ -93,6 +91,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Runtime consolidation, deletion, and footprint | M010 — TUI durable schedule identity and label closure | closed | `plans/closure/runtime-consolidation-deletion-footprint/010-status.md` |
 | Runtime safety — checked edit-history corrective follow-up | M013 — cross-session checkpoint atomicity and hosted closure | closed | `plans/closure/runtime-safety-resource-footprint/013-status.md` |
 | Provider connections and Eggpool | M009 — direct provider session-context corrective pass | closed | `plans/closure/provider-connections/009-status.md` |
+| Provider authentication capability closure | M010 — auth capability matrix and stored bearer closure | closed | `plans/closure/provider-connections/010-status.md` |
 | Programmatic tool execution and Tool Programs | M019/M020 — strict closure and child-artifact recovery | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity | closed | `plans/closure/search-eggsearch-integration/005-status.md` |
 | Development verification and release | M007-M010 — minimal verification and hosted corrective closures | closed | `plans/closure/development-verification-release/007-status.md`; `008-status.md`; `009-status.md`; `010-status.md` |

@@ -52,15 +52,22 @@ providers, each gated on its environment variable. No config dependency.
 **`register_builtin_with_config(registry, config)`** (`provider_core.rs:770`)
 — the primary production path. Registers 17 providers by checking config
 first, then falling back to env vars per-provider. Uses three helper
-functions with a single credential resolution path:
+functions with a single credential resolution path, each wired to an
+explicit `CredentialCapability` from `credential_capability_for`:
 
-1. `register_config_provider` — for providers with base_url override
-   (anthropic, openai, google, openrouter)
-2. `register_credential_provider` — for OpenAI-compatible providers that
-   accept a `Credential` envelope (mistral, groq, deepinfra, cerebras,
-   cohere, together, perplexity, xai, venice, opencode_go, generalcompute)
-3. `register_api_key_provider` — for providers needing a static API key
-   string only (opencode_zen, minimax)
+1. `register_config_provider` (`ApiKeyOnly`) — for providers with
+   base_url override (anthropic, openai, google, openrouter)
+2. `register_credential_provider` (`ApiKeyOrBearer`) — for
+   OpenAI-compatible providers that accept a `Credential` envelope
+   (mistral, groq, deepinfra, cerebras, cohere, together, perplexity,
+   xai, venice, opencode_go, generalcompute)
+3. `register_api_key_provider` (`ApiKeyOnly`) — for providers needing a
+   static API key string only (opencode_zen, minimax)
+
+The full matrix (including `builtin_registration_order()`) is the
+executable contract; `capability_matrix_covers_every_registration_branch`
+fails if a branch is unclassified. Unknown provider ids default to
+`ApiKeyOnly`.
 
 If the registry is still empty after config-based registration, falls back
 to `register_builtin()` for env-var-only registration. This means:
@@ -75,7 +82,12 @@ matching providers are skipped.
 
 `resolve_provider_credential(provider_id, cfg, env_var, store)`
 (`provider_core.rs:506`) is the single resolution path. It builds a
-`ResolverContext` and calls `AuthResolver::resolve`. Resolution order:
+`ResolverContext` with `capability = credential_capability_for(provider_id)`
+and calls `AuthResolver::resolve`. Stored bearer records resolve only for
+`ApiKeyOrBearer` targets; for `ApiKeyOnly` targets they return typed
+`AuthError::Unsupported` (never a silent miss or an API-key
+reinterpretation). Expired records return `AuthError::Expired` before
+transport. Resolution order:
 
 1. Explicit `auth.env` env var
 2. Conventional `{PROVIDER}_API_KEY`
@@ -405,7 +417,9 @@ pub fn create_http_client() -> reqwest::Client {
 ## Invariants & Gotchas
 
 - **Single resolution path**: `resolve_provider_credential` is the only
-  credential resolver. No helper reads `cfg.api_key` directly.
+  credential resolver. No helper reads `cfg.api_key` directly. Capability
+  selection is centralized in `credential_capability_for`; helpers must not
+  branch per-provider store lookups.
 - **Per-provider config independence**: Adding `anthropic` via config does
   NOT suppress `openai` env-var registration. Only if the registry is empty
   after all config-based registrations does `register_builtin()` run.

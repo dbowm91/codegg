@@ -47,7 +47,7 @@ resolver tries each step and returns the first hit:
 4. `AuthConfig::ApiKey.encrypted_value`, decrypted with master key
    → `EncryptedConfig` (returns `MasterKeyMissing` if no key)
 5. User-level `CredentialStore` lookup (provider id + optional account
-   id), filtered to `kind == ApiKey` → `UserStore`
+   id), filtered by `ctx.capability` → `UserStore`
 6. Legacy `ProviderConfig::api_key` (post-decryption) → `LegacyApiKey`
 7. Legacy `ProviderConfig::encrypted_api_key` already decrypted
    → `LegacyDecrypted`
@@ -57,7 +57,13 @@ For **no auth** (no `AuthConfig` or `AuthConfig::None`):
 2. Conventional env var → `EnvConventional`
 3. `ctx.legacy_api_key` → `LegacyApiKey`
 4. `ctx.legacy_decrypted` → `LegacyDecrypted`
-5. User-level `CredentialStore` → `UserStore`
+5. User-level `CredentialStore`, filtered by `ctx.capability` →
+   `UserStore`
+
+`ctx.capability` comes from `credential_capability_for(provider_id)` in
+the centralized `resolve_provider_credential` path. Env/config/legacy
+steps always produce `CredentialKind::ApiKey`; only the store steps can
+yield `BearerToken`, and only when the target capability accepts it.
 
 `AuthConfig::Stored { account_id }` skips straight to `UserStore`.
 
@@ -65,29 +71,53 @@ For **no auth** (no `AuthConfig` or `AuthConfig::None`):
 `AuthConfig::OAuthDevice` → `AuthError::Unsupported`
 `AuthConfig::None` → `Ok(None)`
 
-> **Stored bearer tokens are not yet supported.** Both the
+> **Stored bearer tokens are capability-scoped.** Both the
 > `AuthConfig::Stored` arm and the no-auth fallback's store lookup
-> filter to `CredentialKind::ApiKey`. A stored `BearerToken` record is
-> treated as a miss.
+> select records according to the target provider's
+> `CredentialCapability` (`ApiKeyOnly` vs `ApiKeyOrBearer`, see
+> `crates/codegg-providers/src/auth_types.rs` and the matrix in
+> `credential_capability_for`). A stored `BearerToken` resolves for
+> `ApiKeyOrBearer` providers, is rejected with typed
+> `AuthError::Unsupported` for `ApiKeyOnly` providers, and expired
+> records of either kind fail with `AuthError::Expired` before network
+> access. The store enforces one record per `(provider_id, account_id)`
+> binding, so selection is deterministic.
 
 ### Provider Registration
 
-Three helpers in `crates/codegg-providers/src/provider/mod.rs`:
+Three helpers in `crates/codegg-providers/src/provider_core.rs`:
 
-- **`register_credential_provider`** — factories accepting a full
-  `Credential` envelope. Used for OpenAI-compatible providers (mistral,
-  groq, deepinfra, cerebras, cohere, together, perplexity, xai,
-  venice, opencode_go, generalcompute).
-- **`register_api_key_provider`** — factories taking only the secret
-  string. Used for opencode_zen and minimax (Anthropic-compatible).
-  Rejects `CredentialKind::BearerToken`.
-- **`register_config_provider`** — base-URL-aware variant for
-  anthropic, openai (native), google, openrouter. Threads resolved
-  secret + `cfg.base_url` to factory closure.
+- **`register_credential_provider`** (`ApiKeyOrBearer`) — factories
+  accepting a full `Credential` envelope. Used for OpenAI-compatible
+  providers (mistral, groq, deepinfra, cerebras, cohere, together,
+  perplexity, xai, venice, opencode_go, generalcompute). Preserves
+  `CredentialKind` and `expires_at`; transport sends
+  `Authorization: Bearer …` for either kind.
+- **`register_api_key_provider`** (`ApiKeyOnly`) — factories taking
+  only the secret string. Used for opencode_zen and minimax
+  (Anthropic-compatible). Stored bearer records are rejected with typed
+  `AuthError::Unsupported` before transport.
+- **`register_config_provider`** (`ApiKeyOnly`) — base-URL-aware
+  variant for anthropic, openai (native), google, openrouter. Threads
+  resolved secret + `cfg.base_url` to factory closure. OpenAI-native,
+  OpenRouter, and Zen wire `Authorization: Bearer …` for their
+  long-lived API keys, but the factory contract remains a static API-key
+  string; short-lived bearer lifecycle is not claimed for these paths.
 
 All three call `resolve_provider_credential(provider_id, cfg, env_var,
-store)` which builds a `ResolverContext` and returns `ResolvedAuth`.
-This is the **single resolution path** for provider registration.
+store)` which builds a `ResolverContext` with
+`capability = credential_capability_for(provider_id)` and returns
+`ResolvedAuth`. This is the **single resolution path** for provider
+registration. The executable matrix lives in
+`credential_capability_for` plus `builtin_registration_order()`; the
+`capability_matrix_covers_every_registration_branch` test fails if a new
+branch lands without a classification.
+
+| Provider | Helper | Capability |
+|---|---|---|
+| anthropic, openai, google, openrouter | `register_config_provider` | `ApiKeyOnly` |
+| opencode_zen, minimax | `register_api_key_provider` | `ApiKeyOnly` |
+| mistral, groq, deepinfra, cerebras, cohere, together, perplexity, xai, venice, opencode_go, generalcompute | `register_credential_provider` | `ApiKeyOrBearer` |
 
 `register_builtin` (env-var-only, no config) wraps each key in
 `Credential::api_key(...)`. Used as last-resort fallback when
@@ -186,8 +216,13 @@ pub struct ResolverContext {
     pub legacy_decrypted: Option<String>,
     pub store: Option<Arc<CredentialStore>>,
     pub env_override: Option<String>,  // test-only
+    pub capability: CredentialCapability,  // accepted stored kinds
 }
 ```
+
+`capability` defaults to `ApiKeyOnly`. Production registration always
+sets it from `credential_capability_for`; direct resolver callers must
+set it explicitly when they intend bearer support.
 
 ### ResolvedAuth (`auth_types.rs:205`)
 
@@ -213,6 +248,16 @@ pub enum ResolvedAuthSource {
 }
 ```
 
+### CredentialCapability (`auth_types.rs`)
+
+```rust
+pub enum CredentialCapability { ApiKeyOnly, ApiKeyOrBearer }
+```
+
+`accepts(kind)` is the single predicate for stored-credential selection.
+`incompatible_credential_message()` builds the typed
+`Unsupported` diagnostic without secret material.
+
 ### CredentialStore (`auth_types.rs:437`)
 
 ```rust
@@ -225,9 +270,17 @@ pub struct CredentialStore {
 Key methods:
 - `at_default_location()` — opens `~/.config/codegg/credentials.json`
 - `put(provider_id, account_id, kind, secret, expires_at, scopes)` —
-  encrypts with master key, requires `CODEGG_MASTER_KEY`
+  encrypts with master key, requires `CODEGG_MASTER_KEY`. One record per
+  `(provider_id, account_id)`; `put` replaces in place (including kind
+  changes).
 - `get_plaintext(provider_id, account_id, predicate)` — decrypts on
-  demand; returns `Ok(None)` without master key
+  demand; returns `Ok(None)` without master key (legacy seam, retained
+  for non-provider callers)
+- `get_credential(provider_id, account_id)` — decrypts to a full
+  `Credential` preserving `kind` + `expires_at`; `Ok(None)` without
+  master key
+- `find_record(provider_id, account_id)` — exact-match metadata lookup
+  used for expiry/capability checks before decryption
 - `remove(provider_id, account_id)` — `Some("*")` removes all accounts
 - `list()` — returns all records (metadata only)
 
@@ -349,8 +402,11 @@ Env vars are: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`,
    until async timeout plumbing exists.
 2. **OAuth device flow is disabled.** Returns
    `AuthError::Unsupported`.
-3. **Stored bearer tokens not supported.** Store lookups filter to
-   `CredentialKind::ApiKey`. A stored `BearerToken` is a miss.
+3. **Stored bearer tokens are capability-scoped.** Store lookups
+   filter by the target `CredentialCapability`. A stored `BearerToken`
+   resolves for `ApiKeyOrBearer` providers and is a typed
+   `Unsupported` error (not a silent miss) for `ApiKeyOnly` providers.
+   Expired records of either kind fail with `Expired` before transport.
 4. **Master key required to store.** Reading plaintext without a master
    key returns `Ok(None)` (no decryption), so env/config paths still
    work.
@@ -372,6 +428,14 @@ identifier. The connection store retains the non-secret
 provider/account locator; the resolver decrypts only at lazy runtime
 construction. A missing master key, missing account, expired record,
 or invalid binding is an explicit resolution failure.
+
+`capability_for_provider_kind()` mirrors the registration matrix:
+`OpenAiCompatible` connections are `ApiKeyOrBearer`; native
+`OpenAi`/`Anthropic`/`Google`/`AzureOpenAi` are `ApiKeyOnly`.
+`validate_rotation_kind()` must run before overwriting a store binding
+so incompatible rotations fail before commit. `ProviderConnectionFactory`
+re-validates at build time (before network) and in-flight callers retain
+their captured `Arc` via the daemon `ConnectionManager` revision cache.
 
 ## Provider-Connection Rotation Input
 

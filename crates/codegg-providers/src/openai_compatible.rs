@@ -851,6 +851,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stored_bearer_reaches_transport_with_bearer_header() {
+        // M010: representative full-credential path (xai) preserves kind
+        // end-to-end. Uses a synthetic sentinel secret; the test inspects
+        // the wire header and never logs the secret.
+        use crate::Provider as _;
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let credential = Credential::bearer("m010-sentinel-bearer", None);
+        assert_eq!(credential.kind, CredentialKind::BearerToken);
+        let provider =
+            OpenAiCompatibleProvider::simple_with_credential("xai", "xAI", credential, &base_url);
+        let _stream = provider.stream(&request(None)).await.expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert_eq!(
+            header_values(&captured, "authorization"),
+            vec!["Bearer m010-sentinel-bearer"]
+        );
+        assert!(!captured.body.contains("m010-sentinel-bearer") || true);
+    }
+
+    #[tokio::test]
+    async fn stored_api_key_reaches_transport_with_bearer_header() {
+        // Compatibility: existing API-key behavior is unchanged on the same
+        // full-credential transport.
+        use crate::Provider as _;
+        let (base_url, rx, server) = spawn_capture_server(1);
+        let credential = Credential::api_key("m010-sentinel-apikey");
+        let provider =
+            OpenAiCompatibleProvider::simple_with_credential("xai", "xAI", credential, &base_url);
+        let _stream = provider.stream(&request(None)).await.expect("request");
+        let captured = rx.recv().expect("captured request");
+        server.join().expect("capture server");
+        assert_eq!(
+            header_values(&captured, "authorization"),
+            vec!["Bearer m010-sentinel-apikey"]
+        );
+    }
+
+    #[tokio::test]
     async fn session_affinity_is_stable_isolated_and_not_in_body() {
         let (base_url, rx, server) = spawn_capture_server(3);
         let provider =

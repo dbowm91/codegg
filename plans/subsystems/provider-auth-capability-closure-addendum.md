@@ -1,6 +1,6 @@
 # Provider Authentication Capability Closure Addendum
 
-Status: active
+Status: closed
 
 Source subsystem and predecessor evidence:
 
@@ -71,7 +71,11 @@ It does not own:
 
 Class: invariant / capability / polish.
 
-Status: ready.
+Status: closed.
+
+Closure record:
+
+- `plans/closure/provider-connections/010-status.md`
 
 Implementation plan:
 

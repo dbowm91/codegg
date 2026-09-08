@@ -13,9 +13,9 @@ pub mod oauth;
 
 pub use cli::AuthCli;
 pub use codegg_providers::auth_types::{
-    mask_secret, AuthConfig, AuthError, AuthResolver, Credential, CredentialKind, CredentialStore,
-    ExternalCommandProvider, ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext,
-    StoredCredentialRecord,
+    incompatible_credential_message, mask_secret, AuthConfig, AuthError, AuthResolver, Credential,
+    CredentialCapability, CredentialKind, CredentialStore, ExternalCommandProvider,
+    ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext, StoredCredentialRecord,
 };
 
 /// Test-only utilities shared across modules. The exported

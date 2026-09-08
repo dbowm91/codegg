@@ -104,9 +104,14 @@
   //   { "type": "api_key", "value": "sk-..." }           - inline (avoid; prefer env or store)
   //   { "type": "api_key", "encrypted_value": "v2:..." } - encrypted at rest
   //   { "type": "stored", "account_id": "default" }      - resolve from user credential store
-  //                                                      (currently resolves stored API keys only;
-  //                                                       a future OAuth/bearer-token policy will
-  //                                                       gate stored `BearerToken` records)
+  //                                                      (stored `BearerToken` records resolve only
+  //                                                       for `ApiKeyOrBearer` providers: mistral,
+  //                                                       groq, deepinfra, cerebras, cohere,
+  //                                                       together, perplexity, xai, venice,
+  //                                                       opencode_go, generalcompute; all other
+  //                                                       built-ins reject bearer with typed
+  //                                                       Unsupported; expired records fail as
+  //                                                       Expired before network)
   //   { "type": "external_command", "command": "...", "args": ["..."], "timeout_ms": 5000 }
   //                                                      - parsed; the synchronous resolver and
   //                                                        ExternalCommandProvider::fetch both

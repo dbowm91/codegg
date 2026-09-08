@@ -13,8 +13,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use crate::auth_types::CredentialCapability as ProviderCredentialCapability;
 use crate::auth_types::{AuthResolver, ResolvedAuth, ResolverContext};
-use crate::auth_types::{Credential, CredentialKind, CredentialStore};
+use crate::auth_types::{Credential, CredentialCapability, CredentialKind, CredentialStore};
 pub use crate::error::ProviderError;
 
 pub const MAX_BUFFER_SIZE: usize = 1024 * 1024;
@@ -506,6 +507,64 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
     }
 }
 
+/// Executable provider × credential capability matrix.
+///
+/// Every built-in registration branch in `register_builtin_with_config` must
+/// appear here. New providers must choose a capability deliberately instead
+/// of silently inheriting bearer support.
+///
+/// - `ApiKeyOrBearer`: full-`Credential` OpenAI-compatible paths that
+///   preserve `CredentialKind` through `OpenAiCompatibleProvider` and send
+///   `Authorization: Bearer …` for either kind.
+/// - `ApiKeyOnly`: `String`-contract factories (config-aware Anthropic /
+///   OpenAI-native / Google / OpenRouter, plus OpenCode Zen and MiniMax).
+///   Stored bearer records are rejected explicitly before transport.
+///   OpenAI-native, OpenRouter, and Zen wire `Authorization: Bearer …` for
+///   their long-lived API keys, but the factory contract remains a static
+///   API-key string for this milestone; bearer lifecycle (expiry/short-lived
+///   tokens) is not claimed for those paths.
+pub fn credential_capability_for(provider_id: &str) -> CredentialCapability {
+    match provider_id {
+        // Full-credential OpenAI-compatible family.
+        "mistral" | "groq" | "deepinfra" | "cerebras" | "cohere" | "together" | "perplexity"
+        | "xai" | "venice" | "opencode_go" | "generalcompute" => {
+            CredentialCapability::ApiKeyOrBearer
+        }
+        // Config/base-URL-aware family (String contract).
+        "anthropic" | "openai" | "google" | "openrouter" => CredentialCapability::ApiKeyOnly,
+        // API-key-string family.
+        "opencode_zen" | "minimax" => CredentialCapability::ApiKeyOnly,
+        // Unknown or future providers default to the conservative contract:
+        // explicit rejection rather than silent bearer reinterpretation.
+        _ => CredentialCapability::ApiKeyOnly,
+    }
+}
+
+/// All provider ids registered by `register_builtin_with_config`, in
+/// registration order. Used by the capability-coverage test so a new branch
+/// cannot land without a matrix entry.
+pub fn builtin_registration_order() -> &'static [&'static str] {
+    &[
+        "anthropic",
+        "openai",
+        "google",
+        "openrouter",
+        "opencode_zen",
+        "mistral",
+        "groq",
+        "deepinfra",
+        "cerebras",
+        "cohere",
+        "together",
+        "perplexity",
+        "xai",
+        "venice",
+        "minimax",
+        "opencode_go",
+        "generalcompute",
+    ]
+}
+
 /// Centralized credential resolution for provider registration.
 ///
 /// Builds a [`ResolverContext`] from the legacy [`ProviderConfig`] fields
@@ -513,6 +572,10 @@ pub fn register_builtin(registry: &mut ProviderRegistry) {
 /// [`AuthResolver::resolve`]. The full [`ResolvedAuth`] is returned so the
 /// caller can inspect the [`CredentialKind`] / `expires_at` metadata, not
 /// just the secret.
+///
+/// The resolver context carries the target provider's
+/// [`CredentialCapability`] from [`credential_capability_for`], so stored
+/// bearer selection is centralized rather than branched per factory.
 pub(crate) fn resolve_provider_credential(
     provider_id: &str,
     cfg: Option<&codegg_config::schema::ProviderConfig>,
@@ -552,6 +615,7 @@ pub(crate) fn resolve_provider_credential(
         legacy_decrypted,
         env_override: env_var.map(|s| s.to_string()),
         store: store.cloned(),
+        capability: credential_capability_for(provider_id),
     };
     let auth_ref = cfg.and_then(|c| c.auth.as_ref()).map(|a| match a {
         codegg_config::schema::AuthConfig::ApiKey {
@@ -1582,6 +1646,255 @@ mod tests {
         }
         if let Some(v) = prev_opencode {
             std::env::set_var("OPENCODE_ENCRYPTION_KEY", v);
+        }
+    }
+
+    // ---- M010: auth capability matrix and stored bearer closure ----
+
+    #[test]
+    fn capability_matrix_covers_every_registration_branch() {
+        let order = builtin_registration_order();
+        assert_eq!(order.len(), 17, "matrix must cover all 17 branches");
+        let mut seen = std::collections::HashSet::new();
+        for id in order {
+            assert!(seen.insert(*id), "duplicate matrix entry for '{id}'");
+        }
+        // Compatible full-credential family.
+        for id in [
+            "mistral",
+            "groq",
+            "deepinfra",
+            "cerebras",
+            "cohere",
+            "together",
+            "perplexity",
+            "xai",
+            "venice",
+            "opencode_go",
+            "generalcompute",
+        ] {
+            assert_eq!(
+                credential_capability_for(id),
+                crate::auth_types::CredentialCapability::ApiKeyOrBearer,
+                "provider '{id}' must be ApiKeyOrBearer"
+            );
+        }
+        // Incompatible String-contract families.
+        for id in [
+            "anthropic",
+            "openai",
+            "google",
+            "openrouter",
+            "opencode_zen",
+            "minimax",
+        ] {
+            assert_eq!(
+                credential_capability_for(id),
+                crate::auth_types::CredentialCapability::ApiKeyOnly,
+                "provider '{id}' must be ApiKeyOnly"
+            );
+        }
+        // Unknown providers must not silently inherit bearer support.
+        assert_eq!(
+            credential_capability_for("future_provider_xyz"),
+            crate::auth_types::CredentialCapability::ApiKeyOnly
+        );
+    }
+
+    fn m010_temp_store_with(
+        provider: &str,
+        account: Option<&str>,
+        kind: CredentialKind,
+        secret: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> (tempfile::TempDir, Arc<CredentialStore>) {
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let store = Arc::new(CredentialStore::at_path(dir.path().join("c.json")).expect("store"));
+        store
+            .put(provider, account, kind, secret, expires_at, vec![])
+            .expect("put");
+        (dir, store)
+    }
+
+    fn m010_clear_env(keys: &[&str]) -> Vec<(String, Option<String>)> {
+        keys.iter()
+            .map(|k| {
+                let prev = std::env::var(k).ok();
+                std::env::remove_var(k);
+                (k.to_string(), prev)
+            })
+            .collect()
+    }
+
+    fn m010_restore_env(saved: Vec<(String, Option<String>)>) {
+        for (k, v) in saved {
+            if let Some(v) = v {
+                std::env::set_var(k, v);
+            }
+        }
+    }
+
+    #[test]
+    fn stored_bearer_resolves_for_compatible_provider() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "m010-compat-resolve");
+        let saved = m010_clear_env(&["XAI_API_KEY"]);
+        let (_dir, store) = m010_temp_store_with(
+            "xai",
+            Some("default"),
+            CredentialKind::BearerToken,
+            "bearer-sentinel-xai",
+            None,
+        );
+        let cfg = ProviderConfig {
+            auth: Some(AuthConfig::Stored {
+                account_id: Some("default".to_string()),
+            }),
+            ..Default::default()
+        };
+        let resolved =
+            resolve_provider_credential("xai", Some(&cfg), Some("XAI_API_KEY"), Some(&store))
+                .expect("ok")
+                .expect("some");
+        assert_eq!(resolved.credential.kind, CredentialKind::BearerToken);
+        assert_eq!(resolved.credential.secret, "bearer-sentinel-xai");
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+        m010_restore_env(saved);
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+    }
+
+    #[test]
+    fn stored_bearer_rejected_for_api_key_only_providers() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "m010-incompat-resolve");
+        // Cover both String-contract families: every config-aware provider
+        // (anthropic/openai/google/openrouter) and every api-key-only
+        // provider (opencode_zen/minimax). A bearer record must fail with a
+        // typed incompatibility before any transport is constructed, so zero
+        // outbound requests are possible.
+        for (provider, env_var) in [
+            ("anthropic", "ANTHROPIC_API_KEY"),
+            ("openai", "OPENAI_API_KEY"),
+            ("google", "GOOGLE_API_KEY"),
+            ("openrouter", "OPENROUTER_API_KEY"),
+            ("opencode_zen", "OPENCODE_ZEN_API_KEY"),
+            ("minimax", "MINIMAX_API_KEY"),
+        ] {
+            let saved = m010_clear_env(&[env_var]);
+            let (_dir, store) = m010_temp_store_with(
+                provider,
+                Some("default"),
+                CredentialKind::BearerToken,
+                "bearer-sentinel-incompat",
+                None,
+            );
+            let cfg = ProviderConfig {
+                auth: Some(AuthConfig::Stored {
+                    account_id: Some("default".to_string()),
+                }),
+                ..Default::default()
+            };
+            let err = match resolve_provider_credential(
+                provider,
+                Some(&cfg),
+                Some(env_var),
+                Some(&store),
+            ) {
+                Ok(_) => panic!("bearer for '{provider}' must fail"),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, crate::auth_types::AuthError::Unsupported(_)),
+                "provider '{provider}' expected Unsupported, got {err:?}"
+            );
+            assert!(!format!("{err}").contains("bearer-sentinel-incompat"));
+            m010_restore_env(saved);
+        }
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+    }
+
+    #[test]
+    fn stored_expired_bearer_rejected_for_compatible_provider() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "m010-expired-resolve");
+        let saved = m010_clear_env(&["GROQ_API_KEY"]);
+        let expired = chrono::Utc::now() - chrono::Duration::minutes(10);
+        let (_dir, store) = m010_temp_store_with(
+            "groq",
+            Some("default"),
+            CredentialKind::BearerToken,
+            "bearer-sentinel-expired",
+            Some(expired),
+        );
+        let cfg = ProviderConfig {
+            auth: Some(AuthConfig::Stored {
+                account_id: Some("default".to_string()),
+            }),
+            ..Default::default()
+        };
+        let err = match resolve_provider_credential(
+            "groq",
+            Some(&cfg),
+            Some("GROQ_API_KEY"),
+            Some(&store),
+        ) {
+            Ok(_) => panic!("expired bearer must fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, crate::auth_types::AuthError::Expired(_)));
+        m010_restore_env(saved);
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
+        }
+    }
+
+    #[test]
+    fn stored_api_key_still_resolves_for_api_key_only_provider() {
+        let _guard = crate::auth_types::test_support::lock_env();
+        let prev_master = std::env::var("CODEGG_MASTER_KEY").ok();
+        std::env::set_var("CODEGG_MASTER_KEY", "m010-apikey-still-ok");
+        let saved = m010_clear_env(&["MINIMAX_API_KEY"]);
+        let (_dir, store) = m010_temp_store_with(
+            "minimax",
+            Some("default"),
+            CredentialKind::ApiKey,
+            "stored-minimax-key",
+            None,
+        );
+        let cfg = ProviderConfig {
+            auth: Some(AuthConfig::Stored {
+                account_id: Some("default".to_string()),
+            }),
+            ..Default::default()
+        };
+        let resolved = resolve_provider_credential(
+            "minimax",
+            Some(&cfg),
+            Some("MINIMAX_API_KEY"),
+            Some(&store),
+        )
+        .expect("ok")
+        .expect("some");
+        assert_eq!(resolved.credential.kind, CredentialKind::ApiKey);
+        assert_eq!(resolved.source, ResolvedAuthSource::UserStore);
+        m010_restore_env(saved);
+        if let Some(v) = prev_master {
+            std::env::set_var("CODEGG_MASTER_KEY", v);
+        } else {
+            std::env::remove_var("CODEGG_MASTER_KEY");
         }
     }
 }

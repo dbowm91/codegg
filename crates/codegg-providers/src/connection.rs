@@ -7,7 +7,9 @@
 //! seam for persisted connections.
 
 use crate::anthropic::AnthropicProvider;
-use crate::auth_types::{Credential, CredentialKind, CredentialStore, StoredCredentialRecord};
+use crate::auth_types::{
+    Credential, CredentialCapability, CredentialKind, CredentialStore, StoredCredentialRecord,
+};
 use crate::openai::{OpenAiConfig, OpenAiProvider};
 use crate::openai_compatible::OpenAiCompatibleProvider;
 use crate::Provider;
@@ -77,6 +79,45 @@ impl ProviderKind {
             Self::AzureOpenAi => "Azure OpenAI",
             Self::OpenAiCompatible { provider_id } => provider_id,
         }
+    }
+}
+
+/// Capability for one durable [`ProviderKind`], consistent with the
+/// registration matrix in `crate::provider_core::credential_capability_for`.
+///
+/// Native `OpenAi`/`Anthropic`/`Google`/`AzureOpenAi` connections keep the
+/// static API-key contract (`ApiKeyOnly`); `OpenAiCompatible` connections
+/// accept either kind (`ApiKeyOrBearer`) and preserve it through
+/// `OpenAiCompatibleProvider::simple_with_credential`.
+pub fn capability_for_provider_kind(kind: &ProviderKind) -> CredentialCapability {
+    match kind {
+        ProviderKind::OpenAiCompatible { .. } => CredentialCapability::ApiKeyOrBearer,
+        ProviderKind::OpenAi
+        | ProviderKind::Anthropic
+        | ProviderKind::Google
+        | ProviderKind::AzureOpenAi => CredentialCapability::ApiKeyOnly,
+    }
+}
+
+/// Pre-commit rotation guard: returns `Ok(())` when a stored record's kind is
+/// accepted by the target connection kind, or a typed
+/// [`ConnectionError::UnsupportedCredentialKind`] otherwise.
+///
+/// Callers must invoke this before overwriting the existing store binding so
+/// an incompatible rotation fails before commit and leaves the old
+/// credential/runtime valid.
+pub fn validate_rotation_kind(
+    kind: &ProviderKind,
+    record_kind: CredentialKind,
+) -> Result<(), ConnectionError> {
+    let capability = capability_for_provider_kind(kind);
+    if capability.accepts(record_kind) {
+        Ok(())
+    } else {
+        Err(ConnectionError::UnsupportedCredentialKind {
+            provider_id: kind.implementation_id().to_string(),
+            kind: record_kind,
+        })
     }
 }
 
@@ -698,5 +739,168 @@ mod tests {
         assert_eq!(value.as_object().unwrap().len(), 5);
         assert!(!value.to_string().contains("connection-secret"));
         assert!(!value.to_string().contains("encrypted_secret"));
+    }
+
+    // ---- M010: durable bearer closure ----
+
+    #[test]
+    fn capability_matrix_matches_registration_contract() {
+        assert_eq!(
+            capability_for_provider_kind(&ProviderKind::OpenAiCompatible {
+                provider_id: "xai".to_string()
+            }),
+            CredentialCapability::ApiKeyOrBearer
+        );
+        for kind in [
+            ProviderKind::OpenAi,
+            ProviderKind::Anthropic,
+            ProviderKind::Google,
+            ProviderKind::AzureOpenAi,
+        ] {
+            assert_eq!(
+                capability_for_provider_kind(&kind),
+                CredentialCapability::ApiKeyOnly,
+                "durable {kind:?} must be ApiKeyOnly"
+            );
+        }
+        // Registration matrix agreement for representative ids.
+        assert_eq!(
+            capability_for_provider_kind(&ProviderKind::OpenAiCompatible {
+                provider_id: "gateway".to_string()
+            }),
+            crate::provider_core::credential_capability_for("xai")
+        );
+    }
+
+    #[test]
+    fn compatible_connection_accepts_bearer_and_preserves_kind() {
+        let resolver = Arc::new(FakeResolver {
+            calls: Mutex::new(0),
+            credential: Credential::bearer("m010-durable-bearer", None),
+        });
+        let factory = ProviderConnectionFactory::new(resolver);
+        let descriptor = ProviderConnectionDescriptor::openai_compatible(
+            "connection-bearer",
+            "gateway",
+            SecretRef::provider("gateway"),
+            "https://gateway.example/v1",
+        );
+        let provider = factory.build(&descriptor).expect("compatible bearer");
+        assert_eq!(provider.id(), "gateway");
+    }
+
+    #[test]
+    fn incompatible_kinds_reject_bearer_before_network() {
+        let resolver = Arc::new(FakeResolver {
+            calls: Mutex::new(0),
+            credential: Credential::bearer("m010-durable-bearer", None),
+        });
+        let factory = ProviderConnectionFactory::new(resolver);
+        for descriptor in [
+            ProviderConnectionDescriptor::anthropic(
+                "c-anthropic",
+                SecretRef::provider("anthropic"),
+            ),
+            ProviderConnectionDescriptor::openai("c-openai", SecretRef::provider("openai")),
+            ProviderConnectionDescriptor::new(
+                "c-google",
+                ProviderKind::Google,
+                SecretRef::provider("google"),
+            ),
+            ProviderConnectionDescriptor::new(
+                "c-azure",
+                ProviderKind::AzureOpenAi,
+                SecretRef::provider("azure"),
+            )
+            .with_base_url("https://azure.example"),
+        ] {
+            let err = match factory.build(&descriptor) {
+                Ok(_) => panic!("bearer must be rejected for {:?}", descriptor.provider),
+                Err(err) => err,
+            };
+            assert!(
+                matches!(err, ConnectionError::UnsupportedCredentialKind { .. }),
+                "expected UnsupportedCredentialKind, got {err:?}"
+            );
+            assert!(!format!("{err}").contains("m010-durable-bearer"));
+        }
+    }
+
+    #[test]
+    fn rotation_guard_fails_before_commit_for_incompatible_kind() {
+        // Compatible rotation passes.
+        assert!(validate_rotation_kind(
+            &ProviderKind::OpenAiCompatible {
+                provider_id: "gateway".to_string()
+            },
+            CredentialKind::BearerToken
+        )
+        .is_ok());
+        // Incompatible rotation fails before any store overwrite, leaving the
+        // old credential valid. The error carries no secret.
+        let err = validate_rotation_kind(&ProviderKind::Anthropic, CredentialKind::BearerToken)
+            .expect_err("bearer rotation to anthropic must fail");
+        assert!(matches!(
+            err,
+            ConnectionError::UnsupportedCredentialKind { .. }
+        ));
+    }
+
+    #[test]
+    fn bearer_resolves_after_store_reopen_for_compatible_connection() {
+        let _env = EnvGuard::new();
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("credentials.json");
+        let expires_at = Utc::now() + chrono::Duration::hours(2);
+        std::env::set_var("CODEGG_MASTER_KEY", "m010-durable-reopen");
+        {
+            let store = Arc::new(CredentialStore::at_path(path.clone()).expect("store"));
+            store
+                .put(
+                    "gateway",
+                    Some("work"),
+                    CredentialKind::BearerToken,
+                    "m010-reopen-bearer",
+                    Some(expires_at),
+                    vec![],
+                )
+                .expect("put");
+        }
+        // Simulate restart: reopen the same file, resolve, and build.
+        let reopened = Arc::new(CredentialStore::at_path(path).expect("reopen"));
+        let factory = ProviderConnectionFactory::from_store(reopened);
+        let descriptor = ProviderConnectionDescriptor::openai_compatible(
+            "connection-reopen",
+            "gateway",
+            SecretRef::new("gateway", Some("work".to_string())),
+            "https://gateway.example/v1",
+        );
+        let provider = factory.build(&descriptor).expect("rebuild after reopen");
+        assert_eq!(provider.id(), "gateway");
+    }
+
+    #[test]
+    fn in_flight_instance_retains_captured_credential_across_failed_rotation() {
+        // Old runtime stays usable when a rotation to an incompatible kind
+        // fails validation before commit: the captured Arc is untouched.
+        let good = Arc::new(FakeResolver {
+            calls: Mutex::new(0),
+            credential: Credential::api_key("m010-good-key"),
+        });
+        let factory = ProviderConnectionFactory::new(good);
+        let descriptor =
+            ProviderConnectionDescriptor::openai("c-old", SecretRef::provider("openai"));
+        let old_instance = factory.build(&descriptor).expect("old instance");
+        assert_eq!(old_instance.id(), "openai");
+
+        // Failed rotation attempt never replaces the captured instance.
+        let bad = Arc::new(FakeResolver {
+            calls: Mutex::new(0),
+            credential: Credential::bearer("m010-bad-bearer", None),
+        });
+        let bad_factory = ProviderConnectionFactory::new(bad);
+        assert!(bad_factory.build(&descriptor).is_err());
+        // Old instance is still valid for in-flight work.
+        assert_eq!(old_instance.id(), "openai");
     }
 }

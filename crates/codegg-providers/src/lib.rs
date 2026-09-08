@@ -33,16 +33,16 @@ pub mod text_tool_parser;
 pub mod vertex;
 
 pub use auth_types::{
-    mask_secret, AuthConfig, AuthError, AuthResolver, Credential, CredentialKind, CredentialStore,
-    ExternalCommandProvider, ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext,
-    StoredCredentialRecord,
+    incompatible_credential_message, mask_secret, AuthConfig, AuthError, AuthResolver, Credential,
+    CredentialCapability, CredentialKind, CredentialStore, ExternalCommandProvider,
+    ExternalCredential, ResolvedAuth, ResolvedAuthSource, ResolverContext, StoredCredentialRecord,
 };
 pub use circuit::{CircuitBreaker, CircuitError, CircuitState};
 pub use connection::{
-    ConnectionDescriptor, ConnectionError, ConnectionKind, CredentialResolver,
-    CredentialStoreAdapter, CredentialStoreSecretResolver, ProviderConnection,
-    ProviderConnectionDescriptor, ProviderConnectionFactory, ProviderFactory, ProviderKind,
-    SecretRef, SecretReference, SecretResolutionError, SecretResolver,
+    capability_for_provider_kind, validate_rotation_kind, ConnectionDescriptor, ConnectionError,
+    ConnectionKind, CredentialResolver, CredentialStoreAdapter, CredentialStoreSecretResolver,
+    ProviderConnection, ProviderConnectionDescriptor, ProviderConnectionFactory, ProviderFactory,
+    ProviderKind, SecretRef, SecretReference, SecretResolutionError, SecretResolver,
 };
 pub use eggpool::{
     normalize_eggpool_base_url, EggpoolApiKey, EggpoolCancellationToken, EggpoolModelSummary,
@@ -51,10 +51,11 @@ pub use eggpool::{
 };
 pub use error::{ProviderError, StorageError};
 pub use provider_core::{
-    assistant_text_content_value, create_http_client, openai_tool_arguments_value,
-    project_tool_call_history, register_builtin, register_builtin_with_config, ChatEvent,
-    ChatRequest, ContentPart, EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider,
-    ProviderCapabilities, ProviderRegistry, ProviderRequestContext, ReasoningVisibility,
+    assistant_text_content_value, builtin_registration_order, create_http_client,
+    credential_capability_for, openai_tool_arguments_value, project_tool_call_history,
+    register_builtin, register_builtin_with_config, ChatEvent, ChatRequest, ContentPart,
+    EventStream, ImageUrl, Message, ModelInfo, ModelVariant, Provider, ProviderCapabilities,
+    ProviderCredentialCapability, ProviderRegistry, ProviderRequestContext, ReasoningVisibility,
     ResponseFormat, TokenUsage, ToolCall, ToolDefinition, MAX_BUFFER_SIZE, MAX_REASONING_BYTES,
 };
 pub use responses_api::{
