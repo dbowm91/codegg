@@ -2219,10 +2219,38 @@ mod tests {
 
     #[test]
     fn isolated_child_shell_rejects_parent_paths_and_directory_changes() {
-        let root = std::env::temp_dir();
-        assert!(validate_child_workspace_command("echo ok", &[], &root).is_ok());
-        assert!(validate_child_workspace_command("cd ..", &[], &root).is_err());
-        assert!(validate_child_workspace_command("echo ok > /tmp/parent.txt", &[], &root).is_err());
+        // The isolated root must be an owned subdirectory, never the shared
+        // temporary directory itself: on hosts where `temp_dir()` is a real
+        // directory (Linux `/tmp`), a sibling such as `/tmp/parent.txt` is
+        // inside `temp_dir()` and must not be expected to fail. `tempdir()`
+        // also guarantees the root exists so the fail-closed canonicalization
+        // path does not reject every command. See DVR M010.
+        let dir = tempfile::tempdir().expect("isolated child shell test root");
+        let root = dir.path();
+        assert!(validate_child_workspace_command("echo ok", &[], root).is_ok());
+        assert!(validate_child_workspace_command("cd ..", &[], root).is_err());
+        // Derive the outside path as a sibling of the canonical root so the
+        // expectation holds whether `temp_dir()` is a symlink (macOS
+        // `/tmp` -> `/private/tmp`) or a real directory (Linux `/tmp`).
+        let canonical_root = std::fs::canonicalize(root).expect("test root must canonicalize");
+        let outside = canonical_root
+            .parent()
+            .expect("test root must have a parent")
+            .join("codegg-isolated-child-parent.txt");
+        assert!(validate_child_workspace_command(
+            &format!("echo ok > {}", outside.display()),
+            &[],
+            root
+        )
+        .is_err());
+        // A redirect target inside the worktree stays allowed.
+        let inside = canonical_root.join("child.txt");
+        assert!(validate_child_workspace_command(
+            &format!("echo ok > {}", inside.display()),
+            &[],
+            root
+        )
+        .is_ok());
     }
 
     #[test]
