@@ -201,7 +201,7 @@ Dependency classes:
 
 Class: infrastructure / capability.
 
-Status: ready.
+Status: closed — see `plans/closure/distribution-installation/001-status.md`.
 
 Implementation plan:
 
@@ -234,7 +234,7 @@ Exit conditions:
 
 Class: capability / polish.
 
-Status: blocked on M001.
+Status: ready — M001 closed; see `plans/closure/distribution-installation/001-status.md`.
 
 Implementation plan:
 
@@ -327,5 +327,5 @@ This roadmap closes when maintainers have a stable manual artifact/checksum cont
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/distribution-installation/001-manual-prebuilt-artifact-contract.md` | — | — |
-| M002 | blocked | `plans/implementation/distribution-installation/002-installer-and-end-user-installation.md` | — | hard on M001 |
+| M001 | closed | `plans/implementation/distribution-installation/001-manual-prebuilt-artifact-contract.md` | `plans/closure/distribution-installation/001-status.md` | — |
+| M002 | ready | `plans/implementation/distribution-installation/002-installer-and-end-user-installation.md` | — | — |

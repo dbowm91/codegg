@@ -1,6 +1,6 @@
 # Distribution and Installation Milestone 001 — Manual Prebuilt Artifact Contract
 
-Status: ready for handoff
+Status: implemented — closed; see `plans/closure/distribution-installation/001-status.md`
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

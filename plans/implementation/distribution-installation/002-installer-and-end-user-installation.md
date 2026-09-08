@@ -1,6 +1,6 @@
 # Distribution and Installation Milestone 002 — Verified Installer and End-User Installation
 
-Status: blocked
+Status: ready for handoff — hard dependency M001 closed; see `plans/closure/distribution-installation/001-status.md`
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 
@@ -35,9 +35,9 @@ Add a small, auditable POSIX installer that maps supported Linux/macOS hosts to 
 
 The installer must support the repository's latest release and an explicitly pinned version. Unsupported hosts must fail early with clear Cargo/source installation alternatives.
 
-## 2. Why this milestone is blocked
+## 2. Why this milestone is ready
 
-The installer must not invent filenames, target labels, archive layout, or checksum syntax. M001 first establishes those as a stable release interface.
+The installer must not invent filenames, target labels, archive layout, or checksum syntax. M001 has closed (`plans/closure/distribution-installation/001-status.md`) and establishes those as a stable release interface. All hard dependencies are satisfied; no interface dependency remains unstable.
 
 After M001 closes, the runtime requirements are simple and require no daemon/protocol changes. The intended mapping is:
 
