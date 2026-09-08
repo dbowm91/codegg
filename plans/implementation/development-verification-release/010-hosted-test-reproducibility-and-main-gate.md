@@ -1,6 +1,6 @@
 # Development Verification and Release Milestone 010 — Hosted Test Reproducibility and Mainline Gate
 
-Status: active
+Status: implemented — closed; see `plans/closure/development-verification-release/010-status.md`
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

@@ -41,7 +41,7 @@ Canonical direction remains in:
 | Memory-to-skill promotion | closed | `plans/subsystems/memory-skill-promotion-hosted-verification-corrective-addendum.md` | M005 closed | Publication/proposal Clippy findings and exact-head hosted closure accepted. |
 | Runtime consolidation, deletion, and footprint | closed | `plans/subsystems/runtime-consolidation-deletion-footprint-tui-closure-addendum.md` | M010 closed | Durable TUI schedule identity and labels reconciled. |
 | Programmatic tool execution and Tool Programs | closed | `plans/subsystems/tool-programs-roadmap.md` | M019 strict closure + M020 corrective disposition accepted | — |
-| Development verification and release | active | `plans/subsystems/development-verification-release-ci-reproducibility-corrective-addendum.md` | M010 active | Exact baseline `15632a0` has a hosted workspace-test failure despite reported local success; root cause and exact-head green evidence required. |
+| Development verification and release | closed | `plans/subsystems/development-verification-release-ci-reproducibility-corrective-addendum.md` | M010 closed | Exact-head hosted `CI / verify` green on `8fc7b3b5`; closure at `plans/closure/development-verification-release/010-status.md`. Operator action: require `CI / verify` on `main`. |
 | Distribution and installation | active | `plans/subsystems/distribution-installation-roadmap.md` | M001 ready | Manual release authority and single-binary topology are stable; M002 waits on the artifact/checksum contract. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Only the previously recorded supported-Linux Landlock fixture evidence remains. |
 | Runtime safety — checked edit-history corrective follow-up | closed | `plans/subsystems/runtime-safety-edit-history-corrective-addendum.md` | M013 closed | Exact candidate `f314c38e` passed hosted `CI / verify`. |
@@ -53,7 +53,6 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Development verification and release | M010 — hosted test reproducibility and mainline gate | `plans/implementation/development-verification-release/010-hosted-test-reproducibility-and-main-gate.md` | The exact hosted failing SHA/run and existing minimal CI contract are known; diagnosis can begin without architecture changes. |
 | Post-audit maintainability and surface | M001 — compatibility-surface rationalization | `plans/implementation/post-audit-maintainability-surface/001-compatibility-surface-rationalization.md` | Canonical subsystem owners already exist; the work is an evidence-backed compatibility census/disposition. |
 | Post-audit maintainability and surface | M003 — agent-runtime physical decomposition | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | Remaining problem is physical concentration inside canonical agent ownership; M001 is only a soft merge dependency. |
 | Post-audit maintainability and surface | M004 — Bash-tool physical decomposition | `plans/implementation/post-audit-maintainability-surface/004-bash-tool-physical-decomposition.md` | Bash execution/sandbox/scheduler owners are already stable; this is a behavior-preserving locality refactor. |
@@ -103,7 +102,7 @@ Detailed historical milestone history is intentionally not duplicated here; use 
 | Provider connections and Eggpool | M009 — direct provider session-context corrective pass | closed | `plans/closure/provider-connections/009-status.md` |
 | Programmatic tool execution and Tool Programs | M019/M020 — strict closure and child-artifact recovery | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Search and eggsearch integration | M005 — hosted closure and SourceCard fidelity | closed | `plans/closure/search-eggsearch-integration/005-status.md` |
-| Development verification and release | M007-M009 — minimal verification and hosted corrective closures | closed | `plans/closure/development-verification-release/007-status.md`; `008-status.md`; `009-status.md` |
+| Development verification and release | M007-M010 — minimal verification and hosted corrective closures | closed | `plans/closure/development-verification-release/007-status.md`; `008-status.md`; `009-status.md`; `010-status.md` |
 | Memory-to-skill promotion | M005 — publication Clippy and hosted closure | closed | `plans/closure/memory-skill-promotion/005-status.md` |
 | Architecture convergence and incomplete verticals | M001 — context and compaction ownership convergence | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/001-status.md` |
 | Architecture convergence and incomplete verticals | M002 — process and tool execution ownership convergence | conditionally closed | `plans/closure/architecture-convergence-incomplete-verticals/002-status.md` |

@@ -1,6 +1,6 @@
 # Development Verification and Release — CI Reproducibility Corrective Addendum
 
-Status: active
+Status: closed — M010 closed; see `plans/closure/development-verification-release/010-status.md`.
 
 This addendum reopens only the correctness/evidence boundary of the closed Development Verification and Release workstream. It does not reopen the earlier CI-expansion debates or authorize new verification infrastructure.
 
