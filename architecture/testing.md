@@ -149,6 +149,11 @@ otherwise prefer `current_thread`. If it touches SQLite, use
 scripts/verify.sh quick
 scripts/verify.sh full
 
+# Release/installer fixture tests (offline, change-specific; not routine CI)
+scripts/release/test-release-tools.sh
+scripts/release/test-installer.sh
+sh -n install.sh
+
 # Fast feedback (cheap crates)
 cargo test -p egggit -p eggsentry -p codegg-config -p codegg-protocol
 

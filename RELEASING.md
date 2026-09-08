@@ -483,6 +483,50 @@ Source/development installation remains:
 cargo install --path .
 ```
 
+#### Post-publication installer smoke (M002)
+
+When the GitHub release carries the Step 9 asset set, verify the
+end-user installer on at least one Linux and one macOS host before
+advertising installer support for the tag. All commands are maintainer-run;
+no installer test in routine CI touches the network.
+
+```bash
+# Latest-release path (default destination ~/.local/bin/codegg).
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
+codegg --version
+
+# Pinned-version path.
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh \
+  | CODEGG_VERSION=<VERSION> sh
+codegg --version
+
+# Custom directory path (example).
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh \
+  | CODEGG_INSTALL_DIR=/tmp/codegg-install-smoke sh
+/tmp/codegg-install-smoke/codegg --version
+```
+
+Each smoke run must show:
+
+- the expected release/tag, target, and asset mapping;
+- `checksum ok: codegg-<target>.tar.gz` before extraction;
+- `installed: <dir>/codegg` plus a matching `codegg --version` line;
+- PATH guidance only when the destination is not discoverable;
+- no privilege escalation, shell-profile edit, or daemon/service change.
+
+If any required asset or checksum entry is missing for a tag, do not
+advertise that tag as installer-compatible: either complete the release set
+(re-package, re-finalize, re-validate, re-upload) or document the tag as
+source-only. Historical releases that predate the M001 contract must never
+be presented as installer-compatible.
+
+Offline installer behavior (mapping, URLs, checksums, archive security,
+atomic replacement) is covered without a live release by:
+
+```bash
+scripts/release/test-installer.sh
+```
+
 ## Concurrent releases
 
 Only one maintainer should execute the release sequence at a time.

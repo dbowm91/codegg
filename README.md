@@ -25,7 +25,56 @@ Linux and macOS are the primary Unix runtime targets represented in the current 
 
 ## Install
 
-codegg is currently installed from source:
+### Prebuilt installer (supported Linux/macOS hosts)
+
+The installer downloads the release asset for your host from the canonical
+CodeGG GitHub repository over HTTPS, verifies its SHA-256 checksum against
+the release manifest, and atomically installs `codegg` into a user-writable
+directory. It never uses privilege escalation, never edits shell profiles,
+and never starts background services.
+
+Supported hosts:
+
+| OS | Architecture | Release target |
+|---|---|---|
+| Linux | x86_64 / amd64 | `x86_64-unknown-linux-gnu` |
+| Linux | aarch64 / arm64 | `aarch64-unknown-linux-gnu` |
+| macOS | x86_64 | `x86_64-apple-darwin` |
+| macOS | arm64 / aarch64 | `aarch64-apple-darwin` |
+
+Latest release (default installs to `~/.local/bin/codegg`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
+```
+
+Pinned version:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_VERSION=0.1.1 sh
+```
+
+Custom install directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_INSTALL_DIR="$HOME/bin" sh
+```
+
+Pipe-to-shell executes remote code. To inspect before running, download first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh -o install.sh
+sh install.sh
+```
+
+After installation, ensure the destination directory is on `PATH` (the
+installer prints guidance when it is not). Replacing the executable does not
+restart a running daemon; the new binary takes effect on the next launch.
+The installer only works for releases that carry the documented prebuilt
+asset set (see `RELEASING.md`); older releases without those assets are not
+installer-compatible. Other hosts should install from source below.
+
+### From source
 
 ```bash
 git clone https://github.com/dbowm91/codegg.git
@@ -39,6 +88,11 @@ To run directly from a checkout instead:
 cargo run -- --help
 cargo run --
 ```
+
+codegg is not currently published on crates.io, so `cargo install codegg`
+does not resolve yet. crates.io publication remains a manual maintainer step
+(see `RELEASING.md`); until the first version is published, use the
+installer above or install from source.
 
 The default build includes the TUI and clipboard support. Additional Cargo features include:
 
