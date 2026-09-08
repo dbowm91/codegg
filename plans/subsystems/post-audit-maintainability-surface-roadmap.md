@@ -312,6 +312,6 @@ This roadmap closes when M001–M005 have accepted closure records and the repos
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/post-audit-maintainability-surface/001-compatibility-surface-rationalization.md` | `plans/closure/post-audit-maintainability-surface/001-status.md` | — |
 | M002 | closed | `plans/implementation/post-audit-maintainability-surface/002-model-visible-tool-surface-minimization.md` | `plans/closure/post-audit-maintainability-surface/002-status.md` | — |
-| M003 | ready | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | — | soft merge dependency on M001 |
+| M003 | closed | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | `plans/closure/post-audit-maintainability-surface/003-status.md` | — |
 | M004 | ready | `plans/implementation/post-audit-maintainability-surface/004-bash-tool-physical-decomposition.md` | — | — |
-| M005 | blocked | `plans/implementation/post-audit-maintainability-surface/005-runtime-service-context-global-state-cleanup.md` | — | hard on M002 (satisfied by M002 closure); interface on M003 |
+| M005 | ready | `plans/implementation/post-audit-maintainability-surface/005-runtime-service-context-global-state-cleanup.md` | — | hard on M002 (closed); interface on M003 (closed) |

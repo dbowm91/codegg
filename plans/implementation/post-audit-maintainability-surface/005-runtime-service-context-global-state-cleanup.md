@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Milestone 005 — Runtime-Service Context and Mutable-Global Cleanup
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 
@@ -11,7 +11,7 @@ Source roadmap:
 Dependencies:
 
 - hard: M002 — final model/tool construction and disclosure contract (satisfied: closed by `plans/closure/post-audit-maintainability-surface/002-status.md`; disclosure contract is `src/tool/disclosure.rs` + `ToolRegistry::with_options` registration ownership);
-- interface: M003 — final agent construction/module seams (outstanding).
+- interface: M003 — final agent construction/module seams (satisfied: closed by `plans/closure/post-audit-maintainability-surface/003-status.md`; seams are `AgentLoop::new` + setters, `definition`/`file_agents` public paths, `ToolRegistry::with_options`).
 
 Long-term requirements:
 

@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Milestone 003 — Agent-Runtime Physical Decomposition
 
-Status: implemented (closure review pending)
+Status: closed (closure at `plans/closure/post-audit-maintainability-surface/003-status.md`)
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 
