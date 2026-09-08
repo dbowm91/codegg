@@ -35,6 +35,12 @@ pub struct SessionToolContext {
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
     pub workspace_locks: Option<Arc<codegg_core::workspace_services::WorkspaceLockTable>>,
+    /// Explicit runtime-owned search/MCP context (M005). When `Some`,
+    /// search/evidence wrappers execute against this context instead of
+    /// any process-global slot. Turn construction bootstraps this
+    /// before building the registry; when `None`, the registry falls
+    /// back to an isolated config-derived default context.
+    pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
 }
 
 /// Build a session-scoped [`ToolRegistry`] with default tools, goal tools,
@@ -77,6 +83,7 @@ pub fn build_session_tool_registry(
         runtime_assets: asset_context,
         notification_service,
         workspace_locks,
+        search_runtime,
     } = session_context;
     let todo_state = Arc::new(tokio::sync::Mutex::new(crate::task_state::TodoState::new()));
 
@@ -92,6 +99,16 @@ pub fn build_session_tool_registry(
         Arc::new(FileArtifactStore::new(&execution.workspace_root));
 
     let integrated = integrated_config::resolve_integrated_config(config);
+
+    // Explicit search/MCP runtime context (M005): prefer the
+    // bootstrapped context threaded through `SessionToolContext`,
+    // otherwise derive an isolated config-only context (no shared
+    // service). Neither path reads the deprecated process-global slots.
+    let search_runtime = search_runtime.or_else(|| {
+        Some(crate::search_backend::SearchRuntimeContext::from_config(
+            &config.search.clone().unwrap_or_default(),
+        ))
+    });
 
     // Build the run store rooted at `<workspace_root>/.codegg/runs`.
     // Phase 2: this is propagated from the execution context, never from
@@ -133,6 +150,7 @@ pub fn build_session_tool_registry(
         asset_snapshot: asset_context.snapshot,
         asset_pin: asset_context.pin,
         notification_service,
+        search_runtime,
     });
 
     // Register the task/subagent tool when a runtime is available.

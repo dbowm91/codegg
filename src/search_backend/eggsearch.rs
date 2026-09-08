@@ -16,6 +16,12 @@ use super::framing::{
     frame_security_results,
 };
 
+/// Shared daemon-owned MCP transport handle threaded explicitly through
+/// the eggsearch adapter (M005). `None` means bootstrap never connected
+/// a service for this runtime context; callers report
+/// `eggsearch_unavailable` instead of consulting a process-global slot.
+pub(crate) type McpHandle = std::sync::Arc<tokio::sync::RwLock<crate::mcp::McpService>>;
+
 fn copy_fields(args: &mut Value, input: &Value, fields: &[&str]) {
     for field in fields {
         if let Some(value) = input.get(*field).filter(|value| !value.is_null()) {
@@ -396,7 +402,13 @@ pub struct EggsearchCallResult {
     pub truncated: bool,
 }
 
-async fn call_structured_tool<F>(
+/// Explicit-service variant of the former global choke point. Canonical
+/// implementation: `SearchRuntimeContext` dispatch methods call this
+/// with their owned MCP handle and never touch the process-global slot.
+/// `None` yields the same actionable `eggsearch_unavailable` error the
+/// legacy global path produced for an uninstalled service.
+pub(crate) async fn call_structured_tool_with_service<F>(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     tool: &str,
     args: Value,
@@ -408,8 +420,7 @@ async fn call_structured_tool<F>(
 where
     F: FnOnce(&str, &str) -> String,
 {
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let svc = svc.ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
     let result = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
         let guard = svc.read().await;
         guard.call_tool_structured(mcp_server, tool, args).await
@@ -447,6 +458,7 @@ where
 /// }
 /// ```
 pub async fn call_web_search_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -454,7 +466,8 @@ pub async fn call_web_search_structured(
 ) -> Result<EggsearchCallResult, ToolError> {
     let args = build_web_search_args(input)?;
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "web_search",
         args,
@@ -467,13 +480,14 @@ pub async fn call_web_search_structured(
 }
 
 pub async fn call_web_search(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_web_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_web_search_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -482,6 +496,7 @@ pub async fn call_web_search(
 /// Translate a native `webfetch` call into an eggsearch `web_fetch`
 /// call and execute it.
 pub async fn call_web_fetch_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -489,7 +504,8 @@ pub async fn call_web_fetch_structured(
 ) -> Result<EggsearchCallResult, ToolError> {
     let args = build_web_fetch_args(input)?;
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "web_fetch",
         args,
@@ -502,13 +518,14 @@ pub async fn call_web_fetch_structured(
 }
 
 pub async fn call_web_fetch(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_web_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_web_fetch_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -517,6 +534,7 @@ pub async fn call_web_fetch(
 /// Translate a native `repo_search` call into an eggsearch `repo_search`
 /// call and execute it.
 pub async fn call_repo_search_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -557,7 +575,8 @@ pub async fn call_repo_search_structured(
         .unwrap_or(10)
         .min(30));
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "repo_search",
         args,
@@ -570,13 +589,14 @@ pub async fn call_repo_search_structured(
 }
 
 pub async fn call_repo_search(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_repo_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_repo_search_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -585,6 +605,7 @@ pub async fn call_repo_search(
 /// Translate a native `repo_fetch` call into an eggsearch `repo_fetch`
 /// call and execute it.
 pub async fn call_repo_fetch_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -617,7 +638,8 @@ pub async fn call_repo_fetch_structured(
         args["line_end"] = json!(line_end);
     }
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "repo_fetch",
         args,
@@ -630,13 +652,14 @@ pub async fn call_repo_fetch_structured(
 }
 
 pub async fn call_repo_fetch(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_repo_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_repo_fetch_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -645,6 +668,7 @@ pub async fn call_repo_fetch(
 /// Translate a native `repo_map` call into an eggsearch `repo_map`
 /// call and execute it.
 pub async fn call_repo_map_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -681,7 +705,8 @@ pub async fn call_repo_map_structured(
         .min(3);
     args["max_depth"] = json!(depth);
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "repo_map",
         args,
@@ -694,13 +719,14 @@ pub async fn call_repo_map_structured(
 }
 
 pub async fn call_repo_map(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_repo_map_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_repo_map_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -709,6 +735,7 @@ pub async fn call_repo_map(
 /// Translate a native `security_search` call into an eggsearch
 /// `security_search` call and execute it.
 pub async fn call_security_search_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -762,7 +789,8 @@ pub async fn call_security_search_structured(
         .unwrap_or(10)
         .min(20));
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "security_search",
         args,
@@ -775,13 +803,14 @@ pub async fn call_security_search_structured(
 }
 
 pub async fn call_security_search(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_security_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_security_search_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -790,6 +819,7 @@ pub async fn call_security_search(
 /// Translate a native `research_search` call into an eggsearch
 /// `research_search` call and execute it.
 pub async fn call_research_search_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -828,7 +858,8 @@ pub async fn call_research_search_structured(
         .unwrap_or(10)
         .min(15));
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "research_search",
         args,
@@ -841,13 +872,14 @@ pub async fn call_research_search_structured(
 }
 
 pub async fn call_research_search(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_research_search_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_research_search_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -856,6 +888,7 @@ pub async fn call_research_search(
 /// Translate a native `batch_fetch` call into an eggsearch
 /// `batch_fetch` call and execute it.
 pub async fn call_batch_fetch_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -863,7 +896,8 @@ pub async fn call_batch_fetch_structured(
 ) -> Result<EggsearchCallResult, ToolError> {
     let args = build_batch_fetch_args(input)?;
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "batch_fetch",
         args,
@@ -876,13 +910,14 @@ pub async fn call_batch_fetch_structured(
 }
 
 pub async fn call_batch_fetch(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_batch_fetch_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_batch_fetch_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -891,6 +926,7 @@ pub async fn call_batch_fetch(
 /// Translate a native `build_evidence_bundle` call into an eggsearch
 /// `build_evidence_bundle` call and execute it.
 pub async fn call_build_evidence_bundle_structured(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
@@ -898,7 +934,8 @@ pub async fn call_build_evidence_bundle_structured(
 ) -> Result<EggsearchCallResult, ToolError> {
     let args = build_evidence_bundle_args(input)?;
 
-    call_structured_tool(
+    call_structured_tool_with_service(
+        svc,
         mcp_server,
         "build_evidence_bundle",
         args,
@@ -911,13 +948,14 @@ pub async fn call_build_evidence_bundle_structured(
 }
 
 pub async fn call_build_evidence_bundle(
+    svc: Option<&McpHandle>,
     mcp_server: &str,
     input: &Value,
     max_output_chars: usize,
     timeout_ms: u64,
 ) -> Result<String, ToolError> {
     Ok(
-        call_build_evidence_bundle_structured(mcp_server, input, max_output_chars, timeout_ms)
+        call_build_evidence_bundle_structured(svc, mcp_server, input, max_output_chars, timeout_ms)
             .await?
             .output,
     )
@@ -1011,14 +1049,29 @@ pub fn eggsearch_tool_missing(
 /// Check that a specific upstream MCP tool is available on the
 /// server. Returns `Ok(())` if the tool is present, or a descriptive
 /// error if it is missing.
+///
+/// Legacy global wrapper: snapshots the deprecated process-global slot.
+/// Explicit runtime contexts call [`ensure_tool_available_with_service`].
 pub fn ensure_tool_available(
     mcp_server: &str,
     codegg_tool: &str,
     upstream_tool: &str,
 ) -> Result<(), ToolError> {
-    let svc = match super::state::mcp_service() {
-        Some(s) => s,
-        None => return Ok(()), // will be caught by the call itself
+    let snapshot = super::context::snapshot_global();
+    let svc = snapshot.mcp();
+    ensure_tool_available_with_service(svc.as_ref(), mcp_server, codegg_tool, upstream_tool)
+}
+
+/// Explicit-service variant of [`ensure_tool_available`]. Canonical
+/// implementation used by `SearchRuntimeContext` dispatch methods.
+pub fn ensure_tool_available_with_service(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    codegg_tool: &str,
+    upstream_tool: &str,
+) -> Result<(), ToolError> {
+    let Some(svc) = svc else {
+        return Ok(()); // will be caught by the call itself
     };
     // Read the tool list synchronously (RwLock read is cheap).
     // When a writer holds the lock (e.g. during bootstrap), try_read
@@ -1053,9 +1106,22 @@ pub fn ensure_tool_available(
 }
 
 /// Best-effort provider_status query, used by the doctor command.
+///
+/// Legacy global wrapper: snapshots the deprecated process-global slot.
+/// Explicit runtime contexts call [`call_provider_status_with_service`].
 pub async fn call_provider_status(mcp_server: &str, timeout_ms: u64) -> Result<String, ToolError> {
-    let svc = super::state::mcp_service()
-        .ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
+    let snapshot = super::context::snapshot_global();
+    let svc = snapshot.mcp();
+    call_provider_status_with_service(svc.as_ref(), mcp_server, timeout_ms).await
+}
+
+/// Explicit-service variant of [`call_provider_status`].
+pub async fn call_provider_status_with_service(
+    svc: Option<&McpHandle>,
+    mcp_server: &str,
+    timeout_ms: u64,
+) -> Result<String, ToolError> {
+    let svc = svc.ok_or_else(|| eggsearch_unavailable("McpService is not initialized"))?;
     let raw = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), async {
         let guard = svc.read().await;
         guard
@@ -1125,35 +1191,24 @@ mod tests {
     /// the documented actionable error (used to drive the
     /// "missing eggsearch" acceptance criterion).
     ///
-    /// The test is intentionally permissive about the exact error
-    /// text because the failure surface depends on whether a stale
-    /// `McpService` from a previous test is still in the global
-    /// state slot. We assert the *contract*: when the eggsearch
-    /// backend is selected and the underlying service is not
-    /// usable, the error must mention "eggsearch" so the user
-    /// can debug.
+    /// M005: isolated explicit context with no installed service, so
+    /// the failure surface is deterministic (no stale-global
+    /// permissiveness needed). No locks, no global reset.
     #[tokio::test]
     async fn web_search_unavailable_returns_actionable_error() {
-        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
-        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
-            .lock()
+        let ctx = crate::search_backend::context::SearchRuntimeContext::new(
+            crate::config::schema::SearchConfig {
+                backend: Some(crate::config::schema::SearchBackendConfig::Eggsearch),
+                ..Default::default()
+            },
+        );
+        let res = ctx
+            .dispatch_web_search(&serde_json::json!({"query": "test"}))
             .await;
-        crate::search_backend::state::reset_for_tests();
-        crate::search_backend::state::install_search_config(crate::config::schema::SearchConfig {
-            backend: Some(crate::config::schema::SearchBackendConfig::Eggsearch),
-            ..Default::default()
-        });
-        let res = super::super::dispatch_web_search(&serde_json::json!({"query": "test"})).await;
         let err = res.expect_err("should be unavailable");
         let msg = err.to_string();
-        // Either: the documented actionable "eggsearch backend is
-        // configured but unavailable" error, or a downstream
-        // "server eggsearch not found" error from a stale
-        // McpService. Both surface actionable information about
-        // eggsearch.
         assert!(
             msg.contains("eggsearch backend is configured but unavailable")
-                || msg.contains("server eggsearch not found")
                 || msg.contains("McpService is not initialized"),
             "expected actionable eggsearch error, got: {msg}"
         );
@@ -1327,24 +1382,21 @@ mod tests {
 
     #[tokio::test]
     async fn ensure_tool_available_returns_ok_during_bootstrap_wouldblock() {
-        use crate::search_backend::state;
-
-        let _cp = crate::search_backend::test_support::acquire_cross_process_lock();
-        let _g = crate::search_backend::test_support::SHARED_TEST_LOCK
-            .lock()
-            .await;
-        state::reset_for_tests();
-
-        // Install an McpService so ensure_tool_available takes the WouldBlock path.
+        // Explicit handle (no globals, no locks): hold a write lock to
+        // simulate bootstrap in progress (WouldBlock).
         let svc = std::sync::Arc::new(tokio::sync::RwLock::new(crate::mcp::McpService::new()));
-        state::install_mcp_service(svc.clone());
 
         // Hold a write lock to simulate bootstrap in progress (WouldBlock).
         let _writer = svc.write().await;
 
         // ensure_tool_available must return Ok(()) when the lock is held,
         // not a WouldBlock error or a "tool missing" error.
-        let result = super::ensure_tool_available("eggsearch", "websearch", "web_search");
+        let result = super::ensure_tool_available_with_service(
+            Some(&svc),
+            "eggsearch",
+            "websearch",
+            "web_search",
+        );
         assert!(
             result.is_ok(),
             "ensure_tool_available should return Ok(()) during bootstrap lock hold, got: {:?}",

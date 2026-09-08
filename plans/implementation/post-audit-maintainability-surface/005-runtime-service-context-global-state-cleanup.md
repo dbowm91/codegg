@@ -1,6 +1,8 @@
 # Post-Audit Maintainability and Surface Milestone 005 — Runtime-Service Context and Mutable-Global Cleanup
 
-Status: ready for handoff
+Status: closed
+
+Closure record: `plans/closure/post-audit-maintainability-surface/005-status.md`
 
 Repository baseline: `15632a0483a8c4b9d573ff2ce43297b29be8f42a`
 

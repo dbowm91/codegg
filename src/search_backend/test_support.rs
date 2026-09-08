@@ -1,12 +1,14 @@
-//! Shared test support for `search_backend` integration tests.
+//! Shared test support for `search_backend` bootstrap compat tests.
 //!
-//! `search_backend::state` holds a process-global `McpService` and
-//! `SearchConfig` slot. Integration tests across multiple test files
-//! (and across multiple test binaries) mutate those slots, so they
-//! must serialize against each other. Each test binary is a separate
+//! M005 migrated execution-path tests to isolated
+//! `SearchRuntimeContext` values, which need no serialization. Only the
+//! bootstrap tests (which assert on the legacy process-global install
+//! slots retained for daemon connection reuse) still mutate global
+//! state. Those tests — across multiple test files and binaries — must
+//! serialize against each other: each test binary is a separate
 //! process, so per-process `tokio::sync::Mutex` instances cannot
 //! protect cross-binary races. This module exposes a process-wide
-//! `flock`-based lock that all integration tests must acquire before
+//! `flock`-based lock that those compat tests must acquire before
 //! touching the global state.
 
 use std::path::PathBuf;

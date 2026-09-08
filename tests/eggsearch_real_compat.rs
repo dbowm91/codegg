@@ -6,8 +6,8 @@
 //! from MCP/request compatibility failures.
 
 use codegg::config::schema::{Config, EggsearchConfig, SearchBackendConfig, SearchConfig};
-use codegg::search_backend::bootstrap::bootstrap_eggsearch;
-use codegg::search_backend::state;
+use codegg::search_backend::bootstrap::bootstrap_search_runtime;
+use codegg::search_backend::SearchRuntimeContext;
 use codegg::tool::batch_fetch::BatchFetchTool;
 use codegg::tool::evidence_bundle::EvidenceBundleTool;
 use codegg::tool::repo_fetch::RepoFetchTool;
@@ -41,8 +41,8 @@ fn smoke_config(binary: String) -> Config {
 async fn current_eggsearch_process_is_compatible_with_all_wrappers() {
     let binary = std::env::var("CODEGG_EGGSEARCH_BIN")
         .expect("set CODEGG_EGGSEARCH_BIN to the exact eggsearch binary under test");
-    state::reset_for_tests();
-    let report = bootstrap_eggsearch(&smoke_config(binary)).await;
+    // M005: explicit runtime context flows into every wrapper under test.
+    let (search_runtime, report) = bootstrap_search_runtime(&smoke_config(binary)).await;
     println!("bootstrap: {:?}", report.summary_lines());
     println!("tool_inventory: {:?}", report.tools);
     assert!(
@@ -52,41 +52,42 @@ async fn current_eggsearch_process_is_compatible_with_all_wrappers() {
     );
     assert_eq!(report.tool_coverage_status(), "complete");
 
+    let ctx = || -> SearchRuntimeContext { search_runtime.clone() };
     let cases: Vec<(Box<dyn Tool>, serde_json::Value)> = vec![
         (
-            Box::new(WebSearchTool::default()),
+            Box::new(WebSearchTool::with_search_runtime(ctx())),
             serde_json::json!({"query": "Rust language"}),
         ),
         (
-            Box::new(WebFetchTool::default()),
+            Box::new(WebFetchTool::default().with_search_runtime(ctx())),
             serde_json::json!({"url": "https://www.rust-lang.org/"}),
         ),
         (
-            Box::new(RepoSearchTool),
+            Box::new(RepoSearchTool::with_search_runtime(ctx())),
             serde_json::json!({"query": "async runtime", "owner": "tokio-rs", "repo": "tokio"}),
         ),
         (
-            Box::new(RepoFetchTool),
+            Box::new(RepoFetchTool::with_search_runtime(ctx())),
             serde_json::json!({"owner": "tokio-rs", "repo": "tokio", "path": "README.md"}),
         ),
         (
-            Box::new(RepoMapTool),
+            Box::new(RepoMapTool::with_search_runtime(ctx())),
             serde_json::json!({"owner": "tokio-rs", "repo": "tokio"}),
         ),
         (
-            Box::new(SecuritySearchTool),
+            Box::new(SecuritySearchTool::with_search_runtime(ctx())),
             serde_json::json!({"query": "CVE-2024-0001"}),
         ),
         (
-            Box::new(ResearchSearchTool),
+            Box::new(ResearchSearchTool::with_search_runtime(ctx())),
             serde_json::json!({"query": "Rust async runtime"}),
         ),
         (
-            Box::new(BatchFetchTool),
+            Box::new(BatchFetchTool::with_search_runtime(ctx())),
             serde_json::json!({"items": [{"type": "web", "url": "https://www.rust-lang.org/"}]}),
         ),
         (
-            Box::new(EvidenceBundleTool),
+            Box::new(EvidenceBundleTool::with_search_runtime(ctx())),
             serde_json::json!({"sources": [{"id": "rust", "url": "https://www.rust-lang.org/", "title": "Rust"}]}),
         ),
     ];

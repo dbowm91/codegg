@@ -107,10 +107,14 @@ impl ExecMode {
 
         let permission_checker = PermissionChecker::new(Some(&config), None).with_exec_mode();
         // Bootstraps the search backend (eggsearch by default) before the agent
-        // loop starts. Idempotent if already bootstrapped.
-        let (mcp_service, _report) =
-            crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-        let tool_registry = crate::tool::ToolRegistry::with_config(&config);
+        // loop starts. Idempotent if already bootstrapped. The explicit
+        // runtime context (M005) flows into the registry so wrappers never
+        // consult the deprecated process-global slots at execution time.
+        let (search_runtime, _report) =
+            crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+        let mcp_service = search_runtime.mcp();
+        let tool_registry =
+            crate::tool::ToolRegistry::with_config_and_search_runtime(&config, search_runtime);
 
         let invocation_session_id = self
             .session_id

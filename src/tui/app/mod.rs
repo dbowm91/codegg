@@ -7520,20 +7520,13 @@ impl App {
             "/tool-backends" | "/tools" | "/backends" => {
                 // Build the report synchronously from the resolved
                 // config. The App doesn't hold a direct reference to
-                // the live `ToolRegistry`, so we rely on the resolved
-                // `Config` plus the eggsearch server name in
-                // `search_backend::state` (if initialized).
+                // the live `ToolRegistry`, so the connectivity half of
+                // the report is unavailable here (shown by `/mcps`).
+                // M005: this diagnostic must not consult the deprecated
+                // search-backend process-global slots.
                 let config = crate::config::schema::Config::load_or_default();
                 let search_cfg = config.search.clone().unwrap_or_default();
-                let mcp_server_names: Option<Vec<String>> =
-                    crate::search_backend::state::mcp_service().map(|_mcp| {
-                        // We don't currently expose the live list of
-                        // server names without an async call, so we
-                        // approximate by checking the resolved
-                        // SearchConfig. The full live list is shown
-                        // by `/mcps`.
-                        Vec::new()
-                    });
+                let mcp_server_names: Option<Vec<String>> = None;
                 let report = crate::tool::backend::build_report(
                     &search_cfg,
                     config.tool_backends.as_ref(),

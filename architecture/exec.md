@@ -196,11 +196,12 @@ maps `AppError` variants to `(code, message)` tuples.
 
 ## Invariants & Gotchas
 
-- **MCP service is bootstrapped**: `bootstrap_search_backend()` is called
+- **MCP service is bootstrapped**: `bootstrap_search_runtime()` is called
   before the agent loop starts. The search backend (eggsearch by default)
-  is available in exec mode.
-- **ToolRegistry uses session config**: `ToolRegistry::with_config(&config)`
-  builds the full tool registry from config.
+  is available in exec mode. The returned explicit `SearchRuntimeContext`
+  flows into the registry, so wrappers never consult process-global slots.
+- **ToolRegistry uses session config**: `ToolRegistry::with_config_and_search_runtime(&config, search_runtime)`
+  builds the full tool registry from config plus the bootstrapped context.
 - **Question channel**: `setup_question_channel_for_exec()` is called,
   enabling question tool handling with a 300-second timeout.
 - **Model parsing**: `parse_model()` splits on `/` — if no `/` is present,

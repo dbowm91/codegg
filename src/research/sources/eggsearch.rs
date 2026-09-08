@@ -15,14 +15,32 @@ use std::future::Future;
 use std::pin::Pin;
 
 /// The sole external search source adapter used by deep research.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct EggsearchSource;
+///
+/// Holds an optional explicit [`SearchRuntimeContext`]. When `Some`
+/// (the production registry path via `ResearchTool::with_search_runtime`),
+/// evidence collection executes against that context and never touches
+/// the deprecated process-global slots. When `None` (legacy direct
+/// construction), collection falls back to the legacy global wrappers
+/// for backward compatibility.
+#[derive(Debug, Default, Clone)]
+pub struct EggsearchSource {
+    runtime: Option<crate::search_backend::SearchRuntimeContext>,
+}
 
 type ResultItem<'a> = (&'a Map<String, Value>, Option<&'a Map<String, Value>>);
 
 impl EggsearchSource {
     pub fn new() -> Self {
-        Self
+        Self { runtime: None }
+    }
+
+    /// Attach an explicit runtime-owned search/MCP context (M005).
+    pub fn with_search_runtime(
+        mut self,
+        runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        self.runtime = Some(runtime);
+        self
     }
 
     fn upstream_workflow(mode: &ResearchMode) -> &'static str {
@@ -286,7 +304,16 @@ impl EggsearchSource {
 
     async fn collect_external(&self, request: &ResearchRequest) -> Result<Vec<SourceRecord>> {
         let input = Self::request_input(request);
-        let result = if request.mode == ResearchMode::SecurityReview {
+        // Explicit runtime context (production registry path) avoids the
+        // deprecated process-global slots entirely. Legacy construction
+        // without a context retains the global-wrapper fallback.
+        let result = if let Some(runtime) = self.runtime.as_ref() {
+            if request.mode == ResearchMode::SecurityReview {
+                runtime.dispatch_security_search_structured(&input).await
+            } else {
+                runtime.dispatch_research_search_structured(&input).await
+            }
+        } else if request.mode == ResearchMode::SecurityReview {
             search_backend::dispatch_security_search_structured(&input).await
         } else {
             search_backend::dispatch_research_search_structured(&input).await

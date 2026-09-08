@@ -274,7 +274,16 @@ impl AgentLoop {
                 context_tracker,
                 progress_recovery: RecoveryController::default(),
                 recovery_parallel_limit: None,
-                mcp_service,
+                mcp_service: mcp_service.clone(),
+                // Explicit search/MCP runtime context (M005): owned
+                // immutable config snapshot plus the daemon-owned shared
+                // MCP handle. Derived from the same inputs, so loop-level
+                // capability gates agree with the tool registry's
+                // per-tool contexts without global lookups.
+                search_runtime: crate::search_backend::SearchRuntimeContext::from_config(
+                    &config.search.clone().unwrap_or_default(),
+                )
+                .with_mcp_opt(mcp_service),
                 tool_def_cache: None,
                 deferred_tool_definitions: Vec::new(),
                 model_router,

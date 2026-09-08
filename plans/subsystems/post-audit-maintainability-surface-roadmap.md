@@ -1,6 +1,10 @@
 # Post-Audit Maintainability and Surface Roadmap
 
-Status: active
+Status: closed
+
+M001–M005 all closed; completion definition (§11) met — see milestone
+status table and `plans/closure/post-audit-maintainability-surface/005-status.md`
+for the final dependency audit.
 
 Long-term references:
 
@@ -314,4 +318,4 @@ This roadmap closes when M001–M005 have accepted closure records and the repos
 | M002 | closed | `plans/implementation/post-audit-maintainability-surface/002-model-visible-tool-surface-minimization.md` | `plans/closure/post-audit-maintainability-surface/002-status.md` | — |
 | M003 | closed | `plans/implementation/post-audit-maintainability-surface/003-agent-runtime-physical-decomposition.md` | `plans/closure/post-audit-maintainability-surface/003-status.md` | — |
 | M004 | closed | `plans/implementation/post-audit-maintainability-surface/004-bash-tool-physical-decomposition.md` | `plans/closure/post-audit-maintainability-surface/004-status.md` | — |
-| M005 | ready | `plans/implementation/post-audit-maintainability-surface/005-runtime-service-context-global-state-cleanup.md` | — | hard on M002 (closed); interface on M003 (closed) |
+| M005 | closed | `plans/implementation/post-audit-maintainability-surface/005-runtime-service-context-global-state-cleanup.md` | `plans/closure/post-audit-maintainability-surface/005-status.md` | — |

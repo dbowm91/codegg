@@ -65,6 +65,22 @@ impl ResearchCoordinator {
         self
     }
 
+    /// Attach an explicit runtime-owned search/MCP context (M005) to the
+    /// eggsearch evidence adapter. The adapter is swapped (matched by its
+    /// stable `"eggsearch"` adapter name) so deep-research evidence
+    /// collection executes against this context instead of the deprecated
+    /// process-global slots. Other adapters are untouched.
+    pub fn with_search_runtime(
+        mut self,
+        runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        self.source_adapters.retain(|a| a.name() != "eggsearch");
+        self.source_adapters.push(Box::new(
+            EggsearchSource::new().with_search_runtime(runtime),
+        ));
+        self
+    }
+
     pub fn store(&self) -> &ResearchStore {
         &self.store
     }

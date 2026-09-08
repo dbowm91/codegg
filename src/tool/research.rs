@@ -65,6 +65,33 @@ impl ResearchTool {
         self
     }
 
+    /// Attach an explicit runtime-owned search/MCP context (M005) to the
+    /// underlying research service's eggsearch evidence adapter.
+    ///
+    /// `ToolRegistry::with_options` always uses this. When the service
+    /// is uniquely owned (the normal registry path) the context is
+    /// installed and evidence collection avoids the deprecated
+    /// process-global slots. If the service handle is shared elsewhere,
+    /// the tool keeps global-fallback behavior and warns rather than
+    /// aliasing another owner's service.
+    pub fn with_search_runtime(
+        mut self,
+        runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        match Arc::try_unwrap(self.service) {
+            Ok(svc) => {
+                self.service = Arc::new(svc.with_search_runtime(runtime));
+            }
+            Err(shared) => {
+                tracing::warn!(
+                    "research tool service is shared; retaining legacy global search fallback"
+                );
+                self.service = shared;
+            }
+        }
+        self
+    }
+
     pub fn set_service(&mut self, service: Arc<ResearchService>) {
         self.service = service;
     }

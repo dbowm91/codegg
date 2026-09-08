@@ -169,7 +169,9 @@ impl AgentLoop {
         use crate::config::schema::SearchBackendConfig;
         use crate::tool::backend::ToolBackendKind;
         if matches!(tool_name, "websearch" | "webfetch") {
-            match crate::search_backend::state::search_config().backend() {
+            // Explicit loop-owned search context (M005): no
+            // process-global lookup at execution time.
+            match self.services.search_runtime.backend() {
                 SearchBackendConfig::Eggsearch => ToolBackendKind::Mcp,
                 SearchBackendConfig::Builtin | SearchBackendConfig::Disabled => {
                     ToolBackendKind::BuiltinLegacy

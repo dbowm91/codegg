@@ -381,7 +381,8 @@ pub struct ToolRegistry {
 | `new()` | Create empty registry |
 | `with_options(ToolRegistryOptions)` | **Authoritative registration sequence** |
 | `with_defaults()` | Thin wrapper: `with_options(ToolRegistryOptions::default())` |
-| `with_config(&Config)` | Resolves backend + integrated config, calls `with_options` |
+| `with_config(&Config)` | Resolves backend + integrated config, calls `with_options` (config-only search context, no MCP handle) |
+| `with_config_and_search_runtime(&Config, SearchRuntimeContext)` | Production startup constructor: threads the bootstrapped search/MCP context into every wrapper |
 | `with_session_config_defaults(Config, state, policy, pool, sid)` | **Production session constructor.** Resolves both configs. |
 | `with_session_defaults(todo_state, policy, pool, session_id)` | Drops loaded `[tool_backends]` — tests only. |
 | `register(&mut self, tool: impl Tool + 'static)` | Register a tool (takes owned value) |
@@ -421,6 +422,7 @@ pub struct ToolRegistryOptions {
     pub asset_snapshot: Option<Arc<ProjectAssetSnapshot>>,
     pub asset_pin: Option<Arc<Mutex<RuntimeAssetPin>>>,
     pub notification_service: Option<Arc<ToolProgramNotificationService>>,
+    pub search_runtime: Option<SearchRuntimeContext>,
 }
 ```
 
@@ -429,6 +431,22 @@ fields are resolved by `integrated_config::resolve_integrated_config()`
 and passed through from `with_config()`, `with_session_config_defaults()`,
 and `build_session_tool_registry()`. `with_defaults()` and
 `with_session_defaults()` pass `None` for these (tests only).
+
+The `search_runtime` field (M005) carries the explicit runtime-owned
+`SearchRuntimeContext` (owned immutable `SearchConfig` snapshot plus
+the shared daemon-owned `McpService` handle). Every search/evidence
+wrapper (`websearch`, `webfetch`, `repo_*`, `security_search`,
+`research_search`, `batch_fetch`, `evidence_bundle`, `codesearch`) is
+constructed with a clone of this context and executes against it;
+no wrapper consults the deprecated `search_backend::state`
+process-global slots at execution time. `with_options` stores the
+context on the registry (`ToolRegistry::search_runtime()`) so
+agent-loop capability gates and MCP exposure policy read the same
+runtime truth. `with_defaults()` falls back to an isolated default
+context (default config, no service). Turn/session construction
+(`build_session_tool_registry`, exec/run startup) threads the
+bootstrapped context via `SessionToolContext::search_runtime` or
+`with_config_and_search_runtime`.
 
 ### Integrated Tool Runtime Config
 

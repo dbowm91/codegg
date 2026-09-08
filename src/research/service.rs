@@ -74,6 +74,18 @@ impl ResearchService {
         }
     }
 
+    /// Attach an explicit runtime-owned search/MCP context (M005),
+    /// forwarding to the eggsearch evidence adapter. Consuming builder:
+    /// `ResearchTool::with_search_runtime` uses this on its uniquely
+    /// owned service so production research runs never consult the
+    /// deprecated process-global slots.
+    pub fn with_search_runtime(self, runtime: crate::search_backend::SearchRuntimeContext) -> Self {
+        Self {
+            coordinator: self.coordinator.with_search_runtime(runtime),
+            artifact_root: self.artifact_root,
+        }
+    }
+
     /// Create a service with explicit artifact root and LLM provider.
     pub fn with_artifact_root_and_provider(
         project_root: PathBuf,

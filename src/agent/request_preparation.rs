@@ -322,7 +322,9 @@ impl AgentLoop {
         // Codegg-managed backends (eggsearch today, future
         // egglsp/eggsentry MCP adapters) are hidden by default while
         // user-configured third-party MCP servers stay visible.
-        let search_cfg = crate::search_backend::state::search_config();
+        // The search config comes from the loop-owned explicit runtime
+        // context (M005), never a process-global slot.
+        let search_cfg = self.services.search_runtime.config().clone();
         let tool_backends = self.services.tool_registry.tool_backends();
         let expose_raw_search = search_cfg.expose_raw_mcp_tools();
         let eggsearch_server = search_cfg
@@ -449,7 +451,7 @@ impl AgentLoop {
         }
 
         let tools = self.services.tool_registry.list();
-        let flags = compute_model_flags(model);
+        let flags = compute_model_flags(model, self.services.search_runtime.backend());
         // Hide tools that the registry marks as non-exposed
         // (e.g. `DisabledTool` stubs) so the model never sees a
         // tool whose every call is a guaranteed failure. This is

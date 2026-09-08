@@ -42,6 +42,11 @@ pub const EGGSEARCH_RECOMMENDED_TOOLS: &[&str] = &[
 /// bootstrapped) is a no-op for state installation. The
 /// `McpService::connect_stdio` step is skipped if a service is
 /// already present.
+///
+/// Legacy compatibility: prefer [`bootstrap_search_runtime`], which
+/// returns an explicit [`super::context::SearchRuntimeContext`] for
+/// tool construction. This function remains for diagnostics and
+/// callers that only need the shared handle plus report.
 pub async fn bootstrap_search_backend(
     config: &Config,
 ) -> (Option<Arc<RwLock<McpService>>>, BootstrapReport) {
@@ -69,6 +74,31 @@ pub async fn bootstrap_search_backend(
     }
     let report = bootstrap_eggsearch(config).await;
     (state::mcp_service(), report)
+}
+
+/// Bootstrap the search backend and return an explicit runtime-owned
+/// [`super::context::SearchRuntimeContext`] plus the diagnostic report
+/// (M005).
+///
+/// Production turn/session construction must use this instead of
+/// `bootstrap_search_backend`: the returned context carries the freshly
+/// resolved `SearchConfig` snapshot for this runtime plus the shared
+/// daemon-owned MCP handle, so wrappers built from it execute without
+/// consulting the deprecated process-global slots.
+///
+/// Connection reuse: the underlying MCP transport is still the one
+/// daemon-owned shared service (installed into the legacy slot by
+/// `bootstrap_search_backend` for reuse across entry points), so this
+/// does not spawn one eggsearch server process per turn. Only the
+/// configuration snapshot is per-runtime; concurrent contexts with
+/// different configs coexist while sharing the transport.
+pub async fn bootstrap_search_runtime(
+    config: &Config,
+) -> (super::context::SearchRuntimeContext, BootstrapReport) {
+    let effective = effective_search_config(config);
+    let (svc_opt, report) = bootstrap_search_backend(config).await;
+    let ctx = super::context::SearchRuntimeContext::from_config(&effective).with_mcp_opt(svc_opt);
+    (ctx, report)
 }
 
 /// Connect eggsearch if it is the configured backend and the user has

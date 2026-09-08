@@ -28,8 +28,12 @@ src/mcp/
 
 1. **Startup**: `bootstrap::bootstrap_eggsearch` creates an `McpService`,
    calls `connect_stdio` (local) or `connect_http` (remote) for each
-   configured server, and stores the service in a process-global slot
-   (`search_backend::state`).
+   configured server, and shares the daemon-owned handle explicitly:
+   production turn/session construction receives it inside
+   `SearchRuntimeContext` via `bootstrap_search_runtime` (M005). The
+   legacy process-global slot (`search_backend::state`) is retained
+   only for cross-entry-point connection reuse, not for execution-time
+   lookup.
 
 2. **Tool discovery**: After connection, `discover_tools()` sends
    `tools/list` over JSON-RPC and collects `McpTool` definitions.

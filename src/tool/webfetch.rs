@@ -26,17 +26,30 @@ const IMAGE_CONTENT_TYPES: &[&str] = &[
 /// built-in as fallback).
 pub struct WebFetchTool {
     timeout: Duration,
+    search_runtime: crate::search_backend::SearchRuntimeContext,
 }
 
 impl WebFetchTool {
     pub fn new() -> Self {
         Self {
             timeout: Duration::from_secs(30),
+            search_runtime: crate::search_backend::SearchRuntimeContext::default(),
         }
     }
 
     pub fn with_timeout(self, timeout: Duration) -> Self {
-        Self { timeout }
+        Self { timeout, ..self }
+    }
+
+    /// Build the tool with an explicit runtime-owned search/MCP context.
+    pub fn with_search_runtime(
+        self,
+        search_runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        Self {
+            search_runtime,
+            ..self
+        }
     }
 
     fn client_for_target(&self, target: &ValidatedUrlTarget) -> Result<reqwest::Client, ToolError> {
@@ -107,7 +120,7 @@ impl Tool for WebFetchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        search_backend::dispatch_web_fetch(&input).await
+        self.search_runtime.dispatch_web_fetch(&input).await
     }
 
     async fn execute_structured(
@@ -116,9 +129,14 @@ impl Tool for WebFetchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let result = search_backend::dispatch_web_fetch_structured(&input).await?;
+        let result = self
+            .search_runtime
+            .dispatch_web_fetch_structured(&input)
+            .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let mut provenance = search_backend::provenance_for_fetch(Some(result.truncated))
+        let mut provenance = self
+            .search_runtime
+            .provenance_for_fetch(Some(result.truncated))
             .unwrap_or_else(|| {
                 use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
                 ToolProvenance {

@@ -215,6 +215,7 @@ pub struct ToolRegistry {
     catalog: catalog::ToolCatalog,
     tool_backends: ToolBackendConfig,
     integrated_config: integrated_config::IntegratedToolRuntimeConfig,
+    search_runtime: crate::search_backend::SearchRuntimeContext,
 }
 
 impl Default for ToolRegistry {
@@ -302,6 +303,13 @@ pub struct ToolRegistryOptions {
     /// Optional notification service for background tool program completions.
     pub notification_service:
         Option<Arc<crate::scheduler::tool_program_notifications::ToolProgramNotificationService>>,
+    /// Explicit runtime-owned search/MCP services for search/evidence
+    /// wrapper tools (M005). When `None`, wrappers receive an isolated
+    /// default context (default config, no shared service). Production
+    /// turn/session construction must pass the bootstrapped context so
+    /// tools never consult the deprecated process-global slots at
+    /// execution time.
+    pub search_runtime: Option<crate::search_backend::SearchRuntimeContext>,
 }
 
 impl ToolRegistry {
@@ -311,6 +319,7 @@ impl ToolRegistry {
             catalog: catalog::ToolCatalog::new(),
             tool_backends: ToolBackendConfig::default(),
             integrated_config: integrated_config::IntegratedToolRuntimeConfig::default(),
+            search_runtime: crate::search_backend::SearchRuntimeContext::default(),
         }
     }
 
@@ -321,6 +330,10 @@ impl ToolRegistry {
     pub fn with_options(options: ToolRegistryOptions) -> Self {
         let mut registry = Self::new();
         let workspace_root = options.workspace_root.clone();
+        // Explicit runtime-owned search/MCP services (M005). Every
+        // search/evidence wrapper below receives a clone of this
+        // context; none consults the deprecated process-global slots.
+        let search_runtime = options.search_runtime.clone().unwrap_or_default();
 
         // --- File-system / shell tools (always native) ---
         let bash_tool = if let Some(ref store) = options.run_store {
@@ -383,8 +396,13 @@ impl ToolRegistry {
             None => crate::tool::list::ListTool::default(),
         });
         registry.register(crate::tool::task::TaskTool::default());
-        registry.register(crate::tool::webfetch::WebFetchTool::default());
-        registry.register(crate::tool::websearch::WebSearchTool::default());
+        registry.register(
+            crate::tool::webfetch::WebFetchTool::default()
+                .with_search_runtime(search_runtime.clone()),
+        );
+        registry.register(crate::tool::websearch::WebSearchTool::with_search_runtime(
+            search_runtime.clone(),
+        ));
         let research_tool = options
             .workspace_root
             .as_ref()
@@ -392,8 +410,12 @@ impl ToolRegistry {
                 crate::tool::research::ResearchTool::new(std::sync::Arc::new(
                     crate::research::service::ResearchService::new(root.clone()),
                 ))
+                .with_search_runtime(search_runtime.clone())
             })
-            .unwrap_or_else(crate::tool::research::ResearchTool::with_default_service);
+            .unwrap_or_else(|| {
+                crate::tool::research::ResearchTool::with_default_service()
+                    .with_search_runtime(search_runtime.clone())
+            });
         registry.register(research_tool);
 
         // Evidence/search wrapper tools — only register when evidence backend
@@ -403,13 +425,37 @@ impl ToolRegistry {
         let evidence_enabled = evidence_cfg.map_or(true, |c| c.enabled);
         let evidence_is_eggsearch = evidence_cfg.map_or(true, |c| c.backend == "eggsearch");
         if evidence_enabled && evidence_is_eggsearch {
-            registry.register(crate::tool::repo_search::RepoSearchTool);
-            registry.register(crate::tool::repo_fetch::RepoFetchTool);
-            registry.register(crate::tool::security_search::SecuritySearchTool);
-            registry.register(crate::tool::research_search::ResearchSearchTool);
-            registry.register(crate::tool::repo_map::RepoMapTool);
-            registry.register(crate::tool::batch_fetch::BatchFetchTool);
-            registry.register(crate::tool::evidence_bundle::EvidenceBundleTool);
+            registry.register(
+                crate::tool::repo_search::RepoSearchTool::with_search_runtime(
+                    search_runtime.clone(),
+                ),
+            );
+            registry.register(crate::tool::repo_fetch::RepoFetchTool::with_search_runtime(
+                search_runtime.clone(),
+            ));
+            registry.register(
+                crate::tool::security_search::SecuritySearchTool::with_search_runtime(
+                    search_runtime.clone(),
+                ),
+            );
+            registry.register(
+                crate::tool::research_search::ResearchSearchTool::with_search_runtime(
+                    search_runtime.clone(),
+                ),
+            );
+            registry.register(crate::tool::repo_map::RepoMapTool::with_search_runtime(
+                search_runtime.clone(),
+            ));
+            registry.register(
+                crate::tool::batch_fetch::BatchFetchTool::with_search_runtime(
+                    search_runtime.clone(),
+                ),
+            );
+            registry.register(
+                crate::tool::evidence_bundle::EvidenceBundleTool::with_search_runtime(
+                    search_runtime.clone(),
+                ),
+            );
         } else {
             tracing::info!(
                 evidence_enabled,
@@ -418,7 +464,9 @@ impl ToolRegistry {
             );
         }
         registry.register(crate::tool::image::ImageTool::default());
-        registry.register(crate::tool::codesearch::CodeSearchTool);
+        registry.register(
+            crate::tool::codesearch::CodeSearchTool::with_search_runtime(search_runtime.clone()),
+        );
         registry.register(crate::tool::question::QuestionTool);
 
         // --- Todo tools (policy + persistence gated) ---
@@ -705,6 +753,7 @@ impl ToolRegistry {
             deterministic: options.deterministic_config,
             preflight: options.preflight_config,
         };
+        registry.search_runtime = search_runtime;
 
         // --- Context read tool (artifact expansion) ---
         if options.context_read_enabled {
@@ -736,6 +785,35 @@ impl ToolRegistry {
             deterministic_config: integrated.deterministic,
             preflight_config: integrated.preflight,
             command_intent: config.command_intent.clone(),
+            search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
+                &config.search.clone().unwrap_or_default(),
+            )),
+            ..ToolRegistryOptions::default()
+        })
+    }
+
+    /// Build a registry from a loaded `Config` plus an already
+    /// bootstrapped search/MCP runtime context (M005).
+    ///
+    /// This is the constructor production startup paths (exec, run,
+    /// doctor-adjacent flows) must use after
+    /// `bootstrap_search_runtime`: the wrappers receive the live
+    /// daemon-owned MCP handle instead of a disconnected default
+    /// context. `with_config` remains for config-only/test callers.
+    pub fn with_config_and_search_runtime(
+        config: &crate::config::schema::Config,
+        search_runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        let tool_backends = ToolBackendConfig::from_config(config);
+        let integrated = integrated_config::resolve_integrated_config(config);
+        Self::with_options(ToolRegistryOptions {
+            tool_backends,
+            lsp_cache_config: convert_lsp_cache_config(&config.lsp_semantic_cache),
+            evidence_config: integrated.evidence,
+            deterministic_config: integrated.deterministic,
+            preflight_config: integrated.preflight,
+            command_intent: config.command_intent.clone(),
+            search_runtime: Some(search_runtime),
             ..ToolRegistryOptions::default()
         })
     }
@@ -851,6 +929,9 @@ impl ToolRegistry {
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,
+            search_runtime: Some(crate::search_backend::SearchRuntimeContext::from_config(
+                &config.search.clone().unwrap_or_default(),
+            )),
         })
     }
 
@@ -891,6 +972,7 @@ impl ToolRegistry {
             asset_snapshot: None,
             asset_pin: None,
             notification_service: None,
+            search_runtime: None,
         })
     }
 
@@ -911,6 +993,14 @@ impl ToolRegistry {
     /// preflight) captured at construction. Used by diagnostics.
     pub fn integrated_config(&self) -> &integrated_config::IntegratedToolRuntimeConfig {
         &self.integrated_config
+    }
+
+    /// Explicit runtime-owned search/MCP context captured at
+    /// construction (M005). Agent-loop code that needs the resolved
+    /// search backend (capability gates, MCP exposure policy) reads
+    /// this instead of the deprecated process-global slots.
+    pub fn search_runtime(&self) -> &crate::search_backend::SearchRuntimeContext {
+        &self.search_runtime
     }
 
     /// Whether a tool with the given name is currently registered.

@@ -6,7 +6,22 @@ use crate::error::ToolError;
 use crate::search_backend;
 use crate::tool::{StructuredToolResult, Tool, ToolCategory, ToolExecutionContext};
 
-pub struct ResearchSearchTool;
+#[derive(Default)]
+pub struct ResearchSearchTool {
+    search_runtime: crate::search_backend::SearchRuntimeContext,
+}
+
+impl ResearchSearchTool {
+    /// Build the tool with an explicit runtime-owned search/MCP context.
+    /// Registries constructed via `ToolRegistry::with_options` always use
+    /// this; `Default` yields an isolated default context with no shared
+    /// service (eggsearch calls report unavailable, never a global slot).
+    pub fn with_search_runtime(
+        search_runtime: crate::search_backend::SearchRuntimeContext,
+    ) -> Self {
+        Self { search_runtime }
+    }
+}
 
 #[async_trait]
 impl Tool for ResearchSearchTool {
@@ -59,7 +74,7 @@ impl Tool for ResearchSearchTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<String, ToolError> {
-        search_backend::dispatch_research_search(&input).await
+        self.search_runtime.dispatch_research_search(&input).await
     }
 
     async fn execute_structured(
@@ -68,9 +83,14 @@ impl Tool for ResearchSearchTool {
         _ctx: Option<ToolExecutionContext>,
     ) -> Result<StructuredToolResult, ToolError> {
         let start = Instant::now();
-        let result = search_backend::dispatch_research_search_structured(&input).await?;
+        let result = self
+            .search_runtime
+            .dispatch_research_search_structured(&input)
+            .await?;
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        let mut provenance = search_backend::provenance_for_research_search(Some(result.truncated))
+        let mut provenance = self
+            .search_runtime
+            .provenance_for_research_search(Some(result.truncated))
             .unwrap_or_else(|| {
                 use crate::tool::{ToolBackendKind, ToolProvenance, ToolTrust};
                 ToolProvenance {

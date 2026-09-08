@@ -1,17 +1,29 @@
-//! Global state shared between the search/fetch wrapper tools and the
-//! agent loop's MCP plumbing.
+//! Legacy process-global search/MCP slots (deprecated compatibility).
 //!
-//! The websearch/webfetch tools are registered in
-//! `ToolRegistry::with_defaults()` early in the process, before the
-//! `McpService` exists. They therefore read their backing service and
-//! the resolved `SearchConfig` from shared slots that are populated at
-//! startup time (after the config has been loaded and any required
-//! MCP servers have been bootstrapped).
+//! The websearch/webfetch tools historically read their backing service
+//! and the resolved `SearchConfig` from these shared slots because
+//! `ToolRegistry::with_defaults()` constructed the wrappers before the
+//! `McpService` existed.
 //!
-//! This is intentionally global so we do not have to thread an
-//! `Arc<...>` through every layer of the tool registry's `Box<dyn Tool>`
-//! storage. The values are read-only after startup; tests can
-//! override the config explicitly.
+//! M005 introduced [`super::context::SearchRuntimeContext`]: an explicit
+//! runtime-owned context holding an owned immutable `SearchConfig`
+//! snapshot plus the shared daemon-owned `McpService` handle. Production
+//! tool execution must use that context (threaded through
+//! `ToolRegistryOptions::search_runtime`) and never query these slots at
+//! execution time.
+//!
+//! These slots are retained only for:
+//!
+//! - bootstrap connection reuse: `bootstrap_search_backend` installs the
+//!   connected service here so a second bootstrap call from another
+//!   process entry point reuses one daemon eggsearch connection instead
+//!   of spawning a second server process;
+//! - the legacy global `dispatch_*`/`provenance_for_*` wrappers, which
+//!   snapshot (never mutate) the slots for backward-compatible callers;
+//! - tests that explicitly exercise the legacy global path.
+//!
+//! Do not add new production readers. New code takes a
+//! `SearchRuntimeContext`.
 
 use std::sync::Arc;
 use std::sync::RwLock as StdRwLock;
@@ -24,9 +36,11 @@ use crate::mcp::McpService;
 static MCP_SERVICE: StdRwLock<Option<Arc<RwLock<McpService>>>> = StdRwLock::new(None);
 static SEARCH_CONFIG: StdRwLock<Option<SearchConfig>> = StdRwLock::new(None);
 
-/// Install the process-wide `McpService` reference. Called once at
-/// startup after the service is constructed and eggsearch is
-/// bootstrapped.
+/// Install the process-wide `McpService` reference.
+///
+/// Deprecated compatibility: only `bootstrap` (daemon connection reuse)
+/// and `SearchRuntimeContext::install_as_global_compat` may call this.
+/// Production tool execution uses the explicit runtime context instead.
 pub fn install_mcp_service(svc: Arc<RwLock<McpService>>) {
     let mut guard = MCP_SERVICE
         .write()
@@ -35,6 +49,10 @@ pub fn install_mcp_service(svc: Arc<RwLock<McpService>>) {
 }
 
 /// Returns the installed `McpService`, if any.
+///
+/// Deprecated compatibility: only legacy global dispatch wrappers,
+/// bootstrap reuse checks, and diagnostics may call this. Production
+/// tool execution uses `SearchRuntimeContext::mcp()` instead.
 pub fn mcp_service() -> Option<Arc<RwLock<McpService>>> {
     MCP_SERVICE
         .read()
@@ -43,8 +61,12 @@ pub fn mcp_service() -> Option<Arc<RwLock<McpService>>> {
 }
 
 /// Install the resolved `SearchConfig`. Idempotent: subsequent calls
-/// overwrite the previous value (the production startup path calls
-/// this exactly once, but tests may override).
+/// overwrite the previous value.
+///
+/// Deprecated compatibility: only `bootstrap` and
+/// `SearchRuntimeContext::install_as_global_compat` may call this.
+/// Production tool execution uses the owned snapshot in
+/// `SearchRuntimeContext::config()` instead.
 pub fn install_search_config(cfg: SearchConfig) {
     let mut guard = SEARCH_CONFIG
         .write()
@@ -54,6 +76,10 @@ pub fn install_search_config(cfg: SearchConfig) {
 
 /// Returns the resolved `SearchConfig`, or a default if none has been
 /// installed (e.g. in unit tests that never called bootstrap).
+///
+/// Deprecated compatibility: only legacy global dispatch wrappers and
+/// tests exercising the legacy path may call this. Production tool
+/// execution uses `SearchRuntimeContext::config()` instead.
 pub fn search_config() -> SearchConfig {
     SEARCH_CONFIG
         .read()

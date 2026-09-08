@@ -49,6 +49,11 @@ pub(super) struct AgentLoopServices {
     pub(super) progress_recovery: RecoveryController,
     pub(super) recovery_parallel_limit: Option<usize>,
     pub(super) mcp_service: Option<Arc<RwLock<crate::mcp::McpService>>>,
+    /// Explicit runtime-owned search/MCP context (M005), derived at
+    /// loop construction from the loop's `Config` plus its daemon-owned
+    /// MCP handle. Capability gates and MCP exposure policy read this
+    /// instead of the deprecated process-global slots.
+    pub(super) search_runtime: crate::search_backend::SearchRuntimeContext,
     pub(super) tool_def_cache: Option<ToolDefCache>,
     pub(super) deferred_tool_definitions: Vec<ToolDefinition>,
     pub(super) model_router: ModelRouter,

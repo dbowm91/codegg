@@ -272,7 +272,10 @@ pub(super) fn filter_tools_for_model<'a>(
         .collect()
 }
 
-pub(super) fn compute_model_flags(model: Option<&String>) -> ModelFlags {
+pub(super) fn compute_model_flags(
+    model: Option<&String>,
+    search_backend: crate::config::schema::SearchBackendConfig,
+) -> ModelFlags {
     let model_id = model.map(|s| s.to_lowercase()).unwrap_or_default();
     let is_gpt = model_id.contains("gpt");
     let is_non_oss =
@@ -281,8 +284,10 @@ pub(super) fn compute_model_flags(model: Option<&String>) -> ModelFlags {
     // The backend owns provider availability and credentials. Keep the
     // model catalog independent of provider-specific environment variables;
     // execution reports an actionable eggsearch/bootstrap error instead.
+    // The backend comes from the loop-owned explicit search context
+    // (M005), never a process-global slot.
     let search_provider_available = !matches!(
-        crate::search_backend::state::search_config().backend(),
+        search_backend,
         crate::config::schema::SearchBackendConfig::Disabled
     );
     ModelFlags {

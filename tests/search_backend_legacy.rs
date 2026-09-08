@@ -9,22 +9,17 @@
 //! These tests exercise the *search* legacy path. The webfetch legacy
 //! path requires a real network round-trip and is left to manual
 //! smoke tests; we assert the dispatch wiring here.
+//!
+//! M005: each test builds an isolated `SearchRuntimeContext` (owned
+//! config snapshot + fresh mock service). No process-global
+//! install/reset and no serialization locks are needed.
 
 use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig};
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
-use codegg::search_backend::state;
-use codegg::search_backend::test_support::{
-    acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
-};
+use codegg::search_backend::SearchRuntimeContext;
 use std::sync::Arc;
-use tokio::sync::{Mutex, MutexGuard};
-
-async fn lock() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
-    let cp = acquire_cross_process_lock();
-    let g = SHARED_TEST_LOCK.lock().await;
-    (cp, g)
-}
+use tokio::sync::Mutex;
 
 fn builtin_config() -> SearchConfig {
     SearchConfig {
@@ -48,8 +43,6 @@ fn eggsearch_config_with_fallback() -> SearchConfig {
 /// the *assertion* is that the MCP service is untouched.
 #[tokio::test]
 async fn builtin_backend_does_not_touch_mcp_service() {
-    state::reset_for_tests();
-    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
     let recorded = Arc::clone(&calls);
@@ -69,13 +62,14 @@ async fn builtin_backend_does_not_touch_mcp_service() {
         }),
     );
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    state::install_mcp_service(svc);
-    state::install_search_config(builtin_config());
+    let ctx = SearchRuntimeContext::new(builtin_config()).with_mcp(svc);
 
     // The legacy path will likely error out (no API keys in test
     // env) but that is fine for this test. We only assert that the
     // MCP service was not consulted.
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({"query": "x"})).await;
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({"query": "x"}))
+        .await;
     let recorded = calls.lock().await;
     assert!(
         recorded.is_empty(),
@@ -95,8 +89,6 @@ async fn builtin_backend_does_not_touch_mcp_service() {
 /// unavailable" message.
 #[tokio::test]
 async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
-    state::reset_for_tests();
-    let (_cp, _g) = lock().await;
     let calls = Arc::new(Mutex::new(Vec::<(String, serde_json::Value)>::new()));
     let mut svc = McpService::new();
     let recorded = Arc::clone(&calls);
@@ -116,10 +108,11 @@ async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
         }),
     );
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    state::install_mcp_service(svc);
-    state::install_search_config(eggsearch_config_with_fallback());
+    let ctx = SearchRuntimeContext::new(eggsearch_config_with_fallback()).with_mcp(svc);
 
-    let res = codegg::search_backend::dispatch_web_search(&serde_json::json!({"query": "x"})).await;
+    let res = ctx
+        .dispatch_web_search(&serde_json::json!({"query": "x"}))
+        .await;
     // Either Ok(legacy output) or Err(legacy error) is acceptable.
     // The forbidden outcome is the "eggsearch backend is configured
     // but unavailable" message.
@@ -137,21 +130,21 @@ async fn fallback_to_builtin_avoids_eggsearch_unavailable_error() {
 /// return the clear eggsearch-unavailable error.
 #[tokio::test]
 async fn no_fallback_surfaces_eggsearch_error() {
-    state::reset_for_tests();
-    let (_cp, _g) = lock().await;
     let svc = McpService::new();
-    // No eggsearch server registered -> the service is installed
+    // No eggsearch server registered -> the context holds a service
     // but call_tool for "eggsearch" will fail with "server not found".
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    state::install_mcp_service(svc);
-    state::install_search_config(SearchConfig {
+    let ctx = SearchRuntimeContext::new(SearchConfig {
         backend: Some(SearchBackendConfig::Eggsearch),
         fallback_to_builtin: Some(false),
         eggsearch: Some(EggsearchConfig::default()),
         ..Default::default()
-    });
+    })
+    .with_mcp(svc);
 
-    let res = codegg::search_backend::dispatch_web_search(&serde_json::json!({"query": "x"})).await;
+    let res = ctx
+        .dispatch_web_search(&serde_json::json!({"query": "x"}))
+        .await;
     // The exact error depends on the install path, but it MUST
     // mention eggsearch so the user knows what is going wrong.
     let err = res.expect_err("should error when eggsearch is unavailable");
@@ -167,7 +160,6 @@ async fn no_fallback_surfaces_eggsearch_error() {
 /// and does not require the network.
 #[test]
 fn legacy_format_hits_includes_header_and_url() {
-    state::reset_for_tests();
     use codegg::search::SearchHit;
     use codegg::search_backend::legacy::format_hits;
 

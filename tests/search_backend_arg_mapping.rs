@@ -17,14 +17,12 @@
 //! - `webfetch` always sends `extract_mode = "text"` and
 //!   `include_links = false` to keep output bounded.
 //!
-//! ## Test isolation
+//! ## Test isolation (M005)
 //!
-//! `search_backend::state` is a process-global slot, so the tests in
-//! this file must be serialized against any other test that touches
-//! the same global. We hold the lock for the entire body of each
-//! `#[tokio::test]` (including the `.await` on `dispatch_*`) so a
-//! concurrent test from another binary cannot reset the state between
-//! our install and our assertions.
+//! Each test builds its own explicit `SearchRuntimeContext` holding an
+//! owned config snapshot plus a fresh mock `McpService`. No
+//! process-global install/reset and no cross-test serialization locks
+//! are needed; contexts coexist without cross-talk.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -33,11 +31,7 @@ use codegg::config::schema::{EggsearchConfig, SearchBackendConfig, SearchConfig}
 use codegg::error::McpError;
 use codegg::mcp::{McpService, McpTool};
 use codegg::search_backend::framing;
-use codegg::search_backend::state;
-use codegg::search_backend::test_support::{
-    acquire_cross_process_lock, CrossProcessLockGuard, SHARED_TEST_LOCK,
-};
-use tokio::sync::MutexGuard;
+use codegg::search_backend::SearchRuntimeContext;
 
 fn eggsearch_config() -> SearchConfig {
     SearchConfig {
@@ -84,7 +78,10 @@ fn clamp_output_truncates_long_input() {
 
 // ---- Argument-mapping tests (with mock MCP) ----
 
-fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
+type RecordedCalls = Arc<Mutex<Vec<(String, serde_json::Value)>>>;
+
+#[allow(clippy::type_complexity)]
+fn mock_context() -> (SearchRuntimeContext, RecordedCalls) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let mut svc = McpService::new();
     let recorded = Arc::clone(&calls);
@@ -116,28 +113,20 @@ fn install_mock_recorder() -> Arc<Mutex<Vec<(String, serde_json::Value)>>> {
         }),
     );
     let svc = Arc::new(tokio::sync::RwLock::new(svc));
-    state::install_mcp_service(svc);
-    state::install_search_config(eggsearch_config());
-    calls
-}
-
-async fn lock_tests() -> (CrossProcessLockGuard, MutexGuard<'static, ()>) {
-    let cp = acquire_cross_process_lock();
-    let g = SHARED_TEST_LOCK.lock().await;
-    (cp, g)
+    let ctx = SearchRuntimeContext::new(eggsearch_config()).with_mcp(svc);
+    (ctx, calls)
 }
 
 #[tokio::test]
 async fn num_results_maps_to_max_results() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
-        "query": "x",
-        "num_results": 12,
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "num_results": 12,
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
@@ -147,15 +136,14 @@ async fn num_results_maps_to_max_results() {
 
 #[tokio::test]
 async fn max_results_alias_is_accepted() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
-        "query": "x",
-        "max_results": 7,
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "max_results": 7,
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().expect("at least one call");
     assert_eq!(tool, "web_search");
@@ -164,15 +152,14 @@ async fn max_results_alias_is_accepted() {
 
 #[tokio::test]
 async fn num_results_is_capped_at_30() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
-        "query": "x",
-        "num_results": 5000,
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "num_results": 5000,
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["max_results"], 30);
@@ -180,15 +167,14 @@ async fn num_results_is_capped_at_30() {
 
 #[tokio::test]
 async fn provider_pinned_to_specific_backend() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
-        "query": "x",
-        "provider": "arxiv",
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "provider": "arxiv",
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     let providers = args["providers"].as_array().expect("providers array");
@@ -198,15 +184,14 @@ async fn provider_pinned_to_specific_backend() {
 
 #[tokio::test]
 async fn provider_unknown_does_not_emit_providers_field() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_search(&serde_json::json!({
-        "query": "x",
-        "provider": "unknown_backend",
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_search(&serde_json::json!({
+            "query": "x",
+            "provider": "unknown_backend",
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     if let Some(providers) = args.get("providers") {
@@ -219,15 +204,14 @@ async fn provider_unknown_does_not_emit_providers_field() {
 
 #[tokio::test]
 async fn webfetch_max_length_maps_to_max_chars() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
-        "url": "https://example.com",
-        "max_length": 4000,
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_fetch(&serde_json::json!({
+            "url": "https://example.com",
+            "max_length": 4000,
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (tool, args) = rec.last().unwrap();
     assert_eq!(tool, "web_fetch");
@@ -239,14 +223,13 @@ async fn webfetch_max_length_maps_to_max_chars() {
 
 #[tokio::test]
 async fn webfetch_default_extract_mode_is_text() {
-    let (_cp, _g) = lock_tests().await;
-    state::reset_for_tests();
-    let calls = install_mock_recorder();
-    let _ = codegg::search_backend::dispatch_web_fetch(&serde_json::json!({
-        "url": "https://example.com",
-    }))
-    .await
-    .unwrap();
+    let (ctx, calls) = mock_context();
+    let _ = ctx
+        .dispatch_web_fetch(&serde_json::json!({
+            "url": "https://example.com",
+        }))
+        .await
+        .unwrap();
     let rec = calls.lock().expect("calls poisoned");
     let (_, args) = rec.last().unwrap();
     assert_eq!(args["extract_mode"], "text");

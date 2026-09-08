@@ -1125,6 +1125,17 @@ async fn execute_agent_task(
         .ok_or_else(|| format!("Provider '{}' not found", provider_name))?
         .clone_box();
 
+    // Bootstraps the search backend (eggsearch by default) before the
+    // agent loop starts, returning an explicit runtime context (M005).
+    // The bootstrap is idempotent: if the parent process has already
+    // populated the shared daemon `McpService`, this reuses the
+    // existing service without spawning a new eggsearch connection. If
+    // the backend is `disabled`, the context carries no service and
+    // the loop runs without MCP tools. Wrappers below receive this
+    // context explicitly and never consult process-global slots.
+    let (search_runtime, _report) =
+        crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+
     let mut tool_registry = ToolRegistry::with_options(crate::tool::ToolRegistryOptions {
         workspace_root: request.workspace_root.clone(),
         command_intent: config.command_intent.clone(),
@@ -1134,6 +1145,7 @@ async fn execute_agent_task(
             .map(|_| crate::tool::git::ChildGitPolicy::LocalCommitOnly),
         tool_backends: crate::tool::ToolBackendConfig::from_config(&config),
         lsp_cache_config: crate::tool::convert_lsp_cache_config(&config.lsp_semantic_cache),
+        search_runtime: Some(search_runtime.clone()),
         ..Default::default()
     });
     // Subagents must NEVER have access to in-flight planning tools
@@ -1315,16 +1327,10 @@ async fn execute_agent_task(
     let permission_checker =
         PermissionChecker::new(Some(&config), None).with_agent_rules(agent_rules);
 
-    // Bootstraps the search backend (eggsearch by default) before the agent
-    // loop starts. The bootstrap is idempotent: if the parent process has
-    // already populated the global `McpService` slot, this returns the
-    // existing service without spawning a new eggsearch connection. If the
-    // subagent is spawned in a context where no parent has bootstrapped,
-    // this gives the subagent a chance to set up its own service. If the
-    // backend is `disabled`, this returns `None` and the loop runs without
-    // MCP tools.
-    let (mcp_service, _report) =
-        crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+    // The subagent loop receives the MCP handle from the explicit
+    // runtime context bootstrapped above (no second bootstrap, no
+    // global lookup at execution time).
+    let mcp_service = search_runtime.mcp();
 
     let subagent_session_id = request
         .parent_id

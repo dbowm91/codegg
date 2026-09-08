@@ -251,6 +251,14 @@ impl TurnRuntime for DefaultTurnRuntime {
         let model_profile = resolved_adapter.profile.clone();
         let task_state_policy = model_profile.task_state_policy.clone();
 
+        // ── Search backend bootstrap ─────────────────────────────
+        // M005: bootstrap BEFORE the tool registry so wrappers are
+        // constructed with the explicit runtime context (owned config
+        // snapshot + shared daemon MCP handle) and never consult the
+        // deprecated process-global slots at execution time.
+        let (search_runtime, _search_report) =
+            crate::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+
         // ── Tool registry ────────────────────────────────────────────
         let task_tool_runtime = subagent_pool
             .as_ref()
@@ -278,6 +286,7 @@ impl TurnRuntime for DefaultTurnRuntime {
                     snapshot: asset_snapshot.clone(),
                     pin: asset_pin.clone(),
                 },
+                search_runtime: Some(search_runtime.clone()),
             },
         );
 
@@ -571,9 +580,10 @@ impl TurnRuntime for DefaultTurnRuntime {
         );
         let system = compiled_prompt.text.clone();
 
-        // ── Search backend bootstrap ─────────────────────────────────
-        let (configured_mcp_service, _report) =
-            crate::search_backend::bootstrap::bootstrap_search_backend(&config).await;
+        // ── Search backend handle for the agent loop ───────────────
+        // Reuse the MCP handle from the explicit runtime context
+        // bootstrapped above (no second bootstrap, no global lookup).
+        let configured_mcp_service = search_runtime.mcp();
         let mcp_service = if let Some(global_mcp) = configured_mcp_service {
             let configured = global_mcp.read().await.clone_configured_servers();
             Some(Arc::new(tokio::sync::RwLock::new(configured)))

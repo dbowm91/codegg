@@ -1395,10 +1395,14 @@ async fn run_single_shot(prompt: &str, cli: &Cli) -> Result<(), AppError> {
     let permission_checker =
         codegg::permission::PermissionChecker::new(Some(&config), None).with_active_mode(&config);
     // Bootstraps the search backend (eggsearch by default) before the agent
-    // loop starts. Idempotent if already bootstrapped.
-    let (mcp_service, _report) =
-        codegg::search_backend::bootstrap::bootstrap_search_backend(&config).await;
-    let tool_registry = codegg::tool::ToolRegistry::with_config(&config);
+    // loop starts. Idempotent if already bootstrapped. The explicit
+    // runtime context (M005) flows into the registry so wrappers never
+    // consult the deprecated process-global slots at execution time.
+    let (search_runtime, _report) =
+        codegg::search_backend::bootstrap::bootstrap_search_runtime(&config).await;
+    let mcp_service = search_runtime.mcp();
+    let tool_registry =
+        codegg::tool::ToolRegistry::with_config_and_search_runtime(&config, search_runtime);
     let mut available_tools: Vec<String> = tool_registry
         .list()
         .iter()

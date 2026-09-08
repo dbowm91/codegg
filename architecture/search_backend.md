@@ -24,37 +24,85 @@ collect external evidence.
 
 ```
 src/search_backend/
-├── mod.rs           # Public dispatch_* entry points, StructuredSearchResult
-├── state.rs         # Process-global McpService + SearchConfig slots
+├── mod.rs           # SearchRuntimeContext methods (canonical) + legacy global wrappers
+├── context.rs       # Explicit runtime-owned SearchRuntimeContext (M005)
+├── state.rs         # Deprecated process-global slots (bootstrap reuse + legacy compat only)
 ├── bootstrap.rs     # Connect eggsearch at startup; emit BootstrapReport
-├── eggsearch.rs     # Adapter: native args → eggsearch MCP args
+├── eggsearch.rs     # Adapter: native args → eggsearch MCP args (explicit McpHandle)
 ├── legacy.rs        # Adapter: native args → in-tree SearchProviderRegistry
 ├── framing.rs       # external_untrusted framing + clamp_output
-└── test_support.rs  # Cross-process flock for test isolation
+└── test_support.rs  # Cross-process flock (bootstrap compat tests only)
 ```
 
 ## How It Works
 
-### State Management (`state.rs`)
+### Runtime Context (`context.rs`) — canonical (M005)
 
-Two process-global slots backed by `std::sync::RwLock<Option<...>>`:
+`SearchRuntimeContext` is the explicit runtime-owned carrier for search
+execution. It holds an owned immutable `SearchConfig` snapshot plus the
+shared daemon-owned `McpService` handle (`Option<Arc<RwLock<McpService>>>`):
+
+- constructed after config/MCP bootstrap via
+  `bootstrap_search_runtime()`, or via `SearchRuntimeContext::new/disabled`
+  for tests and bootstrap-free paths;
+- threaded through `ToolRegistryOptions::search_runtime` into every
+  search/evidence wrapper and stored on the registry
+  (`ToolRegistry::search_runtime()`);
+- cloned by `Arc` only for the actually shared MCP transport; dropping
+  one context never tears down the shared service;
+- immutable after construction — no install/reset API, so runtime
+  restart reconstructs from config/bootstrap and no stale value leaks;
+- `Debug` redacts `[search.eggsearch.env]` values (keys only), and the
+  context is never serialized wholesale.
+
+The `dispatch_*`/`provenance_for_*` methods on the context are the
+single canonical execution path. Two independently constructed contexts
+with different configs coexist in one process without cross-talk
+(proven by `tests/search_runtime_isolation.rs`).
+
+Ownership split: the `SearchConfig` snapshot is per-runtime (each turn
+may resolve its own), while the MCP transport remains the one
+daemon-owned shared service reused across entry points (so bootstrap
+does not spawn one eggsearch server process per turn). Concurrent tool
+calls share the daemon service's existing synchronization; no extra
+global lookup lock is taken per call.
+
+### Legacy State (`state.rs`) — deprecated compatibility
+
+Two process-global slots backed by `std::sync::RwLock<Option<...>>`
+remain for narrow compatibility only:
 
 ```rust
 static MCP_SERVICE: StdRwLock<Option<Arc<RwLock<McpService>>>> = ...;
 static SEARCH_CONFIG: StdRwLock<Option<SearchConfig>> = ...;
 ```
 
-- `install_mcp_service(svc)` / `mcp_service()` — the shared MCP service
-- `install_search_config(cfg)` / `search_config()` — the resolved config
-- `reset_for_tests()` — clears both slots (test-only)
+- `install_mcp_service(svc)` / `mcp_service()` — daemon connection
+  reuse across process entry points (bootstrap only);
+- `install_search_config(cfg)` / `search_config()` — legacy global
+  dispatch wrappers snapshot (never mutate) these;
+- `reset_for_tests()` — bootstrap compat tests only.
 
-Slots are populated once at startup. Production code treats them as
-immutable after bootstrap. Tests can override them between cases.
+Production tool execution must not call these. New code takes a
+`SearchRuntimeContext`. The free `dispatch_*`/`provenance_for_*`
+functions in `mod.rs` are thin legacy wrappers over a global snapshot
+for backward-compatible callers (deep-research fallback, diagnostics);
+`SearchRuntimeContext::install_as_global_compat` is the only sanctioned
+writer besides bootstrap.
 
 ### Bootstrap (`bootstrap.rs`)
 
-`bootstrap_search_backend(config)` is called from `main.rs`,
-`tui/mod.rs`, `exec.rs`, and `core/daemon.rs`. It:
+`bootstrap_search_runtime(config)` is the production entry point,
+called from turn construction (`agent/turn_runtime.rs`), subagent spawn
+(`agent/worker.rs`), `exec.rs`, and single-shot `main.rs` flows. It
+resolves the effective config, reuses/establishes the shared daemon MCP
+transport via `bootstrap_search_backend`, and returns an explicit
+`(SearchRuntimeContext, BootstrapReport)` — the context flows into tool
+registry construction so no wrapper reads globals at execution time.
+
+`bootstrap_search_backend(config)` (legacy, retained for diagnostics and
+connection reuse) is called from `main.rs` doctor, `tui` diagnostics,
+and `core/daemon.rs` paths. It:
 
 1. Returns the existing service if already installed (idempotent).
 2. Calls `bootstrap_eggsearch(config)` which:
@@ -257,7 +305,8 @@ Defaults: `backend = "eggsearch"`, `server_name = "eggsearch"`,
   expanded wrappers (`repo_search`, etc.) require `backend = "eggsearch"`
   and return an error otherwise.
 - **Reentrant bootstrap is safe** — `bootstrap_search_backend` checks
-  `state::mcp_service().is_some()` before re-connecting.
+  the installed service before re-connecting, so one daemon eggsearch
+  connection is shared instead of spawned per turn.
 - **Output caps are byte-based** — `clamp_output` operates on byte
   length. UTF-8 boundary issues are vanishingly rare for ASCII-heavy
   web output.
@@ -330,7 +379,13 @@ CODEGG_EGGSEARCH_BIN=/path/to/eggsearch \
 ```
 
 `fake_eggsearch_mcp` exercises the full dispatch path using an in-
-process mock `McpService` via `register_mock_server`.
+process mock `McpService` via `register_mock_server`, with each test
+owning an explicit `SearchRuntimeContext` (no globals, no locks).
+`tests/search_runtime_isolation.rs` proves two differently configured
+contexts/registries coexist concurrently without cross-talk, disabled
+stays disabled, and reconstruction leaks no stale config. The
+cross-process flock in `test_support.rs` is retained only for the
+bootstrap compat tests that still assert on the legacy install slots.
 
 ## Related Docs
 
