@@ -249,6 +249,21 @@ impl JobSubmissionService {
         } else {
             None
         };
+        // Re-validate the retry index under the creation lock. Concurrent
+        // submissions with the same key all miss the unlocked checks above
+        // and serialize here; without this second check each waiter would
+        // create its own durable job. See DVR M010.
+        if let (Some(key_ref), Some(idempotency)) = (key.as_ref(), idempotency.as_mut()) {
+            if let Some(existing) = idempotency.get(key_ref).cloned() {
+                if existing.fingerprint != fingerprint {
+                    return Err(JobSubmissionError::SubmissionKeyConflict);
+                }
+                if let Some(job) = self.store.get_job(&existing.job_id).await? {
+                    return Ok(to_submitted(&job));
+                }
+                idempotency.remove(key_ref);
+            }
+        }
         let job = self.store.create_job_with_labels(spec, labels).await?;
         crate::test_failpoint::hit("tool_program_after_job_persist");
         if let Err(error) = self.scheduler.enqueue_existing(job.clone()).await {
