@@ -40,6 +40,9 @@ a.out
 **/*.rs.bak
 **/debug/
 **/release/
+# Manual release tooling (M001) lives here; keep it tracked.
+!scripts/release/
+!scripts/release/**
 **/build/
 dist/
 

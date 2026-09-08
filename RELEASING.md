@@ -352,30 +352,122 @@ git tag -a v<VERSION> -m "Release v<VERSION>"
 git push origin v<VERSION>
 ```
 
-To create a GitHub Release with pre-built binaries:
+#### Canonical prebuilt-artifact contract (M001)
 
-```bash
-gh release create v<VERSION> \
-  --title "Release v<VERSION>" \
-  --generate-notes \
-  release/codegg-* \
-  release/checksums.txt
+A GitHub release tagged `v<VERSION>` that claims installer support MUST
+carry exactly these stable asset names (version identity comes from the
+tag, never the filename):
+
+```text
+release/
+  codegg-x86_64-unknown-linux-gnu.tar.gz
+  codegg-aarch64-unknown-linux-gnu.tar.gz
+  codegg-x86_64-apple-darwin.tar.gz
+  codegg-aarch64-apple-darwin.tar.gz
+  checksums.txt
 ```
 
-Build targets (one binary per target, hosted release remains optional):
+Each `codegg-<target>.tar.gz` contains exactly one top-level regular
+executable named `codegg` (mode 755). No `target/`, `.git`, configs,
+databases, credentials, planning files, logs, or other source-tree content
+may be included. `checksums.txt` holds one `<sha256>  <basename>` line per
+archive, sorted by basename, generated from the exact files that will be
+uploaded (compatible with `sha256sum -c`).
+
+`x86_64-pc-windows-msvc` (`codegg-x86_64-pc-windows-msvc.tar.gz`) remains
+optional best-effort when a Windows build is available. It is hashed and
+listed explicitly when present but is never required for release-set
+completeness and is not consumed by the Linux/macOS installer path.
 
 The current release artifact is the single `codegg` executable for each target;
 there are no separately packaged daemon and TUI binaries. This matches the
 measured no-split topology decision and preserves the user-scoped singleton
 daemon discovery contract.
 
+#### Manual build → package → validate → upload order
+
+Building remains ordinary Cargo/toolchain work on appropriate hosts. The
+helpers in `scripts/release/` never build; they package already-built
+binaries. There is no GitHub Actions release job and no release automation.
+
 ```bash
-cargo build --release --target aarch64-apple-darwin
-cargo build --release --target x86_64-apple-darwin
+# 1. Choose the version and verify a clean mainline.
+git switch main
+git pull --ff-only
+git status --short
+scripts/verify.sh quick
+
+# 2. Build each required target on an appropriate host/toolchain.
 cargo build --release --target x86_64-unknown-linux-gnu
 cargo build --release --target aarch64-unknown-linux-gnu
-cargo build --release --target x86_64-pc-windows-msvc
+cargo build --release --target x86_64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
+# Optional best-effort only:
+# cargo build --release --target x86_64-pc-windows-msvc
+
+# 3. Run the native version smoke for each built binary on its build host.
+target/release/codegg --version
+target/x86_64-unknown-linux-gnu/release/codegg --version
+# ... repeat per target on the host that built it.
+
+# 4. Package each binary with an explicit target label (never guessed).
+scripts/release/package-binary.sh \
+  --target x86_64-unknown-linux-gnu \
+  --binary target/x86_64-unknown-linux-gnu/release/codegg \
+  --out-dir release
+scripts/release/package-binary.sh \
+  --target aarch64-unknown-linux-gnu \
+  --binary target/aarch64-unknown-linux-gnu/release/codegg \
+  --out-dir release
+scripts/release/package-binary.sh \
+  --target x86_64-apple-darwin \
+  --binary target/x86_64-apple-darwin/release/codegg \
+  --out-dir release
+scripts/release/package-binary.sh \
+  --target aarch64-apple-darwin \
+  --binary target/aarch64-apple-darwin/release/codegg \
+  --out-dir release
+
+# 5. Generate the deterministic checksum manifest, then validate the set.
+scripts/release/finalize-release.sh --dir release
+scripts/release/verify-release.sh --dir release
+
+# 6. Confirm the release directory holds only the intended assets.
+ls -la release
+
+# 7. Create the tag/release manually and upload exactly the validated assets.
+git tag -a v<VERSION> -m "Release v<VERSION>"
+git push origin v<VERSION>
+gh release create v<VERSION> \
+  --title "Release v<VERSION>" \
+  --generate-notes \
+  release/codegg-x86_64-unknown-linux-gnu.tar.gz \
+  release/codegg-aarch64-unknown-linux-gnu.tar.gz \
+  release/codegg-x86_64-apple-darwin.tar.gz \
+  release/codegg-aarch64-apple-darwin.tar.gz \
+  release/checksums.txt
 ```
+
+Do not use a `release/codegg-*` wildcard for upload: it can sweep stray or
+partial files into the release. Upload exactly the five validated paths
+above (plus the optional Windows archive only when it was explicitly
+packaged, finalized, and verified).
+
+Per-host testing may use the explicit relaxation (final releases must not):
+
+```bash
+scripts/release/verify-release.sh --dir /tmp/codegg-release-test --allow-incomplete-target-set
+```
+
+Release-tool tests (offline, fixture-based, no network):
+
+```bash
+scripts/release/test-release-tools.sh
+```
+
+Historical GitHub releases that lack these assets/checksums need not be
+repackaged, but they must not be advertised as installer-compatible. The
+M002 installer consumes only releases satisfying this contract.
 
 ### Step 10 — Installation verification
 
