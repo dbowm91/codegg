@@ -21,8 +21,10 @@ addition to `spawn`, it accepts `status` (`get` is retained), `message`,
 `interrupt`, `wait`, and `cancel`. These operations address a typed durable
 run ID, enforce owner/ancestor lineage, and use bounded payloads. `wait` is a
 bounded long-poll; a timeout reports that the run is still active and does
-not consume scheduler capacity indefinitely. Run control is distinct from
-the file-backed team inbox and is never general project chat.
+not consume scheduler capacity indefinitely. Run control is the only agent
+coordination authority (the legacy file-backed `src/agent/team.rs` inbox was
+removed by the residual-runtime-consolidation M001 retirement) and is never
+general project chat.
 
 For concurrent work, `spawn_many` and run-group actions provide bounded fan-out
 and deterministic joins. New callers should prefer typed `AgentRunId` values,

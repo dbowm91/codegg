@@ -39,7 +39,7 @@ Launch subagents for each batch of related architecture files. Each subagent:
 | 5 | session.md, storage.md, snapshot.md, git.md, worktree.md | Persistence layer |
 | 6 | mcp.md, lsp.md, plugin.md, hooks.md | External integrations |
 | 7 | tui.md, tool.md, skills.md | TUI, tools, skills |
-| 8 | bus.md, memory.md, shell_session.md, tts.md, upgrade.md, util.md, crypto.md, ide.md | Remaining modules |
+| 8 | bus.md, memory.md, tts.md, upgrade.md, util.md, crypto.md, ide.md | Remaining modules |
 
 ### Phase 2: Consolidation
 

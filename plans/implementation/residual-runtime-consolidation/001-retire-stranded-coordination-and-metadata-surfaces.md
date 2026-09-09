@@ -1,6 +1,6 @@
 # Residual Runtime Consolidation Milestone 001 — Retire Stranded Coordination and Metadata Surfaces
 
-Status: ready for handoff
+Status: implemented (closed via `plans/closure/residual-runtime-consolidation/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

@@ -76,7 +76,7 @@ These modules remain in root `src/` due to high coupling with UI/server/agent:
 | Module | Reason |
 |--------|--------|
 | `acp` | agent communication protocol |
-| `agent` | AgentLoop, compaction, routing, team |
+| `agent` | AgentLoop, compaction, routing, durable run control |
 | `tool` | all built-in tools |
 | `permission` | access control, modes |
 | `mcp` | Model Context Protocol client |
@@ -106,7 +106,6 @@ These modules remain in root `src/` due to high coupling with UI/server/agent:
 | `ide` | IDE integration |
 | `lsp` | Language Server Protocol |
 | `security` | SSRF, sandboxing |
-| `shell_session` | shell session metadata |
 | `skills` | skill loading and activation |
 | `command` | slash command registry |
 | `exec` | non-interactive exec mode |

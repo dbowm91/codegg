@@ -87,8 +87,8 @@ ephemeral PTY-backed process group on the node that owns the workspace.
 Attach/detach/resume protocol (M002) and TUI views (M003) consume handles;
 they never reinterpret a `Session` id as a terminal, and terminating a
 process never closes a conversation. The legacy metadata-only
-`src/shell_session/` store is not an execution owner (its final
-disposition belongs to the residual-runtime-consolidation roadmap); the
+`src/shell_session/` store was never an execution owner and was removed by
+the residual-runtime-consolidation M001 retirement; the
 one-shot deferred `terminal` model tool kept its historic name for
 stored-run/permission history compatibility and was re-described in M003
 as one-shot non-interactive execution with `bash` canonical and human

@@ -130,7 +130,7 @@ The agent layer owns the core execution cycle: receiving user input, routing thr
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| Agent | Main agent loop, compaction, routing, team coordination, multi-agent orchestration | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs`, `team.rs` | [agent.md](agent.md) |
+| Agent | Main agent loop, compaction, routing, durable delegated-run orchestration | `loop.rs`, `worker.rs`, `compaction.rs`, `router.rs`, `run_control.rs` | [agent.md](agent.md) |
 | AssetContext / Snapshot / Refresh | Explicit context, immutable snapshot builder, generation coordinator, bounded operator refresh, turn/agent-run pinning, lazy resource handles, and inert remote manifest DTOs (Runtime Assets Milestones 2–4) | `asset_context.rs`, `instructions.rs`, `asset_snapshot.rs`, `asset_snapshot_builder.rs`, `asset_refresh.rs`, `skills/resource.rs`, `codegg-protocol/src/runtime_assets.rs` | [agent.md](agent.md) |
 | ACP | Agent Client Protocol v1 stdio adapter — presentation layer over the singleton daemon, JSON-RPC framing, projection event translation | `acp.rs` | [acp.md](acp.md) |
 | Command Intent | Command intent classification, risk assessment, execution capability model — pipeline stage 1 | `mod.rs`, `shell_shape.rs`, `plan.rs` | [command_intent.md](command_intent.md) |
@@ -166,7 +166,6 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Command | Slash command registry (108 built-in commands) from markdown files | `tui/command.rs` | [command.md](command.md) |
 | Theme | Frontend-neutral theme system (SemanticTheme → ratatui, Halloy) | `theme/` | [theme.md](theme.md) |
 | Shell | Human shell `!`/`!!` commands, projection pipeline (10 phases), safety policy, RTK integration, redaction | `shell/` | [human_shell.md](human_shell.md) |
-| Shell Session | Shell session metadata (no PTY) | `shell_session/` | [shell_session.md](shell_session.md) |
 
 ### Core Layer — Daemon and Transport
 
@@ -368,7 +367,7 @@ The `JobScheduler` is the single daemon admission authority for submitted work. 
 Deep-dive index. Every architecture document in this directory is listed here.
 
 ### Agent and Execution
-- [Agent Loop](agent.md) — Main execution cycle, compaction, routing, multi-agent teams
+- [Agent Loop](agent.md) — Main execution cycle, compaction, routing, durable delegated runs
 - [ACP](acp.md) — Agent Client Protocol v1 stdio adapter
 - [Command Intent](command_intent.md) — Command classification, risk assessment, execution capabilities
 - [Command Planner](command_planner.md) — Backend mapping, permission generation, projection policy
@@ -396,7 +395,6 @@ Deep-dive index. Every architecture document in this directory is listed here.
 - [Command](command.md) — 108 built-in slash commands
 - [Theme](theme.md) — Frontend-neutral theme system
 - [Human Shell](human_shell.md) — `!`/`!!` commands, 10-phase projection pipeline
-- [Shell Session](shell_session.md) — Shell session metadata
 
 ### Core and Infrastructure
 - [Core](core.md) — Daemon lifecycle, transport adapters, request routing
@@ -458,7 +456,7 @@ Deep-dive index. Every architecture document in this directory is listed here.
 ```
 codegg/
 ├── src/                        # Root crate (application)
-│   ├── agent/                  # Agent loop, compaction, routing, teams
+│   ├── agent/                  # Agent loop, compaction, routing, run control
 │   ├── auth/                   # Authentication, crypto
 │   ├── bin/                    # Auxiliary binaries (sandbox helper)
 │   ├── client/                 # Remote TUI WebSocket client
@@ -482,7 +480,6 @@ codegg/
 │   ├── security/               # SSRF, sandboxing
 │   ├── server/                 # HTTP/WebSocket server (feature-gated)
 │   ├── shell/                  # Human shell, projection pipeline
-│   ├── shell_session/          # Shell session metadata
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system

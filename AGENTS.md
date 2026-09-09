@@ -408,7 +408,6 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 | `planning` | plans/ roadmaps, ADRs, closure records, registry maintenance | `overview.md` + `plans/` |
 | `scheduler` | Admission control, fair queue, executors, submission boundary | `scheduler.md` |
 | `server` | HTTP/WebSocket server, routes, auth, rate limits | `server.md` |
-| `shell_session` | Legacy in-memory shell session metadata (no consumers) | `shell_session.md` |
 | `skills` | Skill discovery/activation, `AssetRegistry` | `skills.md` |
 | `tool-program-harness` | Tool Program evaluation harness (scripted/native/eggpool/acp) | `tool_programs.md` |
 | `tui` | TUI change patterns: commands, dispatch, async guard, dialogs | `tui.md` |

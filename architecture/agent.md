@@ -49,8 +49,6 @@ asset management.
 | `src/agent/specialized_runtime.rs` | Host-owned finalization for security-review and research runtimes |
 | `src/agent/progress_recovery.rs` | `AutonomyState`, `RecoveryController` — bounded structured recovery |
 | `src/agent/mention.rs` | `@mention` parsing and agent filtering |
-| `src/agent/team.rs` | `Team`, `TeamMessage`, `AgentRole` — file-based multi-agent coordination |
-| `src/agent/teams.rs` | `TeamManager`, `SharedTaskList`, team tools |
 | `src/agent/builtins/generated.rs` | Auto-generated built-in agent definitions (do not edit) |
 
 ## How It Works

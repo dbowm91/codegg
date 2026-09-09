@@ -129,6 +129,6 @@ This roadmap closes when M001-M003 have accepted closure records, obsolete paral
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | — | — |
+| M001 | closed | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | `plans/closure/residual-runtime-consolidation/001-status.md` | — |
 | M002 | ready | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | — | — |
 | M003 | blocked | `plans/implementation/residual-runtime-consolidation/003-core-daemon-construction-lifecycle-decomposition.md` | — | M002 hard dependency |

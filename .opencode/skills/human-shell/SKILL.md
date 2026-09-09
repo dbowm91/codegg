@@ -122,5 +122,4 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 ## Relationship to Other Modules
 
 - **tool::bash** — Agent bash tool uses `ShellOrigin::AgentTool`; separate from human shell
-- **shell_session** — Metadata-only module for terminal sessions (no PTY, no execution)
 - **tui** — Renders `MsgPart::ShellCell`, handles `/shell-*` commands via `TuiCommand` variants

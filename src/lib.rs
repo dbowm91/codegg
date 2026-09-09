@@ -57,7 +57,6 @@ pub mod search;
 pub mod search_backend;
 pub mod security;
 pub mod shell;
-pub mod shell_session;
 pub mod skills;
 pub(crate) mod test_failpoint;
 pub mod test_runner;
