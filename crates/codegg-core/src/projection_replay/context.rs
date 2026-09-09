@@ -349,6 +349,32 @@ impl ProjectionAccessContext {
         }
     }
 
+    /// Construct a context from a canonical transport-bound principal string.
+    ///
+    /// M002 convergence seam: the caller passes the transport-derived
+    /// principal string (canonical [`crate::identity::PrincipalId`] for team
+    /// principals, `"local-user"` for `LocalOwner`). The legacy
+    /// `"authenticated-remote"` synthetic MUST NOT be produced through this
+    /// path; it remains only as a compatibility value for historical
+    /// contexts built via [`Self::with_projects`].
+    pub fn from_canonical_principal(
+        principal: impl Into<String>,
+        client_id: impl Into<String>,
+        correlation_id: impl Into<String>,
+        capabilities: ProjectionCapabilitySet,
+        resolver: Arc<dyn ProjectionProjectResolver>,
+        transport_class: ProjectionTransportClass,
+    ) -> Self {
+        Self {
+            principal_id: ProjectionPrincipalId::new(principal),
+            client_id: ProjectionClientId::new(client_id),
+            capabilities,
+            project_resolver: resolver,
+            transport_class,
+            request_correlation_id: correlation_id.into(),
+        }
+    }
+
     pub fn has(&self, cap: ProjectionCapability) -> bool {
         // Admin bypass is only honored on the internal test transport.
         if cap.is_internal_only() && self.transport_class != ProjectionTransportClass::InternalTest

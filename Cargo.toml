@@ -208,6 +208,11 @@ name = "projection_transport_real"
 path = "tests/projection_transport_real.rs"
 required-features = ["server"]
 
+[[test]]
+name = "identity_m002_transport_auth"
+path = "tests/identity_m002_transport_auth.rs"
+required-features = ["server"]
+
 [profile.release]
 lto = true
 strip = true

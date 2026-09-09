@@ -175,6 +175,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 51 {
         migrate_and_record(pool, 51).await?;
     }
+    if current_version < 52 {
+        migrate_and_record(pool, 52).await?;
+    }
 
     Ok(())
 }
@@ -238,6 +241,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             49 => migrate_v49(&mut tx).await?,
             50 => migrate_v50(&mut tx).await?,
             51 => migrate_v51(&mut tx).await?,
+            52 => migrate_v52(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2223,6 +2227,41 @@ async fn migrate_v51(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "CREATE INDEX IF NOT EXISTS idx_principal_status ON principal(status)",
         "CREATE INDEX IF NOT EXISTS idx_project_membership_principal ON project_membership(principal_id)",
         "CREATE INDEX IF NOT EXISTS idx_project_membership_state ON project_membership(state)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Identity, authorization, and audit M002: durable personal-token records.
+///
+/// Stores SHA-256 digests, owner, expiry, and revocation — never plaintext.
+/// Revocation is monotonic (`revoked_at` is set once via `COALESCE`) and
+/// restart-safe. Personal tokens authenticate distinct team principals on
+/// network transports; the legacy global bearer remains a bootstrap-only
+/// seam owned outside this table.
+async fn migrate_v52(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS personal_auth_token (
+            token_id TEXT PRIMARY KEY,
+            principal_id TEXT NOT NULL,
+            token_digest TEXT NOT NULL,
+            token_prefix TEXT NOT NULL,
+            label TEXT NOT NULL,
+            auth_method TEXT NOT NULL CHECK (auth_method IN ('personal_token')),
+            transport_class TEXT NOT NULL CHECK (transport_class IN ('authenticated_remote')),
+            time_created INTEGER NOT NULL,
+            expires_at INTEGER,
+            revoked_at INTEGER
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_personal_auth_token_principal ON personal_auth_token(principal_id)",
+        "CREATE INDEX IF NOT EXISTS idx_personal_auth_token_revoked ON personal_auth_token(revoked_at)",
+        "CREATE INDEX IF NOT EXISTS idx_personal_auth_token_expires ON personal_auth_token(expires_at)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

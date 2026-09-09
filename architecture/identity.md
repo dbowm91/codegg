@@ -1,5 +1,11 @@
 # Typed Domain Identity Foundation
 
+Personal-local operation has no login ceremony: trusted local transports
+resolve the deterministic `LocalOwner` principal without interactive
+authentication. Network team listeners fail closed and require a verified
+personal token (or, temporarily, the bootstrap global bearer mapped to
+`LocalOwner`).
+
 `codegg-core::identity` owns the path-independent identity primitives used by
 later project, repository, provider, agent, channel, audit, and distributed
 execution work.
@@ -121,9 +127,48 @@ canonical principal/project-membership domain. Schema migration v51 creates
   is a one-way diagnostic adapter and `is_compatibility_projection` marks
   the synthetic values.
 
-This milestone claims no transport authentication and no request-time
-authorization. The future transport contract (M002) is: authentication
-adapters resolve transport evidence to a canonical `PrincipalId`, the daemon
-transport constructs an immutable request authority context from that
-principal, and request DTOs remain locators that never supply principals,
-roles, or capabilities.
+This milestone claims no request-time
+authorization. Transport authentication is owned by M002
+(`codegg_core::transport_auth`, migration v52 `personal_auth_token`,
+`AuthenticatedPrincipal`/`RequestAuthorityContext`, `ClientRegistry`
+principal binding, HTTP/WS personal-token verification, local-socket
+`LocalOwner` binding, and the bootstrap-only disposition of the legacy
+global bearer).
+
+## Transport authentication and principal binding (M002)
+
+`codegg_core::transport_auth` resolves every accepted connection to a
+canonical principal from trusted transport evidence and carries that
+immutable principal through client/request context. Personal-local startup
+remains login-free.
+
+- Principals: `AuthenticatedPrincipal` (canonical `PrincipalId` + kind +
+  `AuthMethod` + `TransportClass` + owning `client_id`) and
+  `RequestAuthorityContext` (principal + correlation). Both are immutable
+  after construction; payload DTOs remain locators and never supply
+  principals, roles, or capabilities.
+- Methods: `local_owner` (trusted Unix-socket/stdio/inproc, no login),
+  `personal_token` (verified network token → distinct team principal),
+  `bootstrap_global_bearer` (legacy shared secret → `LocalOwner` compat
+  only), `internal_test` (harness only).
+- Tokens: `PersonalTokenStore::create_personal_token` returns the
+  one-time `cggt_<token_id>.<secret>` plaintext plus a durable record;
+  only the SHA-256 digest, owner, expiry, and revocation persist (migration
+  v52 `personal_auth_token`; `STORAGE_LAYOUT_VERSION` is 52). Verification
+  is constant-time, transactional, and restart-safe; revoked/expired or
+  disabled-principal tokens fail new authentication immediately.
+- Binding: `ClientRegistry::register_with_principal` /
+  `set_principal` (immutable once bound) + `principal_for`;
+  `CoreDaemon::request_authority_for_client` /
+  `projection_access_for_client` resolve the bound principal or fall back
+  to `LocalOwner` for in-process/stdio/legacy callers. Projection contexts
+  use `from_canonical_principal` with the bound principal string
+  (`LocalOwner` → `"local-user"`, others → canonical id); the legacy
+  `"authenticated-remote"` synthetic is never produced on this path.
+- Compatibility: the global bearer is bootstrap-only and maps to
+  `LocalOwner`. Removal condition: delete `server.token` /
+  `CODEGG_SERVER_TOKEN` once every operator holds a personal token.
+- Trust limits: the Unix-socket file lives in the user-scoped runtime
+  directory; per-connection `SO_PEERCRED` UID validation is future
+  hardening and is explicitly not claimed. Authentication (who) stays
+  separate from M003 authorization (may do what).

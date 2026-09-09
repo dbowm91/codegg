@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 
+pub use codegg_core::transport_auth::AuthenticatedPrincipal;
+
 #[derive(Debug, Clone)]
 pub struct ConnectedClient {
     pub client_id: String,
@@ -8,6 +10,10 @@ pub struct ConnectedClient {
     pub connected_at: DateTime<Utc>,
     pub attached_sessions: Vec<String>,
     pub capabilities: Option<crate::protocol::frames::ClientCapabilities>,
+    /// Transport-bound canonical principal. Set once at handshake from
+    /// trusted transport evidence; never derived from a request payload.
+    /// `None` only for legacy registration paths that have not yet bound.
+    pub principal: Option<AuthenticatedPrincipal>,
 }
 
 pub struct ClientRegistry {
@@ -41,8 +47,64 @@ impl ClientRegistry {
                 connected_at: Utc::now(),
                 attached_sessions: Vec::new(),
                 capabilities,
+                principal: None,
             },
         );
+    }
+
+    /// Register a connection with its transport-bound canonical principal.
+    /// The principal is immutable for the connection; see [`Self::set_principal`].
+    pub fn register_with_principal(
+        &self,
+        client_id: String,
+        client_name: String,
+        capabilities: Option<crate::protocol::frames::ClientCapabilities>,
+        principal: AuthenticatedPrincipal,
+    ) {
+        self.clients.insert(
+            client_id.clone(),
+            ConnectedClient {
+                client_id,
+                client_name,
+                connected_at: Utc::now(),
+                attached_sessions: Vec::new(),
+                capabilities,
+                principal: Some(principal),
+            },
+        );
+    }
+
+    /// Bind a principal to an already-registered connection. The binding is
+    /// immutable: when a different principal is already bound the call fails
+    /// closed (`false`) and keeps the original. Binding the same principal
+    /// id is idempotent (`true`). Binding when no principal is bound yet
+    /// installs it and returns `true`. Returns `false` when the client is
+    /// unknown.
+    pub fn set_principal(&self, client_id: &str, principal: AuthenticatedPrincipal) -> bool {
+        if let Some(mut client) = self.clients.get_mut(client_id) {
+            match &client.principal {
+                None => {
+                    client.principal = Some(principal);
+                    true
+                }
+                Some(existing)
+                    if existing.principal_id() == principal.principal_id()
+                        && existing.auth_method() == principal.auth_method() =>
+                {
+                    true
+                }
+                Some(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Clone the bound principal for a connection, if any.
+    pub fn principal_for(&self, client_id: &str) -> Option<AuthenticatedPrincipal> {
+        self.clients
+            .get(client_id)
+            .and_then(|client| client.principal.clone())
     }
 
     pub fn unregister(&self, client_id: &str) {
@@ -168,5 +230,42 @@ mod tests {
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].client_id, "client-codegg-1");
         assert_eq!(clients[0].client_name, "codegg-tui");
+    }
+
+    #[test]
+    fn principal_binding_is_immutable_for_connection() {
+        let reg = ClientRegistry::new();
+        reg.register("c1".to_string(), "test".to_string(), None);
+        assert!(reg.principal_for("c1").is_none());
+
+        let local = AuthenticatedPrincipal::local_owner("c1");
+        assert!(reg.set_principal("c1", local.clone()));
+        assert_eq!(reg.principal_for("c1").as_ref(), Some(&local));
+
+        // Rebinding the same principal is idempotent.
+        assert!(reg.set_principal("c1", local.clone()));
+
+        // A different principal cannot hijack the connection.
+        let other = AuthenticatedPrincipal::bootstrap_global_bearer("c1");
+        // Same LocalOwner id but different auth method is still a distinct
+        // binding attempt; it must fail closed.
+        assert!(!reg.set_principal("c1", other));
+        assert_eq!(reg.principal_for("c1").as_ref(), Some(&local));
+
+        // Unknown clients cannot be bound.
+        assert!(!reg.set_principal("missing", AuthenticatedPrincipal::local_owner("missing")));
+    }
+
+    #[test]
+    fn register_with_principal_carries_transport_identity() {
+        let reg = ClientRegistry::new();
+        let principal = AuthenticatedPrincipal::local_owner("c2");
+        reg.register_with_principal(
+            "c2".to_string(),
+            "local-tui".to_string(),
+            None,
+            principal.clone(),
+        );
+        assert_eq!(reg.principal_for("c2").as_ref(), Some(&principal));
     }
 }

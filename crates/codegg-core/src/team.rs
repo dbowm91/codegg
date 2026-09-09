@@ -27,17 +27,17 @@
 //!   `no_secret_material` test asserts the serialized shape stays free of
 //!   secret-bearing field names.
 //!
-//! ## Future transport contract (M002, documented here, not implemented)
+//! ## Transport contract (M002, implemented in `crate::transport_auth`)
 //!
-//! M002 authentication adapters will resolve transport evidence to a canonical
+//! M002 authentication adapters resolve transport evidence to a canonical
 //! [`PrincipalId`] plus authentication context and carry that immutable
 //! principal through client/request context. Request DTOs remain locators and
 //! MUST NOT name a principal, role, or capability. The daemon transport
 //! constructs the request authority context; [`CapabilitySet`] values defined
 //! here are the data that the M003 authorization service will evaluate. The
-//! existing global bearer token and projection synthetic principal strings
-//! remain compatibility projections until M002/M003; see
-//! [`adapt_principal_to_projection_id`] and [`is_compatibility_projection`].
+//! legacy global bearer remains a bootstrap/compatibility seam owned by the
+//! transport layer (maps to `LocalOwner`, never to distinct identities); see
+//! [`crate::transport_auth`] and [`adapt_principal_to_projection_id`].
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

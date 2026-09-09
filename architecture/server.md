@@ -39,11 +39,21 @@ core that defeats the singleton invariant.
 
 ### Middleware Stack (outermost first)
 
-1. **Auth** (`middleware/auth.rs`) — Bearer token from `Authorization`
-   header. Resolution: `CODEGG_SERVER_TOKEN` env → `server.token` config.
-   When no token resolves and auth is not explicitly disabled, **requests
-   are rejected** (fail-closed). Set `CODEGG_SERVER_AUTH_DISABLED=1` to
-   bypass.
+1. **Auth** (`middleware/auth.rs`, M002) — Every accepted connection
+   resolves to a canonical principal from trusted transport evidence.
+   Personal tokens (`cggt_<token_id>.<secret>`) verify against the
+   `personal_auth_token` digest store and bind distinct team principals as
+   `AuthenticatedRemote`. The legacy global bearer (`CODEGG_SERVER_TOKEN`
+   env → `server.token` config) remains only as bootstrap/compatibility:
+   it binds `LocalOwner` via `bootstrap_global_bearer` and MUST NOT
+   masquerade as distinct identities. Removal condition: once every
+   operator holds a personal token, delete the shared secret and require
+   personal tokens. When no credential resolves and auth is not explicitly
+   disabled, **requests are rejected** (fail-closed: 503 when nothing is
+   configured, 401 for wrong/unknown/revoked/expired). Set
+   `CODEGG_SERVER_AUTH_DISABLED=1` to bypass (binds `LocalOwner` for
+   diagnostics; still carries an explicit principal). Secrets never enter
+   logs/events; only token kind is logged via `redact_presented_token`.
 
 2. **Rate Limit** — 100 requests / 60s window per IP. Returns 429 with
    `Retry-After` and `X-RateLimit-*` headers. Key map capped at 10,000
@@ -223,8 +233,26 @@ origins = ["http://localhost:3000"]
 
 | Variable | Purpose |
 |----------|---------|
-| `CODEGG_SERVER_TOKEN` | Auth token (overrides config) |
-| `CODEGG_SERVER_AUTH_DISABLED` | Disable auth entirely |
+| `CODEGG_SERVER_TOKEN` | Legacy bootstrap bearer (overrides config). Compatibility only; maps to `LocalOwner`. |
+| `CODEGG_SERVER_AUTH_DISABLED` | Disable auth entirely (binds `LocalOwner` for diagnostics). |
+
+### Operator auth setup (M002)
+
+Personal-local needs no login: start the daemon normally and trusted local
+transports resolve `LocalOwner` automatically. Team remote access uses
+personal tokens:
+
+1. Create one principal per human via `TeamStore::create_principal`
+   (daemon-owned API; no request payload can self-grant).
+2. Issue one token per device via
+   `PersonalTokenStore::create_personal_token` (returns the one-time
+   `cggt_...` plaintext; only the digest persists).
+3. Present it as `Authorization: Bearer cggt_...` on HTTP and WebSocket.
+   Distinct tokens bind distinct canonical principals; revocation/expiry
+   fails new authentication immediately.
+4. Keep the legacy `server.token`/`CODEGG_SERVER_TOKEN` only until every
+   operator holds a personal token; it always maps to `LocalOwner` and
+   never to distinct identities. Delete it to complete the migration.
 
 ## Invariants & Gotchas
 

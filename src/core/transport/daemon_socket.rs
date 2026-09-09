@@ -697,15 +697,51 @@ async fn handle_client(
                                 hello.client_kind,
                                 client_id
                             );
+                            // M002: trusted local transport binds LocalOwner
+                            // with no login ceremony. The Unix socket lives in
+                            // the user-scoped runtime directory; per-connection
+                            // SO_PEERCRED UID validation is future hardening
+                            // and is explicitly not claimed. The binding is
+                            // immutable for the connection and never derived
+                            // from the ClientHello payload (the hello supplies
+                            // only the display name and capabilities).
+                            let local_principal = match daemon.pool.as_ref() {
+                                Some(pool) => {
+                                    let team = codegg_core::team::TeamStore::new(pool.clone());
+                                    match codegg_core::transport_auth::bind_local_owner(
+                                        &team, &client_id,
+                                    )
+                                    .await
+                                    {
+                                        Ok(principal) => principal,
+                                        Err(error) => {
+                                            tracing::warn!(
+                                                client_id = %client_id,
+                                                error = %error,
+                                                "local-owner bootstrap failed; binding anonymous local principal"
+                                            );
+                                            codegg_core::transport_auth::AuthenticatedPrincipal::local_owner(
+                                                &client_id,
+                                            )
+                                        }
+                                    }
+                                }
+                                None => {
+                                    codegg_core::transport_auth::AuthenticatedPrincipal::local_owner(
+                                        &client_id,
+                                    )
+                                }
+                            };
                             // Register the negotiated id with the actual
                             // client name from the hello. Registration is
                             // deferred until after ClientHello so the name
                             // is correct (previously this was a hardcoded
                             // "websocket" placeholder).
-                            daemon.clients.register(
+                            daemon.clients.register_with_principal(
                                 client_id.clone(),
                                 hello.client_name.clone(),
                                 Some(hello.capabilities.clone()),
+                                local_principal,
                             );
                             let server_hello = CoreFrame::ServerHello(ServerHello {
                                 daemon_id: daemon.daemon_id.clone(),

@@ -1834,6 +1834,56 @@ impl CoreDaemon {
             .await
     }
 
+    /// Transport-bound request authority for one trusted connection.
+    ///
+    /// M002: the principal comes from `ClientRegistry` (bound at handshake
+    /// from trusted transport evidence), never from the request payload.
+    /// Unregistered connections (in-process, stdio, legacy callers) resolve
+    /// to `LocalOwner` so personal-local startup stays login-free.
+    pub fn request_authority_for_client(
+        &self,
+        client_id: &str,
+    ) -> codegg_core::transport_auth::RequestAuthorityContext {
+        if let Some(principal) = self.clients.principal_for(client_id) {
+            return codegg_core::transport_auth::RequestAuthorityContext::new(
+                principal,
+                format!("req-{client_id}"),
+            );
+        }
+        codegg_core::transport_auth::RequestAuthorityContext::local(
+            client_id,
+            format!("req-{client_id}"),
+        )
+    }
+
+    /// Canonical projection access context for one trusted connection.
+    ///
+    /// Uses the bound principal's canonical projection string and transport
+    /// class. Falls back to the local single-user context for unregistered
+    /// (in-process/stdio/legacy) callers. Replaces the historical synthetic
+    /// `"authenticated-remote"` placeholder: remote bindings now carry
+    /// their canonical principal id.
+    pub fn projection_access_for_client(
+        &self,
+        client_id: &str,
+        correlation_id: &str,
+    ) -> codegg_core::projection_replay::context::ProjectionAccessContext {
+        use codegg_core::projection_replay::context::{
+            AllowAllProjectResolver, ProjectionCapabilitySet,
+        };
+        if let Some(principal) = self.clients.principal_for(client_id) {
+            return principal.to_projection_access_context(
+                correlation_id,
+                ProjectionCapabilitySet::local_user(),
+                std::sync::Arc::new(AllowAllProjectResolver),
+            );
+        }
+        codegg_core::projection_replay::context::ProjectionAccessContext::local(
+            client_id,
+            correlation_id,
+        )
+    }
+
     async fn handle_request_with_client(
         &self,
         request: RequestEnvelope<CoreRequest>,
@@ -6603,12 +6653,13 @@ impl CoreDaemon {
                     });
                 };
 
-                // Build access context for the calling principal
+                // Build access context for the calling principal.
+                // M002: use the transport-bound canonical principal when the
+                // connection registered one; otherwise fall back to the
+                // local single-user context. The principal string is never
+                // taken from the request payload.
                 let access_ctx = std::sync::Arc::new(
-                    codegg_core::projection_replay::context::ProjectionAccessContext::local(
-                        "daemon",
-                        "artifact-read",
-                    ),
+                    self.projection_access_for_client(trusted_client_id, "artifact-read"),
                 );
                 let policy = std::sync::Arc::new(
                     codegg_core::projection_replay::policy::PolicyRegistry::default(),

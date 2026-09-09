@@ -200,7 +200,7 @@ transport from the underlying agent and session logic.
 | `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL-over-socket and JSONL-over-stdio transports. Also contains `daemon_socket` for daemon-side socket accept loop. |
 | `core::transport::projection` | projection stream management | Connection-local projection subscription, cursor, and forwarding state. |
 | `core::event_log` | `EventLog` | In-memory event ring buffer with optional SQLite-backed projection sink. |
-| `core::client_registry` | `ClientRegistry` | Maps transport connection IDs to metadata for projection ownership. |
+| `core::client_registry` | `ClientRegistry`, `AuthenticatedPrincipal` | Maps transport connection IDs to metadata plus the immutable transport-bound canonical principal (M002) for projection ownership and request authority. |
 | `core::notification` | `NotificationRouter`, `AudioArbiter` | TTS and notification policy routing. |
 | `core::session_runtime` | `SessionRuntimeRegistry` | Active session runtime state tracking. |
 | `core::session_selection` | `SelectionService` | Session-level connection/model selection via typed stores. |

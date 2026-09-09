@@ -7,7 +7,6 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -1393,12 +1392,14 @@ where
     }
 }
 
-fn validate_ws_auth(
+pub(crate) async fn validate_ws_auth(
     auth: &WebSocketAuth,
     config: &crate::config::schema::Config,
-) -> Result<(), StatusCode> {
+    pool: &sqlx::SqlitePool,
+    client_id: &str,
+) -> Result<codegg_core::transport_auth::AuthenticatedPrincipal, StatusCode> {
     if crate::server::middleware::auth::auth_disabled_by_env() {
-        return Ok(());
+        return Ok(codegg_core::transport_auth::AuthenticatedPrincipal::local_owner(client_id));
     }
 
     let client_token = auth
@@ -1406,27 +1407,18 @@ fn validate_ws_auth(
         .as_ref()
         .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
 
-    // Same resolution order as the HTTP auth middleware: env var first,
-    // then config-file token. Without this fallback a config-only token
-    // protects HTTP routes while the WS endpoints stay open.
-    let expected = crate::server::middleware::auth::resolve_expected_token(config);
-
-    let Some(expected_token) = expected else {
+    let Some(presented) = client_token.as_deref() else {
         // Fail closed: with auth enabled and no token configured there
         // is no way to distinguish callers, so refuse the upgrade.
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
+        let expected = crate::server::middleware::auth::resolve_expected_token(config);
+        if expected.is_none() {
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        return Err(StatusCode::UNAUTHORIZED);
     };
 
-    let valid = client_token
-        .as_ref()
-        .map(|t| t.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 1)
-        .unwrap_or(false);
-
-    if !valid {
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    Ok(())
+    crate::server::middleware::auth::resolve_bearer_principal(presented, config, pool, client_id)
+        .await
 }
 
 pub async fn handle_ws(
@@ -1435,12 +1427,18 @@ pub async fn handle_ws(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth, &state.config) {
-        return res.into_response();
-    }
+    // Provisional connection identity for principal binding. The upgrade
+    // task owns this id for its lifetime; the principal is immutable for
+    // the connection and is registered in `ClientRegistry` on upgrade.
+    let connection_id = format!("ws-{}", uuid::Uuid::new_v4());
+    let principal = match validate_ws_auth(&auth, &state.config, &state.pool, &connection_id).await
+    {
+        Ok(principal) => principal,
+        Err(res) => return res.into_response(),
+    };
 
     limit_ws(ws).on_upgrade(move |socket| async move {
-        upgrade_ws(socket, state, addr).await;
+        upgrade_ws(socket, state, addr, connection_id, principal).await;
     })
 }
 
@@ -1448,7 +1446,17 @@ async fn upgrade_ws(
     socket: WebSocket,
     state: crate::server::state::ServerState,
     addr: std::net::SocketAddr,
+    connection_id: String,
+    principal: codegg_core::transport_auth::AuthenticatedPrincipal,
 ) {
+    if let Some(ref daemon) = state.daemon {
+        daemon.clients.register_with_principal(
+            connection_id.clone(),
+            "websocket".to_string(),
+            None,
+            principal,
+        );
+    }
     let (ws_tx, ws_rx) = socket.split();
 
     let (out_tx, mut out_rx) = mpsc::channel::<OutboundMessage>(WS_OUTBOUND_QUEUE_CAPACITY);
@@ -1479,6 +1487,7 @@ async fn upgrade_ws(
 
     let rate_limiter = state.ws_rate_limiter.clone();
     let recv_cancel = writer_cancel.clone();
+    let state_for_recv = state.clone();
 
     let mut recv_task = tokio::spawn(async move {
         let mut ws_rx = ws_rx;
@@ -1501,7 +1510,7 @@ async fn upgrade_ws(
                     break;
                 }
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
-                    let resp = handle_rpc_request(&req, &state).await;
+                    let resp = handle_rpc_request(&req, &state_for_recv).await;
                     if critical_send(&out_tx, &resp, &recv_cancel).await.is_err() {
                         break;
                     }
@@ -1517,6 +1526,10 @@ async fn upgrade_ws(
         _ = &mut recv_task => {
             send_task.abort();
         }
+    }
+
+    if let Some(ref daemon) = state.daemon {
+        daemon.clients.unregister(&connection_id);
     }
 
     info!("WebSocket connection closed");
@@ -1828,12 +1841,15 @@ pub async fn handle_tui(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth, &state.config) {
-        return res.into_response();
-    }
+    let provisional_id = format!("tui-pending-{}", uuid::Uuid::new_v4());
+    let principal = match validate_ws_auth(&auth, &state.config, &state.pool, &provisional_id).await
+    {
+        Ok(principal) => principal,
+        Err(res) => return res.into_response(),
+    };
 
     limit_ws(ws).on_upgrade(move |socket| async move {
-        upgrade_tui(socket, state, addr).await;
+        upgrade_tui(socket, state, addr, principal).await;
     })
 }
 
@@ -1841,6 +1857,7 @@ async fn upgrade_tui(
     socket: WebSocket,
     state: crate::server::state::ServerState,
     addr: std::net::SocketAddr,
+    principal_template: codegg_core::transport_auth::AuthenticatedPrincipal,
 ) {
     let (ws_tx, ws_rx) = socket.split();
 
@@ -1862,6 +1879,18 @@ async fn upgrade_tui(
     let connection_id = format!("tui-{}", uuid::Uuid::new_v4());
     if let Some(observer) = &transport_observer {
         observer.record_connection_id(connection_id.clone());
+    }
+    // Bind the transport-derived principal to this connection. The binding
+    // is immutable for the connection lifetime and is never derived from a
+    // request payload.
+    let bound_principal = principal_template.for_connection(connection_id.clone());
+    if let Some(ref daemon) = state.daemon {
+        daemon.clients.register_with_principal(
+            connection_id.clone(),
+            "tui-websocket".to_string(),
+            None,
+            bound_principal,
+        );
     }
     let projection = Arc::new(tokio::sync::Mutex::new(
         ProjectionConnectionState::new_with_lifecycle_seam(
@@ -2199,6 +2228,7 @@ async fn upgrade_tui(
         for subscription_id in subscription_ids {
             unsubscribe_tui_daemon_subscription(&daemon, &subscription_id, &connection_id).await;
         }
+        daemon.clients.unregister(&connection_id);
     }
 
     info!("TUI WebSocket connection closed");
@@ -3897,12 +3927,15 @@ pub async fn handle_core_ws(
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     auth: WebSocketAuth,
 ) -> impl axum::response::IntoResponse {
-    if let Err(res) = validate_ws_auth(&auth, &state.config) {
-        return res.into_response();
-    }
+    let provisional_id = format!("core-ws-pending-{}", uuid::Uuid::new_v4());
+    let principal = match validate_ws_auth(&auth, &state.config, &state.pool, &provisional_id).await
+    {
+        Ok(principal) => principal,
+        Err(res) => return res.into_response(),
+    };
 
     limit_ws(ws).on_upgrade(move |socket| async move {
-        upgrade_core_ws(socket, state, addr).await;
+        upgrade_core_ws(socket, state, addr, principal).await;
     })
 }
 
@@ -3910,6 +3943,7 @@ async fn upgrade_core_ws(
     mut socket: WebSocket,
     state: crate::server::state::ServerState,
     addr: std::net::SocketAddr,
+    principal_template: codegg_core::transport_auth::AuthenticatedPrincipal,
 ) {
     let Some(daemon) = state.daemon else {
         tracing::warn!("[{}] No CoreDaemon available for /core WebSocket", addr);
@@ -3935,6 +3969,13 @@ async fn upgrade_core_ws(
         observer.record_queue_capacity(queue_capacity);
     }
     let connection_id = format!("core-ws-{}", uuid::Uuid::new_v4());
+    let bound_principal = principal_template.for_connection(connection_id.clone());
+    daemon.clients.register_with_principal(
+        connection_id.clone(),
+        "core-websocket".to_string(),
+        None,
+        bound_principal,
+    );
     let projection = Arc::new(tokio::sync::Mutex::new(
         ProjectionConnectionState::new_with_lifecycle_seam(
             connection_id.clone(),
@@ -4230,6 +4271,7 @@ async fn upgrade_core_ws(
             )
             .await;
     }
+    daemon.clients.unregister(&connection_id);
 
     info!("[{}] CoreFrame WebSocket connection closed", addr);
 }
