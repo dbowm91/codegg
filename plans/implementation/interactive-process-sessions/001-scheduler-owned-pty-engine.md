@@ -1,6 +1,8 @@
 # Interactive Process Sessions Milestone 001 — Scheduler-Owned PTY Engine
 
-Status: ready for handoff
+Status: implemented
+
+Closure record: `plans/closure/interactive-process-sessions/001-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

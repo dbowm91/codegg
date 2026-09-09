@@ -1,6 +1,6 @@
 # Interactive Process Sessions Milestone 002 — Bounded Attach/Resume Protocol and Authority
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,10 @@ Expose M001 through versioned bounded daemon operations for create/list/attach/d
 
 ## 2. Why this milestone is ready
 
-Blocked on M001. Native request/event envelopes, connection ownership, bounded queues and replay/resync patterns are already established by session projections and daemon socket/WebSocket work.
+M001 is closed (`plans/closure/interactive-process-sessions/001-status.md`).
+Native request/event envelopes, connection ownership, bounded queues and
+replay/resync patterns are already established by session projections and
+daemon socket/WebSocket work.
 
 ## 3. Current implementation evidence
 
