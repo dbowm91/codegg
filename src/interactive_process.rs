@@ -167,6 +167,30 @@ impl InteractiveHandle {
         Self(uuid::Uuid::new_v4().to_string())
     }
 
+    /// Rebuild a handle from a previously issued wire string (M002).
+    ///
+    /// Only the token shape is validated here (`1..=128` chars,
+    /// alphanumeric/`-`/`_`, matching the UUIDs issued by [`Self::fresh`]).
+    /// A well-formed but unknown handle resolves to
+    /// [`InteractiveError::UnknownHandle`] at lookup, never to another
+    /// session: handles are map keys, so parsing cannot alias.
+    pub fn parse(value: &str) -> Result<Self, InteractiveError> {
+        if value.is_empty() || value.len() > 128 {
+            return Err(InteractiveError::InvalidArgument(
+                "interactive handle has an invalid length".to_string(),
+            ));
+        }
+        if !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(InteractiveError::InvalidArgument(
+                "interactive handle has invalid characters".to_string(),
+            ));
+        }
+        Ok(Self(value.to_string()))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -776,6 +800,53 @@ impl InteractiveProcessService {
             exit,
             age: session.created_at.elapsed(),
         })
+    }
+
+    /// Snapshot metadata for every tracked handle (M002 list support).
+    ///
+    /// Snapshots are point-in-time and carry no output bytes or secrets.
+    /// Handles removed concurrently are skipped. Callers apply their own
+    /// list bound; the returned order is sorted by handle for determinism.
+    pub async fn snapshot_all(&self) -> Vec<SessionSnapshot> {
+        let mut handles: Vec<String> = self
+            .inner
+            .sessions
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        handles.sort();
+        let mut out = Vec::with_capacity(handles.len());
+        for key in handles {
+            let Some(entry) = self.inner.sessions.get(&key) else {
+                continue;
+            };
+            let session = entry.clone();
+            drop(entry);
+            let state = *session.state.read().await;
+            let exit = *session.exit.read().await;
+            let size = *session.size.lock().await;
+            let ring = session.ring.lock().await;
+            let child_pid = match state {
+                SessionState::Exited => None,
+                _ => session.child_pid,
+            };
+            out.push(SessionSnapshot {
+                handle: session.handle.clone(),
+                workspace_id: session.workspace_id.clone(),
+                workspace_root: session.workspace_root.clone(),
+                command: session.executable_summary.clone(),
+                state,
+                size,
+                child_pid,
+                next_seq: ring.next_seq(),
+                retained_bytes: ring.retained_bytes(),
+                total_bytes: ring.total_bytes(),
+                truncated: ring.is_truncated(),
+                exit,
+                age: session.created_at.elapsed(),
+            });
+        }
+        out
     }
 
     /// Gracefully terminate a session (SIGTERM, escalate to SIGKILL).

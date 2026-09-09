@@ -45,6 +45,7 @@ complete guard input. Its production dispositions are:
 |---|---|---|
 | `src/managed_process.rs` | Canonical | Only finite-process direct-spawn owner; owns lifecycle and safety primitives. |
 | `src/interactive_process.rs` | Canonical interactive | Only PTY direct-spawn owner (M001). Every spawn holds a scheduler `AdmissionController` permit acquired before `openpty` (ManagedProcess resource class, no exclusivity key); cwd/env derive from the immutable `ExecutionContext`; bounded sequence-numbered scrollback; input/resize/terminate over the master fd; child process-group (setsid leader) cleanup with SIGTERM-then-SIGKILL escalation on terminate/shutdown. Handles are ephemeral UUIDs and do not survive daemon restart. No model-facing tool is registered here. |
+| `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
 | `src/tool/bash.rs`, `src/scheduler/`, `src/python_script/` | Scheduler/adapter | Job admission and domain output remain local; accepted finite execution uses the canonical service. |
 | `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain local; streaming lifecycle uses the canonical service. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
@@ -87,3 +88,20 @@ they never reinterpret a `Session` id as a terminal, and terminating a
 process never closes a conversation. The legacy metadata-only
 `src/shell_session/` store and the one-shot deferred `terminal` model tool
 are not execution owners and remain unchanged by M001.
+
+## Attach ownership and resync (M002)
+
+Attachment is a transport-bound subscription, not authorization transfer:
+`InteractiveAttachmentRegistry` maps `attachment_id -> (handle, client_id)`
+and every lookup checks the caller's transport `client_id`, so unknown and
+foreign attachment IDs answer the same `interactive_attachment_gone` code.
+`create` returns a bare handle; only `attach` mints an attachment, and
+re-attach is idempotent per (client, handle). `detach` and connection close
+(`handle_disconnect`) release attachments without touching processes;
+explicit `terminate` (bounded escalation, `InteractiveProcessExited` event)
+or `remove` are the only kill paths, and both require attachment ownership
+plus terminate authority (local-owner transport, or a plugged semantic
+capability through the same `InteractiveAuthority` context — no wire
+change). Resume from a sequence cursor returns the next bounded chunk or a
+typed `InteractiveResync` (`HistoryExpired` with both cursors, `CursorAhead`,
+`HandleGone` after remove/restart); history is never silently shifted.

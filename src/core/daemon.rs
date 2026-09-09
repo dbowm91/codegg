@@ -63,6 +63,13 @@ pub struct CoreDaemon {
     /// Daemon-owned Eggpool provisioning service. It is present only for
     /// SQLite-backed daemons; legacy in-memory daemons retain compatibility.
     pub eggpool_provisioner: Option<Arc<crate::core::eggpool::EggpoolProvisioner>>,
+    /// Interactive Process Sessions M002: daemon-owned bounded
+    /// attach/resume handler family over the scheduler-owned M001 PTY
+    /// engine. Always present; shares the scheduler's admission
+    /// controller so interactive spawns draw from the same process-slot
+    /// accounting as durable work. Handles and attachments are ephemeral
+    /// and do not survive daemon restart.
+    pub interactive_processes: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
     /// Provider Connections Milestone 3: daemon-owned session selection
     /// service. Reads and writes the connection/model selection on the
     /// session row through the typed core crate; never mutates provider
@@ -427,6 +434,14 @@ impl CoreDaemon {
             projection_seam,
             _projection_maintenance_handle: projection_maintenance_handle,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
+            // M002: share the scheduler's admission controller so
+            // interactive spawns draw from the same process-slot
+            // accounting as durable work (M001 permit contract).
+            interactive_processes: Arc::new(
+                crate::interactive_process_attach::InteractiveProcessProtocol::new(
+                    scheduler.admission().clone(),
+                ),
+            ),
         }
     }
 
@@ -1884,6 +1899,34 @@ impl CoreDaemon {
         )
     }
 
+    /// Interactive Process Sessions M002: transport-derived authority for
+    /// one trusted connection.
+    ///
+    /// The principal comes from `ClientRegistry` (bound at handshake from
+    /// trusted transport evidence), never from the request payload.
+    /// Unregistered connections (in-process, stdio, legacy callers) and
+    /// `LocalOwner` bindings resolve to the local authority; any other
+    /// bound principal resolves to the restricted remote authority until a
+    /// later milestone plugs semantic interactive capabilities through the
+    /// same [`InteractiveAuthority`](crate::interactive_process_attach::InteractiveAuthority)
+    /// context without a wire change.
+    pub fn interactive_authority_for(
+        &self,
+        client_id: &str,
+    ) -> crate::interactive_process_attach::InteractiveAuthority {
+        use crate::interactive_process_attach::InteractiveAuthority;
+        match self.clients.principal_for(client_id) {
+            Some(principal)
+                if principal.auth_method()
+                    == codegg_core::transport_auth::AuthMethod::LocalOwner =>
+            {
+                InteractiveAuthority::local(client_id)
+            }
+            Some(_) => InteractiveAuthority::remote(client_id),
+            None => InteractiveAuthority::local(client_id),
+        }
+    }
+
     /// M003: server-side denial response for one authorization failure.
     ///
     /// Denied requests have zero side effect. A single-project read
@@ -2680,6 +2723,33 @@ impl CoreDaemon {
             &request.payload,
         ))
         .await;
+        // Interactive Process Sessions M002: the attach/resume family runs
+        // on a fresh task (boxed at the call site). The dispatch match
+        // below is already near its stack limit: nesting the PTY handler
+        // frames inside it overflows small worker stacks, so the envelope
+        // moves into `run_interactive_request` instead.
+        if Self::is_interactive_process_request(&request.payload) {
+            let protocol = self.interactive_processes.clone();
+            let workspaces = self.workspaces.clone();
+            let event_log = self.event_log.clone();
+            let authority = self.interactive_authority_for(trusted_client_id);
+            let owned_client = trusted_client_id.to_string();
+            let join = tokio::spawn(async move {
+                let out = Self::run_interactive_request(
+                    protocol,
+                    workspaces,
+                    event_log,
+                    authority,
+                    owned_client,
+                    request,
+                )
+                .await;
+                out
+            });
+            return join.await.map_err(|error| {
+                AppError::Other(anyhow::anyhow!("interactive request task failed: {error}"))
+            })?;
+        }
         match request.payload {
             CoreRequest::AssetRefresh { request } => {
                 let Some(resolver) = self.context_resolver.as_ref() else {
@@ -8196,6 +8266,159 @@ impl CoreDaemon {
                 })
             }
         }
+    }
+
+    /// Interactive Process Sessions M002: `true` for the bounded
+    /// attach/resume operation family, which dispatches through the boxed
+    /// [`Self::handle_interactive_request`] helper instead of the giant
+    /// dispatch match.
+    fn is_interactive_process_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::InteractiveProcessCapabilities
+                | CoreRequest::InteractiveProcessCreate { .. }
+                | CoreRequest::InteractiveProcessList { .. }
+                | CoreRequest::InteractiveProcessAttach { .. }
+                | CoreRequest::InteractiveProcessDetach { .. }
+                | CoreRequest::InteractiveProcessInput { .. }
+                | CoreRequest::InteractiveProcessResize { .. }
+                | CoreRequest::InteractiveProcessResume { .. }
+                | CoreRequest::InteractiveProcessTerminate { .. }
+                | CoreRequest::InteractiveProcessRemove { .. }
+        )
+    }
+
+    /// Interactive Process Sessions M002: dispatch one attach/resume
+    /// envelope through the daemon-owned handler family. Ownership always
+    /// comes from the transport-bound `client_id`; payloads carry no
+    /// identity. Runs on a fresh task (see the call site): `&self` is not
+    /// held, only the owned daemon pieces the family needs.
+    async fn run_interactive_request(
+        protocol: Arc<crate::interactive_process_attach::InteractiveProcessProtocol>,
+        workspaces: Arc<codegg_core::workspace::WorkspaceRegistry>,
+        event_log: Arc<super::event_log::EventLog>,
+        authority: crate::interactive_process_attach::InteractiveAuthority,
+        client_id: String,
+        request: RequestEnvelope<CoreRequest>,
+    ) -> Result<CoreResponse, AppError> {
+        let trusted_client_id = client_id.as_str();
+        match request.payload {
+            CoreRequest::InteractiveProcessCapabilities => {
+                let current =
+                    codegg_protocol::interactive_process::InteractiveProcessCapabilities::current();
+                Ok(protocol.capabilities(&current))
+            }
+            CoreRequest::InteractiveProcessCreate { request } => {
+                let ctx =
+                    match Self::interactive_execution_context(&workspaces, &request.workspace_id)
+                        .await
+                    {
+                        Ok(ctx) => ctx,
+                        Err(response) => return Ok(*response),
+                    };
+                Ok(protocol.create(trusted_client_id, &ctx, &request).await)
+            }
+            CoreRequest::InteractiveProcessList {
+                workspace_id,
+                limit,
+            } => Ok(protocol
+                .list(trusted_client_id, workspace_id.as_deref(), limit)
+                .await),
+            CoreRequest::InteractiveProcessAttach {
+                handle,
+                from_seq,
+                max_bytes,
+            } => Ok(protocol
+                .attach(trusted_client_id, &handle, from_seq, max_bytes)
+                .await),
+            CoreRequest::InteractiveProcessDetach { attachment_id } => {
+                Ok(protocol.detach(trusted_client_id, &attachment_id).await)
+            }
+            CoreRequest::InteractiveProcessInput {
+                attachment_id,
+                data_b64,
+            } => Ok(protocol
+                .input(trusted_client_id, &attachment_id, &data_b64)
+                .await),
+            CoreRequest::InteractiveProcessResize {
+                attachment_id,
+                cols,
+                rows,
+            } => Ok(protocol
+                .resize(trusted_client_id, &attachment_id, cols, rows)
+                .await),
+            CoreRequest::InteractiveProcessResume {
+                attachment_id,
+                from_seq,
+                max_bytes,
+            } => Ok(protocol
+                .resume(trusted_client_id, &attachment_id, from_seq, max_bytes)
+                .await),
+            CoreRequest::InteractiveProcessTerminate { attachment_id } => {
+                let response = protocol
+                    .terminate(trusted_client_id, &authority, &attachment_id)
+                    .await;
+                if let CoreResponse::InteractiveProcessTerminated {
+                    handle,
+                    exit_code,
+                    exit_signal,
+                    ..
+                } = &response
+                {
+                    event_log
+                        .publish(
+                            None,
+                            None,
+                            CoreEvent::InteractiveProcessExited {
+                                handle: handle.clone(),
+                                exit_code: *exit_code,
+                                exit_signal: *exit_signal,
+                            },
+                        )
+                        .await;
+                }
+                Ok(response)
+            }
+            CoreRequest::InteractiveProcessRemove { attachment_id } => Ok(protocol
+                .remove(trusted_client_id, &authority, &attachment_id)
+                .await),
+            other => {
+                let _ = other;
+                Ok(CoreResponse::Error {
+                    code: "interactive_invalid_request".to_string(),
+                    message: "request is not an interactive-process operation".to_string(),
+                })
+            }
+        }
+    }
+
+    /// Interactive Process Sessions M002: resolve the immutable execution
+    /// context for one workspace locator. The workspace must already be
+    /// registered; interactive create never invents workspace identity.
+    /// The error is boxed: `CoreResponse` is too large for an inline
+    /// `Err` variant under the workspace Clippy gate.
+    async fn interactive_execution_context(
+        workspaces: &Arc<codegg_core::workspace::WorkspaceRegistry>,
+        workspace_id_raw: &str,
+    ) -> Result<Arc<codegg_core::workspace::ExecutionContext>, Box<CoreResponse>> {
+        let workspace_id =
+            codegg_core::workspace::WorkspaceId::parse(workspace_id_raw).map_err(|error| {
+                Box::new(CoreResponse::Error {
+                    code: "interactive_invalid_request".to_string(),
+                    message: format!("invalid interactive workspace id: {error}"),
+                })
+            })?;
+        let record = workspaces.resolve(&workspace_id).await.ok_or_else(|| {
+            Box::new(CoreResponse::Error {
+                code: "interactive_invalid_request".to_string(),
+                message: "interactive workspace is not registered".to_string(),
+            })
+        })?;
+        Ok(codegg_core::workspace::ExecutionContext::new(
+            record,
+            None,
+            tokio_util::sync::CancellationToken::new(),
+        ))
     }
 
     async fn find_tool_program_job(

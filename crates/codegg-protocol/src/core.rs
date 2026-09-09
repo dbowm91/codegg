@@ -630,6 +630,76 @@ pub enum CoreResponse {
     AuditCapabilities {
         capabilities: AuditCapabilitiesDto,
     },
+    // ── Interactive Process Sessions M002: Bounded Attach/Resume ────
+    /// Attach/resume capability negotiation response.
+    InteractiveProcessCapabilitiesResponse {
+        supported: bool,
+        protocol_version: u32,
+        max_chunk_bytes: usize,
+        max_input_bytes: usize,
+        max_attachments_per_client: usize,
+        max_attachments_per_process: usize,
+        max_list_items: usize,
+    },
+    /// A process was created; the caller holds no attachment yet.
+    InteractiveProcessCreated {
+        handle: String,
+        metadata: crate::interactive_process::InteractiveProcessMetadata,
+    },
+    /// Bounded process list snapshot (metadata only, no output bytes).
+    InteractiveProcessList {
+        processes: Vec<crate::interactive_process::InteractiveProcessMetadata>,
+        truncated: bool,
+    },
+    /// Attachment established with an initial bounded output chunk. When
+    /// the requested cursor predated retention, `resync` carries the
+    /// typed reason alongside the oldest retained bytes.
+    InteractiveProcessAttached {
+        attachment_id: String,
+        handle: String,
+        chunk: crate::interactive_process::InteractiveOutputChunk,
+        #[serde(default)]
+        resync: Option<crate::interactive_process::InteractiveResync>,
+    },
+    /// Attachment released. The process itself is unaffected.
+    InteractiveProcessDetached {
+        attachment_id: String,
+    },
+    /// Bounded input was accepted for the attachment's process.
+    InteractiveProcessInputAccepted {
+        attachment_id: String,
+        bytes_accepted: usize,
+    },
+    /// Terminal resize was applied to the attachment's process.
+    InteractiveProcessResized {
+        attachment_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Bounded output resumed from the requested cursor.
+    InteractiveProcessResumed {
+        attachment_id: String,
+        chunk: crate::interactive_process::InteractiveOutputChunk,
+    },
+    /// The cursor cannot be resumed incrementally; follow `resync`.
+    InteractiveProcessResyncRequired {
+        attachment_id: String,
+        resync: crate::interactive_process::InteractiveResync,
+    },
+    /// The attachment's process terminated (bounded escalation).
+    InteractiveProcessTerminated {
+        attachment_id: String,
+        handle: String,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        #[serde(default)]
+        exit_signal: Option<i32>,
+    },
+    /// The attachment's handle was dropped, freeing scrollback.
+    InteractiveProcessRemoved {
+        attachment_id: String,
+        handle: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1270,6 +1340,68 @@ pub enum CoreRequest {
     },
     /// M004: capability negotiation for audit bounds.
     AuditCapabilities,
+    // ── Interactive Process Sessions M002: Bounded Attach/Resume ────
+    /// Query daemon attach/resume capabilities and limits. Unknown
+    /// capability strings degrade to `supported: false`, never to an
+    /// error that blocks unrelated traffic.
+    InteractiveProcessCapabilities,
+    /// Create one scheduler-admitted interactive process. Ownership is
+    /// derived from the trusted transport connection, never from the
+    /// payload (which carries no identity field).
+    InteractiveProcessCreate {
+        request: crate::interactive_process::InteractiveProcessCreateRequest,
+    },
+    /// List known process metadata, optionally filtered by workspace.
+    InteractiveProcessList {
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Attach the calling connection to a live handle and read bounded
+    /// output from an optional cursor.
+    InteractiveProcessAttach {
+        handle: String,
+        #[serde(default)]
+        from_seq: Option<u64>,
+        #[serde(default)]
+        max_bytes: Option<usize>,
+    },
+    /// Release one caller-owned attachment. The process is unaffected.
+    InteractiveProcessDetach {
+        attachment_id: String,
+    },
+    /// Write bounded input through a caller-owned attachment. The
+    /// payload names no process handle; the daemon resolves it
+    /// server-side so IDs cannot be replayed across owners.
+    InteractiveProcessInput {
+        attachment_id: String,
+        data_b64: String,
+    },
+    /// Resize through a caller-owned attachment.
+    InteractiveProcessResize {
+        attachment_id: String,
+        cols: u16,
+        rows: u16,
+    },
+    /// Resume bounded output through a caller-owned attachment.
+    InteractiveProcessResume {
+        attachment_id: String,
+        from_seq: u64,
+        #[serde(default)]
+        max_bytes: Option<usize>,
+    },
+    /// Terminate the attachment's process (bounded escalation).
+    /// Requires attachment ownership plus terminate authority.
+    InteractiveProcessTerminate {
+        attachment_id: String,
+    },
+    /// Drop the attachment's handle, freeing scrollback. Live
+    /// processes are terminated first (bounded escalation).
+    /// Requires attachment ownership plus terminate authority.
+    InteractiveProcessRemove {
+        attachment_id: String,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1693,6 +1825,16 @@ pub enum CoreEvent {
     Error {
         code: String,
         message: String,
+    },
+    /// An interactive process reached a terminal state. Carries no
+    /// output bytes; clients resume remaining scrollback through the
+    /// attach/resume operations.
+    InteractiveProcessExited {
+        handle: String,
+        #[serde(default)]
+        exit_code: Option<i32>,
+        #[serde(default)]
+        exit_signal: Option<i32>,
     },
 }
 

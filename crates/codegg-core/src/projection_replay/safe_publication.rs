@@ -80,6 +80,9 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::ToolProgramUpdated { .. } => SafePublicationClass::Safe,
         CoreEvent::QuestionPending { .. } => SafePublicationClass::Safe,
         CoreEvent::ConvergenceUpserted { .. } => SafePublicationClass::Safe,
+        // M002: terminal-state notice carries only the handle plus exit
+        // code/signal. No output bytes, no secrets: safe to publish.
+        CoreEvent::InteractiveProcessExited { .. } => SafePublicationClass::Safe,
     }
 }
 

@@ -91,6 +91,7 @@ These modules remain in root `src/` due to high coupling with UI/server/agent:
 | `context` | context projection and compaction |
 | `scheduler` | global admission control (Phase 5) |
 | `managed_process` | non-interactive process execution |
+| `interactive_process_attach` | bounded attach/resume protocol over the M001 PTY engine |
 | `command_intent` | command classification and routing |
 | `command_planner` | execution backend planning |
 | `command_routing` | structured command dispatch |

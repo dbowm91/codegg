@@ -316,3 +316,8 @@ reason = "GitExecutionService is the canonical read executor; test fixtures in t
 path = "src/interactive_process.rs"
 owner = "interactive"
 reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty, derives cwd/env from ExecutionContext, and cleans the child process group on terminate/shutdown"
+
+[[site]]
+path = "src/interactive_process_attach.rs"
+owner = "interactive"
+reason = "M002 bounded attach/resume protocol over the M001 PTY engine; delegates all lifecycle to InteractiveProcessService, shares the scheduler admission controller, owns no direct-spawn site and no per-attachment tasks"

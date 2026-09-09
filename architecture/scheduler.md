@@ -327,6 +327,12 @@ shutdown. Contention refuses without spawning; spawn failure releases the
 permit with no live handle. This permit contract — not a second
 supervisor — is what keeps interactive sessions inside global admission.
 
+M002 shares the same controller rather than minting a second one: the
+daemon builds its `InteractiveProcessProtocol` handler family over
+`JobScheduler::admission()`, so interactive spawns and durable attempts
+draw from one process-slot accounting. The attach/resume layer itself adds
+no admission path and no background task per attachment.
+
 ## Lifecycle and recovery
 
 Scheduler dispatch creates an attempt, persists executor provenance,

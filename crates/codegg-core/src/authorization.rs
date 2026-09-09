@@ -771,6 +771,47 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::AuditCapabilities => {
             OperationDescriptor::new("audit_capabilities", ScopeKind::Global, None)
         }
+        // ── Interactive Process Sessions M002: Bounded Attach/Resume ──
+        //
+        // Transport-level scope is intentionally `Global` with no semantic
+        // capability: per-process authority is enforced by the daemon's
+        // attachment registry (ownership derived from the trusted
+        // transport `client_id`, never from payload fields), and
+        // terminate/remove additionally require the local-owner transport
+        // (or a future semantic capability plugged through the same
+        // authority context without a wire change). The daemon-wide
+        // authorization gate therefore admits any authenticated caller;
+        // the attachment seam fails closed per process.
+        R::InteractiveProcessCapabilities => {
+            OperationDescriptor::new("interactive_process_capabilities", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessCreate { .. } => {
+            OperationDescriptor::new("interactive_process_create", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessList { .. } => {
+            OperationDescriptor::new("interactive_process_list", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessAttach { .. } => {
+            OperationDescriptor::new("interactive_process_attach", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessDetach { .. } => {
+            OperationDescriptor::new("interactive_process_detach", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessInput { .. } => {
+            OperationDescriptor::new("interactive_process_input", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessResize { .. } => {
+            OperationDescriptor::new("interactive_process_resize", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessResume { .. } => {
+            OperationDescriptor::new("interactive_process_resume", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessTerminate { .. } => {
+            OperationDescriptor::new("interactive_process_terminate", ScopeKind::Global, None)
+        }
+        R::InteractiveProcessRemove { .. } => {
+            OperationDescriptor::new("interactive_process_remove", ScopeKind::Global, None)
+        }
     }
 }
 
@@ -1289,6 +1330,50 @@ fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
             },
         },
         R::AuditCapabilities,
+        R::InteractiveProcessCapabilities,
+        R::InteractiveProcessCreate {
+            request: codegg_protocol::interactive_process::InteractiveProcessCreateRequest {
+                workspace_id: String::new(),
+                argv: vec![String::new()],
+                cwd: None,
+                env_overrides: Vec::new(),
+                cols: None,
+                rows: None,
+                scrollback_bytes: None,
+            },
+        },
+        R::InteractiveProcessList {
+            workspace_id: None,
+            limit: None,
+        },
+        R::InteractiveProcessAttach {
+            handle: String::new(),
+            from_seq: None,
+            max_bytes: None,
+        },
+        R::InteractiveProcessDetach {
+            attachment_id: String::new(),
+        },
+        R::InteractiveProcessInput {
+            attachment_id: String::new(),
+            data_b64: String::new(),
+        },
+        R::InteractiveProcessResize {
+            attachment_id: String::new(),
+            cols: 80,
+            rows: 24,
+        },
+        R::InteractiveProcessResume {
+            attachment_id: String::new(),
+            from_seq: 0,
+            max_bytes: None,
+        },
+        R::InteractiveProcessTerminate {
+            attachment_id: String::new(),
+        },
+        R::InteractiveProcessRemove {
+            attachment_id: String::new(),
+        },
     ]
 }
 
