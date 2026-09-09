@@ -275,6 +275,15 @@ typed_identity!(
     AgentRunMessageId,
     "agent_run_message_id"
 );
+typed_identity!(
+    /// Stable identity for one durable project-chat message.
+    ///
+    /// Project Collaboration M001 owns the channel/message contract.
+    /// Message IDs are opaque, idempotent under client-supplied
+    /// idempotency keys, and never derived from paths.
+    ChatMessageId,
+    "chat_message_id"
+);
 
 /// Project/repository relation. The repository is optional at the enclosing
 /// [`ProjectBinding`] level while a project is being created or resolved.
@@ -415,6 +424,7 @@ mod tests {
             AgentTaskId => "agent-task-fixture",
             ProviderConnectionId => "provider-connection-fixture",
             ChannelId => "channel-fixture",
+            ChatMessageId => "chat-message-fixture",
             AuditEventId => "audit-event-fixture",
             WorkspaceId => "workspace-fixture",
         );

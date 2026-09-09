@@ -249,6 +249,11 @@ Key storage-layout migrations:
 - **v36**: Durable per-job execution timeouts
 - **v46**: `edit_checkpoint` for mutation attribution (pre/post Absent/Present, workspace/session/turn/batch scoped)
 - **v47**: `edit_restore_operation` for checked Undo/Reapply audit (applied/conflict/partial, durable lineage, bounded paths)
+- **v51**: team domain — `principal`, `project_membership` (M001 durable principals/memberships)
+- **v52**: `personal_auth_token` digests for team authentication (M002, never plaintext)
+- **v53**: `origin_attribution` for immutable originating-principal capture (M003)
+- **v54**: append-only `audit_event` + separate `audit_body` retention split (M004)
+- **v55**: project chat — `chat_channel`, `chat_message` (live retention window, per-channel `seq`, idempotency keys), append-only `chat_revision` history (survives retention pruning), `chat_read_marker` (collaboration M001; composing stays ephemeral in memory)
 
 ## Testing
 

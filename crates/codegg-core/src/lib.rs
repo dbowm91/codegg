@@ -8,6 +8,7 @@ pub mod audit;
 pub mod audit_instrumentation;
 pub mod authorization;
 pub mod bus;
+pub mod collaboration;
 pub mod context;
 pub mod error;
 pub mod goal;

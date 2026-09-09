@@ -134,6 +134,19 @@ project subscribe plus artifact list/read gate denials use
 `project_not_found`, indistinguishable from absent (same convention
 as `ProjectGet` and presence reads).
 
+### Project chat (collaboration M001)
+
+Every `chat_*` operation except `chat_capabilities` requires
+`project.chat` on the owning project (`Contributor` and above;
+`Viewer` holds no chat grant). Channel-scoped requests carry only the
+channel locator; the daemon resolves the owning project server-side
+through the durable channel row, so unknown channels fail closed for
+team principals. All eleven project-scoped chat denials use
+`project_not_found`, indistinguishable from absent — unauthorized
+callers cannot enumerate channels, read messages, or infer project,
+membership, or activity existence. See
+`architecture/collaboration.md`.
+
 ## Failure, restart, contention
 
 - Denied requests have zero side effect (gate precedes dispatch).
@@ -152,9 +165,10 @@ as `ProjectGet` and presence reads).
 Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization.rs`
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (138 native operations; M004 adds `audit_capabilities`,
+rendering (150 native operations; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
-audit store contract):
+audit store contract; collaboration M001 adds the twelve `chat_*`
+operations below, all `project.chat`):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -166,6 +180,18 @@ audit store contract):
 | `audit_capabilities` | global | `none` |
 | `audit_export` | direct_project | `audit.read` |
 | `audit_query` | direct_project | `audit.read` |
+| `chat_capabilities` | global | `none` |
+| `chat_channel_ensure` | direct_project | `project.chat` |
+| `chat_channel_list` | direct_project | `project.chat` |
+| `chat_composing_list` | direct_project | `project.chat` |
+| `chat_composing_set` | direct_project | `project.chat` |
+| `chat_edit` | direct_project | `project.chat` |
+| `chat_history` | direct_project | `project.chat` |
+| `chat_read_get` | direct_project | `project.chat` |
+| `chat_read_set` | direct_project | `project.chat` |
+| `chat_redact` | direct_project | `project.chat` |
+| `chat_send` | direct_project | `project.chat` |
+| `chat_sync` | direct_project | `project.chat` |
 | `connection_delete` | opaque | `project.configure` |
 | `connection_disable` | opaque | `project.configure` |
 | `connection_enable` | opaque | `project.configure` |

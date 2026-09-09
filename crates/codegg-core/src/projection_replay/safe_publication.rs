@@ -87,6 +87,15 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // collaborator detail. Receivers re-fetch through the authorized
         // snapshot path; the event itself never leaks membership.
         CoreEvent::PresenceUpdated { .. } => SafePublicationClass::Safe,
+        // Collaboration M001: committed/edited events carry the
+        // secret-redacted message to project subscribers (the daemon
+        // publishes per-project and receivers re-fetch through the
+        // authorized history/sync path on doubt). Redacted/composing
+        // hints carry identity and revision only, never content.
+        CoreEvent::ChatMessageCommitted { .. } => SafePublicationClass::Safe,
+        CoreEvent::ChatMessageEdited { .. } => SafePublicationClass::Safe,
+        CoreEvent::ChatMessageRedacted { .. } => SafePublicationClass::Safe,
+        CoreEvent::ChatComposingUpdated { .. } => SafePublicationClass::Safe,
     }
 }
 

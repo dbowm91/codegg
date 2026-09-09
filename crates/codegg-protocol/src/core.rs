@@ -318,6 +318,102 @@ pub struct PresenceCapabilitiesDto {
     pub max_contributions: usize,
 }
 
+/// Project Collaboration M001: project-scoped channel/message protocol.
+///
+/// Chat is project communication, not general chat. Channels and messages
+/// are daemon-owned durable state scoped to one project; every operation
+/// requires `project.chat` on the owning project so unauthorized callers
+/// cannot enumerate channels, read messages, or infer existence (denials
+/// use the same `project_not_found` shape as a genuinely absent project).
+/// Message bodies are bounded inert text: free text never executes
+/// privileged work. Secrets are redacted at the daemon boundary before
+/// durable write; large content uses handles/artifacts owned elsewhere.
+pub const CHAT_CAPABILITY: &str = "chat.v1";
+pub const CHAT_PROTOCOL_VERSION: u32 = 1;
+
+/// Kind of CodeGG object named by a message reference. References are
+/// opaque locators resolved under the recipient's project authorization;
+/// display hints carry no authority.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatReferenceKindDto {
+    Session,
+    AgentRun,
+    Job,
+    Commit,
+    Artifact,
+    Worktree,
+    Run,
+}
+
+/// One typed reference to a CodeGG object attached to a message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatReferenceDto {
+    pub kind: ChatReferenceKindDto,
+    pub target_id: String,
+    #[serde(default)]
+    pub display_hint: Option<String>,
+}
+
+/// Wire shape of one durable project-chat message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatMessageDto {
+    pub message_id: String,
+    pub channel_id: String,
+    pub project_id: String,
+    pub seq: u64,
+    pub author_principal: String,
+    #[serde(default)]
+    pub author_agent: Option<String>,
+    pub body: String,
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    #[serde(default)]
+    pub thread_root: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub references: Vec<ChatReferenceDto>,
+    pub revision: u64,
+    pub redacted: bool,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub edited_at_ms: Option<i64>,
+}
+
+/// Wire shape of one durable project channel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatChannelDto {
+    pub channel_id: String,
+    pub project_id: String,
+    pub name: String,
+    pub created_by: String,
+    pub created_at_ms: i64,
+}
+
+/// Capability negotiation for the chat surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatCapabilitiesDto {
+    pub supported: bool,
+    pub protocol_version: u32,
+    pub max_body_bytes: usize,
+    pub max_page_limit: u32,
+    pub max_mentions: usize,
+    pub max_references: usize,
+    pub composing_ttl_secs: u64,
+    pub retention_max_messages: usize,
+}
+
+/// One ephemeral composing entry. Carries identity and expiry only, never
+/// message content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatComposingDto {
+    pub channel_id: String,
+    pub principal_id: String,
+    pub client_id: String,
+    pub expires_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub protocol_version: u32,
@@ -822,6 +918,54 @@ pub enum CoreResponse {
     /// Presence capability negotiation response.
     PresenceCapabilities {
         capabilities: PresenceCapabilitiesDto,
+    },
+    // ── Project Collaboration M001: Project Channel/Message Protocol ──
+    /// Chat capability negotiation response.
+    ChatCapabilities {
+        capabilities: ChatCapabilitiesDto,
+    },
+    /// One durable project channel.
+    ChatChannel {
+        channel: ChatChannelDto,
+    },
+    /// Bounded project channel listing.
+    ChatChannelList {
+        channels: Vec<ChatChannelDto>,
+        truncated: bool,
+    },
+    /// Bounded message history page for one channel.
+    ChatHistory {
+        channel_id: String,
+        messages: Vec<ChatMessageDto>,
+        next_cursor: u64,
+        truncated: bool,
+        retention_floor_seq: u64,
+    },
+    /// One durable message. `duplicate` is true when a retry converged
+    /// on an already-stored idempotency key.
+    ChatMessage {
+        message: ChatMessageDto,
+        #[serde(default)]
+        duplicate: bool,
+    },
+    /// The caller's read marker for one channel.
+    ChatReadMarker {
+        channel_id: String,
+        last_read_seq: u64,
+        updated_at_ms: i64,
+    },
+    /// Bounded composing snapshot for one channel (content-free).
+    ChatComposing {
+        channel_id: String,
+        composing: Vec<ChatComposingDto>,
+    },
+    /// Bounded incremental sync page for one channel.
+    ChatSync {
+        channel_id: String,
+        messages: Vec<ChatMessageDto>,
+        next_cursor: u64,
+        resync_required: bool,
+        retention_floor_seq: u64,
     },
 }
 
@@ -1545,6 +1689,98 @@ pub enum CoreRequest {
     PresenceSnapshotGet {
         project_id: String,
     },
+    // ── Project Collaboration M001: Project Channel/Message Protocol ──
+    //
+    // Every chat operation below is project-scoped and requires
+    // `project.chat` on the owning project. Channel-scoped requests
+    // carry only the channel locator; the daemon resolves the owning
+    // project server-side through the durable channel row (unknown
+    // channels fail closed). Principals come from transport authority,
+    // never from the payload.
+    /// Query daemon chat capabilities and bounds.
+    ChatCapabilities,
+    /// Ensure the default project channel exists (idempotent). Returns
+    /// the oldest channel when one already exists.
+    ChatChannelEnsure {
+        project_id: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Bounded channel listing for one project, oldest first.
+    ChatChannelList {
+        project_id: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Bounded message history for one channel, ascending by `seq`.
+    ChatHistory {
+        channel_id: String,
+        #[serde(default)]
+        from_seq: Option<u64>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
+    /// Send one message. `idempotency_key` scopes retry convergence to
+    /// `(channel_id, key)`: a duplicate key returns the original message
+    /// without assigning a second sequence number.
+    ChatSend {
+        channel_id: String,
+        body: String,
+        #[serde(default)]
+        reply_to: Option<String>,
+        #[serde(default)]
+        thread_root: Option<String>,
+        #[serde(default)]
+        mentions: Vec<String>,
+        #[serde(default)]
+        references: Vec<ChatReferenceDto>,
+        #[serde(default)]
+        idempotency_key: Option<String>,
+    },
+    /// Edit one message body. Only the original author may edit and the
+    /// expected revision must match the stored revision.
+    ChatEdit {
+        channel_id: String,
+        message_id: String,
+        expected_revision: u64,
+        new_body: String,
+    },
+    /// Redact one message body to `[REDACTED]`. Only the original author
+    /// may redact; prior revisions survive as append-only history.
+    ChatRedact {
+        channel_id: String,
+        message_id: String,
+        #[serde(default)]
+        expected_revision: Option<u64>,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// Advance the caller's read marker. Markers only move forward.
+    ChatReadSet {
+        channel_id: String,
+        last_read_seq: u64,
+    },
+    /// Fetch the caller's read marker for one channel.
+    ChatReadGet {
+        channel_id: String,
+    },
+    /// Set or clear the caller's ephemeral composing lease in one channel.
+    ChatComposingSet {
+        channel_id: String,
+        composing: bool,
+    },
+    /// Bounded composing snapshot for one channel (content-free).
+    ChatComposingList {
+        channel_id: String,
+    },
+    /// Bounded incremental sync from a cursor. Expired cursors receive a
+    /// bounded resync page with `resync_required` set.
+    ChatSync {
+        channel_id: String,
+        from_seq: u64,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1986,6 +2222,39 @@ pub enum CoreEvent {
     /// (global filter) so it survives session-scoped replay filters.
     PresenceUpdated {
         project_id: String,
+    },
+    // ── Project Collaboration M001: Project Channel/Message Protocol ──
+    //
+    // Structural liveness hints only. Committed events carry the full
+    // message because the recipient already holds `project.chat` on the
+    // owning project (the daemon publishes per-project and subscribers
+    // re-fetch through the authorized history/sync path on doubt).
+    // Composing updates carry no content: receivers re-fetch through
+    // the authorized composing-list path.
+    /// A chat message was committed to a channel.
+    ChatMessageCommitted {
+        project_id: String,
+        channel_id: String,
+        message: ChatMessageDto,
+    },
+    /// A chat message body was edited (new revision).
+    ChatMessageEdited {
+        project_id: String,
+        channel_id: String,
+        message: ChatMessageDto,
+    },
+    /// A chat message body was redacted. Carries identity and revision
+    /// only; receivers re-fetch the message for the redacted view.
+    ChatMessageRedacted {
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+    },
+    /// Composing state changed in a channel (content-free hint).
+    ChatComposingUpdated {
+        project_id: String,
+        channel_id: String,
     },
 }
 

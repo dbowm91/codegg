@@ -184,6 +184,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 54 {
         migrate_and_record(pool, 54).await?;
     }
+    if current_version < 55 {
+        migrate_and_record(pool, 55).await?;
+    }
 
     Ok(())
 }
@@ -250,6 +253,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             52 => migrate_v52(&mut tx).await?,
             53 => migrate_v53(&mut tx).await?,
             54 => migrate_v54(&mut tx).await?,
+            55 => migrate_v55(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2374,6 +2378,23 @@ async fn migrate_v54(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "CREATE INDEX IF NOT EXISTS idx_audit_body_event ON audit_body(event_id)",
         "CREATE INDEX IF NOT EXISTS idx_audit_body_expires ON audit_body(expires_at)",
     ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Project Collaboration M001: durable project channels, messages with
+/// append-only revision history, per-principal read markers, and client
+/// idempotency keys.
+///
+/// `chat_message` rows are the live retention window (oldest pruned
+/// first); `chat_revision` rows survive pruning so edit/redact history
+/// remains append-only. Composing leases stay ephemeral in memory and
+/// have no table. Additive `IF NOT EXISTS`, safe on existing databases.
+async fn migrate_v55(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::collaboration::CHAT_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

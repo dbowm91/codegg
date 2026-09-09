@@ -84,6 +84,12 @@ pub struct CoreDaemon {
     /// project-scoped presence leases. Never durable, never
     /// authoritative for authorization; cleared on restart.
     pub presence: Arc<codegg_core::presence::PresenceService>,
+    /// Project Collaboration M001: daemon-owned project-chat service.
+    /// Durable channels/messages/read markers live in the catalog pool
+    /// (when present); composing leases are ephemeral in memory and
+    /// cleared on restart. Pool-less daemons serve composing state only
+    /// and fail durable operations with `chat_unavailable`.
+    pub collaboration: Arc<codegg_core::collaboration::CollaborationService>,
     /// Projection replay publication seam. Present only for SQLite-backed
     /// daemons; legacy in-memory daemons retain `None`.
     pub projection_seam:
@@ -419,6 +425,9 @@ impl CoreDaemon {
             daemon_id,
             generation,
             pool: deps.pool.clone(),
+            collaboration: Arc::new(
+                codegg_core::collaboration::CollaborationService::with_defaults(deps.pool.clone()),
+            ),
             deps,
             event_log,
             sessions: Arc::new(crate::core::session_runtime::SessionRuntimeRegistry::new()),
@@ -2197,12 +2206,30 @@ impl CoreDaemon {
                 | CoreRequest::ProjectionArtifactList { .. }
                 | CoreRequest::ProjectionArtifactRead { .. }
         );
+        // Collaboration M001: single-project chat reads/writes deny as
+        // not-found so unauthorized callers cannot infer project
+        // existence, membership, channels, or message activity.
+        let chat_private = matches!(
+            request,
+            CoreRequest::ChatChannelEnsure { .. }
+                | CoreRequest::ChatChannelList { .. }
+                | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatSend { .. }
+                | CoreRequest::ChatEdit { .. }
+                | CoreRequest::ChatRedact { .. }
+                | CoreRequest::ChatReadSet { .. }
+                | CoreRequest::ChatReadGet { .. }
+                | CoreRequest::ChatComposingSet { .. }
+                | CoreRequest::ChatComposingList { .. }
+                | CoreRequest::ChatSync { .. }
+        );
         if (matches!(
             request,
             CoreRequest::ProjectGet { .. }
                 | CoreRequest::PresenceSnapshotGet { .. }
                 | CoreRequest::PresenceHeartbeat { .. }
-        ) || observe_private)
+        ) || observe_private
+            || chat_private)
             && error.is_denial()
         {
             let (code, message) = codegg_core::authorization::denial_as_not_found();
@@ -2307,10 +2334,22 @@ impl CoreDaemon {
             CoreRequest::AuditExport { request } => Some(request.project_id.as_str()),
             CoreRequest::PresenceHeartbeat { request } => Some(request.project_id.as_str()),
             CoreRequest::PresenceSnapshotGet { project_id } => Some(project_id.as_str()),
+            CoreRequest::ChatChannelEnsure { project_id, .. }
+            | CoreRequest::ChatChannelList { project_id, .. } => Some(project_id.as_str()),
             _ => None,
         };
         if let Some(raw) = direct {
             return ProjectId::parse(raw).ok();
+        }
+        // Collaboration M001: channel-scoped requests carry only the
+        // channel locator; the owning project resolves server-side
+        // through the durable channel row. Unknown channels yield `None`
+        // so team principals fail closed.
+        if let Some(channel_id) = Self::chat_channel_id_for_request(request) {
+            return Box::pin(codegg_core::collaboration::channel_project(
+                pool, channel_id,
+            ))
+            .await;
         }
         if let CoreRequest::ProjectionSubscribe { request } = request {
             return match request.scope {
@@ -2347,6 +2386,556 @@ impl CoreDaemon {
             return self.job_session_project(pool, job_id).await;
         }
         None
+    }
+
+    /// Collaboration M001: `channel_id` locator carried by one
+    /// channel-scoped chat request, if any. Capability creation and
+    /// channel listing carry a direct `project_id` instead.
+    fn chat_channel_id_for_request(request: &CoreRequest) -> Option<&str> {
+        match request {
+            CoreRequest::ChatHistory { channel_id, .. }
+            | CoreRequest::ChatSend { channel_id, .. }
+            | CoreRequest::ChatEdit { channel_id, .. }
+            | CoreRequest::ChatRedact { channel_id, .. }
+            | CoreRequest::ChatReadSet { channel_id, .. }
+            | CoreRequest::ChatReadGet { channel_id }
+            | CoreRequest::ChatComposingSet { channel_id, .. }
+            | CoreRequest::ChatComposingList { channel_id }
+            | CoreRequest::ChatSync { channel_id, .. } => Some(channel_id),
+            _ => None,
+        }
+    }
+
+    /// Collaboration M001: `true` when the request is served by the
+    /// dedicated chat handler ([`Self::handle_chat_request`]).
+    fn is_chat_request(request: &CoreRequest) -> bool {
+        matches!(
+            request,
+            CoreRequest::ChatCapabilities
+                | CoreRequest::ChatChannelEnsure { .. }
+                | CoreRequest::ChatChannelList { .. }
+                | CoreRequest::ChatHistory { .. }
+                | CoreRequest::ChatSend { .. }
+                | CoreRequest::ChatEdit { .. }
+                | CoreRequest::ChatRedact { .. }
+                | CoreRequest::ChatReadSet { .. }
+                | CoreRequest::ChatReadGet { .. }
+                | CoreRequest::ChatComposingSet { .. }
+                | CoreRequest::ChatComposingList { .. }
+                | CoreRequest::ChatSync { .. }
+        )
+    }
+    /// Collaboration M001: resolve one channel locator to its
+    /// `(ChannelId, ProjectId)` pair through the durable channel row.
+    ///
+    /// Unknown channels report `chat_channel_not_found` and malformed
+    /// ids report `chat_invalid_input`, neither leaking which projects
+    /// exist. Pool-less daemons have no durable channels and report
+    /// `chat_unavailable`. The error is boxed: `CoreResponse` is a large
+    /// enum and returning it by value trips the large-error lint.
+    async fn resolve_chat_channel(
+        &self,
+        channel_id: &str,
+    ) -> Result<
+        (
+            codegg_core::identity::ChannelId,
+            codegg_core::identity::ProjectId,
+        ),
+        Box<CoreResponse>,
+    > {
+        let channel = codegg_core::identity::ChannelId::parse(channel_id).map_err(|error| {
+            Box::new(CoreResponse::Error {
+                code: "chat_invalid_input".to_owned(),
+                message: error.to_string(),
+            })
+        })?;
+        let Some(pool) = self.pool.clone() else {
+            return Err(Box::new(CoreResponse::Error {
+                code: "chat_unavailable".to_owned(),
+                message: "project chat requires a durable database pool".to_owned(),
+            }));
+        };
+        match codegg_core::collaboration::channel_project(&pool, channel.as_str()).await {
+            Some(project) => Ok((channel, project)),
+            None => Err(Box::new(CoreResponse::Error {
+                code: "chat_channel_not_found".to_owned(),
+                message: "chat channel not found".to_owned(),
+            })),
+        }
+    }
+
+    /// Collaboration M001: dedicated chat request handler.
+    ///
+    /// The M003 gate enforced `project.chat` before this runs. Bodies
+    /// are inert text: this handler never parses commands, mentions, or
+    /// references into execution. Principals come from transport
+    /// authority, never from the payload.
+    async fn handle_chat_request(
+        &self,
+        request: CoreRequest,
+        trusted_client_id: &str,
+    ) -> Result<CoreResponse, crate::error::AppError> {
+        use codegg_core::collaboration::CollaborationError;
+        let chat_error = |error: CollaborationError| CoreResponse::Error {
+            code: error.code().to_owned(),
+            message: error.to_string(),
+        };
+        match request {
+            CoreRequest::ChatCapabilities => Ok(CoreResponse::ChatCapabilities {
+                capabilities: self.collaboration.capabilities_dto(),
+            }),
+            CoreRequest::ChatChannelEnsure { project_id, name } => {
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let outcome = if let Some(name) = name.as_deref() {
+                    self.collaboration
+                        .ensure_channel_by_name(&project, &principal, name, now_ms)
+                        .await
+                } else {
+                    self.collaboration
+                        .ensure_default_channel(&project, &principal, now_ms)
+                        .await
+                };
+                match outcome {
+                    Ok(channel) => Ok(CoreResponse::ChatChannel {
+                        channel: channel.to_dto(),
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatChannelList { project_id, limit } => {
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                match self.collaboration.list_channels(&project, limit).await {
+                    Ok((channels, truncated)) => Ok(CoreResponse::ChatChannelList {
+                        channels: channels.iter().map(|c| c.to_dto()).collect(),
+                        truncated,
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatHistory {
+                channel_id,
+                from_seq,
+                limit,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                match self
+                    .collaboration
+                    .history(&project, &channel, from_seq, limit)
+                    .await
+                {
+                    Ok(page) => Ok(CoreResponse::ChatHistory {
+                        channel_id: channel.as_str().to_owned(),
+                        messages: page.messages.iter().map(|m| m.to_dto()).collect(),
+                        next_cursor: page.next_cursor,
+                        truncated: page.truncated,
+                        retention_floor_seq: page.retention_floor_seq,
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatSend {
+                channel_id,
+                body,
+                reply_to,
+                thread_root,
+                mentions,
+                references,
+                idempotency_key,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                let parse_message_id = |raw: &str| {
+                    codegg_core::identity::ChatMessageId::parse(raw).map_err(|error| {
+                        Box::new(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        })
+                    })
+                };
+                let reply_to = match reply_to.as_deref().map(parse_message_id).transpose() {
+                    Ok(target) => target,
+                    Err(response) => return Ok(*response),
+                };
+                let thread_root = match thread_root.as_deref().map(parse_message_id).transpose() {
+                    Ok(target) => target,
+                    Err(response) => return Ok(*response),
+                };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self
+                    .collaboration
+                    .send_message(
+                        &project,
+                        &channel,
+                        &principal,
+                        None,
+                        &body,
+                        reply_to.as_ref(),
+                        thread_root.as_ref(),
+                        &mentions,
+                        &references,
+                        idempotency_key.as_deref(),
+                        now_ms,
+                    )
+                    .await
+                {
+                    Ok(outcome) => {
+                        if !outcome.duplicate {
+                            let dto = outcome.message.to_dto();
+                            self.event_log
+                                .publish(
+                                    None,
+                                    None,
+                                    CoreEvent::ChatMessageCommitted {
+                                        project_id: project.as_str().to_owned(),
+                                        channel_id: channel.as_str().to_owned(),
+                                        message: dto.clone(),
+                                    },
+                                )
+                                .await;
+                            Ok(CoreResponse::ChatMessage {
+                                message: dto,
+                                duplicate: false,
+                            })
+                        } else {
+                            Ok(CoreResponse::ChatMessage {
+                                message: outcome.message.to_dto(),
+                                duplicate: true,
+                            })
+                        }
+                    }
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatEdit {
+                channel_id,
+                message_id,
+                expected_revision,
+                new_body,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                let message_id =
+                    match codegg_core::identity::ChatMessageId::parse(message_id.as_str()) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "chat_invalid_input".to_owned(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self
+                    .collaboration
+                    .edit_message(
+                        &project,
+                        &channel,
+                        &message_id,
+                        &principal,
+                        expected_revision,
+                        &new_body,
+                        now_ms,
+                    )
+                    .await
+                {
+                    Ok(message) => {
+                        let dto = message.to_dto();
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ChatMessageEdited {
+                                    project_id: project.as_str().to_owned(),
+                                    channel_id: channel.as_str().to_owned(),
+                                    message: dto.clone(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ChatMessage {
+                            message: dto,
+                            duplicate: false,
+                        })
+                    }
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatRedact {
+                channel_id,
+                message_id,
+                expected_revision,
+                reason,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                let message_id =
+                    match codegg_core::identity::ChatMessageId::parse(message_id.as_str()) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "chat_invalid_input".to_owned(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self
+                    .collaboration
+                    .redact_message(
+                        &project,
+                        &channel,
+                        &message_id,
+                        &principal,
+                        expected_revision,
+                        reason.as_deref(),
+                        now_ms,
+                    )
+                    .await
+                {
+                    Ok(message) => {
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ChatMessageRedacted {
+                                    project_id: project.as_str().to_owned(),
+                                    channel_id: channel.as_str().to_owned(),
+                                    message_id: message.id.as_str().to_owned(),
+                                    revision: message.revision,
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::ChatMessage {
+                            message: message.to_dto(),
+                            duplicate: false,
+                        })
+                    }
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatReadSet {
+                channel_id,
+                last_read_seq,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self
+                    .collaboration
+                    .set_read_marker(&project, &channel, &principal, last_read_seq, now_ms)
+                    .await
+                {
+                    Ok(marker) => Ok(CoreResponse::ChatReadMarker {
+                        channel_id: channel.as_str().to_owned(),
+                        last_read_seq: marker.last_read_seq,
+                        updated_at_ms: marker.updated_at_ms,
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatReadGet { channel_id } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                match self
+                    .collaboration
+                    .get_read_marker(&project, &channel, &principal)
+                    .await
+                {
+                    Ok(marker) => {
+                        let (last_read_seq, updated_at_ms) = marker
+                            .map(|m| (m.last_read_seq, m.updated_at_ms))
+                            .unwrap_or((0, 0));
+                        Ok(CoreResponse::ChatReadMarker {
+                            channel_id: channel.as_str().to_owned(),
+                            last_read_seq,
+                            updated_at_ms,
+                        })
+                    }
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            CoreRequest::ChatComposingSet {
+                channel_id,
+                composing,
+            } => {
+                // Composing is ephemeral and pool-independent: the lease
+                // key parses lexically and never touches durable rows.
+                let channel = match codegg_core::identity::ChannelId::parse(channel_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                // Composing still requires project membership: resolve the
+                // owning project and deny unknown channels without
+                // leaking existence. Pool-less daemons skip the check
+                // (local-only, no team state).
+                if self.pool.is_some()
+                    && codegg_core::collaboration::channel_project(
+                        self.pool.as_ref().expect("pool checked"),
+                        channel.as_str(),
+                    )
+                    .await
+                    .is_none()
+                {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_channel_not_found".to_owned(),
+                        message: "chat channel not found".to_owned(),
+                    });
+                }
+                let now = std::time::Instant::now();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                if let Err(error) = self.collaboration.set_composing(
+                    &channel,
+                    &principal,
+                    trusted_client_id,
+                    composing,
+                    now,
+                    now_ms,
+                ) {
+                    return Ok(chat_error(error));
+                }
+                let entries = self.collaboration.list_composing(&channel, now);
+                // Content-free liveness hint; receivers re-fetch through
+                // the authorized composing-list path. Pool-less leases
+                // stay local-only.
+                if let Some(pool) = self.pool.clone() {
+                    if let Some(project) =
+                        codegg_core::collaboration::channel_project(&pool, channel.as_str()).await
+                    {
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::ChatComposingUpdated {
+                                    project_id: project.as_str().to_owned(),
+                                    channel_id: channel.as_str().to_owned(),
+                                },
+                            )
+                            .await;
+                    }
+                }
+                Ok(CoreResponse::ChatComposing {
+                    channel_id: channel.as_str().to_owned(),
+                    composing: entries.iter().map(|e| e.to_dto(&channel)).collect(),
+                })
+            }
+            CoreRequest::ChatComposingList { channel_id } => {
+                let channel = match codegg_core::identity::ChannelId::parse(channel_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                if self.pool.is_some()
+                    && codegg_core::collaboration::channel_project(
+                        self.pool.as_ref().expect("pool checked"),
+                        channel.as_str(),
+                    )
+                    .await
+                    .is_none()
+                {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_channel_not_found".to_owned(),
+                        message: "chat channel not found".to_owned(),
+                    });
+                }
+                let entries = self
+                    .collaboration
+                    .list_composing(&channel, std::time::Instant::now());
+                Ok(CoreResponse::ChatComposing {
+                    channel_id: channel.as_str().to_owned(),
+                    composing: entries.iter().map(|e| e.to_dto(&channel)).collect(),
+                })
+            }
+            CoreRequest::ChatSync {
+                channel_id,
+                from_seq,
+                limit,
+            } => {
+                let (channel, project) = match self.resolve_chat_channel(channel_id.as_str()).await
+                {
+                    Ok(pair) => pair,
+                    Err(response) => return Ok(*response),
+                };
+                match self
+                    .collaboration
+                    .sync(&project, &channel, from_seq, limit)
+                    .await
+                {
+                    Ok(page) => Ok(CoreResponse::ChatSync {
+                        channel_id: channel.as_str().to_owned(),
+                        messages: page.messages.iter().map(|m| m.to_dto()).collect(),
+                        next_cursor: page.next_cursor,
+                        resync_required: page.resync_required,
+                        retention_floor_seq: page.retention_floor_seq,
+                    }),
+                    Err(error) => Ok(chat_error(error)),
+                }
+            }
+            other => Ok(CoreResponse::Error {
+                code: "chat_invalid_input".to_owned(),
+                message: format!(
+                    "request is not a chat operation: {}",
+                    codegg_core::authorization::operation_descriptor(&other).operation
+                ),
+            }),
+        }
     }
 
     /// M003: `session_id` locator carried by one request, if any.
@@ -2992,6 +3581,14 @@ impl CoreDaemon {
             &request.payload,
         ))
         .await;
+        // Collaboration M001: chat arms run in a dedicated handler so
+        // the main dispatch future stays small (same rationale as the
+        // boxed authorization preamble above). The M003 gate has already
+        // enforced `project.chat`; the handler only records/reads the
+        // caller's project-scoped chat state.
+        if Self::is_chat_request(&request.payload) {
+            return Box::pin(self.handle_chat_request(request.payload, trusted_client_id)).await;
+        }
         // Interactive Process Sessions M002: the attach/resume family runs
         // on a fresh task (boxed at the call site). The dispatch match
         // below is already near its stack limit: nesting the PTY handler

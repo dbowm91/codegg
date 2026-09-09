@@ -832,6 +832,73 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectObserve),
         ),
+        // ── Project Collaboration M001: Project Channel/Message Protocol ──
+        //
+        // Every chat operation requires `project.chat` on the owning
+        // project. Channel-scoped requests carry only the channel
+        // locator; the daemon resolves the owning project server-side
+        // through the durable channel row (unknown channels fail
+        // closed). Reads and writes share the same capability so
+        // unauthorized callers cannot enumerate channels, read
+        // messages, or infer existence.
+        R::ChatCapabilities => {
+            OperationDescriptor::new("chat_capabilities", ScopeKind::Global, None)
+        }
+        R::ChatChannelEnsure { .. } => OperationDescriptor::new(
+            "chat_channel_ensure",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatChannelList { .. } => OperationDescriptor::new(
+            "chat_channel_list",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatHistory { .. } => OperationDescriptor::new(
+            "chat_history",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatSend { .. } => OperationDescriptor::new(
+            "chat_send",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatEdit { .. } => OperationDescriptor::new(
+            "chat_edit",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatRedact { .. } => OperationDescriptor::new(
+            "chat_redact",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatReadSet { .. } => OperationDescriptor::new(
+            "chat_read_set",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatReadGet { .. } => OperationDescriptor::new(
+            "chat_read_get",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatComposingSet { .. } => OperationDescriptor::new(
+            "chat_composing_set",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatComposingList { .. } => OperationDescriptor::new(
+            "chat_composing_list",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatSync { .. } => OperationDescriptor::new(
+            "chat_sync",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
     }
 }
 
@@ -1405,6 +1472,60 @@ fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::PresenceSnapshotGet {
             project_id: String::new(),
+        },
+        R::ChatCapabilities,
+        R::ChatChannelEnsure {
+            project_id: String::new(),
+            name: None,
+        },
+        R::ChatChannelList {
+            project_id: String::new(),
+            limit: None,
+        },
+        R::ChatHistory {
+            channel_id: String::new(),
+            from_seq: None,
+            limit: None,
+        },
+        R::ChatSend {
+            channel_id: String::new(),
+            body: String::new(),
+            reply_to: None,
+            thread_root: None,
+            mentions: Vec::new(),
+            references: Vec::new(),
+            idempotency_key: None,
+        },
+        R::ChatEdit {
+            channel_id: String::new(),
+            message_id: String::new(),
+            expected_revision: 0,
+            new_body: String::new(),
+        },
+        R::ChatRedact {
+            channel_id: String::new(),
+            message_id: String::new(),
+            expected_revision: None,
+            reason: None,
+        },
+        R::ChatReadSet {
+            channel_id: String::new(),
+            last_read_seq: 0,
+        },
+        R::ChatReadGet {
+            channel_id: String::new(),
+        },
+        R::ChatComposingSet {
+            channel_id: String::new(),
+            composing: false,
+        },
+        R::ChatComposingList {
+            channel_id: String::new(),
+        },
+        R::ChatSync {
+            channel_id: String::new(),
+            from_seq: 0,
+            limit: None,
         },
     ]
 }

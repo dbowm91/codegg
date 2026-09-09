@@ -408,6 +408,18 @@ resolve through deterministic lookup of an existing unique locator.
   session/project subscribe and artifact list/read denials use
   `project_not_found`. Redaction and artifact bounds are unchanged.
   See `architecture/presence.md`.
+- **Project chat is a versioned namespaced capability** (collaboration
+  M001, `chat.v1`, protocol version 1): `ChatChannelEnsure/List`,
+  `ChatHistory/Send/Edit/Redact`, `ChatReadSet/Get`,
+  `ChatComposingSet/List`, `ChatSync`, plus `ChatCapabilities`.
+  Every project-scoped operation requires `project.chat`; denials use
+  `project_not_found`. Message bodies are bounded inert text (free
+  text never executes); secrets are redacted before durable write.
+  Sync is bounded cursor pagination with explicit `resync_required`
+  once a cursor predates the retention floor. Events
+  (`ChatMessageCommitted/Edited/Redacted`, `ChatComposingUpdated`)
+  are structural liveness hints. Older clients ignore the chat
+  surface. See `architecture/collaboration.md`.
 
 ## Testing
 
@@ -419,6 +431,7 @@ cargo test --test headless_projection_consumer # non-TUI CoreResponse consumer
 
 ## Related Docs
 
+- `architecture/collaboration.md` — project channels/messages/sync (M001)
 - `architecture/presence.md` — project-scoped presence leases (M001)
 - `architecture/projection.md` — full projection contract
 - `architecture/core.md` — core facade and transport adapters
