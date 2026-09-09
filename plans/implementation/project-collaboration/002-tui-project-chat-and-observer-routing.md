@@ -1,6 +1,6 @@
 # Project Collaboration Milestone 002 — TUI Project Chat and Observer Input Routing
 
-Status: blocked
+Status: ready for handoff (unblocked by collaboration M001 closure `plans/closure/project-collaboration/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Add project-scoped chat UI/state to the TUI and route insert-mode text to projec
 
 ## 2. Why this milestone is ready
 
-Blocked on collaboration M001. Presence/observation M003 is a transitive prerequisite and supplies stable observer/focus semantics; multi-project TUI is closed.
+Unblocked by collaboration M001 closure (`plans/closure/project-collaboration/001-status.md`). Presence/observation M003 is a transitive prerequisite and supplies stable observer/focus semantics; multi-project TUI is closed.
 
 ## 3. Current implementation evidence
 

@@ -1,6 +1,6 @@
 # Project Collaboration Milestone 003 — Separately Authorized Structured Chat Actions
 
-Status: blocked
+Status: ready for handoff (unblocked by collaboration M001 closure `plans/closure/project-collaboration/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Add explicit typed message-associated actions for launching an agent task/review
 
 ## 2. Why this milestone is ready
 
-Blocked on M001; identity/audit prerequisites are transitive through M001. Durable agent task/run/job/worktree systems are already closed and are consumers, not reimplemented here.
+Unblocked by collaboration M001 closure (`plans/closure/project-collaboration/001-status.md`); identity/audit prerequisites are transitive through M001. Durable agent task/run/job/worktree systems are already closed and are consumers, not reimplemented here.
 
 ## 3. Current implementation evidence
 

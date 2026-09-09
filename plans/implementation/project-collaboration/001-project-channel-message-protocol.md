@@ -1,6 +1,6 @@
 # Project Collaboration Milestone 001 — Project Channel, Message, and Synchronization Contract
 
-Status: ready for handoff
+Status: implemented (closed by `plans/closure/project-collaboration/001-status.md`)
 
 Unblocked by presence-observation M003 closure (`plans/closure/presence-observation/003-status.md`); identity/audit M005 already closed.
 
