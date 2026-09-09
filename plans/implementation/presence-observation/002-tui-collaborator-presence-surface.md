@@ -1,6 +1,8 @@
 # Presence and Observation Milestone 002 — TUI Collaborator and Presence Surface
 
-Status: ready for handoff
+Status: implemented
+
+Closure: `plans/closure/presence-observation/002-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

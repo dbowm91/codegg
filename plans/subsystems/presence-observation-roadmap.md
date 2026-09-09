@@ -125,5 +125,5 @@ M001-M003 accepted: authorized teammates see current bounded presence and can ob
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/presence-observation/001-project-presence-leases.md` | `plans/closure/presence-observation/001-status.md` | — |
-| M002 | ready | `plans/implementation/presence-observation/002-tui-collaborator-presence-surface.md` | — | — |
-| M003 | blocked | `plans/implementation/presence-observation/003-authorized-read-only-observation.md` | — | M002; session-projections M012 interface already closed |
+| M002 | closed | `plans/implementation/presence-observation/002-tui-collaborator-presence-surface.md` | `plans/closure/presence-observation/002-status.md` | — |
+| M003 | ready | `plans/implementation/presence-observation/003-authorized-read-only-observation.md` | — | — (session-projections M012 interface already closed) |
