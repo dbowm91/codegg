@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 002 — Transport Authentication and Principal Binding
 
-Status: ready for handoff (unblocked by M001 closure at `plans/closure/identity-authorization-audit/001-status.md`)
+Status: closed; see `plans/closure/identity-authorization-audit/002-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 003 — Daemon Authorization and Originating-Principal Attribution
 
-Status: blocked
+Status: ready for handoff (unblocked by M002 closure at `plans/closure/identity-authorization-audit/002-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

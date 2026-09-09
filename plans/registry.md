@@ -28,7 +28,7 @@ Canonical direction remains in:
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Residual runtime consolidation | active | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001/M002 ready | M003 waits for M002. |
-| Identity, authorization, and audit | active | `plans/subsystems/identity-authorization-audit-roadmap.md` | M001 closed, M002 ready | M003-M005 form a hard dependency chain behind M002. |
+| Identity, authorization, and audit | active | `plans/subsystems/identity-authorization-audit-roadmap.md` | M002 closed, M003 ready | M004-M005 form a hard dependency chain behind M003. |
 | Presence and read-only observation | active | `plans/subsystems/presence-observation-roadmap.md` | M001 blocked | Requires identity-authorization-audit M003; later milestones depend on M001/M002. |
 | Project collaboration | active | `plans/subsystems/project-collaboration-roadmap.md` | M001 blocked | Requires identity/audit M005 and presence-observation M003. |
 | Interactive process sessions | active | `plans/subsystems/interactive-process-sessions-roadmap.md` | M001 ready | M002/M003 depend sequentially on M001. |
@@ -60,7 +60,7 @@ Canonical direction remains in:
 |---|---|---|---|
 | Residual runtime consolidation | M001 — stranded coordination/metadata retirement | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | Canonical agent/process owners are already closed; no hard dependency. |
 | Residual runtime consolidation | M002 — CoreDaemon request-family decomposition | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | Behavior-preserving physical refactor over already stable domain owners. |
-| Identity, authorization, and audit | M002 — transport authentication and principal binding | `plans/implementation/identity-authorization-audit/002-transport-authentication-principal-binding.md` | M001 domain closed; local/HTTP/WebSocket/stdio seams already identified as stable. |
+| Identity, authorization, and audit | M003 — daemon authorization and attribution | `plans/implementation/identity-authorization-audit/003-daemon-authorization-and-attribution.md` | M002 transport identity closed; `AuthenticatedPrincipal`/`ClientRegistry`/`RequestAuthorityContext` seams already landed as stable. |
 | Interactive process sessions | M001 — scheduler-owned PTY engine | `plans/implementation/interactive-process-sessions/001-scheduler-owned-pty-engine.md` | Scheduler/workspace/managed-process foundations are closed; protocol is downstream. |
 | Tool Program capability expansion | M001 — deterministic local read expansion | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | Tool Programs are strictly closed and ADR-0001 supplies the authority contract. |
 
@@ -83,7 +83,6 @@ These five plans may be implemented in parallel if agents avoid overlapping docu
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 | Residual runtime consolidation | M003 construction/lifecycle decomposition | M002 closure. |
-| Identity, authorization, and audit | M003 daemon authorization/attribution | M002 closure. |
 | Identity, authorization, and audit | M004 append-only audit foundation | M003 closure. |
 | Identity, authorization, and audit | M005 audit instrumentation | M004 closure. |
 | Presence and observation | M001 presence leases | Identity/auth M003 closure. |
@@ -104,6 +103,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
 | Identity, authorization, and audit | M001 closed | `plans/closure/identity-authorization-audit/001-status.md` |
+| Identity, authorization, and audit | M002 closed | `plans/closure/identity-authorization-audit/002-status.md` |
 | Post-audit maintainability and surface | closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
 | Provider authentication capability closure | closed | `plans/closure/provider-connections/010-status.md` |
 | Frontend-neutral session projections | closed | `plans/closure/session-projections/012-status.md` |
