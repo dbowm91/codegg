@@ -5,6 +5,7 @@ pub mod agent_run;
 pub mod agent_run_control;
 pub mod agent_run_group;
 pub mod audit;
+pub mod audit_instrumentation;
 pub mod authorization;
 pub mod bus;
 pub mod context;

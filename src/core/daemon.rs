@@ -2189,6 +2189,458 @@ impl CoreDaemon {
         }
     }
 
+    /// M005: best-effort append of one structural audit event.
+    ///
+    /// Bounded: one per-write timeout, no unbounded queue, never fails
+    /// the operation. Outcomes are observable via
+    /// `audit_instrumentation::emit_counters_snapshot` plus warn logs.
+    async fn append_audit_event(&self, builder: codegg_core::audit::AuditEventBuilder) {
+        let Some(pool) = self.pool.clone() else {
+            codegg_core::audit_instrumentation::record_emit_dropped_no_pool();
+            return;
+        };
+        let store = codegg_core::audit::AuditStore::new(pool);
+        match tokio::time::timeout(std::time::Duration::from_millis(500), store.append(builder))
+            .await
+        {
+            Ok(Ok(_)) => codegg_core::audit_instrumentation::record_emit_appended(),
+            Ok(Err(error)) => {
+                codegg_core::audit_instrumentation::record_emit_failed();
+                tracing::warn!(error = %error, "audit event append failed");
+            }
+            Err(_) => {
+                codegg_core::audit_instrumentation::record_emit_failed();
+                tracing::warn!("audit event append timed out");
+            }
+        }
+    }
+
+    /// M005: causal chain locators for one request.
+    ///
+    /// Derived from request DTO locators plus the gate-resolved project.
+    /// Payloads supply locators only; actor/decision always come from
+    /// the trusted authority/decision pair.
+    fn audit_chain_for_request(
+        request: &CoreRequest,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> codegg_core::audit_instrumentation::AuditChainContext {
+        let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+        chain.project = decision.project_id.clone();
+        if let Some(session) = Self::session_id_for_request(request) {
+            chain.session_id = Some(session.to_owned());
+        }
+        match request {
+            CoreRequest::TurnCancel { turn_id, .. } | CoreRequest::TurnSteer { turn_id, .. } => {
+                chain.turn_id = Some(turn_id.clone());
+            }
+            CoreRequest::JobCancel { job_id, .. } | CoreRequest::JobRetry { job_id } => {
+                chain.job_id = Some(job_id.clone());
+            }
+            CoreRequest::ManagedWorktreeCleanup { worktree_id, .. }
+            | CoreRequest::ManagedWorktreeArchive { worktree_id, .. } => {
+                chain.worktree_id = Some(worktree_id.clone());
+            }
+            CoreRequest::SessionSelectionUpdate { request } => {
+                chain.provider_connection_id = Some(request.connection_id.clone());
+            }
+            CoreRequest::SessionSelectionModels { connection_id, .. } => {
+                chain.provider_connection_id = Some(connection_id.clone());
+            }
+            CoreRequest::RunRerun {
+                parent_run_id,
+                session_id,
+                ..
+            } => {
+                chain.run_id = Some(parent_run_id.clone());
+                if chain.session_id.is_none() {
+                    chain.session_id = session_id.clone();
+                }
+            }
+            CoreRequest::LspPreviewApply { request } => {
+                chain.session_id = Some(request.session_id.clone());
+                if let Some(turn) = request.turn_id.clone() {
+                    chain.turn_id = Some(turn);
+                }
+            }
+            CoreRequest::EditCheckpointUndo { session_id, .. }
+            | CoreRequest::EditCheckpointUndoLatest { session_id, .. }
+            | CoreRequest::EditCheckpointReapply { session_id, .. }
+            | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => {
+                chain.session_id = Some(session_id.clone());
+            }
+            CoreRequest::SchedulePause { schedule_id }
+            | CoreRequest::ScheduleResume { schedule_id }
+            | CoreRequest::ScheduleDelete { schedule_id } => {
+                chain.job_id = Some(schedule_id.clone());
+            }
+            _ => {}
+        }
+        if let CoreRequest::JobSubmit { spec } = request {
+            if let Some(session) = spec.session_id.clone() {
+                chain.session_id = Some(session);
+            }
+            if let Some(turn) = spec.turn_id.clone() {
+                chain.turn_id = Some(turn);
+            }
+        }
+        if let CoreRequest::ScheduleCreate { spec } = request {
+            if let Some(session) = spec.session_id.clone() {
+                chain.session_id = Some(session);
+            }
+        }
+        chain
+    }
+
+    /// M005: emit one structural event for an authorized request.
+    ///
+    /// Canonical control-plane seam: runs after the M003 gate, before
+    /// any side effect, at the daemon dispatch owner. Creation
+    /// operations that mint their identity in the handler
+    /// (`SessionCreate`, `JobSubmit`, audit reads) are skipped here
+    /// and emitted post-creation with their durable ids.
+    async fn emit_audit_for_authorized(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        request_id: &str,
+        request: &CoreRequest,
+    ) {
+        use codegg_core::audit_instrumentation as instr;
+        let operation = codegg_core::authorization::operation_descriptor(request).operation;
+        let Some(action) = instr::operation_to_audit_action(operation) else {
+            return;
+        };
+        match request {
+            CoreRequest::SessionCreate { .. }
+            | CoreRequest::JobSubmit { .. }
+            | CoreRequest::AuditQuery { .. }
+            | CoreRequest::AuditExport { .. } => return,
+            _ => {}
+        }
+        let provenance = codegg_core::authorization::audit_provenance(decision);
+        let chain = Self::audit_chain_for_request(request, decision);
+        let principal = authority.principal();
+        let builder = match action {
+            codegg_core::audit::AuditAction::Authentication => {
+                instr::authentication_event(principal, &provenance, &chain, "allow")
+            }
+            codegg_core::audit::AuditAction::SessionCreate => {
+                let session = chain
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::session_create_event(principal, &provenance, &chain, &session, "allow")
+            }
+            codegg_core::audit::AuditAction::SessionAttach => {
+                let session = chain.session_id.clone().unwrap_or_default();
+                instr::session_attach_event(principal, &provenance, &chain, &session, "allow")
+            }
+            codegg_core::audit::AuditAction::PromptSubmit => {
+                let (session, text) = match request {
+                    CoreRequest::TurnSubmit {
+                        session_id, text, ..
+                    } => (session_id.clone(), text.clone()),
+                    CoreRequest::TurnSteer {
+                        session_id, text, ..
+                    } => (session_id.clone(), text.clone()),
+                    _ => (chain.session_id.clone().unwrap_or_default(), String::new()),
+                };
+                let digest = instr::structural_digest(text.as_bytes());
+                instr::prompt_submit_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &session,
+                    request_id,
+                    &digest,
+                    text.len(),
+                    "allow",
+                )
+            }
+            codegg_core::audit::AuditAction::ProviderSelect => {
+                let (session, connection, model) = match request {
+                    CoreRequest::SessionSelectionUpdate { request } => (
+                        request.session_id.clone(),
+                        request.connection_id.clone(),
+                        request.model_id.clone(),
+                    ),
+                    _ => (
+                        chain.session_id.clone().unwrap_or_default(),
+                        chain
+                            .provider_connection_id
+                            .clone()
+                            .unwrap_or_else(|| decision.operation.clone()),
+                        decision.operation.clone(),
+                    ),
+                };
+                instr::provider_select_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &session,
+                    &connection,
+                    &model,
+                    "allow",
+                )
+            }
+            codegg_core::audit::AuditAction::ModelSelect => {
+                let (session, model) = match request {
+                    CoreRequest::ModelSelect { session_id, model } => {
+                        (session_id.clone(), model.clone())
+                    }
+                    _ => (
+                        chain.session_id.clone().unwrap_or_default(),
+                        decision.operation.clone(),
+                    ),
+                };
+                instr::model_select_event(principal, &provenance, &chain, &session, &model, "allow")
+            }
+            codegg_core::audit::AuditAction::AgentDelegate => {
+                let (parent, child) = match request {
+                    CoreRequest::AgentSelect {
+                        session_id,
+                        agent_name,
+                    } => (session_id.clone(), agent_name.clone()),
+                    CoreRequest::GoalSet { session_id, .. }
+                    | CoreRequest::GoalFromFile { session_id, .. }
+                    | CoreRequest::GoalPause { session_id }
+                    | CoreRequest::GoalResume { session_id }
+                    | CoreRequest::GoalClear { session_id }
+                    | CoreRequest::GoalDone { session_id }
+                    | CoreRequest::GoalCheckpoint { session_id, .. }
+                    | CoreRequest::GoalSetBudget { session_id, .. } => {
+                        (session_id.clone(), request_id.to_owned())
+                    }
+                    CoreRequest::ToolProgramNotificationReinject { session_id }
+                    | CoreRequest::ToolProgramRecoveryDebugInspect { session_id, .. } => {
+                        (session_id.clone(), request_id.to_owned())
+                    }
+                    _ => (
+                        chain
+                            .session_id
+                            .clone()
+                            .unwrap_or_else(|| request_id.to_owned()),
+                        request_id.to_owned(),
+                    ),
+                };
+                instr::agent_delegate_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &parent,
+                    &child,
+                    "allow",
+                )
+            }
+            codegg_core::audit::AuditAction::PermissionDecision => {
+                let (tool, outcome) = match request {
+                    CoreRequest::PermissionRespond { id, choice } => (id.clone(), choice.clone()),
+                    _ => (request_id.to_owned(), "allow".to_owned()),
+                };
+                instr::permission_decision_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &tool,
+                    &outcome,
+                    &decision.operation,
+                )
+            }
+            codegg_core::audit::AuditAction::ToolInvoke => {
+                let run = chain
+                    .run_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::tool_invoke_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    "run_rerun",
+                    "scheduler",
+                    "allow",
+                )
+                .with_run(run)
+            }
+            codegg_core::audit::AuditAction::FileMutate => {
+                let (digest_source, op) = match request {
+                    CoreRequest::EditCheckpointUndo { checkpoint_id, .. }
+                    | CoreRequest::EditCheckpointReapply { checkpoint_id, .. } => {
+                        (checkpoint_id.clone(), decision.operation.clone())
+                    }
+                    CoreRequest::LspPreviewApply { request } => {
+                        (request.preview_id.clone(), decision.operation.clone())
+                    }
+                    _ => (request_id.to_owned(), decision.operation.clone()),
+                };
+                let digest = instr::structural_digest(digest_source.as_bytes());
+                instr::file_mutate_event(principal, &provenance, &chain, &digest, &op, "allow")
+            }
+            codegg_core::audit::AuditAction::WorktreeLifecycle => {
+                let worktree = chain
+                    .worktree_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::worktree_lifecycle_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &worktree,
+                    &decision.operation,
+                    "allow",
+                )
+            }
+            codegg_core::audit::AuditAction::JobSubmit => {
+                let job = chain
+                    .job_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::job_submit_event(principal, &provenance, &chain, &job, "allow")
+            }
+            codegg_core::audit::AuditAction::JobCancel => {
+                let job = chain
+                    .job_id
+                    .clone()
+                    .or_else(|| chain.turn_id.clone())
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::job_cancel_event(principal, &provenance, &chain, &job, "allow")
+            }
+            codegg_core::audit::AuditAction::JobComplete => {
+                let job = chain
+                    .job_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::job_complete_event(principal, &provenance, &chain, &job, "retry", "allow")
+            }
+            codegg_core::audit::AuditAction::MembershipChange => {
+                let member = chain
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| request_id.to_owned());
+                instr::membership_change_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &member,
+                    &decision.operation,
+                    decision.membership_revision,
+                )
+            }
+            codegg_core::audit::AuditAction::ConfigChange => instr::config_change_event(
+                principal,
+                &provenance,
+                &chain,
+                &decision.operation,
+                decision
+                    .project_id
+                    .as_ref()
+                    .map(|id| id.as_str())
+                    .unwrap_or("workspace"),
+                "allow",
+            ),
+            codegg_core::audit::AuditAction::AssetRefresh => {
+                let project = decision
+                    .project_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_owned())
+                    .unwrap_or_default();
+                instr::asset_refresh_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &project,
+                    "request_authorized",
+                    "allow",
+                )
+            }
+            codegg_core::audit::AuditAction::AuthorizationDecision => {
+                instr::authorization_denied_event(
+                    principal,
+                    &provenance,
+                    &chain,
+                    &decision.operation,
+                    decision.capability.as_deref().unwrap_or("none"),
+                    "authorized",
+                )
+            }
+            _ => return,
+        };
+        self.append_audit_event(builder).await;
+    }
+
+    /// M005: emit one terminal denial event for a rejected request.
+    ///
+    /// Denials carry the operation/capability the caller supplied plus
+    /// the denial reason. They never carry secret material and never
+    /// leak project existence beyond the authorized read gate that
+    /// already protects audit pages.
+    async fn emit_audit_for_denial(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        request_id: &str,
+        request: &CoreRequest,
+        error: &codegg_core::authorization::AuthorizationError,
+    ) {
+        use codegg_core::audit_instrumentation as instr;
+        let descriptor = codegg_core::authorization::operation_descriptor(request);
+        let capability = match error {
+            codegg_core::authorization::AuthorizationError::Denied { capability, .. } => {
+                (*capability).to_owned()
+            }
+            _ => descriptor
+                .capability
+                .map(|cap| cap.as_str().to_owned())
+                .unwrap_or_else(|| "none".to_owned()),
+        };
+        let correlation = format!("{}:{request_id}", authority.correlation_id());
+        // Best-effort direct project locator so project-scoped denials
+        // remain queryable by the project owner through the `audit.read`
+        // gate. Unresolvable scopes stay `None` and never leak existence
+        // through the audit page itself.
+        let direct_project: Option<codegg_core::identity::ProjectId> = match request {
+            CoreRequest::AuditQuery { query } => {
+                codegg_core::identity::ProjectId::parse(query.project_id.as_str()).ok()
+            }
+            CoreRequest::AuditExport { request } => {
+                codegg_core::identity::ProjectId::parse(request.project_id.as_str()).ok()
+            }
+            CoreRequest::SessionList { project_id, .. }
+            | CoreRequest::ProjectGet { project_id }
+            | CoreRequest::ProjectArchive { project_id }
+            | CoreRequest::ProjectRestore { project_id } => {
+                codegg_core::identity::ProjectId::parse(project_id).ok()
+            }
+            CoreRequest::SessionCreate {
+                project_id: Some(project_id),
+                ..
+            }
+            | CoreRequest::SessionCreateFromTemplate {
+                project_id: Some(project_id),
+                ..
+            } => codegg_core::identity::ProjectId::parse(project_id).ok(),
+            _ => None,
+        };
+        let provenance = codegg_core::audit::AuditDecisionProvenance::new(
+            uuid::Uuid::new_v4().to_string(),
+            correlation,
+            "denied",
+            direct_project.clone(),
+        );
+        let mut chain = codegg_core::audit_instrumentation::AuditChainContext::new();
+        chain.project = direct_project;
+        if let Some(session) = Self::session_id_for_request(request) {
+            chain.session_id = Some(session.to_owned());
+        }
+        let builder = instr::authorization_denied_event(
+            authority.principal(),
+            &provenance,
+            &chain,
+            descriptor.operation,
+            &capability,
+            &error.to_string(),
+        );
+        self.append_audit_event(builder).await;
+    }
+
     async fn handle_request_with_client(
         &self,
         request: RequestEnvelope<CoreRequest>,
@@ -2210,8 +2662,24 @@ impl CoreDaemon {
         .await
         {
             Ok(decision) => decision,
-            Err(error) => return Ok(Self::authorization_denial(&request.payload, &error)),
+            Err(error) => {
+                Box::pin(self.emit_audit_for_denial(
+                    &authority,
+                    &request.request_id,
+                    &request.payload,
+                    &error,
+                ))
+                .await;
+                return Ok(Self::authorization_denial(&request.payload, &error));
+            }
         };
+        Box::pin(self.emit_audit_for_authorized(
+            &authority,
+            &authz_decision,
+            &request.request_id,
+            &request.payload,
+        ))
+        .await;
         match request.payload {
             CoreRequest::AssetRefresh { request } => {
                 let Some(resolver) = self.context_resolver.as_ref() else {
@@ -2900,6 +3368,28 @@ impl CoreDaemon {
                                 connection_id.as_str(),
                             )
                             .await;
+                            // M005: structural provider-selection event.
+                            {
+                                let provenance =
+                                    codegg_core::authorization::audit_provenance(&authz_decision);
+                                let mut chain =
+                                    codegg_core::audit_instrumentation::AuditChainContext::new();
+                                chain.project = authz_decision.project_id.clone();
+                                chain.session_id = Some(req.session_id.clone());
+                                chain.provider_connection_id =
+                                    Some(connection_id.as_str().to_owned());
+                                let builder =
+                                    codegg_core::audit_instrumentation::provider_select_event(
+                                        authority.principal(),
+                                        &provenance,
+                                        &chain,
+                                        req.session_id.as_str(),
+                                        connection_id.as_str(),
+                                        req.model_id.as_str(),
+                                        "allow",
+                                    );
+                                self.append_audit_event(builder).await;
+                            }
                             Ok(CoreResponse::SessionSelectionUpdated {
                                 session_id: req.session_id,
                                 selection,
@@ -3295,6 +3785,28 @@ impl CoreDaemon {
                                         created.id.as_str(),
                                     )
                                     .await;
+                                    // M005: structural session-create event
+                                    // with the durable session id.
+                                    {
+                                        let provenance =
+                                            codegg_core::authorization::audit_provenance(
+                                                &authz_decision,
+                                            );
+                                        let mut chain =
+                                            codegg_core::audit_instrumentation::AuditChainContext::new(
+                                            );
+                                        chain.project = Some(context.project_id.clone());
+                                        chain.session_id = Some(created.id.clone());
+                                        let builder =
+                                            codegg_core::audit_instrumentation::session_create_event(
+                                                authority.principal(),
+                                                &provenance,
+                                                &chain,
+                                                created.id.as_str(),
+                                                "allow",
+                                            );
+                                        self.append_audit_event(builder).await;
+                                    }
                                     Ok(CoreResponse::Session { session: created })
                                 }
                             }
@@ -3749,6 +4261,28 @@ impl CoreDaemon {
                                         created.id.as_str(),
                                     )
                                     .await;
+                                    // M005: structural session-create event
+                                    // with the durable session id.
+                                    {
+                                        let provenance =
+                                            codegg_core::authorization::audit_provenance(
+                                                &authz_decision,
+                                            );
+                                        let mut chain =
+                                            codegg_core::audit_instrumentation::AuditChainContext::new(
+                                            );
+                                        chain.project = Some(context.project_id.clone());
+                                        chain.session_id = Some(created.id.clone());
+                                        let builder =
+                                            codegg_core::audit_instrumentation::session_create_event(
+                                                authority.principal(),
+                                                &provenance,
+                                                &chain,
+                                                created.id.as_str(),
+                                                "allow",
+                                            );
+                                        self.append_audit_event(builder).await;
+                                    }
                                     Ok(CoreResponse::Session { session: created })
                                 }
                             }
@@ -3852,6 +4386,28 @@ impl CoreDaemon {
                                         created.id.as_str(),
                                     )
                                     .await;
+                                    // M005: structural session-create event
+                                    // with the durable session id.
+                                    {
+                                        let provenance =
+                                            codegg_core::authorization::audit_provenance(
+                                                &authz_decision,
+                                            );
+                                        let mut chain =
+                                            codegg_core::audit_instrumentation::AuditChainContext::new(
+                                            );
+                                        chain.project = Some(context.project_id.clone());
+                                        chain.session_id = Some(created.id.clone());
+                                        let builder =
+                                            codegg_core::audit_instrumentation::session_create_event(
+                                                authority.principal(),
+                                                &provenance,
+                                                &chain,
+                                                created.id.as_str(),
+                                                "allow",
+                                            );
+                                        self.append_audit_event(builder).await;
+                                    }
                                     Ok(CoreResponse::Session { session: created })
                                 }
                             }
@@ -4100,6 +4656,29 @@ impl CoreDaemon {
                             job_id.as_str(),
                         )
                         .await;
+                        // M005: structural job-submit event with
+                        // causation back to the submitting session/turn.
+                        {
+                            let provenance =
+                                codegg_core::authorization::audit_provenance(&authz_decision);
+                            let mut chain =
+                                codegg_core::audit_instrumentation::AuditChainContext::new();
+                            chain.project = authz_decision.project_id.clone();
+                            chain.session_id = record.as_ref().and_then(|r| r.session_id.clone());
+                            chain.turn_id = record.as_ref().and_then(|r| r.turn_id.clone());
+                            chain.job_id = Some(job_id.clone());
+                            if let Some(run) = record.as_ref().and_then(|r| r.session_id.clone()) {
+                                let _ = run;
+                            }
+                            let builder = codegg_core::audit_instrumentation::job_submit_event(
+                                authority.principal(),
+                                &provenance,
+                                &chain,
+                                job_id.as_str(),
+                                "allow",
+                            );
+                            self.append_audit_event(builder).await;
+                        }
                         Ok(CoreResponse::JobSubmitted { job_id })
                     }
                     Err(e) => Ok(CoreResponse::Error {
@@ -6435,11 +7014,35 @@ impl CoreDaemon {
                 }
                 let store = codegg_core::audit::AuditStore::new(pool);
                 match store.query(&filter).await {
-                    Ok(page) => Ok(CoreResponse::AuditPage {
-                        events: page.events.iter().map(|event| event.to_dto()).collect(),
-                        next_cursor: page.next_cursor,
-                        truncated: page.truncated,
-                    }),
+                    Ok(page) => {
+                        // M005: self-describing audit-read event with the
+                        // returned count. Emitted post-read so the envelope
+                        // just returned never contains its own event.
+                        {
+                            let provenance =
+                                codegg_core::authorization::audit_provenance(&authz_decision);
+                            let mut chain =
+                                codegg_core::audit_instrumentation::AuditChainContext::new();
+                            chain.project = authz_decision.project_id.clone();
+                            let limit = query
+                                .limit
+                                .unwrap_or(codegg_core::audit::DEFAULT_QUERY_LIMIT);
+                            let builder = codegg_core::audit_instrumentation::audit_query_event(
+                                authority.principal(),
+                                &provenance,
+                                &chain,
+                                limit,
+                                page.events.len(),
+                                "allow",
+                            );
+                            self.append_audit_event(builder).await;
+                        }
+                        Ok(CoreResponse::AuditPage {
+                            events: page.events.iter().map(|event| event.to_dto()).collect(),
+                            next_cursor: page.next_cursor,
+                            truncated: page.truncated,
+                        })
+                    }
                     Err(error) => Ok(CoreResponse::Error {
                         code: error.code().to_owned(),
                         message: error.to_string(),
@@ -6508,11 +7111,35 @@ impl CoreDaemon {
                 }
                 let store = codegg_core::audit::AuditStore::new(pool);
                 match store.export(&filter).await {
-                    Ok(export) => Ok(CoreResponse::AuditExport {
-                        events: export.events.iter().map(|event| event.to_dto()).collect(),
-                        digest: export.digest,
-                        count: export.count,
-                    }),
+                    Ok(export) => {
+                        // M005: self-describing export event with digest
+                        // count. Post-read so the envelope never contains
+                        // its own event.
+                        {
+                            let provenance =
+                                codegg_core::authorization::audit_provenance(&authz_decision);
+                            let mut chain =
+                                codegg_core::audit_instrumentation::AuditChainContext::new();
+                            chain.project = authz_decision.project_id.clone();
+                            let limit = request
+                                .limit
+                                .unwrap_or(codegg_core::audit::MAX_EXPORT_EVENTS);
+                            let builder = codegg_core::audit_instrumentation::audit_export_event(
+                                authority.principal(),
+                                &provenance,
+                                &chain,
+                                limit,
+                                export.count,
+                                "allow",
+                            );
+                            self.append_audit_event(builder).await;
+                        }
+                        Ok(CoreResponse::AuditExport {
+                            events: export.events.iter().map(|event| event.to_dto()).collect(),
+                            digest: export.digest,
+                            count: export.count,
+                        })
+                    }
                     Err(error) => Ok(CoreResponse::Error {
                         code: error.code().to_owned(),
                         message: error.to_string(),

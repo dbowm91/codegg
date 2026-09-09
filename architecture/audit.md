@@ -1,11 +1,13 @@
-# Audit Foundation (Identity M004)
+# Audit Foundation and Instrumentation (Identity M004/M005)
 
 Identity, authorization, and audit M004. The coordinator owns an
 append-only structural audit record/store with typed attribution,
 bounded redacted metadata, deterministic ordering/idempotency,
 authorized bounded query/pagination/filter/export, and
 content-retention separation. M005 (instrumentation) consumes this
-store; this document owns the store contract.
+store; this document owns the store contract plus the M005 coverage
+contract (action/owner matrix, correlation/causation, bounded
+best-effort emission, redaction, backpressure, and operator reads).
 
 ## Ownership
 
@@ -174,13 +176,79 @@ losing attributable structure.
   `max_inflight` deliberately; do not retry blindly with fresh event
   ids (reuse the id for idempotent retry).
 
+## Instrumentation coverage (M005)
+
+The required Phase-11 event-coverage matrix lives in
+`crates/codegg-core/src/audit_instrumentation.rs`
+(`REQUIRED_AUDIT_COVERAGE`, one row per `AuditAction::ALL`). Each row
+names the canonical owner (never a duplicate wrapper), the trusted
+actor source, the authorization scope, the representative decision
+operation, the allowed structural metadata keys, the causation linkage,
+and whether the daemon maps it live in this milestone.
+
+Live daemon seam (`src/core/daemon.rs`):
+
+- `emit_audit_for_authorized` runs after the M003 gate and before any
+  side effect for every `audit_action_for_request` mapping except
+  creation/audit-read operations that mint their identity or count in
+  the handler (`SessionCreate`, `JobSubmit`, `AuditQuery`,
+  `AuditExport`, which emit post-creation with durable ids/counts).
+- `emit_audit_for_denial` emits one terminal `authorization_decision`
+  event with the operation/capability the caller supplied and the
+  denial reason. Direct project locators are preserved so
+  project-scoped denials stay queryable by the project owner through
+  the `audit.read` gate; unresolvable scopes stay `None` and never
+  leak existence through the page itself.
+- Post-creation emits: session creation (`SessionCreate`,
+  `SessionImportData`, `SessionCreateFromTemplate`) with the durable
+  session id; job submission with the durable job/session/turn linkage;
+  provider selection with connection/model; audit query/export with
+  the returned count (post-read so envelopes never contain their own
+  event).
+- All emits are best-effort and bounded: one 500 ms per-write timeout,
+  no unbounded queue, never fail the operation. Outcomes are visible
+  via `audit_instrumentation::emit_counters_snapshot`
+  (`appended`/`failed`/`dropped_no_pool`) plus warn logs. High-volume
+  reads/listings stay explicitly uninstrumented
+  (`UNINSTRUMENTED_OPERATIONS`); the coverage guard pins that list so
+  a new privileged operation cannot hide there.
+
+Correlation and causation:
+
+- Every event carries the gate-copied `decision_id` plus a
+  `correlation_id` defaulting to the M003 decision correlation.
+  Children preserve the parent correlation and point
+  `causation_parent` at the parent `event_id`, so
+  prompt -> root run -> child delegate -> tool/job -> Git/worktree
+  chains reconstruct with one ordered project query.
+- Retries reuse `deterministic_event_id(decision, action, correlation,
+  scope)` so replays return the stored event instead of assigning a
+  second sequence number.
+- Builders accept only structural locators, SHA-256 digests, bounded
+  labels, and outcome enums. Prompt/file/tool output bodies are never
+  accepted; paths/argv/refs are digested. The underlying builder still
+  rejects secret-bearing keys/values/bodies with
+  `audit_secret_detected` before any write.
+
+Explicit gaps (builders + store fixtures landed, no live single-host
+emission by design):
+
+- `node_enrollment`, `remote_execute` — future node protocol.
+- `chat_triggered_action` — collaboration M003 owns structured chat
+  actions; chat is never an execution interface in M005.
+- `command_execute`, `git_operation` — execution-surface chains are
+  proven via builders/fixtures in M005; the live tool-broker and
+  git-executor hooks are deferred follow-ups.
+
 ## Verification
 
 ```bash
 cargo test -p codegg-core audit
 cargo test --test identity_m004_audit_foundation
+cargo test --test identity_m005_audit_instrumentation
 cargo test --test storage_migrations
 python3 scripts/check_audit_invariants.py --verbose
+python3 scripts/check_audit_coverage.py --verbose
 python3 scripts/check_authorization_matrix.py --verbose
 python3 scripts/check_project_catalog_invariants.py --verbose
 bash scripts/check-core-boundary.sh
