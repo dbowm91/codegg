@@ -953,6 +953,48 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             action: "Kill running shell command",
             condition: None,
         },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-create <cmd>",
+            action: "Create an interactive workspace terminal",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-list",
+            action: "List interactive terminals in this workspace",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-attach <handle>",
+            action: "Attach to an interactive terminal",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-detach [handle]",
+            action: "Detach (process keeps running)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/terminal-terminate [handle]",
+            action: "Terminate an interactive terminal process",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Dialog,
+            key: "i (terminal view)",
+            action: "Focus terminal: keystrokes go to the process",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Dialog,
+            key: "Esc (terminal focused)",
+            action: "Leave terminal focus (never submits)",
+            condition: None,
+        },
         // Dialog mode (common across dialogs)
         HelpEntry {
             mode: HelpMode::Dialog,

@@ -46,6 +46,7 @@ complete guard input. Its production dispositions are:
 | `src/managed_process.rs` | Canonical | Only finite-process direct-spawn owner; owns lifecycle and safety primitives. |
 | `src/interactive_process.rs` | Canonical interactive | Only PTY direct-spawn owner (M001). Every spawn holds a scheduler `AdmissionController` permit acquired before `openpty` (ManagedProcess resource class, no exclusivity key); cwd/env derive from the immutable `ExecutionContext`; bounded sequence-numbered scrollback; input/resize/terminate over the master fd; child process-group (setsid leader) cleanup with SIGTERM-then-SIGKILL escalation on terminate/shutdown. Handles are ephemeral UUIDs and do not survive daemon restart. No model-facing tool is registered here. |
 | `src/interactive_process_attach.rs` | Interactive protocol adapter (M002) | No direct-spawn owner: the bounded attach/resume family (`create/list/attach/detach/input/resize/terminate/remove/resume`) delegates every lifecycle call to the M001 service. Attachment ownership is keyed by transport `client_id`; mutating payloads name an `attachment_id`, never a handle. Output reads are on-demand from the shared M001 ring (no per-attachment queue or task); lag answers typed resync. The daemon shares the scheduler's admission controller with the M001 engine so process-slot accounting stays single. |
+| `src/tui/interactive_terminal.rs`, `src/tui/commands/interactive_terminal.rs` | Interactive TUI projection (M003) | No spawn/dispatch owner: the controller is a bounded projection of M002 handles/output (scrollback window, focus gate, link state) and the command layer issues daemon `CoreRequest::InteractiveProcess*` operations through the TUI `CoreClient`. No `Session`/projection/observer coupling; keyboard bytes reach a terminal only under explicit focus; `Esc` always leaves focus and never submits. |
 | `src/tool/bash.rs`, `src/scheduler/`, `src/python_script/` | Scheduler/adapter | Job admission and domain output remain local; accepted finite execution uses the canonical service. |
 | `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain local; streaming lifecycle uses the canonical service. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
@@ -86,8 +87,12 @@ ephemeral PTY-backed process group on the node that owns the workspace.
 Attach/detach/resume protocol (M002) and TUI views (M003) consume handles;
 they never reinterpret a `Session` id as a terminal, and terminating a
 process never closes a conversation. The legacy metadata-only
-`src/shell_session/` store and the one-shot deferred `terminal` model tool
-are not execution owners and remain unchanged by M001.
+`src/shell_session/` store is not an execution owner (its final
+disposition belongs to the residual-runtime-consolidation roadmap); the
+one-shot deferred `terminal` model tool kept its historic name for
+stored-run/permission history compatibility and was re-described in M003
+as one-shot non-interactive execution with `bash` canonical and human
+interactive terminals owned by the TUI over the M002 protocol.
 
 ## Attach ownership and resync (M002)
 
@@ -105,3 +110,26 @@ capability through the same `InteractiveAuthority` context — no wire
 change). Resume from a sequence cursor returns the next bounded chunk or a
 typed `InteractiveResync` (`HistoryExpired` with both cursors, `CursorAhead`,
 `HandleGone` after remove/restart); history is never silently shifted.
+
+## TUI terminal projection and legacy disposition (M003)
+
+The reference TUI experience (`src/tui/interactive_terminal.rs` state
+controller + `src/tui/commands/interactive_terminal.rs` slash-command
+handlers + the `Terminal` dialog) consumes the M002 protocol and owns no
+process state: create/list/attach/detach/input/resize/terminate/remove
+are daemon `CoreRequest::InteractiveProcess*` operations issued through
+the TUI `CoreClient`, with stale completions dropped by the terminal
+async-request generation. The controller keeps a bounded scrollback
+window per viewed handle (64 KiB, matching the M002 default read), a
+coalesced pending-input/resize queue under the M001/M002 bounds, an
+explicit focus gate (keys reach the process only while focused; `Esc`
+always leaves focus and never submits), typed link states
+(live/reconnecting/resync-required/exited/gone), and per-workspace
+routing from the active session's canonical binding (never ambient cwd).
+TUI close detaches (releases the caller-owned attachment; the process
+keeps running) unless the user explicitly terminates; transport
+reconnect marks live views reconnecting with scrollback retained, and a
+daemon restart marks non-exited views gone. Raw terminal bytes never
+become session observation: the controller has no session/projection/
+observer dependency, headers describe without carrying output, and
+`/terminal-*` commands are human-shell-family commands, not model tools.

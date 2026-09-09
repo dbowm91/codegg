@@ -29,6 +29,7 @@ pub enum Dialog {
     SecurityReview,
     SourcePreview,
     ShellShow,
+    Terminal,
     TaskList,
     WorktreeList,
     GoalShow,
@@ -71,6 +72,7 @@ impl Dialog {
                 | Self::SecurityReview
                 | Self::SourcePreview
                 | Self::ShellShow
+                | Self::Terminal
                 | Self::TaskList
                 | Self::WorktreeList
                 | Self::GoalShow

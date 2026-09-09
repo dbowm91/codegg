@@ -109,6 +109,7 @@ pub mod commands;
 pub mod components;
 pub mod file_diff;
 pub mod input;
+pub mod interactive_terminal;
 pub mod layout;
 pub mod route;
 pub(crate) mod runtime;

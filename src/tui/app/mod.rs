@@ -558,6 +558,58 @@ pub enum TuiCommand {
         stream: String,
         range: Option<String>,
     },
+    /// Render one interactive terminal view (M003). Synchronous: projects
+    /// the controller state for `handle` into the terminal dialog.
+    TerminalShow {
+        handle: String,
+    },
+    /// Completion: an interactive terminal create has finished.
+    TerminalCreateFinished {
+        request_id: u64,
+        handle: Option<String>,
+        workspace_id: Option<String>,
+        command_label: Option<String>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal list has finished.
+    TerminalListFinished {
+        request_id: u64,
+        processes: Option<Vec<crate::protocol::interactive_process::InteractiveProcessMetadata>>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal attach has finished. Carries
+    /// the caller-owned attachment plus the initial bounded chunk and/or
+    /// a typed resync.
+    TerminalAttachFinished {
+        request_id: u64,
+        handle: String,
+        attachment_id: Option<String>,
+        chunk: Option<crate::protocol::interactive_process::InteractiveOutputChunk>,
+        resync: Option<crate::protocol::interactive_process::InteractiveResync>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal resume has finished.
+    TerminalResumeFinished {
+        request_id: u64,
+        handle: String,
+        chunk: Option<crate::protocol::interactive_process::InteractiveOutputChunk>,
+        resync: Option<crate::protocol::interactive_process::InteractiveResync>,
+        error: Option<String>,
+    },
+    /// Completion: an interactive terminal input/resize/detach/terminate/
+    /// remove operation has finished. `cols`/`rows` carry the daemon
+    /// echo for resize; `exit_code`/`exit_signal` carry the outcome for
+    /// terminate.
+    TerminalOpFinished {
+        request_id: u64,
+        op: String,
+        handle: String,
+        exit_code: Option<i32>,
+        exit_signal: Option<i32>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        error: Option<String>,
+    },
     FileDiffStatsReady {
         path: PathBuf,
         generation: u64,
@@ -1038,6 +1090,10 @@ pub struct App {
     /// each command reaches a terminal state.
     pub command_run_bridge: crate::shell::ShellCommandRunBridge,
     pub shell_handles: std::collections::HashMap<u64, crate::shell::runtime::ShellHandle>,
+    /// Interactive terminal views (M003): projection of daemon M002
+    /// handles/output. Owns no PTY/process state; every mutation goes
+    /// through `CoreRequest::InteractiveProcess*` operations.
+    pub interactive_terminals: crate::tui::interactive_terminal::InteractiveTerminalController,
     /// Cached human-shell confirmation policy from `[human_shell]`.
     /// Loaded at construction (or config reload) so the UI thread never
     /// performs synchronous disk I/O per shell event.
@@ -1374,6 +1430,8 @@ impl App {
                 info_dialog: None,
                 ui_node_dialog: None,
                 shell_detail_dialog: None,
+                terminal_dialog: None,
+                terminal_detail_handle: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
@@ -1393,6 +1451,7 @@ impl App {
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
             },
             agent_state: AgentState {
@@ -1471,6 +1530,8 @@ impl App {
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             remote_sequence: 0,
             shell_handles: std::collections::HashMap::new(),
+            interactive_terminals:
+                crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
@@ -1838,6 +1899,8 @@ impl App {
                 info_dialog: None,
                 ui_node_dialog: None,
                 shell_detail_dialog: None,
+                terminal_dialog: None,
+                terminal_detail_handle: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
                 pending_bulk_delete: None,
@@ -1857,6 +1920,7 @@ impl App {
                 session_mutation_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 session_messages_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 test_run_request: crate::tui::app::state::AsyncUiRequestState::new(),
+                terminal_request: crate::tui::app::state::AsyncUiRequestState::new(),
                 project_picker: None,
             },
             agent_state: AgentState {
@@ -1919,6 +1983,8 @@ impl App {
             command_run_store: crate::shell::CommandOutputStore::new(),
             command_run_bridge: crate::shell::ShellCommandRunBridge::new(),
             shell_handles: std::collections::HashMap::new(),
+            interactive_terminals:
+                crate::tui::interactive_terminal::InteractiveTerminalController::new(),
             plugin_ui_state: crate::tui::app::state::PluginUiState::default(),
             task_registry: crate::tui::task_lifecycle::TuiTaskRegistry::new(),
             render_panic_injection: RenderPanicInjection::all_false(),
@@ -1980,8 +2046,15 @@ impl App {
     /// Notify the projection client that the underlying transport
     /// reconnect completed. Drops all subscription state and bumps
     /// the reconnect epoch.
+    ///
+    /// Interactive terminal attachments are transport-bound (M002
+    /// `handle_disconnect`): the daemon released them server-side, so
+    /// every live view moves to reconnecting with scrollback retained.
+    /// Re-attach (`/terminal-attach`) resumes from the last cursor when
+    /// the process still lives.
     pub fn on_projection_reconnect(&mut self) {
         self.projection_client.on_reconnect();
+        self.interactive_terminals.note_transport_disconnect();
     }
 
     /// Apply a projection envelope to the projection client. The
@@ -4769,6 +4842,11 @@ impl App {
             self.handle_keybind_key(key);
             return;
         }
+        if let Dialog::Terminal = &self.ui_state.dialog {
+            if crate::tui::commands::interactive_terminal::handle_terminal_key(self, key) {
+                return;
+            }
+        }
         if let Dialog::Model = &self.ui_state.dialog {
             if key.code == crossterm::event::KeyCode::Tab {
                 self.dialog_state.model_dialog.next_tab();
@@ -4864,6 +4942,7 @@ impl App {
                         | Dialog::Cost
                         | Dialog::Usage
                         | Dialog::ShellShow
+                        | Dialog::Terminal
                         | Dialog::Stats
                         | Dialog::TaskList
                         | Dialog::MemoryResults
@@ -4925,6 +5004,7 @@ impl App {
                     | Dialog::Cost
                     | Dialog::Usage
                     | Dialog::ShellShow
+                    | Dialog::Terminal
                     | Dialog::Stats
                     | Dialog::TaskList
                     | Dialog::MemoryResults
@@ -4982,6 +5062,7 @@ impl App {
                     | Dialog::Cost
                     | Dialog::Usage
                     | Dialog::ShellShow
+                    | Dialog::Terminal
                     | Dialog::Stats
                     | Dialog::TaskList
                     | Dialog::MemoryResults
@@ -8024,6 +8105,149 @@ impl App {
             "/plugins" | "/plugin-list" | "/plugin-ls" => {
                 crate::tui::commands::plugin_management::show_plugins(self);
             }
+            "/terminal-create" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /terminal-create <command> [args...]");
+                } else {
+                    // Simple whitespace split: interactive terminals run
+                    // through the daemon PTY engine, not a shell, so no
+                    // shell metacharacters are interpreted.
+                    let argv: Vec<String> = args.split_whitespace().map(str::to_string).collect();
+                    crate::tui::commands::interactive_terminal::start_terminal_create(self, argv);
+                }
+            }
+            "/terminal-list" => {
+                crate::tui::commands::interactive_terminal::start_terminal_list(self);
+            }
+            "/terminal-attach" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /terminal-attach <handle>");
+                } else {
+                    crate::tui::commands::interactive_terminal::start_terminal_attach(
+                        self,
+                        args.to_string(),
+                    );
+                }
+            }
+            "/terminal-show" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                if args.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /terminal-show <handle>");
+                } else if let Some(ref tx) = self.tui_cmd_tx {
+                    let _ = send_tui(
+                        tx,
+                        TuiCommand::TerminalShow {
+                            handle: args.to_string(),
+                        },
+                    );
+                }
+            }
+            "/terminal-focus" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                };
+                crate::tui::commands::interactive_terminal::focus_terminal(self, handle);
+            }
+            "/terminal-send" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                match args.split_once(' ') {
+                    Some((handle, text)) if !handle.is_empty() && !text.is_empty() => {
+                        crate::tui::commands::interactive_terminal::send_terminal_input(
+                            self,
+                            handle.to_string(),
+                            text.as_bytes().to_vec(),
+                        );
+                    }
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /terminal-send <handle> <text>");
+                    }
+                }
+            }
+            "/terminal-resize" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                match parts.as_slice() {
+                    [handle, cols, rows] => match (cols.parse::<u16>(), rows.parse::<u16>()) {
+                        (Ok(cols), Ok(rows)) => {
+                            crate::tui::commands::interactive_terminal::start_terminal_resize(
+                                self,
+                                handle.to_string(),
+                                cols,
+                                rows,
+                            );
+                        }
+                        _ => {
+                            self.messages_state.toasts.warning(
+                                "Usage: /terminal-resize <handle> <cols> <rows> (numbers)",
+                            );
+                        }
+                    },
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /terminal-resize <handle> <cols> <rows>");
+                    }
+                }
+            }
+            "/terminal-resume" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                };
+                crate::tui::commands::interactive_terminal::start_terminal_resume(self, handle);
+            }
+            "/terminal-detach" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                };
+                crate::tui::commands::interactive_terminal::start_terminal_detach(self, handle);
+            }
+            "/terminal-terminate" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                };
+                crate::tui::commands::interactive_terminal::start_terminal_terminate(self, handle);
+            }
+            "/terminal-remove" => {
+                let query = self.dialog_state.command_palette.query.clone();
+                let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                let handle = if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                };
+                crate::tui::commands::interactive_terminal::start_terminal_remove(self, handle);
+            }
             "/plugin-info" => {
                 let query = self.dialog_state.command_palette.query.clone();
                 let args = query.split_once(' ').map(|x| x.1).unwrap_or("").trim();
@@ -9032,6 +9256,14 @@ impl App {
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
                 self.dialog_state.shell_detail_dialog = None;
+            }
+            Dialog::Terminal => {
+                // UI state only: attachment release is owned by
+                // `close_terminal_view` on the explicit Esc path, or by
+                // transport disconnect server-side. Clearing here keeps
+                // every dismissal path truthful without double-detach.
+                self.dialog_state.terminal_detail_handle = None;
+                self.dialog_state.terminal_dialog = None;
             }
             Dialog::RunDetail => {
                 self.dialog_state.run_detail_dialog = None;

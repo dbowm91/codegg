@@ -166,6 +166,39 @@ carries cached sidebar state to remote clients.
 `App::show_short_or_info(info_type, lines)` routes output to short toast
 (≤3 lines) or scrollable `InfoDialog`. Dialog reused if already open.
 
+### Interactive Terminals (M003)
+
+Reference TUI experience over the M002 attach/resume protocol. The
+TUI owns no PTY/process state: `App::interactive_terminals`
+(`src/tui/interactive_terminal.rs`) is a bounded projection of daemon
+handles/output, and `src/tui/commands/interactive_terminal.rs` issues
+every mutation as a daemon `CoreRequest::InteractiveProcess*` operation
+through the TUI `CoreClient`.
+
+- **Slash commands**: `/terminal-create <cmd> [args...]`, `/terminal-list`,
+  `/terminal-attach <handle>`, `/terminal-show <handle>`,
+  `/terminal-focus [handle]`, `/terminal-send <handle> <text>`,
+  `/terminal-resize <handle> <cols> <rows>`, `/terminal-resume [handle]`,
+  `/terminal-detach [handle]`, `/terminal-terminate [handle]`,
+  `/terminal-remove [handle]`.
+- **Focus gate**: the dialog opens in viewing mode; `i` focuses (keys go
+  to the process), `Esc` unfocuses, `Esc` again closes with detach.
+  The raw `Esc` byte is never forwarded and a prompt is never submitted
+  from terminal focus (`classify_key`).
+- **Bounds**: 64 KiB scrollback window per view (matches the M002
+  default read), ≤16 views (matches the per-client attachment cap),
+  32 KiB per input write, sizes 1..=1000 (all mirror M001/M002
+  constants). Rapid input coalesces; rapid resize is last-wins.
+- **Reconnect/exit**: transport reconnect marks live views
+  reconnecting with scrollback retained (`on_projection_reconnect`);
+  re-attach resumes from the last cursor. Process exit renders the
+  terminal state and rejects input; daemon restart marks non-exited
+  views gone. TUI close detaches unless the user explicitly terminates.
+- **Routing**: the workspace comes from the active session's canonical
+  binding (never ambient cwd); views filter per project.
+- **No observation coupling**: headers describe without carrying
+  output; raw terminal bytes never enter session/projection state.
+
 ### Remote TUI Snapshot Sequencing
 
 `App::remote_sequence: u64` is monotonically increasing.
@@ -358,20 +391,20 @@ On-demand (Option): `theme_picker`, `question_dialog`,
 `diff_dialog`, `review_dialog`, `security_review_dialog`,
 `source_preview_dialog`, `run_detail_dialog`, `research_browser`,
 `help_dialog`, `info_dialog`, `ui_node_dialog`,
-`shell_detail_dialog`, `project_picker`.
+`shell_detail_dialog`, `terminal_dialog`, `project_picker`.
 
 Async request states: `import_request`, `research_request`,
 `session_reload_request`, `task_list_request`, `task_delete_request`,
 `worktree_list_request`, `template_create_request`,
 `session_mutation_request`, `session_messages_request`,
-`test_run_request`.
+`test_run_request`, `terminal_request`.
 
 Pending fields: `permission_perm_id`, `question_session_id`,
 `pending_delete_session`, `pending_archive_session`,
 `pending_bulk_delete`, `pending_bulk_delete_ids`,
 `pending_bulk_archive`, `pending_bulk_archive_ids`,
 `pending_shell_command`, `pending_connection_lifecycle`,
-`shell_detail_id`.
+`shell_detail_id`, `terminal_detail_handle`.
 
 Plugin dialogs stored in `PluginUiState`, not `DialogState`.
 A single `Dialog::Plugin` variant handles all plugin dialogs.
@@ -385,10 +418,18 @@ pub enum Dialog {
     Share, Import, Template, Connect, ConnectionSelection,
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
-    ShellShow, TaskList, WorktreeList, GoalShow, MemoryResults,
+    ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, ProjectPicker,
 }
 ```
+
+The `Terminal` dialog renders one interactive terminal view (M003): an
+`InfoDialog` with `InfoType::TerminalShow` driven by
+`DialogState::terminal_dialog` / `terminal_detail_handle`. It is a
+projection of the M002 protocol, not a PTY widget: headers describe
+link/focus/size/cursor state, output shows the newest bounded lines,
+and keyboard bytes reach the process only under explicit focus
+(`i` focuses, `Esc` unfocuses, `Esc` again closes with detach).
 
 ### DialogType (`src/tui/components/component.rs:22`)
 
@@ -398,7 +439,7 @@ pub enum DialogType {
     Permission, Mcp, Question, Diff, Import, Template,
     Connect, ConnectionSelection, Keybind,
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
-    ResearchBrowser, SecurityReview, SourcePreview, ShellShow,
+    ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
     DoctorReport, Plugin, RunDetail, None,
 }
@@ -457,7 +498,13 @@ template creation, session message loading, subagent spawn, task/worktree
 operations, memory operations, goal lifecycle, research browser, doctor,
 security review, git sidebar, plugin commands, test run, shell operations,
 provider connection lifecycle, project catalog, file diff stats, and
-completion/result variants for each async operation.
+completion/result variants for each async operation. Interactive
+terminal operations (M003) follow the same pattern:
+`TerminalShow` (synchronous render) plus `TerminalCreateFinished`,
+`TerminalListFinished`, `TerminalAttachFinished`,
+`TerminalResumeFinished`, and `TerminalOpFinished`
+(input/resize/detach/terminate/remove) completions, all guarded by
+`DialogState::terminal_request` so stale completions are dropped.
 
 ### Routes (`src/tui/route.rs`)
 
@@ -650,8 +697,8 @@ No direct TUI config keys in `opencode.jsonc`. TUI state is driven by:
 
 - **Dialog::Info doesn't exist**: `Dialog::Info` is NOT in the Dialog
   enum. `components/dialogs/info.rs` exists but `InfoDialog` uses
-  `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`, etc.
-  via `dialog_type_for_info_type()`.
+  `DialogType::Context`, `Cost`, `Usage`, `Stats`, `ShellShow`,
+  `TerminalShow`, etc. via `dialog_type_for_info_type()`.
 - **DialogType in component.rs**: `DialogType` lives in
   `src/tui/components/component/component.rs`, not `types.rs`.
 - **Dialog::Plugin is generic**: A single `Dialog::Plugin` variant

@@ -57,6 +57,11 @@ pub struct DialogState {
     pub info_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
     pub ui_node_dialog: Option<crate::tui::components::dialogs::ui_node::UiNodeDialog>,
     pub shell_detail_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
+    /// Interactive terminal dialog (M003): projection of one M002 handle.
+    pub terminal_dialog: Option<crate::tui::components::dialogs::info::InfoDialog>,
+    /// Currently viewed interactive terminal handle (for terminal dialog
+    /// action shortcuts and key routing).
+    pub terminal_detail_handle: Option<String>,
     pub pending_delete_session: Option<String>,
     pub pending_archive_session: Option<(String, bool)>,
     pub pending_bulk_delete: Option<usize>,
@@ -90,6 +95,10 @@ pub struct DialogState {
     /// Async request state for test run operations. Stale completions
     /// with a mismatched id are silently ignored.
     pub test_run_request: crate::tui::app::state::AsyncUiRequestState,
+    /// Async request state for interactive terminal operations
+    /// (create/list/attach/resume/input/resize/detach/terminate/remove).
+    /// Stale completions with a mismatched id are silently ignored.
+    pub terminal_request: crate::tui::app::state::AsyncUiRequestState,
     /// Project picker dialog state (Milestone 2).
     pub project_picker: Option<crate::tui::app::state::ProjectPickerState>,
 }

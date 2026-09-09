@@ -80,6 +80,17 @@ static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// One-shot non-interactive shell execution (M003 disposition).
+///
+/// The historic `terminal` name is retained so stored runs, session
+/// imports, permission modes, and agent deny-lists keep resolving, but
+/// this tool is NOT an interactive terminal: it runs one command to
+/// completion through the canonical finite-execution owner
+/// (`ManagedProcessService`, the same owner behind `bash`) and returns
+/// captured output. `bash` is the canonical model shell. Human
+/// interactive workspace terminals run in the TUI over the daemon
+/// interactive-process service (`InteractiveProcessService` + the M002
+/// attach/resume protocol), never through this tool.
 pub struct TerminalTool {
     timeout: Duration,
     max_output_lines: usize,
@@ -228,7 +239,7 @@ impl Tool for TerminalTool {
     }
 
     fn description(&self) -> &str {
-        "Run commands in an interactive terminal session"
+        "Run one shell command to completion and return captured output (one-shot, not an interactive PTY). Bash is the canonical model shell; human interactive terminals run in the TUI over the daemon interactive-process service"
     }
 
     fn parameters(&self) -> serde_json::Value {

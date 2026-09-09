@@ -16,6 +16,11 @@ use super::super::commands::goals::{
     start_goal_show, start_refresh_session_state,
 };
 #[allow(unused_imports)]
+use super::super::commands::interactive_terminal::{
+    apply_terminal_attach_finished, apply_terminal_create_finished, apply_terminal_list_finished,
+    apply_terminal_op_finished, apply_terminal_resume_finished, handle_terminal_show,
+};
+#[allow(unused_imports)]
 use super::super::commands::memory::{
     apply_habit_result, apply_memory_result, apply_skill_publish_finished, start_habit_dismiss,
     start_habit_list, start_memory_forget, start_memory_remember, start_memory_search,
@@ -50,7 +55,6 @@ use super::super::commands::sessions::{
     start_open_tree_dialog, start_reload_sessions, start_rename_session, start_share_session,
     start_undo_delete, start_unshare_session,
 };
-#[allow(unused_imports)]
 use super::super::commands::shell::{
     handle_run_human_shell, handle_shell_ask, handle_shell_event, handle_shell_expand,
     handle_shell_include, handle_shell_kill, handle_shell_list, handle_shell_rerun,
@@ -763,6 +767,81 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::ShellExpand { id, stream, range } => {
             handle_shell_expand(app, id, stream, range);
         }
+        TuiCommand::TerminalShow { handle } => {
+            handle_terminal_show(app, handle);
+        }
+        TuiCommand::TerminalCreateFinished {
+            request_id,
+            handle,
+            workspace_id,
+            command_label,
+            error,
+        } => {
+            apply_terminal_create_finished(
+                app,
+                request_id,
+                handle,
+                workspace_id,
+                command_label,
+                error,
+            );
+        }
+        TuiCommand::TerminalListFinished {
+            request_id,
+            processes,
+            error,
+        } => {
+            apply_terminal_list_finished(app, request_id, processes, error);
+        }
+        TuiCommand::TerminalAttachFinished {
+            request_id,
+            handle,
+            attachment_id,
+            chunk,
+            resync,
+            error,
+        } => {
+            apply_terminal_attach_finished(
+                app,
+                request_id,
+                handle,
+                attachment_id,
+                chunk,
+                resync,
+                error,
+            );
+        }
+        TuiCommand::TerminalResumeFinished {
+            request_id,
+            handle,
+            chunk,
+            resync,
+            error,
+        } => {
+            apply_terminal_resume_finished(app, request_id, handle, chunk, resync, error);
+        }
+        TuiCommand::TerminalOpFinished {
+            request_id,
+            op,
+            handle,
+            exit_code,
+            exit_signal,
+            cols,
+            rows,
+            error,
+        } => {
+            apply_terminal_op_finished(
+                app,
+                request_id,
+                op,
+                handle,
+                exit_code,
+                exit_signal,
+                cols,
+                rows,
+                error,
+            );
+        }
         TuiCommand::FileDiffStatsReady {
             path,
             generation,
@@ -814,6 +893,10 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 summary.push_str("\n  Template create: loading");
                 has_activity = true;
             }
+            if app.dialog_state.terminal_request.is_loading() {
+                summary.push_str("\n  Terminal operation: loading");
+                has_activity = true;
+            }
             if app.security_review_running.is_some() {
                 summary.push_str("\n  Security review: running");
                 has_activity = true;
@@ -822,6 +905,13 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 summary.push_str(&format!(
                     "\n  Shell commands: {} running",
                     app.shell_handles.len()
+                ));
+                has_activity = true;
+            }
+            if !app.interactive_terminals.is_empty() {
+                summary.push_str(&format!(
+                    "\n  Interactive terminals: {} tracked",
+                    app.interactive_terminals.len()
                 ));
                 has_activity = true;
             }

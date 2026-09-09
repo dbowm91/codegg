@@ -322,6 +322,28 @@ impl CommandRegistry {
                 .with_description("Ask about shell output (args: <id|last> <question>)"),
             Command::new("/shell-expand", CommandCategory::System, None)
                 .with_description("Expand raw shell output from projection handle (args: <id|last> stdout|stderr [start..end])"),
+            Command::new("/terminal-create", CommandCategory::System, None)
+                .with_description("Create an interactive workspace terminal (args: <command> [args...])"),
+            Command::new("/terminal-list", CommandCategory::System, None)
+                .with_description("List interactive terminals in this workspace"),
+            Command::new("/terminal-attach", CommandCategory::System, None)
+                .with_description("Attach to an interactive terminal (args: <handle>)"),
+            Command::new("/terminal-show", CommandCategory::System, None)
+                .with_description("Show an interactive terminal (args: <handle>)"),
+            Command::new("/terminal-focus", CommandCategory::System, None)
+                .with_description("Focus an interactive terminal so keystrokes go to the process (args: [handle])"),
+            Command::new("/terminal-send", CommandCategory::System, None)
+                .with_description("Send text to an interactive terminal (args: <handle> <text>)"),
+            Command::new("/terminal-resize", CommandCategory::System, None)
+                .with_description("Resize an interactive terminal (args: <handle> <cols> <rows>)"),
+            Command::new("/terminal-resume", CommandCategory::System, None)
+                .with_description("Resume live terminal output after lag/resync (args: [handle])"),
+            Command::new("/terminal-detach", CommandCategory::System, None)
+                .with_description("Detach from an interactive terminal; the process keeps running (args: [handle])"),
+            Command::new("/terminal-terminate", CommandCategory::System, None)
+                .with_description("Terminate an interactive terminal process (args: [handle])"),
+            Command::new("/terminal-remove", CommandCategory::System, None)
+                .with_description("Remove an interactive terminal handle, freeing scrollback (args: [handle])"),
             Command::new("/tui-stats", CommandCategory::System, None)
                 .with_description("Show TUI runtime diagnostics"),
             Command::new("/plugins", CommandCategory::System, None)

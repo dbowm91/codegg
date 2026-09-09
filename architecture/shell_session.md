@@ -4,8 +4,13 @@
 
 `shell_session` provides in-memory metadata management for terminal
 sessions. It tracks session identity, working directory, shell type, and
-terminal dimensions. It does **not** create PTY sessions or execute
-commands — that is handled by `tool::terminal` and the shell runtime.
+terminal dimensions. It does **not** create PTY sessions, execute
+commands, or own interactive terminals. One-shot model shell execution
+lives in the `bash` tool and the one-shot `terminal` tool (both via
+`ManagedProcessService`); human `!`/`!!` commands live in the shell
+runtime; real interactive PTYs are owned by the daemon
+`InteractiveProcessService` with the M002 attach/resume protocol and the
+TUI terminal controller (`src/tui/interactive_terminal.rs`).
 
 ## Where It Lives
 
@@ -80,9 +85,14 @@ None. Defaults are hard-coded:
 
 ## Invariants & Gotchas
 
-- **No PTY**: This module only tracks metadata. Shell execution lives
-  in `src/shell/runtime.rs` (`ShellRuntime`) and
-  `src/tool/terminal/`.
+- **No PTY**: This module only tracks metadata. Human shell execution
+  lives in `src/shell/runtime.rs` (`ShellRuntime`); one-shot model shell
+  execution lives in the `bash` / `terminal` tools via
+  `ManagedProcessService`; interactive PTYs live in
+  `src/interactive_process.rs` (daemon owner) with the TUI projection in
+  `src/tui/interactive_terminal.rs`. Do not build new execution paths on
+  this module (see also the residual-runtime-consolidation roadmap, which
+  owns its final disposition).
 - **In-memory only**: No persistence. Sessions vanish on restart.
 - **String cwd**: `cwd` is `String`, not `PathBuf`, to support
   serialization over the server protocol.
@@ -101,6 +111,7 @@ project-scoped listing. All use `#[tokio::test]`.
 
 ## Related Docs
 
-- [tool.md](tool.md) — Terminal tool that spawns shell commands
+- [tool.md](tool.md) — One-shot `terminal` tool and canonical `bash` shell (both non-interactive, via `ManagedProcessService`)
 - [human_shell.md](human_shell.md) — Human `!`/`!!` shell execution
   (separate from session metadata)
+- [process-tool-execution-ownership.md](process-tool-execution-ownership.md) — Canonical interactive PTY owner (`InteractiveProcessService`) and TUI terminal projection

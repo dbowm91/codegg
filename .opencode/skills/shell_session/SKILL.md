@@ -14,7 +14,7 @@ This skill covers the shell_session module in codegg for shell session metadata 
 
 ## Overview
 
-The `shell_session` module manages in-memory metadata for shell/terminal sessions. It does **NOT** create actual PTY sessions - that is handled by the `tool::terminal` module.
+The `shell_session` module manages in-memory metadata for shell/terminal sessions. It does **NOT** create actual PTY sessions and is **NOT** the interactive-terminal owner. Real interactive PTYs are owned by the daemon `InteractiveProcessService` (`src/interactive_process.rs`) with the M002 attach/resume protocol (`src/interactive_process_attach.rs`) and the TUI terminal controller (`src/tui/interactive_terminal.rs`). The `terminal` model tool is one-shot non-interactive execution (see its tool description); `bash` is the canonical model shell.
 
 **Location**: `src/shell_session/`
 
@@ -126,13 +126,15 @@ manager.delete(&session.id).await?;
 ## Notes
 
 - Sessions are **in-memory only** - they do not persist across restarts
-- The module does NOT spawn actual shell processes
-- Actual shell execution is handled by `tool::terminal`
+- The module does NOT spawn actual shell processes and does NOT own PTYs
+- One-shot model shell execution is handled by `bash` / the one-shot `terminal` tool (both via `ManagedProcessService`); interactive human PTYs are owned by `InteractiveProcessService` + the TUI terminal controller
 - Use `project_id` to group sessions by project
-- Terminal dimensions (cols/rows) are stored for future use when actual PTY support is added
+- Terminal dimensions (cols/rows) are stored metadata only; live PTY resize goes through the interactive-process service, not this module
 - Unit tests provided: 11 tests covering create, get, update, list, resize, delete operations
 
 ## Relationship to Other Modules
 
-- **tool::terminal** - Actually executes shell commands (not the same as this shell_session module)
+- **tool::terminal** - One-shot non-interactive model shell execution via `ManagedProcessService` (not a PTY, not the same as this shell_session module)
+- **interactive_process / interactive_process_attach** - Canonical daemon PTY owner and attach/resume protocol for human interactive terminals
+- **tui::interactive_terminal** - TUI projection (bounded scrollback, focus gate, resync UX) over the M002 protocol
 - **session/** - Manages agent conversation sessions (different from shell sessions)
