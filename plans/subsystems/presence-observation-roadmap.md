@@ -1,6 +1,11 @@
 # Presence and Read-Only Observation Roadmap
 
-Status: active
+Status: closed
+
+All milestones M001–M003 are accepted; the subsystem is complete per §11.
+Closure records: M001 (`plans/closure/presence-observation/001-status.md`),
+M002 (`plans/closure/presence-observation/002-status.md`),
+M003 (`plans/closure/presence-observation/003-status.md`).
 
 Long-term references:
 
@@ -126,4 +131,4 @@ M001-M003 accepted: authorized teammates see current bounded presence and can ob
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/presence-observation/001-project-presence-leases.md` | `plans/closure/presence-observation/001-status.md` | — |
 | M002 | closed | `plans/implementation/presence-observation/002-tui-collaborator-presence-surface.md` | `plans/closure/presence-observation/002-status.md` | — |
-| M003 | ready | `plans/implementation/presence-observation/003-authorized-read-only-observation.md` | — | — (session-projections M012 interface already closed) |
+| M003 | closed | `plans/implementation/presence-observation/003-authorized-read-only-observation.md` | `plans/closure/presence-observation/003-status.md` | — |

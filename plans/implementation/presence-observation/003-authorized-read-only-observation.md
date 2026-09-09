@@ -1,6 +1,8 @@
 # Presence and Observation Milestone 003 — Authorized Read-Only Session Observation
 
-Status: ready for handoff
+Status: implemented
+
+Closed by `plans/closure/presence-observation/003-status.md` (implementation commit `2a6403d8`).
 
 Unblocked by M002 closure (`plans/closure/presence-observation/002-status.md`); session-projections M012 interface already closed.
 

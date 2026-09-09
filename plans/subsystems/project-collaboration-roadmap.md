@@ -103,6 +103,6 @@ M001-M003 accepted: authorized project communication is durable and synchronized
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | blocked | `plans/implementation/project-collaboration/001-project-channel-message-protocol.md` | — | identity-authorization-audit M005; presence-observation M003 |
+| M001 | ready | `plans/implementation/project-collaboration/001-project-channel-message-protocol.md` | — | — (identity-authorization-audit M005 and presence-observation M003 closed) |
 | M002 | blocked | `plans/implementation/project-collaboration/002-tui-project-chat-and-observer-routing.md` | — | M001 |
 | M003 | blocked | `plans/implementation/project-collaboration/003-structured-chat-actions.md` | — | M001; authorization/audit prerequisites transitively satisfied by M001 |
