@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 001 — Principal, Membership, Role, and Capability Domain
 
-Status: ready for handoff
+Status: closed; see `plans/closure/identity-authorization-audit/001-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

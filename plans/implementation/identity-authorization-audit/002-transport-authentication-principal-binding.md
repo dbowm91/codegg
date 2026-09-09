@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 002 — Transport Authentication and Principal Binding
 
-Status: blocked
+Status: ready for handoff (unblocked by M001 closure at `plans/closure/identity-authorization-audit/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Resolve every accepted client connection to a canonical principal using trusted 
 
 ## 2. Why this milestone is ready
 
-Blocked on M001 durable principal/membership contract. Existing local socket, HTTP/WebSocket, stdio/inproc transports and `ClientRegistry` provide stable integration seams.
+M001 durable principal/membership contract is closed (`plans/closure/identity-authorization-audit/001-status.md`). Existing local socket, HTTP/WebSocket, stdio/inproc transports and `ClientRegistry` provide stable integration seams.
 
 ## 3. Current implementation evidence
 
