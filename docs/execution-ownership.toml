@@ -311,3 +311,8 @@ reason = "mod tests block uses git subprocess to set up test fixtures; not a pro
 path = "src/git_service.rs"
 owner = "definition_or_adapter"
 reason = "GitExecutionService is the canonical read executor; test fixtures in this file are gated by #[cfg(test)]"
+
+[[site]]
+path = "src/interactive_process.rs"
+owner = "interactive"
+reason = "M001 scheduler-owned PTY engine for long-lived user-controlled interactive sessions; every spawn holds an AdmissionController permit acquired before openpty, derives cwd/env from ExecutionContext, and cleans the child process group on terminate/shutdown"

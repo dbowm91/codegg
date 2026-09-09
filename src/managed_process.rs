@@ -114,7 +114,7 @@ impl EnvironmentPolicy {
         self
     }
 
-    fn apply(&self, command: &mut Command) {
+    pub(crate) fn apply(&self, command: &mut Command) {
         command.env_clear();
 
         for name in &self.inherited {

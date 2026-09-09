@@ -38,6 +38,7 @@ pub mod git_service;
 pub mod goal_verification;
 pub mod hooks;
 pub mod ide;
+pub mod interactive_process;
 pub mod job_dispatcher;
 pub mod job_recovery;
 pub mod lsp;

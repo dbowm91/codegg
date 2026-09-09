@@ -314,6 +314,19 @@ surfaces whose full scheduler submission requires additional
 RunStore/PTY integration. They must not be described as covered by the
 daemon invariant until migrated.
 
+### Ephemeral interactive admission (M001)
+
+Local interactive PTYs (`src/interactive_process.rs`) are not durable
+jobs and create no `JobRecord`: they are ephemeral, die with the daemon,
+and restart reports prior handles gone. They are still scheduler-admitted:
+every spawn acquires a `ResourcePermitGuard` via
+`AdmissionController::try_admit_arc` with the ManagedProcess resource
+class (one process slot, no exclusivity key) *before* `openpty`, and the
+guard is held inside the live session until natural exit, terminate, or
+shutdown. Contention refuses without spawning; spawn failure releases the
+permit with no live handle. This permit contract — not a second
+supervisor — is what keeps interactive sessions inside global admission.
+
 ## Lifecycle and recovery
 
 Scheduler dispatch creates an attempt, persists executor provenance,

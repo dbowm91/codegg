@@ -44,6 +44,7 @@ complete guard input. Its production dispositions are:
 | Surface | Disposition | Boundary |
 |---|---|---|
 | `src/managed_process.rs` | Canonical | Only finite-process direct-spawn owner; owns lifecycle and safety primitives. |
+| `src/interactive_process.rs` | Canonical interactive | Only PTY direct-spawn owner (M001). Every spawn holds a scheduler `AdmissionController` permit acquired before `openpty` (ManagedProcess resource class, no exclusivity key); cwd/env derive from the immutable `ExecutionContext`; bounded sequence-numbered scrollback; input/resize/terminate over the master fd; child process-group (setsid leader) cleanup with SIGTERM-then-SIGKILL escalation on terminate/shutdown. Handles are ephemeral UUIDs and do not survive daemon restart. No model-facing tool is registered here. |
 | `src/tool/bash.rs`, `src/scheduler/`, `src/python_script/` | Scheduler/adapter | Job admission and domain output remain local; accepted finite execution uses the canonical service. |
 | `src/shell/runtime.rs` | Interactive adapter | Human `$SHELL -lc` semantics and shell events remain local; streaming lifecycle uses the canonical service. |
 | `src/shell/rtk.rs`, `src/tool/formatter.rs`, `src/tool/terminal.rs`, `src/ide/` | Blocking adapters | Authorization, parsing, and presentation remain local; timeout, bounded capture, cwd, env, and cleanup use the canonical service. |
@@ -74,3 +75,15 @@ boundaries.
 Protocol children remain direct owners only where framing, persistence, or
 crate dependency direction makes finite-process capture the wrong abstraction.
 Their ownership is explicit rather than hidden behind a generic shell helper.
+
+## Session vs interactive process (M001)
+
+A human `Session` is a conversation/turn identity; a scheduler `Job` is
+durable admitted work; a `Run` is an execution record. An interactive-process
+handle (`src/interactive_process.rs`) is none of these: it names one
+ephemeral PTY-backed process group on the node that owns the workspace.
+Attach/detach/resume protocol (M002) and TUI views (M003) consume handles;
+they never reinterpret a `Session` id as a terminal, and terminating a
+process never closes a conversation. The legacy metadata-only
+`src/shell_session/` store and the one-shot deferred `terminal` model tool
+are not execution owners and remain unchanged by M001.
