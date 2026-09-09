@@ -812,6 +812,26 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
         R::InteractiveProcessRemove { .. } => {
             OperationDescriptor::new("interactive_process_remove", ScopeKind::Global, None)
         }
+        // ── Presence and Observation M001: Project-Scoped Presence Leases ──
+        //
+        // Heartbeat writes only the caller's own contribution (principal
+        // and client come from transport authority) and snapshot reads
+        // only the named project. Both require `project.observe` so
+        // unauthorized projects are indistinguishable from absent via
+        // the `project_not_found` denial shape.
+        R::PresenceCapabilities => {
+            OperationDescriptor::new("presence_capabilities", ScopeKind::Global, None)
+        }
+        R::PresenceHeartbeat { .. } => OperationDescriptor::new(
+            "presence_heartbeat",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectObserve),
+        ),
+        R::PresenceSnapshotGet { .. } => OperationDescriptor::new(
+            "presence_snapshot_get",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectObserve),
+        ),
     }
 }
 
@@ -1373,6 +1393,18 @@ fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         },
         R::InteractiveProcessRemove {
             attachment_id: String::new(),
+        },
+        R::PresenceCapabilities,
+        R::PresenceHeartbeat {
+            request: codegg_protocol::core::PresenceHeartbeatRequestDto {
+                project_id: String::new(),
+                session_id: None,
+                activity: codegg_protocol::core::PresenceActivityDto::Active,
+                connection_generation: 0,
+            },
+        },
+        R::PresenceSnapshotGet {
+            project_id: String::new(),
         },
     ]
 }

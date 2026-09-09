@@ -395,6 +395,12 @@ resolve through deterministic lookup of an existing unique locator.
   local-only. The remote core WebSocket rejects them.
 - **Projection is additive**: Unknown optional variants are tolerated
   within the declared version range.
+- **Presence is ephemeral and non-authoritative** (M001):
+  `PresenceHeartbeat` / `PresenceSnapshotGet` carry only locators plus
+  a semantic `PresenceActivityDto`; principals come from transport
+  authority. Snapshots are bounded and privacy-filtered; denials use
+  `project_not_found`. `PresenceUpdated` carries no collaborator
+  detail. See `architecture/presence.md`.
 
 ## Testing
 
@@ -406,6 +412,7 @@ cargo test --test headless_projection_consumer # non-TUI CoreResponse consumer
 
 ## Related Docs
 
+- `architecture/presence.md` — project-scoped presence leases (M001)
 - `architecture/projection.md` — full projection contract
 - `architecture/core.md` — core facade and transport adapters
 - `architecture/server.md` — HTTP/WebSocket server

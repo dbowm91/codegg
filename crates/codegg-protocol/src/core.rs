@@ -209,6 +209,115 @@ pub struct AuditCapabilitiesDto {
     pub max_body_bytes: u32,
 }
 
+/// Presence and Observation M001: project-scoped ephemeral presence leases.
+///
+/// Presence is a liveness projection only. It never authorizes an
+/// operation, never becomes durable history, and never carries secrets,
+/// file content, prompts, or reasoning. Principals are always derived
+/// server-side from the transport-bound connection; request DTOs carry
+/// only locators (`project_id`, `session_id`) plus a semantic activity
+/// enum. Snapshots are bounded and privacy-filtered: unauthorized
+/// callers receive the same `project_not_found` shape as a genuinely
+/// absent project.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PresenceActivityDto {
+    Active,
+    Idle,
+    Observing,
+    AgentRunning,
+}
+
+impl PresenceActivityDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Idle => "idle",
+            Self::Observing => "observing",
+            Self::AgentRunning => "agent_running",
+        }
+    }
+
+    /// Parse a wire activity name, failing closed on unknown input.
+    /// Unknown values degrade to `None` at the daemon boundary so a
+    /// forward-compatible client cannot inject a privileged state.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "idle" => Some(Self::Idle),
+            "observing" => Some(Self::Observing),
+            "agent_running" => Some(Self::AgentRunning),
+            _ => None,
+        }
+    }
+}
+
+/// Heartbeat/update request for the caller's own presence contribution.
+///
+/// The principal and client identity are derived server-side from the
+/// trusted connection and MUST NOT appear in this DTO. `session_id` is
+/// optional: `None` marks project-level presence (connected but not
+/// attached), `Some` marks one attached session contribution.
+/// `connection_generation` is a per-connection monotonic generation
+/// bumped on every reconnect; a late heartbeat carrying an older
+/// generation than the stored contribution is rejected and cannot
+/// resurrect stale state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresenceHeartbeatRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default = "default_presence_activity")]
+    pub activity: PresenceActivityDto,
+    #[serde(default)]
+    pub connection_generation: u64,
+}
+
+fn default_presence_activity() -> PresenceActivityDto {
+    PresenceActivityDto::Active
+}
+
+/// One aggregated principal row in a project presence snapshot.
+///
+/// Aggregation across that principal's clients/sessions is
+/// deterministic: activity is the maximum rank
+/// (`agent_running > active > observing > idle`), sessions are the
+/// sorted union truncated to the advertised bound, and `last_active_ms`
+/// is the maximum contribution timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresencePrincipalDto {
+    pub principal_id: String,
+    pub activity: PresenceActivityDto,
+    pub client_count: usize,
+    #[serde(default)]
+    pub session_ids: Vec<String>,
+    pub last_active_ms: i64,
+}
+
+/// Bounded privacy-filtered snapshot of one project's live presence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresenceSnapshotDto {
+    pub project_id: String,
+    pub as_of_ms: i64,
+    #[serde(default)]
+    pub principals: Vec<PresencePrincipalDto>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// Capability negotiation for the presence surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresenceCapabilitiesDto {
+    pub supported: bool,
+    pub protocol_version: u32,
+    pub lease_ttl_secs: u64,
+    pub idle_after_secs: u64,
+    pub heartbeat_interval_hint_secs: u64,
+    pub max_principals_per_project: usize,
+    pub max_sessions_per_principal: usize,
+    pub max_contributions: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub protocol_version: u32,
@@ -699,6 +808,20 @@ pub enum CoreResponse {
     InteractiveProcessRemoved {
         attachment_id: String,
         handle: String,
+    },
+    // ── Presence and Observation M001: Project-Scoped Presence Leases ──
+    /// Acknowledgement of a heartbeat with the server-computed expiry.
+    PresenceHeartbeatAck {
+        project_id: String,
+        expires_at_ms: i64,
+    },
+    /// Bounded privacy-filtered presence snapshot for one project.
+    PresenceSnapshot {
+        snapshot: PresenceSnapshotDto,
+    },
+    /// Presence capability negotiation response.
+    PresenceCapabilities {
+        capabilities: PresenceCapabilitiesDto,
     },
 }
 
@@ -1402,6 +1525,26 @@ pub enum CoreRequest {
     InteractiveProcessRemove {
         attachment_id: String,
     },
+    // ── Presence and Observation M001: Project-Scoped Presence Leases ──
+    /// Capability negotiation for the presence surface. Unknown
+    /// capability strings degrade to `supported: false`, never to an
+    /// error that blocks unrelated traffic.
+    PresenceCapabilities,
+    /// Heartbeat/renew the caller's own presence contribution for one
+    /// project. The principal and client identity come from the
+    /// trusted transport connection; the payload carries only
+    /// locators plus a semantic activity enum. Requires
+    /// `project.observe` on the named project.
+    PresenceHeartbeat {
+        request: PresenceHeartbeatRequestDto,
+    },
+    /// Fetch a bounded privacy-filtered presence snapshot for one
+    /// project. Requires `project.observe`; denials use the same
+    /// `project_not_found` shape as a genuinely absent project so
+    /// unauthorized callers cannot infer existence.
+    PresenceSnapshotGet {
+        project_id: String,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1835,6 +1978,14 @@ pub enum CoreEvent {
         exit_code: Option<i32>,
         #[serde(default)]
         exit_signal: Option<i32>,
+    },
+    /// Presence changed for one project. Carries no collaborator
+    /// detail: receivers re-fetch through the authorized
+    /// `presence_snapshot_get` path so the broadcast itself cannot
+    /// leak membership to unauthorized subscribers. Sessionless
+    /// (global filter) so it survives session-scoped replay filters.
+    PresenceUpdated {
+        project_id: String,
     },
 }
 

@@ -16,6 +16,7 @@ pub mod jobs;
 pub mod memory;
 pub mod migration;
 pub mod model_profile;
+pub mod presence;
 pub mod project_catalog;
 pub mod project_discovery;
 pub mod project_discovery_service;

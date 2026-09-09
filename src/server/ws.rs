@@ -1530,6 +1530,8 @@ async fn upgrade_ws(
 
     if let Some(ref daemon) = state.daemon {
         daemon.clients.unregister(&connection_id);
+        // Presence M001: disconnect expires the connection's contributions.
+        daemon.note_client_disconnected(&connection_id);
     }
 
     info!("WebSocket connection closed");
@@ -2229,6 +2231,8 @@ async fn upgrade_tui(
             unsubscribe_tui_daemon_subscription(&daemon, &subscription_id, &connection_id).await;
         }
         daemon.clients.unregister(&connection_id);
+        // Presence M001: disconnect expires the connection's contributions.
+        daemon.note_client_disconnected(&connection_id);
     }
 
     info!("TUI WebSocket connection closed");
@@ -4272,6 +4276,8 @@ async fn upgrade_core_ws(
             .await;
     }
     daemon.clients.unregister(&connection_id);
+    // Presence M001: disconnect expires the connection's contributions.
+    daemon.note_client_disconnected(&connection_id);
 
     info!("[{}] CoreFrame WebSocket connection closed", addr);
 }

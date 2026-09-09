@@ -18,6 +18,7 @@ discovery). It is designed to be a low-coupling foundation that root
 | Module | Purpose |
 |--------|---------|
 | `bus` | Event bus (GlobalEventBus), PermissionRegistry, QuestionRegistry |
+| `presence` | Ephemeral project-scoped presence leases (M001, task-free, bounded) |
 | `context` | Context packing, projection, and compaction utilities |
 | `error` | Central error taxonomy (AppError, ToolError, etc.) |
 | `goal` | Long-horizon goal runtime, budget enforcement |
@@ -177,6 +178,7 @@ module. Key test modules:
 
 ## Related Docs
 
+- `architecture/presence.md` — presence lease domain (M001)
 - `architecture/model_profile_task_state.md` — model profiles and task
   state deep dive
 - `architecture/native_crates.md` — library-first tool architecture

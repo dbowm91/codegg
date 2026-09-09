@@ -80,6 +80,10 @@ pub struct CoreDaemon {
     pub asset_refresh: Arc<crate::agent::asset_refresh::AssetRefreshCoordinator>,
     /// Project Catalog Milestone 3: explicit owner-scoped activation leases.
     pub project_activation: Arc<ProjectActivationRegistry>,
+    /// Presence and Observation M001: daemon-owned ephemeral
+    /// project-scoped presence leases. Never durable, never
+    /// authoritative for authorization; cleared on restart.
+    pub presence: Arc<codegg_core::presence::PresenceService>,
     /// Projection replay publication seam. Present only for SQLite-backed
     /// daemons; legacy in-memory daemons retain `None`.
     pub projection_seam:
@@ -431,6 +435,7 @@ impl CoreDaemon {
             selection_service,
             asset_refresh,
             project_activation,
+            presence: Arc::new(codegg_core::presence::PresenceService::default()),
             projection_seam,
             _projection_maintenance_handle: projection_maintenance_handle,
             dropped_event_bridge_events: std::sync::atomic::AtomicU64::new(0),
@@ -1899,6 +1904,47 @@ impl CoreDaemon {
         )
     }
 
+    /// Presence and Observation M001: best-effort activity contribution
+    /// from connection/session/agent progress.
+    ///
+    /// The principal comes from transport authority, never from a
+    /// payload. Failures are ignored so presence can never break
+    /// session/agent correctness; those systems do not depend on
+    /// presence. Renewal uses the tracked connection generation so
+    /// implicit touches never stale-reject against an explicit
+    /// heartbeat generation.
+    pub fn note_presence_activity(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        trusted_client_id: &str,
+        project: Option<codegg_core::identity::ProjectId>,
+        session_id: Option<&str>,
+        activity: codegg_core::presence::PresenceActivity,
+    ) {
+        let Some(project) = project else {
+            return;
+        };
+        let principal = authority.principal().principal_id().clone();
+        let now_instant = std::time::Instant::now();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let _ = self.presence.touch(
+            project,
+            principal,
+            trusted_client_id,
+            session_id,
+            activity,
+            now_instant,
+            now_ms,
+        );
+    }
+
+    /// Presence M001: expire every contribution owned by one transport
+    /// connection. Called on socket/WebSocket disconnect after the
+    /// client registry entry is removed.
+    pub fn note_client_disconnected(&self, trusted_client_id: &str) {
+        self.presence.remove_client(trusted_client_id);
+    }
+
     /// Interactive Process Sessions M002: transport-derived authority for
     /// one trusted connection.
     ///
@@ -1937,7 +1983,16 @@ impl CoreDaemon {
         request: &CoreRequest,
         error: &codegg_core::authorization::AuthorizationError,
     ) -> CoreResponse {
-        if matches!(request, CoreRequest::ProjectGet { .. }) && error.is_denial() {
+        // Presence M001: single-project presence reads/heartbeats deny
+        // as not-found so unauthorized callers cannot infer project
+        // existence, membership, collaborators, or activity.
+        if matches!(
+            request,
+            CoreRequest::ProjectGet { .. }
+                | CoreRequest::PresenceSnapshotGet { .. }
+                | CoreRequest::PresenceHeartbeat { .. }
+        ) && error.is_denial()
+        {
             let (code, message) = codegg_core::authorization::denial_as_not_found();
             return CoreResponse::Error {
                 code: code.to_string(),
@@ -2038,6 +2093,8 @@ impl CoreDaemon {
             | CoreRequest::GoalCheckpoint { project_id, .. } => Some(project_id),
             CoreRequest::AuditQuery { query } => Some(query.project_id.as_str()),
             CoreRequest::AuditExport { request } => Some(request.project_id.as_str()),
+            CoreRequest::PresenceHeartbeat { request } => Some(request.project_id.as_str()),
+            CoreRequest::PresenceSnapshotGet { project_id } => Some(project_id.as_str()),
             _ => None,
         };
         if let Some(raw) = direct {
@@ -3653,6 +3710,16 @@ impl CoreDaemon {
                 )
                 .await;
 
+                // Presence M001: meaningful agent activity. Best-effort
+                // only; turn correctness never depends on presence.
+                self.note_presence_activity(
+                    &authority,
+                    trusted_client_id,
+                    authz_decision.project_id.clone(),
+                    Some(session_id.as_str()),
+                    codegg_core::presence::PresenceActivity::AgentRunning,
+                );
+
                 // Build an immutable execution context from the bound
                 // runtime's workspace identity. The context flows through
                 // every daemon-owned execution path inside the turn.
@@ -3953,6 +4020,16 @@ impl CoreDaemon {
                                 }
                             }
                         }
+                        // Presence M001: meaningful session activity.
+                        // Best-effort only; session correctness never
+                        // depends on presence.
+                        self.note_presence_activity(
+                            &authority,
+                            trusted_client_id,
+                            authz_decision.project_id.clone(),
+                            Some(session_id.as_str()),
+                            codegg_core::presence::PresenceActivity::Active,
+                        );
                         Ok(CoreResponse::Session {
                             session: Self::session_dto(session, context.as_ref()),
                         })
@@ -7021,6 +7098,112 @@ impl CoreDaemon {
             CoreRequest::AuditCapabilities => Ok(CoreResponse::AuditCapabilities {
                 capabilities: codegg_core::audit::audit_capabilities_dto(),
             }),
+            // ── Presence and Observation M001 ──
+            //
+            // Presence is ephemeral and never authorizes. The M003 gate
+            // above already enforced `project.observe`; these arms only
+            // record/read the caller's own liveness projection.
+            CoreRequest::PresenceCapabilities => Ok(CoreResponse::PresenceCapabilities {
+                capabilities: self.presence.config().capabilities_dto(),
+            }),
+            CoreRequest::PresenceHeartbeat { request } => {
+                let project = match codegg_core::identity::ProjectId::parse(&request.project_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "presence_invalid_project".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let session = match request.session_id.as_deref() {
+                    Some("") => None,
+                    Some(raw) => Some(raw),
+                    None => None,
+                };
+                if let Some(raw) = session {
+                    if raw.len() > 128 {
+                        return Ok(CoreResponse::Error {
+                            code: "presence_invalid_session".into(),
+                            message: "session locator exceeds the bounded length".into(),
+                        });
+                    }
+                }
+                // Principal and client come from transport authority,
+                // never from the payload.
+                let authority = self.request_authority_for_client(trusted_client_id);
+                let principal = authority.principal().principal_id().clone();
+                let now_instant = std::time::Instant::now();
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                match self.presence.heartbeat_dto(
+                    project.clone(),
+                    principal,
+                    trusted_client_id,
+                    session,
+                    request.activity,
+                    request.connection_generation,
+                    now_instant,
+                    now_ms,
+                ) {
+                    Ok(expires_at_ms) => {
+                        // Bounded liveness hint for authorized
+                        // collaborators. Carries only the project id;
+                        // receivers re-fetch through the authorized
+                        // snapshot path.
+                        self.event_log
+                            .publish(
+                                None,
+                                None,
+                                CoreEvent::PresenceUpdated {
+                                    project_id: project.as_str().to_owned(),
+                                },
+                            )
+                            .await;
+                        Ok(CoreResponse::PresenceHeartbeatAck {
+                            project_id: project.as_str().to_owned(),
+                            expires_at_ms,
+                        })
+                    }
+                    Err(codegg_core::presence::PresenceError::Capacity) => {
+                        Ok(CoreResponse::Error {
+                            code: "presence_capacity".into(),
+                            message: "presence capacity is exhausted".into(),
+                        })
+                    }
+                    Err(codegg_core::presence::PresenceError::StaleGeneration) => {
+                        Ok(CoreResponse::Error {
+                            code: "presence_stale_generation".into(),
+                            message: "stale connection generation cannot resurrect presence".into(),
+                        })
+                    }
+                    Err(codegg_core::presence::PresenceError::InvalidInput { field, message }) => {
+                        Ok(CoreResponse::Error {
+                            code: "presence_invalid_input".into(),
+                            message: format!("invalid presence {field}: {message}"),
+                        })
+                    }
+                }
+            }
+            CoreRequest::PresenceSnapshotGet { project_id } => {
+                let project = match codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "presence_invalid_project".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                // Single bounded cleanup before the read; no
+                // task-per-lease exists.
+                self.presence.evict_expired(std::time::Instant::now());
+                let snapshot = self.presence.snapshot(
+                    &project,
+                    std::time::Instant::now(),
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                Ok(CoreResponse::PresenceSnapshot { snapshot })
+            }
             CoreRequest::AuditQuery { query } => {
                 let Some(pool) = self.pool.clone() else {
                     return Ok(CoreResponse::Error {

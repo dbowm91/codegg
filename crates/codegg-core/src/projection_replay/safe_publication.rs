@@ -83,6 +83,10 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         // M002: terminal-state notice carries only the handle plus exit
         // code/signal. No output bytes, no secrets: safe to publish.
         CoreEvent::InteractiveProcessExited { .. } => SafePublicationClass::Safe,
+        // Presence M001: update carries only the project id, no
+        // collaborator detail. Receivers re-fetch through the authorized
+        // snapshot path; the event itself never leaks membership.
+        CoreEvent::PresenceUpdated { .. } => SafePublicationClass::Safe,
     }
 }
 

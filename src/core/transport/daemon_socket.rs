@@ -815,6 +815,9 @@ async fn handle_client(
     }
 
     daemon.clients.unregister(&client_id);
+    // Presence M001: disconnect shortens/expires the connection's
+    // contributions without touching session history.
+    daemon.note_client_disconnected(&client_id);
 
     let subscription_ids = cleanup_projection_state(&projection_state).await;
     for subscription_id in subscription_ids {

@@ -270,6 +270,9 @@ Defined in `crates/codegg-protocol/src/core.rs`.
   set-budget
 - **Projections**: capabilities, subscribe, resume, ack, unsubscribe,
   snapshot-get, artifact-read, artifact-list
+- **Presence** (M001, ephemeral): capabilities, heartbeat, snapshot-get.
+  Daemon-owned leases; principals come from transport authority; never
+  authoritative. See `architecture/presence.md`.
 - **Tool programs**: list, inspect, call-page, notification-reinject,
   recovery-debug-inspect
 - **Memory**: search, list, remember, forget

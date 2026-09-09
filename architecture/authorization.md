@@ -46,7 +46,10 @@ in-memory daemons without a pool decide under the same broad policy.
 - Single-project reads deny as not-found (`denial_as_not_found`): the
   `authorization_denied` shape for `ProjectGet` is byte-identical to the
   catalog's genuinely-absent shape, so unauthorized callers cannot infer
-  project existence.
+  project existence. Presence M001 extends the same shape to
+  `PresenceSnapshotGet` and `PresenceHeartbeat`: unauthorized presence
+  reads/writes are indistinguishable from absent projects (no
+  membership/collaborator/activity signal).
 - Structured denials (`authorization_denied`,
   `authorization_scope_required`, `authorization_scope_ambiguous`,
   `authorization_principal_inactive`, `authorization_unavailable`) carry
@@ -254,6 +257,9 @@ audit store contract):
 | `session_selection_update` | via_session | `agent.invoke` |
 | `session_share` | via_session | `project.configure` |
 | `session_unshare` | via_session | `project.configure` |
+| `presence_capabilities` | global | `none` |
+| `presence_heartbeat` | direct_project | `project.observe` |
+| `presence_snapshot_get` | direct_project | `project.observe` |
 | `snapshot_daemon` | global | `none` |
 | `snapshot_models` | global | `none` |
 | `snapshot_session` | via_session | `session.read` |
