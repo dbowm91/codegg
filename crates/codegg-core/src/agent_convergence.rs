@@ -2282,7 +2282,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(version, 50);
+        assert_eq!(version, crate::storage::STORAGE_LAYOUT_VERSION as i64);
 
         sqlx::query("DROP TABLE agent_convergence_cycle")
             .execute(&pool)

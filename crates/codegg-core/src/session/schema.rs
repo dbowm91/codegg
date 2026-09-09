@@ -172,6 +172,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 50 {
         migrate_and_record(pool, 50).await?;
     }
+    if current_version < 51 {
+        migrate_and_record(pool, 51).await?;
+    }
 
     Ok(())
 }
@@ -234,6 +237,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             48 => migrate_v48(&mut tx).await?,
             49 => migrate_v49(&mut tx).await?,
             50 => migrate_v50(&mut tx).await?,
+            51 => migrate_v51(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2176,6 +2180,49 @@ async fn migrate_v49(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "CREATE INDEX IF NOT EXISTS idx_agent_convergence_owner_run ON agent_convergence(owner_kind, owner_run_id)",
         "CREATE INDEX IF NOT EXISTS idx_agent_convergence_status_updated ON agent_convergence(status, updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_agent_convergence_cycle_verifier ON agent_convergence_cycle(verifier_run_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// Identity, authorization, and audit M001: durable canonical principal and
+/// project-membership domain. The tables store identity metadata only; no
+/// credential secret, token, or key material belongs here. Membership rows are
+/// never physically deleted so a stale writer cannot silently restore revoked
+/// authority; revocation is a revision-bumped state transition.
+async fn migrate_v51(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS principal (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL CHECK (kind IN ('human','service_account','node','local_owner')),
+            display_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('active','disabled')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        )
+        "#,
+        r#"
+        CREATE TABLE IF NOT EXISTS project_membership (
+            project_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('viewer','contributor','maintainer','owner')),
+            state TEXT NOT NULL CHECK (state IN ('active','suspended','revoked')),
+            revision INTEGER NOT NULL CHECK (revision > 0),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            PRIMARY KEY (project_id, principal_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_principal_kind ON principal(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_principal_status ON principal(status)",
+        "CREATE INDEX IF NOT EXISTS idx_project_membership_principal ON project_membership(principal_id)",
+        "CREATE INDEX IF NOT EXISTS idx_project_membership_state ON project_membership(state)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

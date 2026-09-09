@@ -83,3 +83,47 @@ typed `ProjectId` and `WorkspaceId` against durable catalog and binding records,
 and rejects archived, mismatched, unresolved, or stale contexts. A directory is
 only a compatibility locator for a unique existing binding; it never creates an
 identity.
+
+## Team principal, membership, role, and capability domain
+
+Identity, authorization, and audit M001 adds `codegg_core::team`, the durable
+canonical principal/project-membership domain. Schema migration v51 creates
+`principal` and `project_membership` tables; `STORAGE_LAYOUT_VERSION` is 51.
+
+- Principals: `Human`, `ServiceAccount`, `Node`, and explicit `LocalOwner`.
+  `TeamStore::ensure_local_owner` bootstraps the deterministic
+  `"local-owner"` record idempotently; personal-local daemons resolve the OS
+  owner to this record without a login ceremony. Authorization still receives
+  an explicit principal; `LocalOwner` is a composition, not a bypass.
+- Roles: `Viewer`, `Contributor`, `Maintainer`, `Owner`. `ProjectRole::parse`
+  fails closed on unknown input.
+- Capabilities: 21 semantic operation verbs (`project.read`,
+  `project.observe`, `project.chat`, `session.create`, `session.read`,
+  `session.observe`, `agent.invoke`, `agent.delegate`, `file.read`,
+  `file.modify`, `command.execute`, `job.submit`, `job.cancel`, `git.read`,
+  `git.write`, `worktree.create`, `worktree.remove`, `project.configure`,
+  `member.manage`, `audit.read`, `node.target`). `Capability::parse` fails
+  closed. Expansion is central and monotonic: Viewer (6) ⊂ Contributor (14)
+  ⊂ Maintainer (19) ⊂ Owner (21); see `role_capability_matrix()` and
+  `role_capability_rows()` for the executable matrix.
+- Memberships: project-scoped `(project_id, principal_id)` rows with role,
+  `active`/`suspended`/`revoked` state, and optimistic `revision`. Only
+  `active` memberships grant capabilities. Mutations require the current
+  revision; stale writers receive `RevisionConflict` instead of silently
+  restoring revoked authority. Rows are never physically deleted, so
+  re-creation after revocation returns `MembershipConflict` and re-grants go
+  through the revision-checked update path.
+- Records contain no credential secret, token, or key material. Existing
+  provider-credential records are never reinterpreted as human principals.
+  Existing string principal fields (`ProjectionPrincipalId` synthetic
+  `"local-user"`/`"internal-test"`/`"authenticated-remote"` values) remain
+  compatibility projections until M003; `adapt_principal_to_projection_id`
+  is a one-way diagnostic adapter and `is_compatibility_projection` marks
+  the synthetic values.
+
+This milestone claims no transport authentication and no request-time
+authorization. The future transport contract (M002) is: authentication
+adapters resolve transport evidence to a canonical `PrincipalId`, the daemon
+transport constructs an immutable request authority context from that
+principal, and request DTOs remain locators that never supply principals,
+roles, or capabilities.
