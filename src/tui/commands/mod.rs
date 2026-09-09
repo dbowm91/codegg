@@ -8,6 +8,7 @@ pub(super) mod manifest_restore;
 pub(super) mod memory;
 pub(super) mod plugin_management;
 pub(super) mod plugins;
+pub(super) mod presence;
 pub(super) mod project_catalog;
 pub(super) mod project_picker;
 pub(super) mod provider_connections;

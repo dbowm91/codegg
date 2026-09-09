@@ -56,6 +56,7 @@ pub enum DialogType {
     DoctorReport,
     Plugin,
     RunDetail,
+    Collaborators,
     None,
 }
 
@@ -104,6 +105,11 @@ impl From<DialogType> for Dialog {
             DialogType::DoctorReport => Dialog::DoctorReport,
             DialogType::Plugin => Dialog::Plugin,
             DialogType::RunDetail => Dialog::RunDetail,
+            // Collaborator presence renders through the generic info
+            // dialog (focus-stack slot). There is no dedicated
+            // `Dialog` variant; closing follows the standard
+            // info-dialog path.
+            DialogType::Collaborators => Dialog::None,
             DialogType::None => Dialog::None,
         }
     }

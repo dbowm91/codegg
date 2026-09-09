@@ -23,6 +23,7 @@ pub enum InfoType {
     MemoryResults,
     DoctorReport,
     Agents,
+    Collaborators,
 }
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ impl InfoDialog {
             InfoType::MemoryResults => " Memory ",
             InfoType::DoctorReport => " Doctor ",
             InfoType::Agents => " Agents ",
+            InfoType::Collaborators => " Collaborators ",
         }
     }
 
@@ -86,6 +88,7 @@ impl InfoDialog {
             InfoType::MemoryResults => DialogType::MemoryResults,
             InfoType::DoctorReport => DialogType::DoctorReport,
             InfoType::Agents => DialogType::Agent,
+            InfoType::Collaborators => DialogType::Collaborators,
         }
     }
 

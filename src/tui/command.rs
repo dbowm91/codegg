@@ -361,6 +361,9 @@ impl CommandRegistry {
                 .with_description("Remove a local installed plugin (args: <plugin-id-or-name>)"),
             Command::new("/plugin-install", CommandCategory::System, None)
                 .with_description("Install a plugin from a local path (args: <path>)"),
+            Command::new("/collaborators", CommandCategory::System, None)
+                .with_aliases(&["/presence", "/team"])
+                .with_description("Show collaborators for the active project (/collaborators, /collaborators refresh)"),
         ]
     }
 
@@ -549,7 +552,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 113);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 114);
     }
 
     #[test]

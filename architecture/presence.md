@@ -164,6 +164,59 @@ tests: heartbeat/expiry/idle, disconnect/reconnect, two-clients,
 several-sessions, aggregation, privacy negatives, churn bound,
 restart, stale generation, DTO authority negative, capabilities).
 
+## M002 — TUI Collaborator Surface
+
+The TUI renders daemon-owned presence as a bounded per-project
+projection. It owns no presence truth.
+
+```
+src/tui/app/state/presence.rs      # reducer keyed by project_id + request/reconnect epoch
+src/tui/commands/presence.rs       # capability + snapshot fetch (spawn-and-complete)
+src/tui/app/mod.rs                 # App.presence, header count, /collaborators, reconnect/switch hooks
+src/tui/components/dialogs/info.rs # InfoType::Collaborators (scrollable panel)
+src/tui/components/component.rs    # DialogType::Collaborators (focus slot)
+src/tui/command.rs                 # /collaborators (/presence, /team) registry
+src/tui/input.rs                   # help entries
+tests/presence_m002_collaborators.rs
+```
+
+- **Reducer** (`PresenceState`): per-project entries with
+  `request_id` + `reconnect_epoch` stale guards, `sequence` ordering,
+  `needs_resync` flag, and LRU eviction at 16 projects. Snapshots only
+  update the matching `project_id` (rapid-switch leak prevention).
+  Unauthorized (`project_not_found`) and unsupported (old daemon) both
+  clear to `Unavailable` and render identically; transient errors retain
+  stale rows with a resync flag.
+- **Fetch**: `start_refresh_presence` negotiates `PresenceCapabilities`
+  then `PresenceSnapshotGet` in one registered task (`TuiTaskKind::Command`).
+  No polling storm: `needs_refresh` coalesces while loading, and
+  `PresenceHint` (`PresenceUpdated { project_id }`) only flags resync —
+  the active project re-fetches, inactive tabs refresh on foreground.
+- **Header**: `presence.header_summary(project_id)` renders `👥 N`
+  (plus `· agent running` / `(stale)`) only for authorized `Ready`
+  data; unavailable/loading renders nothing (hidden, identical for
+  unauthorized and absent).
+- **Panel**: `/collaborators` (`/presence`, `/team`; `refresh`
+  subcommand forces re-fetch) opens a scrollable info dialog from
+  `presence.panel_lines(project_id)`: stable activity-rank + id order,
+  32-row display bound with `+N more`, coarse labels only
+  (`active`/`idle`/`observing`/`agent running`), empty/loading/error/
+  unavailable states. Focus follows the standard info-dialog convention
+  (`j`/`k` scroll, `Esc`/`Enter` close); opening never mutates sessions.
+- **Lifecycle**: tab switch triggers a bounded refresh for the new
+  active project; tab close drops the project when no remaining tab
+  holds it; `on_projection_reconnect` bumps both presence and routing
+  epochs and re-fetches the active project. Authorization loss clears
+  the cache (`clear_project`) so hidden data is never rendered locally.
+- **Compatibility**: older daemons without the presence capability show
+  the generic unavailable panel; project tabs keep working. No storage
+  migration.
+
+```bash
+cargo test --test presence_m002_collaborators
+cargo test -p codegg --lib tui::app::state::presence
+```
+
 ## Related Docs
 
 - `architecture/authorization.md` — `project.observe` gate + denial shape

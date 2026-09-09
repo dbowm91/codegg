@@ -187,6 +187,20 @@ pub(crate) fn switch_active_tab(
         app.view_switch.cancel();
     }
 
+    // Presence M002: rapid switching must not leak one project's
+    // collaborators into another. Trigger a bounded refresh for the new
+    // active project; the reducer keys by project_id and drops stale
+    // completions from the previous tab.
+    if let Some(new_project) = app
+        .project_tabs
+        .get(target_tab_id)
+        .and_then(|t| t.project_id.clone())
+    {
+        if app.presence.needs_refresh(&new_project) {
+            super::presence::start_refresh_presence(app, new_project);
+        }
+    }
+
     // Persist the new active-tab intent.
     app.schedule_manifest_save();
 }
@@ -639,6 +653,14 @@ pub(crate) fn close_active_project_tab(app: &mut App) {
         app.view_switch.cancel();
     }
 
+    // Capture the closing tab's project so presence can be dropped
+    // when no remaining tab holds it (never render hidden data from a
+    // local cache after the tab is gone).
+    let closing_project = app
+        .project_tabs
+        .get(&current_id)
+        .and_then(|t| t.project_id.clone());
+
     // Remove the tab
     let was_last = app.project_tabs.len() == 1;
     app.project_tabs.remove_tab(&current_id);
@@ -653,6 +675,20 @@ pub(crate) fn close_active_project_tab(app: &mut App) {
     // If it was the last tab, create a fallback
     if was_last {
         app.project_tabs.close_fallback_tab();
+    }
+
+    // Presence M002: drop the cached presence when no remaining tab
+    // holds the closed project. Inactive-tab state stays bounded and
+    // closed projects never leak into the new active tab.
+    if let Some(pid) = closing_project {
+        let still_open = app
+            .project_tabs
+            .ordered()
+            .iter()
+            .any(|t| t.project_id.as_deref() == Some(pid.as_str()));
+        if !still_open {
+            app.presence.clear_project(&pid);
+        }
     }
 
     // Persist the new tab order/active intent.

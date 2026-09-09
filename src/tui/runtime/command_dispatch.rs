@@ -174,6 +174,42 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         } => {
             apply_project_catalog_refreshed(app, request_id, supported, entries, truncated, error);
         }
+        TuiCommand::RefreshPresence { project_id } => {
+            super::super::commands::presence::start_refresh_presence(app, project_id);
+        }
+        TuiCommand::PresenceSnapshotLoaded {
+            request_id,
+            project_id,
+            snapshot,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::presence::apply_presence_snapshot_loaded(
+                app,
+                request_id,
+                project_id,
+                snapshot,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::PresenceHint { project_id } => {
+            // Liveness hint only: flag for a bounded re-fetch when the
+            // project is not already loading. No task per hint.
+            if app.presence.note_hint(&project_id) {
+                // Only auto-refresh the active project to avoid a
+                // background storm across inactive tabs. Inactive tabs
+                // refresh on foreground.
+                let is_active = app.active_project_id() == Some(project_id.as_str());
+                if is_active {
+                    super::super::commands::presence::start_refresh_presence(app, project_id);
+                }
+            }
+        }
         TuiCommand::OpenTreeDialog => {
             start_open_tree_dialog(app);
         }

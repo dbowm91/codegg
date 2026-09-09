@@ -984,6 +984,18 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             condition: None,
         },
         HelpEntry {
+            mode: HelpMode::Command,
+            key: "/collaborators",
+            action: "Show collaborators for the active project",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/collaborators refresh",
+            action: "Refresh collaborator presence",
+            condition: None,
+        },
+        HelpEntry {
             mode: HelpMode::Dialog,
             key: "i (terminal view)",
             action: "Focus terminal: keystrokes go to the process",

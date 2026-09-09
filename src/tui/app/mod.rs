@@ -837,6 +837,32 @@ pub enum TuiCommand {
     PreviousProjectTab,
     /// Close the active project tab.
     CloseProjectTab,
+    /// Presence M002: explicit refresh of one project's collaborator
+    /// presence. The handler performs capability negotiation + snapshot
+    /// fetch through `CoreClient`.
+    RefreshPresence {
+        project_id: String,
+    },
+    /// Presence M002: completion of a snapshot fetch. Stale completions
+    /// (wrong request id or reconnect epoch) are dropped at apply time.
+    /// `unauthorized` covers `project_not_found` denials (indistinguishable
+    /// from absent); `unsupported` covers older daemons without the
+    /// presence capability. Both render the identical unavailable panel.
+    PresenceSnapshotLoaded {
+        request_id: u64,
+        project_id: String,
+        snapshot: Option<crate::protocol::core::PresenceSnapshotDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M002: liveness hint (`CoreEvent::PresenceUpdated`).
+    /// Carries no collaborator detail; flags the project for a bounded
+    /// re-fetch when it is not already loading.
+    PresenceHint {
+        project_id: String,
+    },
     /// Milestone 4: trigger a manifest restore attempt.
     /// Dispatched at TUI startup after the manifest is loaded.
     ManifestRestoreRequested,
@@ -1159,6 +1185,10 @@ pub struct App {
     /// `ServerCapabilities::session_projection` flag and reverts to
     /// the raw-core compatibility path when projection is unavailable.
     pub projection_client: crate::tui::app::state::ProjectionClientState,
+    /// Collaborator presence projection (Presence M002). Daemon-owned
+    /// ephemeral presence rendered per project. The TUI owns no presence
+    /// truth; every entry is derived from an authorized snapshot.
+    pub presence: crate::tui::app::state::PresenceState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1545,6 +1575,7 @@ impl App {
             ),
             manifest_daemon_hint: None,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
+            presence: crate::tui::app::state::PresenceState::new(),
         }
     }
 
@@ -1999,6 +2030,7 @@ impl App {
             ),
             manifest_daemon_hint: None,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
+            presence: crate::tui::app::state::PresenceState::new(),
         }
     }
 
@@ -2039,6 +2071,13 @@ impl App {
         if switched {
             self.projection_client
                 .set_active_tab(Some(tab_id.as_str().to_string()));
+            // Presence M002: bounded refresh for the newly active
+            // project; routing stays keyed by project_id.
+            if let Some(pid) = self.active_project_id().map(str::to_string) {
+                if self.presence.needs_refresh(&pid) {
+                    crate::tui::commands::presence::start_refresh_presence(self, pid);
+                }
+            }
         }
         switched
     }
@@ -2055,6 +2094,28 @@ impl App {
     pub fn on_projection_reconnect(&mut self) {
         self.projection_client.on_reconnect();
         self.interactive_terminals.note_transport_disconnect();
+        // Presence M002: lag/resync replaces stale presentation from the
+        // authoritative snapshot. Bump the presence epoch (drops
+        // pre-reconnect completions) and re-fetch the active project.
+        self.presence.on_reconnect();
+        self.routing_registry.bump_reconnect_epoch();
+        if let Some(project_id) = self.active_project_id().map(str::to_string) {
+            crate::tui::commands::presence::start_refresh_presence(self, project_id);
+        }
+    }
+
+    /// Presence M002: route a daemon `PresenceUpdated { project_id }`
+    /// liveness hint into the bounded presence reducer. No collaborator
+    /// detail is carried; the active project re-fetches through the
+    /// authorized snapshot path. Inactive projects flag resync and
+    /// refresh on foreground (no polling storm).
+    pub fn on_presence_hint(&mut self, project_id: String) {
+        if self.presence.note_hint(&project_id) {
+            let is_active = self.active_project_id() == Some(project_id.as_str());
+            if is_active {
+                crate::tui::commands::presence::start_refresh_presence(self, project_id);
+            }
+        }
     }
 
     /// Apply a projection envelope to the projection client. The
@@ -3109,6 +3170,13 @@ impl App {
         } else {
             String::new()
         };
+        // Presence M002: daemon-owned collaborator count for the active
+        // project. `None` when unavailable/loading/unauthorized so hidden
+        // projects never leak through the header.
+        let presence_summary = self
+            .active_project_id()
+            .and_then(|pid| self.presence.header_summary(pid))
+            .unwrap_or_default();
         let title = match self.ui_state.routes.current() {
             Route::Home => Line::from(vec![
                 Span::styled(
@@ -3138,6 +3206,14 @@ impl App {
                     format!("agent:{agent_name}  model:{model_short}"),
                     Style::default().fg(self.ui_state.theme.muted),
                 ),
+                if presence_summary.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        format!("  {presence_summary}"),
+                        Style::default().fg(self.ui_state.theme.secondary),
+                    )
+                },
             ]),
             Route::Session(_) => Line::from(""),
         };
@@ -6024,6 +6100,24 @@ impl App {
             }
             "/tts" => {
                 self.toggle_tts();
+            }
+            "/collaborators" | "/presence" | "/team" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                // Subcommand: `/collaborators refresh` forces a re-fetch.
+                // Bare `/collaborators` shows the bounded panel, fetching
+                // on demand when missing or stale. Focus/key follows the
+                // standard info-dialog convention (j/k scroll, Esc close)
+                // and never mutates sessions.
+                let arg = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                if arg.eq_ignore_ascii_case("refresh") {
+                    crate::tui::commands::presence::refresh_collaborators(self);
+                } else {
+                    crate::tui::commands::presence::show_collaborators(self);
+                }
             }
             "/sessions" => {
                 self.open_dialog(Dialog::Session);
@@ -11964,6 +12058,15 @@ impl App {
         // never blocks on git probing.
         crate::tui::commands::git_sidebar::start_refresh_git_sidebar(self);
 
+        // Presence M002: refresh collaborator presence for the newly
+        // bound project. Keyed by project_id so rapid switches cannot
+        // leak the previous project's collaborators.
+        if let Some(pid) = project_id.clone() {
+            if self.presence.needs_refresh(&pid) {
+                crate::tui::commands::presence::start_refresh_presence(self, pid);
+            }
+        }
+
         // Milestone 4: persist the new session binding.
         self.schedule_manifest_save();
     }
@@ -12074,6 +12177,55 @@ impl App {
         crate::tui::commands::project_catalog::apply_project_catalog_refreshed(
             self, request_id, supported, entries, truncated, error,
         );
+    }
+
+    /// Presence M002: kick off a collaborator refresh for `project_id`.
+    /// Public so tests and the `/collaborators` dispatcher can route
+    /// through this method without exposing the private command module.
+    pub fn refresh_presence(&mut self, project_id: String) {
+        crate::tui::commands::presence::start_refresh_presence(self, project_id);
+    }
+
+    /// Presence M002: apply a snapshot completion. Public for the same
+    /// dispatcher/test reasons as the catalog apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_presence_snapshot(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        snapshot: Option<crate::protocol::core::PresenceSnapshotDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::presence::apply_presence_snapshot_loaded(
+            self,
+            request_id,
+            project_id,
+            snapshot,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Presence M002: whether the daemon advertised presence support.
+    pub fn presence_supported(&self) -> bool {
+        self.presence.is_supported()
+    }
+
+    /// Presence M002: open the bounded collaborator panel for the active
+    /// project. Public so tests and the `/collaborators` dispatcher share
+    /// one entry point.
+    pub fn show_collaborators(&mut self) {
+        crate::tui::commands::presence::show_collaborators(self);
+    }
+
+    /// Presence M002: explicit refresh + panel open for the active project.
+    pub fn refresh_collaborators(&mut self) {
+        crate::tui::commands::presence::refresh_collaborators(self);
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {

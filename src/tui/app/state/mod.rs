@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod messages;
 pub mod persistence;
 pub mod plugin_ui;
+pub mod presence;
 pub mod project_picker;
 pub mod project_tabs;
 pub mod projection_client;
@@ -23,6 +24,11 @@ pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
 pub use messages::MessagesState;
 pub use plugin_ui::{PluginUiApplyResult, PluginUiState};
+pub use presence::{
+    activity_label, display_principal, CollaboratorEntry, PresenceState, PresenceStatus,
+    ProjectPresence, MAX_PRESENCE_DISPLAY_PRINCIPALS, MAX_PRESENCE_DISPLAY_SESSIONS,
+    MAX_PRESENCE_PROJECTS, MAX_PRINCIPAL_DISPLAY_LEN,
+};
 pub use project_picker::{
     PickerPhase, ProjectPickerState, RegistrationDraft, SessionSummaryCacheEntry,
     MAX_OPEN_PROJECT_TABS, MAX_PROJECT_LIST_ITEMS, MAX_TAB_LABEL_LEN,

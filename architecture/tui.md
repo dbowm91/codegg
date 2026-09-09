@@ -161,6 +161,30 @@ holds `root`, `branch`, `dirty`, `staged_count`, `unstaged_count`,
 **Remote TUI**: `RemoteTuiStateSnapshot.git: Option<RemoteGitInfo>`
 carries cached sidebar state to remote clients.
 
+### Collaborator Presence (Presence M002)
+
+Daemon-owned presence rendered as a bounded per-project projection.
+The TUI owns no presence truth.
+
+- **State**: `PresenceState` (`src/tui/app/state/presence.rs`) keyed by
+  `project_id` with per-project `request_id` + global `reconnect_epoch`
+  stale guards, LRU eviction at 16 projects, stable activity-rank + id
+  ordering, and identical `Unavailable` rendering for unauthorized and
+  feature-absent projects.
+- **Fetch**: `src/tui/commands/presence.rs` negotiates
+  `PresenceCapabilities` then `PresenceSnapshotGet` in one registered
+  task. `PresenceHint { project_id }` (from
+  `CoreEvent::PresenceUpdated`) only flags resync; the active project
+  re-fetches, inactive tabs refresh on foreground.
+- **Surface**: header shows `👥 N` only for authorized data (hidden
+  otherwise); `/collaborators` (`/presence`, `/team`, `refresh`
+  subcommand) opens a scrollable `InfoType::Collaborators` dialog with
+  coarse activity labels and empty/loading/error states. Focus follows
+  the standard info-dialog convention and never mutates sessions.
+- **Lifecycle**: tab switch refreshes the new active project; tab close
+  drops unheld projects; `App::on_projection_reconnect` resyncs the
+  active project. See `architecture/presence.md` for the full contract.
+
 ### Long Output → Info Dialog
 
 `App::show_short_or_info(info_type, lines)` routes output to short toast
