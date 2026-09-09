@@ -181,7 +181,7 @@ pub use egggit::process::{
 
 | Location | How Used |
 |----------|----------|
-| `src/core/daemon.rs:3747,4977` | `find_git_root` + `list_worktrees` for workspace/project discovery |
+| `src/core/daemon_projects.rs` (`handle_projects_request`) | `find_git_root` + `list_worktrees` for workspace/project discovery |
 | `src/tui/app/mod.rs:5880` | `/worktree` command handler |
 | `src/tui/commands/git_sidebar.rs:113` | Git sidebar worktree listing |
 | `src/tui/commands/tasks.rs:550` | `start_worktree_list` async task |

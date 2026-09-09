@@ -1,6 +1,6 @@
 # Residual Runtime Consolidation Milestone 002 — CoreDaemon Request-Family Decomposition
 
-Status: ready for handoff
+Status: implemented (closed via `plans/closure/residual-runtime-consolidation/002-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

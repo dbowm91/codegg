@@ -23,6 +23,35 @@ This skill covers the `src/core/` module, which is the request/response boundary
 - Memory, task, and worktree helpers
 - Model refresh and agent/model selection helpers
 
+## Request-Family Routing (Residual M002)
+
+`CoreDaemon` is the single composition/lifecycle authority. Request
+handling is physically decomposed by family; do not add a new generic
+coordinator, service bus, or DI framework:
+
+| Family | Handler | Module |
+|---|---|---|
+| assets | `handle_assets_request` | `src/core/daemon_assets.rs` |
+| providers | `handle_providers_request` | `src/core/daemon_providers.rs` |
+| sessions | `handle_sessions_request` | `src/core/daemon_sessions.rs` |
+| turns | `handle_turns_request` | `src/core/daemon_turns.rs` |
+| jobs | `handle_jobs_request` | `src/core/daemon_jobs.rs` |
+| projects | `handle_projects_request` | `src/core/daemon_projects.rs` |
+| goals | `handle_goals_request` | `src/core/daemon_goals.rs` |
+| projection | `handle_projection_request` | `src/core/daemon_projection.rs` |
+| ops | `handle_ops_request` | `src/core/daemon_ops.rs` |
+
+- `DaemonRequestFamily::of` (`src/core/daemon_family.rs`) is the only
+  request-to-owner routing table. New `CoreRequest` variants must be
+  classified there first; the routing test fails otherwise.
+- `handle_request_with_client` stays a thin router: authorization/audit
+  preamble, boxed chat pre-router, spawned interactive-process
+  pre-router, then one `Box::pin` delegate per family. Keep it that way.
+- Family handlers are boring `impl CoreDaemon` methods on shared
+  daemon-owned state. Shared helpers live in `src/core/daemon.rs` as
+  `pub(crate)`; construction/lifecycle extraction belongs to M003, not
+  to request handlers.
+
 ## Core Client Types
 
 | Type | Use |

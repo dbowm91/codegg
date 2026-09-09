@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
-| Residual runtime consolidation | active | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001 closed, M002 ready | M003 waits for M002. |
+| Residual runtime consolidation | active | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001 closed, M002 closed, M003 ready | — |
 | Identity, authorization, and audit | closed | `plans/subsystems/identity-authorization-audit-roadmap.md` | M005 closed | — |
 | Presence and read-only observation | closed | `plans/subsystems/presence-observation-roadmap.md` | M001–M003 closed | — |
 | Project collaboration | closed | `plans/subsystems/project-collaboration-roadmap.md` | M001+M002+M003 closed | — |
@@ -58,14 +58,14 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Residual runtime consolidation | M002 — CoreDaemon request-family decomposition | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | Behavior-preserving physical refactor over already stable domain owners. |
+| Residual runtime consolidation | M003 — CoreDaemon construction/lifecycle decomposition | `plans/implementation/residual-runtime-consolidation/003-core-daemon-construction-lifecycle-decomposition.md` | M002 closed; targets the stabilized daemon module layout. |
 | Tool Program capability expansion | M001 — deterministic local read expansion | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | Tool Programs are strictly closed and ADR-0001 supplies the authority contract. |
 
 These four plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
 
 ## Current execution order and dependency gates
 
-1. Residual M001 is closed (stranded team/shell-session surfaces retired; closure at `plans/closure/residual-runtime-consolidation/001-status.md`). M002 remains a ready refactor handoff. Residual M003 remains blocked until M002 closes.
+1. Residual M001 and M002 are closed (stranded team/shell-session surfaces retired, closure at `plans/closure/residual-runtime-consolidation/001-status.md`; CoreDaemon request-family decomposition, closure at `plans/closure/residual-runtime-consolidation/002-status.md`). Residual M003 is a ready construction/lifecycle handoff against the stabilized module layout.
 2. Identity/auth/audit is closed: M001 domain -> M002 transport identity -> M003 daemon authorization/attribution (closed) -> M004 audit store (closed) -> M005 instrumentation closure (closed).
 3. Presence M001/M002/M003 are closed and the subsystem is complete. Observation consumes the already-closed session-projection interface.
 4. Project collaboration M001+M002+M003 are closed and the subsystem is complete: durable authorized channels/messages with ordering/retry/restart/retention/auth/privacy, bounded TUI chat with observer insert routing and zero-control proof, and separately authorized structured actions with idempotent scheduler-boundary submits and audit causation. Free text is never an execution interface.
@@ -79,7 +79,6 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 |---|---|---|
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
-| Residual runtime consolidation | M003 construction/lifecycle decomposition | M002 closure. |
 | Tool Program capability expansion | M002 external repo search | TP expansion M001 closure. |
 | Tool Program capability expansion | M003 operation-scoped Git/LSP reads | TP expansion M001/M002 closures. |
 
@@ -100,6 +99,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Agent runs/worktree concurrency | closed | `plans/closure/agent-run-worktree-concurrency/009-status.md` |
 | Tool Programs | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Residual runtime consolidation | M001 closed | `plans/closure/residual-runtime-consolidation/001-status.md` |
+| Residual runtime consolidation | M002 closed | `plans/closure/residual-runtime-consolidation/002-status.md` |
 | Search and eggsearch integration | closed | `plans/closure/search-eggsearch-integration/005-status.md` |
 | Presence and read-only observation | M001 closed | `plans/closure/presence-observation/001-status.md` |
 | Presence and read-only observation | M002 closed | `plans/closure/presence-observation/002-status.md` |

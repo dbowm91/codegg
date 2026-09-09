@@ -9,6 +9,16 @@ use crate::protocol::core::{
 
 pub mod client_registry;
 pub mod daemon;
+pub mod daemon_assets;
+pub mod daemon_family;
+pub mod daemon_goals;
+pub mod daemon_jobs;
+pub mod daemon_ops;
+pub mod daemon_projection;
+pub mod daemon_projects;
+pub mod daemon_providers;
+pub mod daemon_sessions;
+pub mod daemon_turns;
 pub mod eggpool;
 pub mod event_log;
 pub mod instance;
