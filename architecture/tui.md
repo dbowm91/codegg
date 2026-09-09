@@ -185,6 +185,43 @@ The TUI owns no presence truth.
   drops unheld projects; `App::on_projection_reconnect` resyncs the
   active project. See `architecture/presence.md` for the full contract.
 
+### Read-Only Session Observation (Presence M003)
+
+One authorized session followed read-only through the existing
+projection subscription path. The TUI owns no observation truth.
+
+- **State**: `ObserverState` (`src/tui/app/state/observe.rs`) holds at
+  most one `ObservedTarget` (project/session locators, observer-owned
+  subscription id, authoritative cursor, watermarks) with per-observation
+  `request_id` + global `reconnect_epoch` stale guards. Denied and
+  unsupported targets render identically as unavailable; `stop`/`clear`
+  drops cached state so hidden data is never rendered locally.
+- **Flow**: `src/tui/commands/observe.rs` negotiates
+  `ProjectionCapabilities`, then `ProjectionSubscribe` (session scope),
+  `ProjectionResume` for reconnect/lag/resync, and
+  `ProjectionUnsubscribe` on stop — all on registered
+  `TuiTaskKind::Command` tasks with `TuiCommand::StartObserve` /
+  `ObserveSubscribed` / `ObserveResumed` / `StopObserving` /
+  `ObserveUnsubscribed` dispatch arms in
+  `src/tui/runtime/command_dispatch.rs`. `/observe <session-id>`
+  (`/watch`) resolves the project from the active tab; `/stop-observing`
+  (`/unwatch`) tears down only the observer-owned subscription. The
+  `/collaborators` panel lists session locators plus the bounded
+  `/observe` hint (chooser-to-action seam; no chat storage).
+- **Read-only enforcement** (central, fail-closed): `ObserverState::blocks_command`
+  (narrow allowlist in `is_observer_allowed_command`; everything else
+  denied) is checked at the top of `App::execute_command`;
+  `blocks_prompt_submit` reroutes chat/human-shell input in
+  `App::send_prompt` to the collaboration placeholder; permission and
+  question answers are rejected in `submit_permission_response`,
+  `on_permission_confirm`, and `submit_question_answers`. The header
+  renders `👁 OBSERVING <session> (read-only) · <state>` (locator +
+  coarse status only, never content).
+- **Reconnect**: `App::on_projection_reconnect` bumps the observer epoch
+  and resumes from the authoritative cursor; revocation denies as
+  `project_not_found` daemon-side. Full matrix in
+  `architecture/presence.md`.
+
 ### Long Output → Info Dialog
 
 `App::show_short_or_info(info_type, lines)` routes output to short toast

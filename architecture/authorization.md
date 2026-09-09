@@ -119,6 +119,21 @@ the capability on the scoped project, deployment connections require an
 `BoundedProjectResolver` from `project.read` grants so
 `authorize_scope` enforces the same memberships as the daemon boundary.
 
+### Session observation (presence M003)
+
+Session-scope `ProjectionSubscribe` requires canonical
+`session.observe` on the owning project (resolved through the session
+row), in addition to the gate's `project.observe`. The projection
+access context is derived from the same membership
+(`CoreDaemon::canonical_observe_access_for_project`: team expansion +
+resolver bounded to the target project), so no synthetic allow-all
+authority remains on the observation path. `ProjectionResume` is
+global at the gate and rechecks per stream kind on every resume;
+artifact reads/lists re-enforce the team-derived context. Session and
+project subscribe plus artifact list/read gate denials use
+`project_not_found`, indistinguishable from absent (same convention
+as `ProjectGet` and presence reads).
+
 ## Failure, restart, contention
 
 - Denied requests have zero side effect (gate precedes dispatch).

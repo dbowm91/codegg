@@ -1,12 +1,12 @@
-# Presence and Observation M001 — Project-Scoped Presence Leases
+# Presence and Observation — Leases, Collaborators, Read-Only Observation
 
 ## Purpose
 
 Daemon-owned ephemeral project-scoped presence for canonical
 principals, client attachments, and bounded session/agent activity
 summaries, with heartbeat/idle/expiry/reconnect and privacy semantics.
-This document covers M001 only (leases). TUI rendering is M002;
-authorized read-only observation is M003.
+This document covers M001 (leases), M002 (TUI collaborator surface),
+and M003 (authorized read-only observation).
 
 Presence is a **projection of liveness/activity only**. It is never
 consulted to authorize an operation, never becomes durable history or
@@ -219,8 +219,128 @@ cargo test -p codegg --lib tui::app::state::presence
 
 ## Related Docs
 
-- `architecture/authorization.md` — `project.observe` gate + denial shape
+- `architecture/authorization.md` — `project.observe` / `session.observe` gates + denial shapes
 - `architecture/protocol.md` — presence wire DTOs and capability
 - `architecture/core.md` — daemon ownership and transports
 - `architecture/codegg_core.md` — core module boundary
 - `architecture/projection.md` — observation reuses projection replay (M003)
+- `architecture/tui.md` — observer-mode surface, dispatch, and read-only enforcement
+
+## M003 — Authorized Read-Only Session Observation
+
+Observation is an authorized specialization of the existing projection
+subscription path. No new streaming stack, storage format, or protocol
+version: the caller requests a session locator, daemon authorization
+verifies canonical `session.observe`, and existing replay/redaction/
+artifact/transport lifecycle applies. The TUI renders the same logical
+activity model in an explicitly read-only state.
+
+```
+crates/codegg-core/src/projection_replay/context.rs  # authorize_scope: session scope needs ObserveSessionProjection
+crates/codegg-core/src/authorization.rs               # team_capabilities_to_projection (existing mapping reused)
+src/core/daemon.rs                                    # canonical_observe_access_for_project, session_observe_allowed,
+                                                      # subscribe/resume/artifact rechecks, denial shapes
+src/tui/app/state/observe.rs                          # ObserverState reducer + central read-only policy
+src/tui/commands/observe.rs                           # subscribe/resume/stop flow on CoreClient
+src/tui/app/mod.rs                                    # TuiCommand arms, /observe + /stop-observing, header banner,
+                                                      # execute_command/send_prompt/permission/question guards,
+                                                      # on_projection_reconnect resume
+src/tui/runtime/command_dispatch.rs                   # StartObserve/ObserveSubscribed/ObserveResumed/StopObserving arms
+src/tui/command.rs + src/tui/input.rs                 # /observe (/watch), /stop-observing (/unwatch) registry + help
+tests/presence_m003_observation.rs                    # allow/deny, negatives, lifecycle, bounds, redaction, TUI state
+```
+
+### Daemon authorization
+
+- The daemon gate enforces `project.observe` on `ProjectionSubscribe`
+  (unchanged matrix). Session scope additionally requires canonical
+  `session.observe` on the owning project, resolved through the session
+  row — the same authority as `resolve_authorization_project`
+  (`CoreDaemon::session_observe_allowed`). LocalOwner broad policy and
+  pool-less local daemons keep working; team principals without an
+  active `session.observe` grant deny.
+- The projection access context is canonical: team membership expands
+  through `team_capabilities_to_projection` and the resolver is bounded
+  to exactly the target project
+  (`canonical_observe_access_for_project`). The historical allow-all
+  `projection_access_for_client` remains only for callers without a
+  target project (legacy artifact paths, diagnostics); new code must
+  not use it for cross-session visibility.
+- `ProjectionResume` is global at the gate (no locator), so the handler
+  is the authority boundary: session streams recheck `session.observe`,
+  project streams recheck `project.observe`, on every resume. Denials
+  clean transient owned subscriptions so revoked grants cannot retain
+  delivery. Artifact reads/lists re-enforce the team-derived context so
+  handles stay project-scoped (reads remain capped by the 64 KiB
+  protocol window).
+- Denial shapes are privacy-preserving: session/project subscribe and
+  artifact list/read gate denials use `project_not_found`
+  (indistinguishable from absent). `authorization_denial` maps them
+  alongside `ProjectGet`/presence reads.
+
+### Observer visibility/control matrix
+
+| Action | Observer (Viewer) | Denied/outsider | Notes |
+|---|---|---|---|
+| Subscribe/resume another session | allow with `session.observe` | `project_not_found` | Same shape for missing vs denied |
+| Snapshot/replay/live tail | redacted canonical stream | nothing delivered | Redaction before durable replay is authoritative |
+| Prompt submit / chat input | blocked, chat placeholder | n/a | Never sent as a turn; chat seam reserved for project-collaboration M001 |
+| Permission/question answers | blocked | n/a | Counts visible via projection summary only |
+| Turn steer/cancel, `agent.invoke` | `authorization_denied` | `project_not_found` | Every turn re-enters the gate |
+| Model/agent/provider settings | blocked (TUI) | n/a | `/models`, `/agent`, `/connections` denied while observing |
+| Session/file/worktree/Git/job mutations | blocked (TUI) + gate denies | n/a | `/new`, `/fork`, `/revert`, `/lsp-preview-apply`, `/pr`, `/loop`, `/test`, … |
+| Shell/terminal control | blocked (TUI) | n/a | Inspection (`/shell-list`, `/terminal-show`, …) stays allowed |
+| Artifact handles | project-scoped list/reads | `project_not_found` | Opaque ids; cross-project use fails closed |
+| Stop observing | always allowed | n/a | Tears down only the observer-owned subscription |
+
+Allowed while observing (narrow, fail-closed): `/observe`, `/watch`,
+`/stop-observing`, `/unwatch`, help/status/navigation
+(`/help`, `/status`, `/sessions`, `/collaborators`, …), read-only
+inspection (`/context`, `/search`, `/diff`, `/lsp-status`,
+`/shell-list`, `/memory-search`, …). Everything else is denied with
+`Observer mode is read-only — … Use /stop-observing to resume control.`
+
+### Failure, reconnect, and contention
+
+- Observer disconnect tears down only the observer-owned subscription
+  (`ProjectionUnsubscribe` best-effort on stop; `ObserverState::stop`
+  returns the owned id). The target session keeps running and its
+  history is untouched.
+- Target owner disconnect grants no control: subscriptions are not tied
+  to target connections, and the watcher still cannot invoke.
+- Transport reconnect bumps the observer epoch (stale completions drop)
+  and resumes from the authoritative cursor; resync converges on a
+  fresh snapshot instead of a stale cursor.
+- Revoked `session.observe` denies new/resumed delivery as
+  `project_not_found` and cleans transient owned state.
+- Multiple observers hold independent subscriptions on one stream and
+  share no mutable ownership. Bounds are the existing subscription
+  caps (32 per client, 256 per daemon) plus observer locator/error
+  bounds (128-byte locators, 256-byte errors); no second streaming
+  stack exists.
+
+### Compatibility
+
+Additive only. Older daemons (no projection support) render the generic
+unavailable state; project tabs keep working. No storage migration, no
+`PROTOCOL_VERSION` bump, no new `CoreRequest` variant (the matrix is
+unchanged; M003 reuses `project.observe`/`session.observe`).
+
+### Testing
+
+```bash
+cargo test -p codegg --lib tui::app::state::observe
+cargo test --test presence_m003_observation
+cargo test --test presence_m001_leases
+cargo test --test presence_m002_collaborators
+python3 scripts/check_authorization_matrix.py
+bash scripts/check-core-boundary.sh
+```
+
+Key suite: `tests/presence_m003_observation.rs` (11 tests: allow/deny +
+absent-indistinguishability, outsider non-enumeration, daemon
+steer/cancel/model/file negatives, observer-only teardown vs surviving
+observer, owner-disconnect control negative, revocation resume-denial +
+cleanup, multi-observer + per-client/daemon bounds, snapshot+replay
+secret-redaction proof, artifact project scope, TUI lifecycle/banner/
+policy/reconnect, collaborator observe-hint seam).

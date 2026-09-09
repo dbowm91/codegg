@@ -387,8 +387,19 @@ impl ProjectionAccessContext {
     /// Authorization decision for a project/session scope. A session
     /// outside the resolver or an absent observe capability fails
     /// closed.
+    ///
+    /// Presence M003: session scope requires `ObserveSessionProjection`
+    /// (canonical `session.observe`), project scope requires
+    /// `ObservePublicProjection` (canonical `project.observe`). Both
+    /// capabilities are present for local users and for every team role
+    /// that may observe; a principal with only one of them can reach
+    /// only the matching scope. The resolver check is unchanged.
     pub fn authorize_scope(&self, project_id: &str, session_id: Option<&str>) -> bool {
-        if !self.has(ProjectionCapability::ObservePublicProjection) {
+        if session_id.is_some() {
+            if !self.has(ProjectionCapability::ObserveSessionProjection) {
+                return false;
+            }
+        } else if !self.has(ProjectionCapability::ObservePublicProjection) {
             return false;
         }
         if !self.project_resolver.is_allowed(project_id) {

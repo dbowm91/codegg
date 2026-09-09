@@ -364,6 +364,12 @@ impl CommandRegistry {
             Command::new("/collaborators", CommandCategory::System, None)
                 .with_aliases(&["/presence", "/team"])
                 .with_description("Show collaborators for the active project (/collaborators, /collaborators refresh)"),
+            Command::new("/observe", CommandCategory::System, None)
+                .with_aliases(&["/watch"])
+                .with_description("Follow another session read-only (/observe <session-id>)"),
+            Command::new("/stop-observing", CommandCategory::System, None)
+                .with_aliases(&["/unwatch"])
+                .with_description("Stop following the observed session"),
         ]
     }
 
@@ -552,7 +558,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 114);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 127);
     }
 
     #[test]

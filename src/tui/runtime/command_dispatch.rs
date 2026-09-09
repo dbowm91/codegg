@@ -210,6 +210,63 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
+        TuiCommand::StartObserve {
+            project_id,
+            session_id,
+        } => {
+            super::super::commands::observe::start_observe(app, project_id, session_id);
+        }
+        TuiCommand::ObserveSubscribed {
+            request_id,
+            project_id,
+            session_id,
+            subscription_id,
+            cursor,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            super::super::commands::observe::apply_observe_subscribed(
+                app,
+                request_id,
+                project_id,
+                session_id,
+                subscription_id,
+                cursor,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ObserveResumed {
+            request_id,
+            session_id,
+            cursor,
+            last_delivered_seq,
+            error,
+            unauthorized,
+            reconnect_epoch,
+        } => {
+            super::super::commands::observe::apply_observe_resumed(
+                app,
+                request_id,
+                session_id,
+                cursor,
+                last_delivered_seq,
+                error,
+                unauthorized,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::StopObserving => {
+            super::super::commands::observe::stop_observing(app);
+        }
+        TuiCommand::ObserveUnsubscribed { .. } => {
+            // Best-effort unsubscribe completion; no state to apply
+            // (reducer already cleared on stop). Ignored when stale.
+        }
         TuiCommand::OpenTreeDialog => {
             start_open_tree_dialog(app);
         }

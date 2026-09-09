@@ -1883,6 +1883,15 @@ impl CoreDaemon {
     /// (in-process/stdio/legacy) callers. Replaces the historical synthetic
     /// `"authenticated-remote"` placeholder: remote bindings now carry
     /// their canonical principal id.
+    ///
+    /// Presence M003 note: this sync helper preserves the historical
+    /// local-user capability shape for callers without a target project
+    /// (legacy artifact paths, diagnostics). Session observation MUST use
+    /// [`Self::canonical_observe_access_for_project`], which derives
+    /// capabilities from the canonical team membership (`session.observe`
+    /// / `project.observe`) and bounds the resolver to the target
+    /// project. New code MUST NOT rely on the allow-all resolver here
+    /// for cross-session visibility.
     pub fn projection_access_for_client(
         &self,
         client_id: &str,
@@ -1902,6 +1911,194 @@ impl CoreDaemon {
             client_id,
             correlation_id,
         )
+    }
+
+    /// Presence M003: canonical observe access for one target project.
+    ///
+    /// Derives projection capabilities from the canonical team membership
+    /// for `project_id` (via [`codegg_core::authorization::team_capabilities_to_projection`])
+    /// and bounds the resolver to exactly that project. LocalOwner broad
+    /// policy and pool-less (local-only) daemons retain the local-user
+    /// context; team principals without an active membership receive an
+    /// empty capability set so [`ProjectionAccessContext::authorize_scope`]
+    /// fails closed. The principal string always comes from transport
+    /// authority, never from a request payload.
+    pub async fn canonical_observe_access_for_project(
+        &self,
+        client_id: &str,
+        project_id: &codegg_core::identity::ProjectId,
+        correlation_id: &str,
+    ) -> codegg_core::projection_replay::context::ProjectionAccessContext {
+        use codegg_core::authorization::{is_local_owner_broad, team_capabilities_to_projection};
+        use codegg_core::projection_replay::context::{
+            AllowAllProjectResolver, BoundedProjectResolver, ProjectionCapabilitySet,
+        };
+        let authority = self.request_authority_for_client(client_id);
+        let principal = authority.principal().clone();
+        if is_local_owner_broad(&principal) {
+            return principal.to_projection_access_context(
+                correlation_id,
+                ProjectionCapabilitySet::local_user(),
+                std::sync::Arc::new(AllowAllProjectResolver),
+            );
+        }
+        let Some(pool) = self.pool.clone() else {
+            return codegg_core::projection_replay::context::ProjectionAccessContext::local(
+                client_id,
+                correlation_id,
+            );
+        };
+        let team = codegg_core::team::TeamStore::new(pool);
+        let membership = team
+            .get_membership(project_id, principal.principal_id())
+            .await
+            .unwrap_or(None);
+        let Some(membership) = membership else {
+            return principal.to_projection_access_context(
+                correlation_id,
+                ProjectionCapabilitySet::new(),
+                std::sync::Arc::new(BoundedProjectResolver::new(Vec::<String>::new())),
+            );
+        };
+        let team_caps = membership.effective_capabilities();
+        let proj_caps = team_capabilities_to_projection(&team_caps);
+        let resolver = std::sync::Arc::new(BoundedProjectResolver::new([project_id.as_str()]));
+        principal.to_projection_access_context(correlation_id, proj_caps, resolver)
+    }
+
+    /// Presence M003: `true` when `client_id` may observe `session_id`.
+    ///
+    /// Resolves the owning project through the session row (the same
+    /// authority used by [`Self::resolve_authorization_project`]) and
+    /// requires canonical `session.observe` on that project. LocalOwner
+    /// broad policy and pool-less daemons allow; unknown sessions,
+    /// unresolvable projects, inactive principals, and memberships
+    /// without `session.observe` deny. Callers map denials to
+    /// `project_not_found` so outsiders cannot distinguish a missing
+    /// session from a denied one.
+    pub async fn session_observe_allowed(
+        &self,
+        client_id: &str,
+        session_id: &str,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        use codegg_core::authorization::is_local_owner_broad;
+        if session_id.is_empty() {
+            return None;
+        }
+        let authority = self.request_authority_for_client(client_id);
+        let principal = authority.principal().clone();
+        let Some(pool) = self.pool.clone() else {
+            // Pool-less local daemons have no team state; resolve through
+            // the projection seam's session binding when available so
+            // local observation keeps working without fabricating a
+            // project.
+            if let Some(seam) = self.projection_seam.as_ref() {
+                if let Some(storage) = seam.project_storage() {
+                    if let Ok(Some(record)) = storage.session_binding(session_id).await {
+                        if let Some(project) = record.project_id {
+                            return Some(project);
+                        }
+                    }
+                }
+            }
+            return None;
+        };
+        let project = self.session_project(&pool, session_id).await?;
+        if is_local_owner_broad(&principal) {
+            return Some(project);
+        }
+        let team = codegg_core::team::TeamStore::new(pool);
+        let has = team
+            .has_capability(
+                &project,
+                principal.principal_id(),
+                codegg_core::team::Capability::SessionObserve,
+            )
+            .await
+            .unwrap_or(false);
+        if has {
+            Some(project)
+        } else {
+            None
+        }
+    }
+
+    /// Presence M003: boxed observe-scope decision for dispatch call sites.
+    ///
+    /// The dispatch match in `handle_request_with_client` is already near
+    /// the debug stack limit (see the boxed authorization preamble): every
+    /// observe check runs through this helper via `Box::pin` at the call
+    /// site so the dispatch future holds only the box, never the team
+    /// lookup frames. Returns the canonical project when `client_id` may
+    /// observe `session_id` (session scope) or `project_id` (project
+    /// scope, `session_id` `None`); `None` denies (callers map to
+    /// `project_not_found`).
+    async fn observe_scope_project_boxed(
+        &self,
+        client_id: &str,
+        project_id: Option<&codegg_core::identity::ProjectId>,
+        session_id: Option<&str>,
+        correlation_id: &str,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        // Outer box: the dispatch future holds only this box.
+        Box::pin(async move {
+            if let Some(session_id) = session_id {
+                let project =
+                    Box::pin(self.session_observe_allowed(client_id, session_id)).await?;
+                let access = Box::pin(self.canonical_observe_access_for_project(
+                    client_id,
+                    &project,
+                    correlation_id,
+                ))
+                .await;
+                let allowed = codegg_core::projection_replay::policy::ProjectionAccessPolicy::authorize_subscribe(
+                    &codegg_core::projection_replay::policy::DefaultAccessPolicy::new(),
+                    &access,
+                    project.as_str(),
+                    Some(session_id),
+                );
+                if allowed {
+                    Some(project)
+                } else {
+                    None
+                }
+            } else if let Some(project_id) = project_id {
+                let access = Box::pin(self.canonical_observe_access_for_project(
+                    client_id,
+                    project_id,
+                    correlation_id,
+                ))
+                .await;
+                let allowed = codegg_core::projection_replay::policy::ProjectionAccessPolicy::authorize_subscribe(
+                    &codegg_core::projection_replay::policy::DefaultAccessPolicy::new(),
+                    &access,
+                    project_id.as_str(),
+                    None,
+                );
+                if allowed {
+                    Some(project_id.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .await
+    }
+
+    /// Presence M003: boxed canonical access context for dispatch call
+    /// sites (artifact paths need the context itself, not just the
+    /// decision). Same boxing rationale as
+    /// [`Self::observe_scope_project_boxed`].
+    async fn observe_access_boxed(
+        &self,
+        client_id: &str,
+        project_id: &codegg_core::identity::ProjectId,
+        correlation_id: &str,
+    ) -> codegg_core::projection_replay::context::ProjectionAccessContext {
+        Box::pin(self.canonical_observe_access_for_project(client_id, project_id, correlation_id))
+            .await
     }
 
     /// Presence and Observation M001: best-effort activity contribution
@@ -1986,12 +2183,27 @@ impl CoreDaemon {
         // Presence M001: single-project presence reads/heartbeats deny
         // as not-found so unauthorized callers cannot infer project
         // existence, membership, collaborators, or activity.
-        if matches!(
+        // Presence M003: observation reads (`ProjectionSubscribe` either
+        // scope, artifact list/read) deny identically so outsiders cannot
+        // distinguish a missing session/project from a denied one and
+        // learn nothing about project/session existence or activity.
+        // Artifact list denials match the in-handler recheck shape
+        // (`project_not_found`); artifact read gate denials match too
+        // (the in-handler `Denied` outcome is defense-in-depth for a
+        // gate-passed caller whose derived caps lack the read kind).
+        let observe_private = matches!(
+            request,
+            CoreRequest::ProjectionSubscribe { .. }
+                | CoreRequest::ProjectionArtifactList { .. }
+                | CoreRequest::ProjectionArtifactRead { .. }
+        );
+        if (matches!(
             request,
             CoreRequest::ProjectGet { .. }
                 | CoreRequest::PresenceSnapshotGet { .. }
                 | CoreRequest::PresenceHeartbeat { .. }
-        ) && error.is_denial()
+        ) || observe_private)
+            && error.is_denial()
         {
             let (code, message) = codegg_core::authorization::denial_as_not_found();
             return CoreResponse::Error {
@@ -7689,12 +7901,74 @@ impl CoreDaemon {
                         message: e.to_string(),
                     });
                 }
+                // Presence M003: canonical `session.observe` integration.
+                // The daemon gate already enforced `project.observe` for
+                // this operation; session scope additionally requires
+                // `session.observe` on the owning project. Denials use
+                // `project_not_found` so outsiders cannot distinguish a
+                // missing session from a denied one. The check runs boxed
+                // (see `observe_scope_project_boxed`) so the dispatch
+                // future holds only the box.
+                let canonical_project = if matches!(request.scope, ProjectionStreamKind::Session) {
+                    match Box::pin(self.observe_scope_project_boxed(
+                        trusted_client_id,
+                        None,
+                        Some(request.scope_id.as_str()),
+                        "observe-subscribe",
+                    ))
+                    .await
+                    {
+                        Some(project) => Some(project),
+                        None => {
+                            let (code, message) = codegg_core::authorization::denial_as_not_found();
+                            return Ok(CoreResponse::Error {
+                                code: code.to_string(),
+                                message,
+                            });
+                        }
+                    }
+                } else {
+                    // Project scope: re-enforce the canonical context so a
+                    // revocation between the gate and dispatch cannot retain
+                    // a stale allow. Denials stay privacy-preserving.
+                    // Unparseable locators skip the recheck (the stream
+                    // layer validates); parseable ones must pass it.
+                    match codegg_core::identity::ProjectId::parse(request.scope_id.as_str()) {
+                        Ok(project_id) => {
+                            match Box::pin(self.observe_scope_project_boxed(
+                                trusted_client_id,
+                                Some(&project_id),
+                                None,
+                                "observe-subscribe-project",
+                            ))
+                            .await
+                            {
+                                Some(_) => None,
+                                None => {
+                                    let (code, message) =
+                                        codegg_core::authorization::denial_as_not_found();
+                                    return Ok(CoreResponse::Error {
+                                        code: code.to_string(),
+                                        message,
+                                    });
+                                }
+                            }
+                        }
+                        Err(_) => None,
+                    }
+                };
                 let service = seam.service();
                 let client_id = trusted_client_id;
 
                 // Resolve canonical binding for Session scope so the
                 // subscription lands on the same stream publications use.
-                let (resolved_project, resolved_workspace, _resolved_revision) =
+                // Presence M003: when no binding row exists (test-injected
+                // session rows, legacy sessions), fall back to the canonical
+                // session-table project already authorized above so local
+                // observation keeps working without fabricating a stream.
+                // A binding that disagrees with the canonical project fails
+                // closed as not-found (privacy-preserving).
+                let (mut resolved_project, resolved_workspace, _resolved_revision) =
                     if matches!(request.scope, ProjectionStreamKind::Session) {
                         if let Some(storage) = seam.project_storage() {
                             match storage.session_binding(&request.scope_id).await {
@@ -7721,6 +7995,28 @@ impl CoreDaemon {
                     } else {
                         (request.scope_id.clone(), None, 1)
                     };
+                if matches!(request.scope, ProjectionStreamKind::Session)
+                    && resolved_project.is_empty()
+                {
+                    // Reuse the project already authorized above (no second
+                    // team lookup, no extra dispatch frame).
+                    if let Some(canonical) = canonical_project.as_ref() {
+                        resolved_project = canonical.as_str().to_owned();
+                    }
+                }
+                if matches!(request.scope, ProjectionStreamKind::Session)
+                    && !resolved_project.is_empty()
+                {
+                    if let Some(canonical) = canonical_project.as_ref() {
+                        if resolved_project != canonical.as_str() {
+                            let (code, message) = codegg_core::authorization::denial_as_not_found();
+                            return Ok(CoreResponse::Error {
+                                code: code.to_string(),
+                                message,
+                            });
+                        }
+                    }
+                }
 
                 let sub_id = match request.scope {
                     ProjectionStreamKind::Session => {
@@ -7838,6 +8134,68 @@ impl CoreDaemon {
                         });
                     }
                 };
+                // Presence M003: recheck canonical authorization on resume.
+                // `ProjectionResume` is global at the gate (no project
+                // locator), so this handler is the authority boundary.
+                // Session streams require `session.observe` on the owning
+                // project; project streams require `project.observe`.
+                // Denials use `project_not_found` (privacy-preserving) and
+                // clean any transient owned subscription so revoked grants
+                // cannot retain delivery. The check runs boxed (see
+                // `observe_scope_project_boxed`) so the dispatch future
+                // holds only the box.
+                let resume_allowed = match descriptor.kind {
+                    ProjectionStreamKind::Session => {
+                        let session_id = descriptor.session_id.clone().unwrap_or_default();
+                        Box::pin(self.observe_scope_project_boxed(
+                            trusted_client_id,
+                            None,
+                            Some(session_id.as_str()),
+                            "observe-resume",
+                        ))
+                        .await
+                        .is_some()
+                    }
+                    ProjectionStreamKind::Project => {
+                        match codegg_core::identity::ProjectId::parse(
+                            descriptor.project_id.as_str(),
+                        ) {
+                            Ok(project_id) => Box::pin(self.observe_scope_project_boxed(
+                                trusted_client_id,
+                                Some(&project_id),
+                                None,
+                                "observe-resume-project",
+                            ))
+                            .await
+                            .is_some(),
+                            Err(_) => false,
+                        }
+                    }
+                };
+                if !resume_allowed {
+                    // Clean transient owned state for this connection so a
+                    // revoked grant cannot retain delivery via an existing
+                    // subscription id.
+                    let owned: Vec<codegg_protocol::projection::replay::ProjectionSubscriptionId> =
+                        service
+                            .subscriptions()
+                            .by_id()
+                            .iter()
+                            .filter(|entry| {
+                                entry.value().stream_id == cursor.stream_id
+                                    && entry.value().client_id == trusted_client_id
+                            })
+                            .map(|entry| entry.key().clone())
+                            .collect();
+                    for sub in owned {
+                        let _ = service.unsubscribe(&sub).await;
+                    }
+                    let (code, message) = codegg_core::authorization::denial_as_not_found();
+                    return Ok(CoreResponse::Error {
+                        code: code.to_string(),
+                        message,
+                    });
+                }
 
                 // Reuse only a subscription owned by this trusted connection.
                 // A reconnect has no active entry, so establish a fresh
@@ -8076,13 +8434,28 @@ impl CoreDaemon {
                 };
 
                 // Build access context for the calling principal.
-                // M002: use the transport-bound canonical principal when the
-                // connection registered one; otherwise fall back to the
-                // local single-user context. The principal string is never
-                // taken from the request payload.
-                let access_ctx = std::sync::Arc::new(
-                    self.projection_access_for_client(trusted_client_id, "artifact-read"),
-                );
+                // Presence M003: use the canonical team-derived context for
+                // the target project (no synthetic allow-all). The gate
+                // already enforced `project.observe`; this recheck binds
+                // the artifact policy to the same membership so revocation
+                // between gate and dispatch cannot retain reads. The
+                // principal string is never taken from the request payload.
+                // Boxed (see `observe_access_boxed`) so the dispatch
+                // future holds only the box.
+                let access_ctx = match codegg_core::identity::ProjectId::parse(project_id.as_str())
+                {
+                    Ok(project) => std::sync::Arc::new(
+                        Box::pin(self.observe_access_boxed(
+                            trusted_client_id,
+                            &project,
+                            "artifact-read",
+                        ))
+                        .await,
+                    ),
+                    Err(_) => std::sync::Arc::new(
+                        self.projection_access_for_client(trusted_client_id, "artifact-read"),
+                    ),
+                };
                 let policy = std::sync::Arc::new(
                     codegg_core::projection_replay::policy::PolicyRegistry::default(),
                 );
@@ -8179,6 +8552,30 @@ impl CoreDaemon {
                         message: "projection replay requires a SQLite-backed daemon".into(),
                     });
                 };
+
+                // Presence M003: canonical scope check for artifact listing.
+                // The gate enforced `project.observe`; re-enforce the
+                // team-derived context here so the handle list cannot leak
+                // across projects via a stale gate decision. Artifact
+                // handles remain project-scoped opaque ids; reads are capped
+                // by the protocol's 64 KiB window at the registry layer.
+                // Boxed (see `observe_access_boxed`) so the dispatch
+                // future holds only the box.
+                if let Ok(project) = codegg_core::identity::ProjectId::parse(project_id.as_str()) {
+                    let access = Box::pin(self.observe_access_boxed(
+                        trusted_client_id,
+                        &project,
+                        "artifact-list",
+                    ))
+                    .await;
+                    if !access.authorize_scope(project_id.as_str(), None) {
+                        let (code, message) = codegg_core::authorization::denial_as_not_found();
+                        return Ok(CoreResponse::Error {
+                            code: code.to_string(),
+                            message,
+                        });
+                    }
+                }
 
                 let metrics = std::sync::Arc::new(
                     codegg_core::projection_replay::ProjectionReplayMetrics::new(),

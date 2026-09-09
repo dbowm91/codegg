@@ -401,6 +401,13 @@ resolve through deterministic lookup of an existing unique locator.
   authority. Snapshots are bounded and privacy-filtered; denials use
   `project_not_found`. `PresenceUpdated` carries no collaborator
   detail. See `architecture/presence.md`.
+- **Observation reuses projection subscribe/resume** (presence M003):
+  no new wire variant. Session-scope `ProjectionSubscribe` requires
+  canonical `session.observe` (in addition to the gate's
+  `project.observe`); `ProjectionResume` rechecks on every resume;
+  session/project subscribe and artifact list/read denials use
+  `project_not_found`. Redaction and artifact bounds are unchanged.
+  See `architecture/presence.md`.
 
 ## Testing
 

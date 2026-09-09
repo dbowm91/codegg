@@ -996,6 +996,18 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             condition: None,
         },
         HelpEntry {
+            mode: HelpMode::Command,
+            key: "/observe <session-id>",
+            action: "Follow another session read-only",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/stop-observing",
+            action: "Stop following the observed session",
+            condition: None,
+        },
+        HelpEntry {
             mode: HelpMode::Dialog,
             key: "i (terminal view)",
             action: "Focus terminal: keystrokes go to the process",

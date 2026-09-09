@@ -933,6 +933,49 @@ pub enum TuiCommand {
         checkpoints: Vec<crate::protocol::dto::EditCheckpointSummaryDto>,
         error: Option<String>,
     },
+    /// Presence M003: start an authorized read-only observation of one
+    /// session. The handler performs capability negotiation + session
+    /// subscribe through `CoreClient` on a registered task.
+    StartObserve {
+        project_id: String,
+        session_id: String,
+    },
+    /// Presence M003: subscribe completion. Stale completions (wrong
+    /// request id or reconnect epoch) are dropped at apply time.
+    /// `unauthorized` covers `project_not_found` denials
+    /// (indistinguishable from absent); `unsupported` covers older
+    /// daemons without projection support. Both render identically.
+    ObserveSubscribed {
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M003: resume/replay continuation for the active
+    /// observation (reconnect/lag/resync path).
+    ObserveResumed {
+        request_id: u64,
+        session_id: String,
+        cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        last_delivered_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        reconnect_epoch: u64,
+    },
+    /// Presence M003: explicit stop of the active observation. Carries
+    /// the observer-owned subscription id (when present) so the handler
+    /// can issue the authoritative unsubscribe best-effort.
+    StopObserving,
+    /// Presence M003: unsubscribe completion (best-effort; stale
+    /// completions are ignored).
+    ObserveUnsubscribed {
+        subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+    },
 }
 
 /// Send a [`TuiCommand`] on the bounded command channel, logging when a
@@ -1189,6 +1232,12 @@ pub struct App {
     /// ephemeral presence rendered per project. The TUI owns no presence
     /// truth; every entry is derived from an authorized snapshot.
     pub presence: crate::tui::app::state::PresenceState,
+    /// Authorized read-only observation (Presence M003). Bounded
+    /// frontend projection of one observed session plus the central
+    /// read-only input policy. The TUI owns no observation truth; every
+    /// field is derived from an authorized projection subscribe/resume
+    /// round-trip. `None` handling is via `ObserverState::is_observing`.
+    pub observer: crate::tui::app::state::ObserverState,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1576,6 +1625,7 @@ impl App {
             manifest_daemon_hint: None,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
+            observer: crate::tui::app::state::ObserverState::new(),
         }
     }
 
@@ -2031,6 +2081,7 @@ impl App {
             manifest_daemon_hint: None,
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
+            observer: crate::tui::app::state::ObserverState::new(),
         }
     }
 
@@ -2101,6 +2152,16 @@ impl App {
         self.routing_registry.bump_reconnect_epoch();
         if let Some(project_id) = self.active_project_id().map(str::to_string) {
             crate::tui::commands::presence::start_refresh_presence(self, project_id);
+        }
+        // Presence M003: observer reconnect replays from the authoritative
+        // cursor. Bump the observer epoch (drops pre-reconnect
+        // completions) and resume the active observation when present.
+        // Revoked grants deny as `project_not_found` and clean transient
+        // state daemon-side; multiple observers share no mutable
+        // ownership (each holds its own subscription id).
+        self.observer.on_reconnect();
+        if self.observer.target().is_some() {
+            crate::tui::commands::observe::resume_observe(self);
         }
     }
 
@@ -3177,6 +3238,10 @@ impl App {
             .active_project_id()
             .and_then(|pid| self.presence.header_summary(pid))
             .unwrap_or_default();
+        // Presence M003: explicit read-only observer banner. `None` when
+        // not observing. Carries only the opaque session locator + coarse
+        // status — never prompts, content, or secrets.
+        let observer_banner = self.observer.banner_line().unwrap_or_default();
         let title = match self.ui_state.routes.current() {
             Route::Home => Line::from(vec![
                 Span::styled(
@@ -3212,6 +3277,16 @@ impl App {
                     Span::styled(
                         format!("  {presence_summary}"),
                         Style::default().fg(self.ui_state.theme.secondary),
+                    )
+                },
+                if observer_banner.is_empty() {
+                    Span::raw("")
+                } else {
+                    Span::styled(
+                        format!("  {observer_banner}"),
+                        Style::default()
+                            .fg(self.ui_state.theme.warning)
+                            .add_modifier(Modifier::BOLD),
                     )
                 },
             ]),
@@ -5766,6 +5841,19 @@ impl App {
     }
 
     fn execute_command(&mut self, cmd: &crate::tui::command::Command, raw_input: Option<&str>) {
+        // Presence M003: central read-only enforcement. While observing,
+        // every slash command except the observer lifecycle + narrow
+        // read-only allowlist is rejected here (covers dialog, process,
+        // template, and match arms below). The guard shows the toast.
+        if self.observer.is_observing() {
+            let effective = raw_input.unwrap_or(cmd.name.as_str());
+            if crate::tui::commands::observe::check_observer_block(self, effective) {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                return;
+            }
+        }
         if let Some(dialog) = &cmd.dialog {
             self.ui_state.command_mode = false;
             self.open_dialog(dialog.clone());
@@ -6118,6 +6206,44 @@ impl App {
                 } else {
                     crate::tui::commands::presence::show_collaborators(self);
                 }
+            }
+            "/observe" | "/watch" => {
+                self.ui_state.command_mode = false;
+                let session_arg = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                if session_arg.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /observe <session-id>");
+                    self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
+                    return;
+                }
+                // Session locator is the first token; anything after is
+                // ignored (no second stream, no control args).
+                let session_id = session_arg
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string();
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
+                    return;
+                };
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                crate::tui::commands::observe::start_observe(self, project_id, session_id);
+            }
+            "/stop-observing" | "/unwatch" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                crate::tui::commands::observe::stop_observing(self);
             }
             "/sessions" => {
                 self.open_dialog(Dialog::Session);
@@ -9003,6 +9129,32 @@ impl App {
         }
         if self.prompt_state.pending_send {
             debug_log!("send_prompt: returning - pending_send already true");
+            return;
+        }
+        // Presence M003: observer mode is explicitly read-only. Slash
+        // commands route to the allowlisted dispatcher; all other input
+        // (chat, human-shell `!`) is rejected with the collaboration
+        // placeholder and never sent as a turn.
+        if self.observer.blocks_prompt_submit() {
+            if trimmed_text.starts_with('/') {
+                if self.handle_slash_command(&text) {
+                    debug_log!("send_prompt: handled slash command, clearing prompt");
+                    self.prompt_state.prompt.clear();
+                    self.prompt_state.show_completions = false;
+                    return;
+                }
+                self.messages_state.toasts.warning(
+                    &crate::tui::app::state::observe::observer_blocked_message(&trimmed_text),
+                );
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                return;
+            }
+            if let Some(placeholder) = self.observer.collaboration_input_placeholder() {
+                self.messages_state.toasts.warning(placeholder.as_str());
+            }
+            self.prompt_state.prompt.clear();
+            self.prompt_state.show_completions = false;
             return;
         }
         if self.handle_slash_command(&text) {
@@ -12228,6 +12380,58 @@ impl App {
         crate::tui::commands::presence::refresh_collaborators(self);
     }
 
+    /// Presence M003: start an authorized read-only observation of
+    /// `session_id` in `project_id`. Public so tests and the `/observe`
+    /// dispatcher share one entry point.
+    pub fn start_observe(&mut self, project_id: String, session_id: String) {
+        crate::tui::commands::observe::start_observe(self, project_id, session_id);
+    }
+
+    /// Presence M003: apply a subscribe completion. Public for the same
+    /// dispatcher/test reasons as the presence apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_observe_subscribed(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        session_id: String,
+        subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
+        cursor: Option<crate::protocol::projection::replay::ProjectionCursor>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::observe::apply_observe_subscribed(
+            self,
+            request_id,
+            project_id,
+            session_id,
+            subscription_id,
+            cursor,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Presence M003: resume the active observation after reconnect/lag.
+    pub fn resume_observe(&mut self) {
+        crate::tui::commands::observe::resume_observe(self);
+    }
+
+    /// Presence M003: stop the active observation (observer-owned
+    /// unsubscribe only; target session keeps running).
+    pub fn stop_observing(&mut self) {
+        crate::tui::commands::observe::stop_observing(self);
+    }
+
+    /// Presence M003: whether an observation is currently active.
+    pub fn is_observing(&self) -> bool {
+        self.observer.is_observing()
+    }
+
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {
         if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
             tracing::warn!("set_session_store ignored: AppMode::RemoteCore (daemon owns storage)");
@@ -12975,6 +13179,17 @@ impl App {
     }
 
     pub fn submit_question_answers(&mut self) {
+        // Presence M003: observers view pending counts via the projection
+        // summary but can never answer for the target session.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — question answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.question_dialog = None;
+            self.dialog_state.question_session_id = None;
+            self.close_dialog();
+            return;
+        }
         if let Some(qd) = &self.dialog_state.question_dialog {
             let answers = qd.answers_json();
             if let Some(session_id) = self.dialog_state.question_session_id.take() {
@@ -13001,6 +13216,17 @@ impl App {
     }
 
     pub fn submit_permission_response(&mut self, allowed: bool) {
+        // Presence M003: observers can never answer permission requests
+        // for the observed session.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — permission answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.permission_dialog = None;
+            self.dialog_state.permission_perm_id = None;
+            self.close_dialog();
+            return;
+        }
         if let Some(ref perm_id) = self.dialog_state.permission_perm_id {
             let perm_id = perm_id.clone();
             let choice = match allowed {
@@ -13015,6 +13241,16 @@ impl App {
     }
 
     pub fn on_permission_confirm(&mut self) -> Option<(bool, usize)> {
+        // Presence M003: same negative as `submit_permission_response`.
+        if self.observer.blocks_permission_response() {
+            self.messages_state.toasts.warning(
+                "Observer mode is read-only — permission answers are disabled while observing. Use /stop-observing to resume control.",
+            );
+            self.dialog_state.permission_dialog = None;
+            self.dialog_state.permission_perm_id = None;
+            self.close_dialog();
+            return None;
+        }
         let pd = self.dialog_state.permission_dialog.as_ref()?;
         let idx = pd.selected_option();
         let choice = match idx {

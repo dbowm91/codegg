@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod dialog;
 pub mod manifest;
 pub mod messages;
+pub mod observe;
 pub mod persistence;
 pub mod plugin_ui;
 pub mod presence;
@@ -23,6 +24,10 @@ pub use async_request::AsyncUiRequestState;
 pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
 pub use messages::MessagesState;
+pub use observe::{
+    is_observer_allowed_command, observer_blocked_message, ObserveStatus, ObservedTarget,
+    ObserverState,
+};
 pub use plugin_ui::{PluginUiApplyResult, PluginUiState};
 pub use presence::{
     activity_label, display_principal, CollaboratorEntry, PresenceState, PresenceStatus,

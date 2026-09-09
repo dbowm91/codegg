@@ -502,6 +502,8 @@ impl PresenceState {
                 String::new(),
                 "No other collaborators right now.".to_string(),
                 "You are the only active presence in this project.".to_string(),
+                String::new(),
+                "Use /observe <session-id> to follow a session read-only.".to_string(),
             ],
             PresenceStatus::Ready => {
                 let mut lines = vec![
@@ -538,6 +540,11 @@ impl PresenceState {
                     lines.push(String::new());
                     lines.push("Stale — refresh to resync.".to_string());
                 }
+                // Presence M003: chooser-to-action seam. Session locators
+                // are already listed per collaborator above; this bounded
+                // hint points at `/observe` without carrying content.
+                lines.push(String::new());
+                lines.push("Use /observe <session-id> to follow a session read-only.".to_string());
                 lines
             }
             PresenceStatus::Error => {
