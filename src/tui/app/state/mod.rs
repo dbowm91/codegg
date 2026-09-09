@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod async_request;
+pub mod chat;
 pub mod diagnostics;
 pub mod dialog;
 pub mod manifest;
@@ -21,6 +22,10 @@ pub mod view_switch;
 
 pub use agent::AgentState;
 pub use async_request::AsyncUiRequestState;
+pub use chat::{
+    extract_mentions, message_line, ChatState, ChatStatus, ProjectChat, MAX_CHAT_DISPLAY_MESSAGES,
+    MAX_CHAT_DRAFT_LEN, MAX_CHAT_MESSAGES_PER_CHANNEL, MAX_CHAT_PROJECTS,
+};
 pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
 pub use messages::MessagesState;

@@ -267,6 +267,173 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             // Best-effort unsubscribe completion; no state to apply
             // (reducer already cleared on stop). Ignored when stale.
         }
+        TuiCommand::RefreshChat { project_id } => {
+            super::super::commands::chat::start_chat_history(app, project_id);
+        }
+        TuiCommand::ChatHistoryLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            truncated,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_history(
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                next_cursor,
+                truncated,
+                retention_floor_seq,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatSyncLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            resync_required,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_sync(
+                request_id,
+                project_id,
+                channel_id,
+                messages,
+                next_cursor,
+                resync_required,
+                retention_floor_seq,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatMessageSent {
+            request_id: _,
+            project_id,
+            channel_id,
+            message,
+            duplicate,
+            draft,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_sent(
+                project_id,
+                channel_id,
+                message,
+                duplicate,
+                draft,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatEditFinished {
+            request_id: _,
+            project_id,
+            channel_id,
+            message,
+            message_id: _,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_edit(
+                project_id,
+                channel_id,
+                message,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatRedactFinished {
+            request_id: _,
+            project_id,
+            channel_id,
+            message_id,
+            revision,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_redact(
+                project_id,
+                channel_id,
+                message_id,
+                revision,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatReadMarkerSet {
+            project_id,
+            channel_id,
+            last_read_seq,
+            error,
+        } => {
+            app.apply_chat_read(project_id, channel_id, last_read_seq, error);
+        }
+        TuiCommand::ChatComposingLoaded {
+            request_id: _,
+            project_id,
+            channel_id,
+            composing,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_composing(
+                project_id,
+                channel_id,
+                composing,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatHint {
+            project_id,
+            channel_id,
+        } => {
+            // Liveness hint only: flag for a bounded re-fetch when the
+            // project is not already loading. No task per hint.
+            if app.chat.note_hint(&project_id) {
+                let is_active = app.active_project_id() == Some(project_id.as_str());
+                if is_active {
+                    super::super::commands::chat::start_chat_history(app, project_id);
+                } else {
+                    let _ = channel_id;
+                }
+            }
+        }
         TuiCommand::OpenTreeDialog => {
             start_open_tree_dialog(app);
         }

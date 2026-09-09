@@ -24,6 +24,7 @@ pub enum InfoType {
     DoctorReport,
     Agents,
     Collaborators,
+    ProjectChat,
 }
 
 #[derive(Clone)]
@@ -71,6 +72,7 @@ impl InfoDialog {
             InfoType::DoctorReport => " Doctor ",
             InfoType::Agents => " Agents ",
             InfoType::Collaborators => " Collaborators ",
+            InfoType::ProjectChat => " Project Chat ",
         }
     }
 
@@ -89,6 +91,7 @@ impl InfoDialog {
             InfoType::DoctorReport => DialogType::DoctorReport,
             InfoType::Agents => DialogType::Agent,
             InfoType::Collaborators => DialogType::Collaborators,
+            InfoType::ProjectChat => DialogType::ProjectChat,
         }
     }
 
@@ -102,6 +105,10 @@ impl InfoDialog {
 
     pub fn content_lines(&self) -> &[String] {
         &self.lines
+    }
+
+    pub fn info_type(&self) -> InfoType {
+        self.info_type.clone()
     }
 }
 

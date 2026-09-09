@@ -211,8 +211,11 @@ projection subscription path. The TUI owns no observation truth.
 - **Read-only enforcement** (central, fail-closed): `ObserverState::blocks_command`
   (narrow allowlist in `is_observer_allowed_command`; everything else
   denied) is checked at the top of `App::execute_command`;
-  `blocks_prompt_submit` reroutes chat/human-shell input in
-  `App::send_prompt` to the collaboration placeholder; permission and
+  `blocks_prompt_submit` routes bare insert-mode input in
+  `App::send_prompt` to project chat via the M002 collaboration seam
+  (`route_observer_insert_to_chat`; only `Chat*` core requests, zero
+  turn/permission control), with the collaboration placeholder as the
+  no-project fallback; permission and
   question answers are rejected in `submit_permission_response`,
   `on_permission_confirm`, and `submit_question_answers`. The header
   renders `👁 OBSERVING <session> (read-only) · <state>` (locator +
@@ -221,6 +224,40 @@ projection subscription path. The TUI owns no observation truth.
   and resumes from the authoritative cursor; revocation denies as
   `project_not_found` daemon-side. Full matrix in
   `architecture/presence.md`.
+
+### Project Chat (Project Collaboration M002)
+
+Project-scoped chat rendered from daemon `chat.v1` state; the TUI owns
+no durable messages. Full contract in `architecture/collaboration.md`.
+
+- **State**: `ChatState` (`src/tui/app/state/chat.rs`) keyed by
+  `project_id` with per-project `request_id` + global `reconnect_epoch`
+  stale guards, LRU eviction at 16 projects, a 100-message sliding
+  window per active channel, per-project drafts, forward-only read
+  markers with derived unread counts, and expiry-filtered composing
+  leases. Unauthorized and feature-absent projects render the identical
+  `Unavailable` panel and clear cached content.
+- **Flow**: `src/tui/commands/chat.rs` negotiates `ChatCapabilities`
+  then channel ensure / history / sync / send / edit / redact /
+  read-marker / composing in registered `TuiTaskKind::Command` tasks
+  with `TuiCommand::RefreshChat` / `ChatHistoryLoaded` /
+  `ChatSyncLoaded` / `ChatMessageSent` / `ChatEditFinished` /
+  `ChatRedactFinished` / `ChatReadMarkerSet` / `ChatComposingLoaded` /
+  `ChatHint` dispatch arms. Live `ChatMessageCommitted/Edited/Redacted`
+  payloads merge into the cached active channel; composing hints only
+  re-fetch the snapshot while the panel is showing.
+- **Surface**: header shows `💬 N` (plus unread) only for authorized
+  data; `/chat` opens a scrollable `InfoType::ProjectChat` dialog
+  (`j`/`k` scroll, `Esc`/`Enter` close). Commands: `/chat-send`,
+  `/chat-reply`, `/chat-history`, `/chat-sync`, `/chat-read`,
+  `/chat-edit`, `/chat-redact`, `/chat-composing`. While observing,
+  `/chat*` commands are allowlisted and bare insert-mode text routes to
+  the observed project's chat; observer-target disconnect leaves chat
+  usable.
+- **Lifecycle**: tab switch refreshes the new active project when stale;
+  `App::on_projection_reconnect` resumes the M001 cursor or resyncs the
+  bounded window. Failed sends retain the editable draft with the typed
+  error and fabricate nothing.
 
 ### Long Output → Info Dialog
 

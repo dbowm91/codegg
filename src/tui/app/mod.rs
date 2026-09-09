@@ -976,6 +976,109 @@ pub enum TuiCommand {
     ObserveUnsubscribed {
         subscription_id: Option<crate::protocol::projection::replay::ProjectionSubscriptionId>,
     },
+    /// Project Collaboration M002: explicit refresh of one project's
+    /// chat window (channel ensure + history through `CoreClient`).
+    RefreshChat {
+        project_id: String,
+    },
+    /// Project Collaboration M002: history-page completion for the
+    /// active channel window.
+    ChatHistoryLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        truncated: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: incremental-sync completion from the
+    /// cached M001 cursor (or a bounded resync page).
+    ChatSyncLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        resync_required: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: send completion. `draft` echoes the
+    /// attempted body so failures retain it; `duplicate` marks idempotent
+    /// retry convergence. No task-per-message spinner: stale protection
+    /// is the reconnect epoch plus merge-by-id.
+    ChatMessageSent {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message: Option<crate::protocol::core::ChatMessageDto>,
+        duplicate: bool,
+        draft: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: edit completion (new revision).
+    ChatEditFinished {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message: Option<crate::protocol::core::ChatMessageDto>,
+        message_id: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: redact completion (identity +
+    /// revision; the body is `[REDACTED]` daemon-side).
+    ChatRedactFinished {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: read-marker completion
+    /// (forward-only; failures keep the local unread badge).
+    ChatReadMarkerSet {
+        project_id: String,
+        channel_id: String,
+        last_read_seq: u64,
+        error: Option<String>,
+    },
+    /// Project Collaboration M002: composing-snapshot completion
+    /// (content-free leases).
+    ChatComposingLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        composing: Vec<crate::protocol::core::ChatComposingDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M002: liveness hint (`ChatMessageCommitted`
+    /// / `ChatComposingUpdated`). Carries no message detail; flags the
+    /// project for a bounded re-fetch when it is not already loading.
+    ChatHint {
+        project_id: String,
+        channel_id: String,
+    },
 }
 
 /// Send a [`TuiCommand`] on the bounded command channel, logging when a
@@ -1238,6 +1341,15 @@ pub struct App {
     /// field is derived from an authorized projection subscribe/resume
     /// round-trip. `None` handling is via `ObserverState::is_observing`.
     pub observer: crate::tui::app::state::ObserverState,
+    /// Project-scoped chat projection (Project Collaboration M002).
+    /// Daemon-owned durable channels/messages rendered per project. The
+    /// TUI owns no chat truth; every entry is derived from an authorized
+    /// `chat.v1` round-trip through `CoreClient`.
+    pub chat: crate::tui::app::state::ChatState,
+    /// Project shown in the open chat panel, if any. Tracks which
+    /// project's lines the `InfoType::ProjectChat` dialog displays so
+    /// completions refresh the visible window without a new fetch.
+    pub chat_panel_project: Option<String>,
 }
 
 /// What to do at TUI startup with respect to session loading. The TUI
@@ -1626,6 +1738,8 @@ impl App {
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
             observer: crate::tui::app::state::ObserverState::new(),
+            chat: crate::tui::app::state::ChatState::new(),
+            chat_panel_project: None,
         }
     }
 
@@ -2082,6 +2196,8 @@ impl App {
             projection_client: crate::tui::app::state::ProjectionClientState::new(),
             presence: crate::tui::app::state::PresenceState::new(),
             observer: crate::tui::app::state::ObserverState::new(),
+            chat: crate::tui::app::state::ChatState::new(),
+            chat_panel_project: None,
         }
     }
 
@@ -2129,6 +2245,14 @@ impl App {
                     crate::tui::commands::presence::start_refresh_presence(self, pid);
                 }
             }
+            // Project Collaboration M002: bounded chat refresh for the
+            // newly active project; drafts/messages stay per-project so
+            // rapid switching never cross-routes.
+            if let Some(pid) = self.active_project_id().map(str::to_string) {
+                if self.chat.needs_refresh(&pid) {
+                    crate::tui::commands::chat::start_chat_history(self, pid);
+                }
+            }
         }
         switched
     }
@@ -2162,6 +2286,15 @@ impl App {
         self.observer.on_reconnect();
         if self.observer.target().is_some() {
             crate::tui::commands::observe::resume_observe(self);
+        }
+        // Project Collaboration M002: reconnect resumes the M001 cursor
+        // (`next_cursor`) or resyncs the bounded window. Bump the chat
+        // epoch (drops pre-reconnect completions) and re-fetch the
+        // active project; an observer-target disconnect leaves chat
+        // usable because chat refresh is independent of observation.
+        self.chat.on_reconnect();
+        if let Some(project_id) = self.active_project_id().map(str::to_string) {
+            crate::tui::commands::chat::start_chat_history(self, project_id);
         }
     }
 
@@ -6245,6 +6378,183 @@ impl App {
                 self.prompt_state.show_completions = false;
                 crate::tui::commands::observe::stop_observing(self);
             }
+            "/chat" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                crate::tui::commands::chat::show_chat(self);
+            }
+            "/chat-send" => {
+                self.ui_state.command_mode = false;
+                let body = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default()
+                    .to_string();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_send(self, project_id, body, None);
+            }
+            "/chat-reply" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some((target, body)) = rest.split_once(' ') else {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /chat-reply <message-id> <text>");
+                    return;
+                };
+                let body = body.trim();
+                if body.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /chat-reply <message-id> <text>");
+                    return;
+                }
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_send(
+                    self,
+                    project_id,
+                    body.to_string(),
+                    Some(target.trim().to_string()),
+                );
+            }
+            "/chat-history" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_history(self, project_id);
+                // Refresh the panel view when it is showing chat.
+                crate::tui::commands::chat::show_chat(self);
+            }
+            "/chat-sync" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_sync(self, project_id);
+            }
+            "/chat-read" => {
+                self.ui_state.command_mode = false;
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_read(self, project_id);
+            }
+            "/chat-edit" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let Some((target, body)) = rest.split_once(' ') else {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /chat-edit <message-id> <new-text>");
+                    return;
+                };
+                if body.trim().is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /chat-edit <message-id> <new-text>");
+                    return;
+                }
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_edit(
+                    self,
+                    project_id,
+                    target.trim().to_string(),
+                    body.trim().to_string(),
+                );
+            }
+            "/chat-redact" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                if rest.is_empty() {
+                    self.messages_state
+                        .toasts
+                        .warning("Usage: /chat-redact <message-id> [reason]");
+                    return;
+                }
+                let (target, reason) = match rest.split_once(' ') {
+                    Some((t, r)) if !r.trim().is_empty() => {
+                        (t.trim().to_string(), Some(r.trim().to_string()))
+                    }
+                    _ => (rest.trim().to_string(), None),
+                };
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_redact(self, project_id, target, reason);
+            }
+            "/chat-composing" => {
+                self.ui_state.command_mode = false;
+                let arg = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let composing = match arg.to_lowercase().as_str() {
+                    "on" | "true" | "1" | "start" => true,
+                    "off" | "false" | "0" | "stop" | "clear" => false,
+                    _ => {
+                        self.messages_state
+                            .toasts
+                            .warning("Usage: /chat-composing on|off");
+                        return;
+                    }
+                };
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
+            }
             "/sessions" => {
                 self.open_dialog(Dialog::Session);
             }
@@ -9132,9 +9442,9 @@ impl App {
             return;
         }
         // Presence M003: observer mode is explicitly read-only. Slash
-        // commands route to the allowlisted dispatcher; all other input
-        // (chat, human-shell `!`) is rejected with the collaboration
-        // placeholder and never sent as a turn.
+        // commands route to the allowlisted dispatcher; bare insert-mode
+        // input (chat, human-shell `!`) routes to project chat via the
+        // M002 collaboration seam and is never sent as a turn.
         if self.observer.blocks_prompt_submit() {
             if trimmed_text.starts_with('/') {
                 if self.handle_slash_command(&text) {
@@ -9148,6 +9458,13 @@ impl App {
                 );
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
+                return;
+            }
+            // M002: observer insert-mode text targets the observed
+            // project's chat. Zero turn steering/control flows through
+            // this path — only `Chat*` core requests are issued.
+            if self.route_observer_text_to_chat(&text) {
+                debug_log!("send_prompt: routed observer input to project chat");
                 return;
             }
             if let Some(placeholder) = self.observer.collaboration_input_placeholder() {
@@ -12430,6 +12747,302 @@ impl App {
     /// Presence M003: whether an observation is currently active.
     pub fn is_observing(&self) -> bool {
         self.observer.is_observing()
+    }
+
+    /// Project Collaboration M002: whether the daemon advertised chat
+    /// support.
+    pub fn chat_supported(&self) -> bool {
+        self.chat.is_supported()
+    }
+
+    /// Project Collaboration M002: open the bounded chat panel for the
+    /// active project. Public so tests and the `/chat` dispatcher share
+    /// one entry point.
+    pub fn show_chat(&mut self) {
+        crate::tui::commands::chat::show_chat(self);
+    }
+
+    /// Project Collaboration M002: kick off a history fetch for
+    /// `project_id`. Public so tests and the `/chat-history`
+    /// dispatcher can route through this method without exposing the
+    /// private command module.
+    pub fn refresh_chat(&mut self, project_id: String) {
+        crate::tui::commands::chat::start_chat_history(self, project_id);
+    }
+
+    /// Project Collaboration M002: incremental sync from the cached M001
+    /// cursor for `project_id`.
+    pub fn sync_chat(&mut self, project_id: String) {
+        crate::tui::commands::chat::start_chat_sync(self, project_id);
+    }
+
+    /// Project Collaboration M002: apply a history-page completion.
+    /// Public for the same dispatcher/test reasons as the presence
+    /// apply path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_history(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        truncated: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_history_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            truncated,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply an incremental-sync completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_sync(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        messages: Vec<crate::protocol::core::ChatMessageDto>,
+        next_cursor: u64,
+        resync_required: bool,
+        retention_floor_seq: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_sync_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            messages,
+            next_cursor,
+            resync_required,
+            retention_floor_seq,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply a send completion (failures
+    /// retain the draft; nothing is fabricated).
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_sent(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message: Option<crate::protocol::core::ChatMessageDto>,
+        duplicate: bool,
+        draft: String,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_message_sent(
+            self,
+            project_id,
+            channel_id,
+            message,
+            duplicate,
+            draft,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply an edit completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_edit(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message: Option<crate::protocol::core::ChatMessageDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_edit_finished(
+            self,
+            project_id,
+            channel_id,
+            message,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply a redact completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_redact(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_redact_finished(
+            self,
+            project_id,
+            channel_id,
+            message_id,
+            revision,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: apply a read-marker completion.
+    pub fn apply_chat_read(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        last_read_seq: u64,
+        error: Option<String>,
+    ) {
+        crate::tui::commands::chat::apply_chat_read_marker_set(
+            self,
+            project_id,
+            channel_id,
+            last_read_seq,
+            error,
+        );
+    }
+
+    /// Project Collaboration M002: apply a composing-snapshot completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_composing(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        composing: Vec<crate::protocol::core::ChatComposingDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_composing_loaded(
+            self,
+            project_id,
+            channel_id,
+            composing,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M002: send one message to the project's
+    /// active channel.
+    pub fn send_chat_message(
+        &mut self,
+        project_id: String,
+        body: String,
+        reply_to: Option<String>,
+    ) {
+        crate::tui::commands::chat::start_chat_send(self, project_id, body, reply_to);
+    }
+
+    /// Project Collaboration M002: advance the caller's read marker to
+    /// the newest retained message (forward-only daemon-side).
+    pub fn mark_chat_read(&mut self, project_id: String) {
+        crate::tui::commands::chat::start_chat_read(self, project_id);
+    }
+
+    /// Project Collaboration M002: set or clear the caller's ephemeral
+    /// composing lease (content-free).
+    pub fn set_chat_composing(&mut self, project_id: String, composing: bool) {
+        crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
+    }
+
+    /// Project Collaboration M002: route a daemon chat liveness hint
+    /// into the bounded chat reducer. Carries no message detail; the
+    /// active project re-fetches through the authorized history path.
+    /// Inactive projects flag resync and refresh on foreground (no
+    /// polling storm).
+    pub fn on_chat_hint(&mut self, project_id: String, channel_id: String) {
+        if self.chat.note_hint(&project_id) {
+            let is_active = self.active_project_id() == Some(project_id.as_str());
+            if is_active {
+                crate::tui::commands::chat::start_chat_history(self, project_id);
+            } else {
+                let _ = channel_id;
+            }
+        }
+    }
+
+    /// Project Collaboration M002: route observer-mode insert text to
+    /// project chat (the M002 collaboration seam). Public so tests can
+    /// prove the zero-control property without reaching into private
+    /// command modules. Returns `true` when routed.
+    pub fn route_observer_text_to_chat(&mut self, text: &str) -> bool {
+        crate::tui::commands::chat::route_observer_insert_to_chat(self, text)
+    }
+
+    /// Project Collaboration M002: apply a daemon
+    /// `ChatMessageCommitted` payload to the bounded chat window.
+    /// Public so the transport/event bridge can route live chat events
+    /// without exposing the private command module.
+    pub fn apply_chat_event_committed(&mut self, message: crate::protocol::core::ChatMessageDto) {
+        crate::tui::commands::chat::on_chat_message_committed(self, message);
+    }
+
+    /// Project Collaboration M002: apply a daemon `ChatMessageEdited`
+    /// payload to the bounded chat window.
+    pub fn apply_chat_event_edited(&mut self, message: crate::protocol::core::ChatMessageDto) {
+        crate::tui::commands::chat::on_chat_message_edited(self, message);
+    }
+
+    /// Project Collaboration M002: apply a daemon `ChatMessageRedacted`
+    /// hint (identity + revision) to the bounded chat window.
+    pub fn apply_chat_event_redacted(
+        &mut self,
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        revision: u64,
+    ) {
+        crate::tui::commands::chat::on_chat_message_redacted(
+            self, project_id, channel_id, message_id, revision,
+        );
+    }
+
+    /// Project Collaboration M002: route a daemon
+    /// `ChatComposingUpdated` liveness hint into the reducer. Carries no
+    /// content; the panel re-fetches the composing snapshot only while
+    /// it is showing.
+    pub fn on_chat_composing_hint(&mut self, project_id: String, channel_id: String) {
+        crate::tui::commands::chat::on_chat_composing_hint(self, project_id, channel_id);
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {

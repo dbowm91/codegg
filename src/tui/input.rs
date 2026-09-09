@@ -1008,6 +1008,24 @@ pub fn default_help_entries() -> Vec<HelpEntry> {
             condition: None,
         },
         HelpEntry {
+            mode: HelpMode::Command,
+            key: "/chat",
+            action: "Show project chat for the active project",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/chat-send <text>",
+            action: "Send a chat message (bare input while observing)",
+            condition: None,
+        },
+        HelpEntry {
+            mode: HelpMode::Command,
+            key: "/chat-history",
+            action: "Reload the project chat window",
+            condition: None,
+        },
+        HelpEntry {
             mode: HelpMode::Dialog,
             key: "i (terminal view)",
             action: "Focus terminal: keystrokes go to the process",

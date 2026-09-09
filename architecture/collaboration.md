@@ -1,4 +1,4 @@
-# Project Collaboration — Channels, Messages, Synchronization (M001)
+# Project Collaboration — Channels, Messages, Synchronization (M001), TUI Chat (M002)
 
 ## Purpose
 
@@ -6,7 +6,8 @@ Daemon-owned durable project-scoped channels and messages with
 replies/threads, mentions, typed CodeGG object references,
 edits/redactions, read markers, ephemeral composing state, retention,
 and bounded idempotent incremental synchronization over the native
-protocol.
+protocol — plus the TUI project-chat panel and observer input routing
+(M002).
 
 Chat is **project communication, not general chat** and never an
 execution interface: message bodies are inert bounded text. Free text —
@@ -25,6 +26,9 @@ Roadmap: `plans/subsystems/project-collaboration-roadmap.md#M001`.
 Implementation plan:
 `plans/implementation/project-collaboration/001-project-channel-message-protocol.md`.
 Closure: `plans/closure/project-collaboration/001-status.md`.
+TUI chat (M002) plan:
+`plans/implementation/project-collaboration/002-tui-project-chat-and-observer-routing.md`.
+Closure: `plans/closure/project-collaboration/002-status.md`.
 
 ## Where It Lives
 
@@ -41,6 +45,9 @@ crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 12 CoreRequests, 8 Cor
 src/core/daemon.rs                        # daemon-owned CollaborationService, channel->project
                                           # resolver, privacy denials, dedicated chat handler
 tests/collaboration_m001_chat.rs          # 12 daemon boundary tests
+src/tui/app/state/chat.rs                 # M002: bounded per-project chat reducer (ChatState)
+src/tui/commands/chat.rs                  # M002: async chat commands + observer insert routing
+tests/collaboration_m002_chat_tui.rs      # M002: 11 TUI boundary tests
 ```
 
 ## How It Works
@@ -179,9 +186,54 @@ chat body or secret material.
 ```bash
 cargo test -p codegg-core collaboration       # 14 unit tests (domain/store/retention/composing)
 cargo test --test collaboration_m001_chat     # 12 daemon boundary tests
+cargo test -p codegg --lib tui::app::state::chat  # 16 chat reducer tests (M002)
+cargo test --test collaboration_m002_chat_tui # 11 TUI boundary tests (M002)
 python3 scripts/check_authorization_matrix.py # matrix covers all 12 chat_* operations
 bash scripts/check-core-boundary.sh           # collaboration stays UI/server/plugin/auth-free
 ```
+
+## TUI project chat and observer input routing (M002)
+
+The TUI renders daemon chat state and owns no durable messages. Chat
+routes by `ProjectId`/`ChannelId` through the M001 `chat.v1` surface
+only — no second websocket, no polling loop, no task-per-message.
+
+- **Reducer** (`tui::app::state::chat::ChatState`): bounded per-project
+  projection keyed by canonical `project_id`. At most 16 projects, a
+  100-message sliding window per active channel, 50-row panel
+  virtualization, per-message display truncation (500 bytes), per-project
+  drafts (8 KiB bound, never cross-routed), daemon read markers
+  (forward-only, unread derived), and content-free composing leases
+  (expiry-filtered at display). One channel window per project is cached
+  (the active channel); multi-channel windows are future work. Every
+  apply path verifies project/channel/request-id/epoch routing, so rapid
+  project switching cannot leak one project's messages or drafts into
+  another. Unauthorized and feature-absent projects render the identical
+  unavailable panel and clear cached content.
+- **Commands** (`tui::commands::chat`): capability negotiation then
+  channel ensure / history / sync / send / edit / redact / read-marker /
+  composing through `CoreClient` on registered tasks, landing as
+  `TuiCommand::Chat*` completions with the standard stale-completion
+  guard. Failed sends retain the editable draft with the typed error and
+  fabricate nothing. History replaces the window; sync merges by
+  `message_id` (duplicate deliveries converge) or replaces on
+  `resync_required`. Reconnect resumes the M001 `next_cursor` or resyncs
+  the bounded window.
+- **Observer seam** (`route_observer_insert_to_chat`): while observing
+  another session, bare insert-mode input targets the observed project's
+  chat. Only `Chat*` core requests are issued on this path — turn
+  submit/steer/cancel and permission/question answers stay blocked by
+  `ObserverState`, and chat slash commands (`/chat*`) are allowlisted
+  while every control family stays denied. When no project is available
+  the read-only placeholder toast is the fail-closed fallback.
+- **Panel** (`InfoType::ProjectChat` via the generic info dialog, `j`/`k`
+  scroll, `Esc`/`Enter` close): active-channel window newest-last with
+  unread separators, composing indicator, resync/stale notes, and the
+  `/chat-*` command footer. References render as typed locators
+  (`kind:target_id` plus optional hint); large content stays daemon-side.
+  Slash commands: `/chat`, `/chat-send`, `/chat-reply`, `/chat-history`,
+  `/chat-sync`, `/chat-read`, `/chat-edit`, `/chat-redact`,
+  `/chat-composing`.
 
 ## Related Docs
 

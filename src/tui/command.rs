@@ -370,6 +370,24 @@ impl CommandRegistry {
             Command::new("/stop-observing", CommandCategory::System, None)
                 .with_aliases(&["/unwatch"])
                 .with_description("Stop following the observed session"),
+            Command::new("/chat", CommandCategory::System, None)
+                .with_description("Show project chat for the active project (/chat)"),
+            Command::new("/chat-send", CommandCategory::System, None)
+                .with_description("Send a chat message to the active project (/chat-send <text>)"),
+            Command::new("/chat-reply", CommandCategory::System, None)
+                .with_description("Reply to a chat message (/chat-reply <message-id> <text>)"),
+            Command::new("/chat-history", CommandCategory::System, None)
+                .with_description("Reload the project chat window (/chat-history)"),
+            Command::new("/chat-sync", CommandCategory::System, None)
+                .with_description("Incrementally sync project chat from the cached cursor (/chat-sync)"),
+            Command::new("/chat-read", CommandCategory::System, None)
+                .with_description("Mark project chat as read up to the newest message (/chat-read)"),
+            Command::new("/chat-edit", CommandCategory::System, None)
+                .with_description("Edit your chat message (/chat-edit <message-id> <new-text>)"),
+            Command::new("/chat-redact", CommandCategory::System, None)
+                .with_description("Redact your chat message (/chat-redact <message-id> [reason])"),
+            Command::new("/chat-composing", CommandCategory::System, None)
+                .with_description("Set or clear your typing indicator (/chat-composing on|off)"),
         ]
     }
 
@@ -558,7 +576,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 127);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 136);
     }
 
     #[test]

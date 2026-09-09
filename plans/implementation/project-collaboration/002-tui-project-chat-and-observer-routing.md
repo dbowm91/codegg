@@ -1,6 +1,6 @@
 # Project Collaboration Milestone 002 — TUI Project Chat and Observer Input Routing
 
-Status: ready for handoff (unblocked by collaboration M001 closure `plans/closure/project-collaboration/001-status.md`)
+Status: implemented (closed by `plans/closure/project-collaboration/002-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

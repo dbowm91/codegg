@@ -414,15 +414,16 @@ impl ObserverState {
         ))
     }
 
-    /// Collaboration input seam placeholder (project-collaboration M001
-    /// will consume this). M003 MUST NOT store chat; this returns the
-    /// stable user-facing placeholder explaining that observer input is
-    /// not sent as a turn and will become project chat in a later
-    /// milestone. The text is bounded and secret-free.
+    /// Collaboration input seam (project-collaboration M002 consumes
+    /// this). Bare observer insert-mode input routes to project chat via
+    /// `crate::tui::commands::chat::route_observer_insert_to_chat`; this
+    /// returns the stable user-facing fallback explaining that observer
+    /// input is not sent as a turn, used only when no project is
+    /// available for chat routing. The text is bounded and secret-free.
     pub fn collaboration_input_placeholder(&self) -> Option<String> {
         let target = self.target.as_ref()?;
         Some(format!(
-            "Observer mode is read-only — input for {} was not sent as a turn. Project chat lands here in a later milestone; use /stop-observing to resume control.",
+            "Observer mode is read-only — input for {} was not sent as a turn. Bare text goes to project chat; use /stop-observing to resume control.",
             truncate_session(&target.session_id)
         ))
     }
@@ -484,6 +485,10 @@ pub fn is_observer_allowed_command(command: &str) -> bool {
         normalized.as_str(),
         // Observer lifecycle itself.
         "observe" | "watch" | "stop-observing" | "unwatch" |
+        // Project chat (M002 collaboration seam). Read/write through the
+        // daemon-authorized `chat.v1` surface only; never session control.
+        "chat" | "chat-send" | "chat-reply" | "chat-history" | "chat-sync" |
+        "chat-read" | "chat-edit" | "chat-redact" | "chat-composing" |
         // Help/status/navigation (read-only).
         "help" | "status" | "sessions" | "resume" | "continue" |
         "collaborators" | "presence" | "team" |
@@ -516,7 +521,7 @@ pub fn is_observer_allowed_command(command: &str) -> bool {
 }
 
 /// Human-readable denial for blocked observer commands. Bounded and
-/// secret-free; directs to `/stop-observing` and the future chat seam.
+/// secret-free; directs to `/stop-observing` and the project chat seam.
 pub fn observer_blocked_message(command: &str) -> String {
     format!(
         "Observer mode is read-only — /{0} is disabled while observing. Use /stop-observing to resume control.",
