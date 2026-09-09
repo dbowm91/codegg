@@ -1,6 +1,6 @@
 # Presence and Observation Milestone 002 — TUI Collaborator and Presence Surface
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Render daemon-owned authorized presence in each project tab through a bounded co
 
 ## 2. Why this milestone is ready
 
-Blocked on M001. Multi-project TUI/session state and frontend-neutral projection controller are already closed.
+Unblocked by M001 closure (`plans/closure/presence-observation/001-status.md`). Multi-project TUI/session state and frontend-neutral projection controller are already closed.
 
 ## 3. Current implementation evidence
 

@@ -29,7 +29,7 @@ Canonical direction remains in:
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Residual runtime consolidation | active | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001/M002 ready | M003 waits for M002. |
 | Identity, authorization, and audit | closed | `plans/subsystems/identity-authorization-audit-roadmap.md` | M005 closed | — |
-| Presence and read-only observation | active | `plans/subsystems/presence-observation-roadmap.md` | M001 ready | M002/M003 depend on M001. |
+| Presence and read-only observation | active | `plans/subsystems/presence-observation-roadmap.md` | M002 ready | M001 closed; M003 depends on M002. |
 | Project collaboration | active | `plans/subsystems/project-collaboration-roadmap.md` | M001 blocked | Requires presence-observation M003 (identity/audit M005 closed). |
 | Interactive process sessions | closed | `plans/subsystems/interactive-process-sessions-roadmap.md` | M001–M003 closed | — |
 | Tool Program capability expansion | active | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M001 ready | M002/M003 depend on the M001 eligibility contract. |
@@ -60,7 +60,7 @@ Canonical direction remains in:
 |---|---|---|---|
 | Residual runtime consolidation | M001 — stranded coordination/metadata retirement | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | Canonical agent/process owners are already closed; no hard dependency. |
 | Residual runtime consolidation | M002 — CoreDaemon request-family decomposition | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | Behavior-preserving physical refactor over already stable domain owners. |
-| Presence and read-only observation | M001 — project-scoped presence leases | `plans/implementation/presence-observation/001-project-presence-leases.md` | Identity M003 closed; team membership, transport-bound principals, and project authorization landed. |
+| Presence and read-only observation | M002 — TUI collaborator and presence surface | `plans/implementation/presence-observation/002-tui-collaborator-presence-surface.md` | Presence M001 closed (`plans/closure/presence-observation/001-status.md`); multi-project TUI and projection controller already closed. |
 | Tool Program capability expansion | M001 — deterministic local read expansion | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | Tool Programs are strictly closed and ADR-0001 supplies the authority contract. |
 
 These four plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
@@ -69,7 +69,7 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 
 1. Residual M001 and M002 are independent ready cleanup/refactor handoffs. Residual M003 remains blocked until M002 closes.
 2. Identity/auth/audit is closed: M001 domain -> M002 transport identity -> M003 daemon authorization/attribution (closed) -> M004 audit store (closed) -> M005 instrumentation closure (closed).
-3. Presence M001 may now proceed (identity M003 closed). Presence M002 follows M001; M003 follows M001/M002 and consumes the already-closed session-projection interface.
+3. Presence M001 is closed. Presence M002 may now proceed on the closed lease/snapshot protocol; M003 follows M002 and consumes the already-closed session-projection interface.
 4. Project collaboration M001 cannot begin before presence/observation M003 closes (identity/audit M005 now closed). Chat UI and structured actions follow M001. Free text is never an execution interface.
 5. Interactive-process M001/M002/M003 are closed; the subsystem roadmap is closed.
 6. Tool Program expansion M001 may proceed independently. M002 external search and M003 narrow Git/LSP reads remain blocked behind the eligibility contract; no mutation authority is added.
@@ -82,8 +82,7 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 | Residual runtime consolidation | M003 construction/lifecycle decomposition | M002 closure. |
-| Presence and observation | M002 TUI presence | Presence M001 closure. |
-| Presence and observation | M003 read-only observation | Presence M001/M002 closure; session-projection interface already satisfied. |
+| Presence and observation | M003 read-only observation | Presence M002 closure; session-projection interface already satisfied. |
 | Project collaboration | M001 channel/message protocol | Presence-observation M003 closure (identity/audit M005 closed). |
 | Project collaboration | M002 TUI project chat | Collaboration M001 closure. |
 | Project collaboration | M003 structured chat actions | Collaboration M001 closure. |
@@ -107,6 +106,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Agent runs/worktree concurrency | closed | `plans/closure/agent-run-worktree-concurrency/009-status.md` |
 | Tool Programs | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Search and eggsearch integration | closed | `plans/closure/search-eggsearch-integration/005-status.md` |
+| Presence and read-only observation | M001 closed | `plans/closure/presence-observation/001-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. New defects receive new corrective plans under the owning subsystem.
 
