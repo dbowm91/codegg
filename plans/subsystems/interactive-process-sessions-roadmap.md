@@ -105,5 +105,5 @@ M001-M003 accepted: CodeGG has a real bounded scheduler-owned interactive worksp
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/interactive-process-sessions/001-scheduler-owned-pty-engine.md` | `plans/closure/interactive-process-sessions/001-status.md` | — |
-| M002 | ready | `plans/implementation/interactive-process-sessions/002-bounded-attach-resume-protocol.md` | — | — |
-| M003 | blocked | `plans/implementation/interactive-process-sessions/003-tui-terminal-integration-and-legacy-disposition.md` | — | M002 |
+| M002 | closed | `plans/implementation/interactive-process-sessions/002-bounded-attach-resume-protocol.md` | `plans/closure/interactive-process-sessions/002-status.md` | — |
+| M003 | ready | `plans/implementation/interactive-process-sessions/003-tui-terminal-integration-and-legacy-disposition.md` | — | — |

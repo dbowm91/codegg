@@ -1,6 +1,6 @@
 # Interactive Process Sessions Milestone 003 — TUI Terminal Integration and Legacy Disposition
 
-Status: blocked
+Status: ready for handoff
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Provide the reference TUI interactive-terminal experience over M002 and disposit
 
 ## 2. Why this milestone is ready
 
-Blocked on M002. Bash remains canonical model shell and human shell commands/managed process paths are stable.
+Unblocked by M002 closure (`plans/closure/interactive-process-sessions/002-status.md`). Bash remains canonical model shell and human shell commands/managed process paths are stable.
 
 ## 3. Current implementation evidence
 
