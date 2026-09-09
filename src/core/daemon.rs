@@ -1884,12 +1884,332 @@ impl CoreDaemon {
         )
     }
 
+    /// M003: server-side denial response for one authorization failure.
+    ///
+    /// Denied requests have zero side effect. A single-project read
+    /// denies as not-found so an unauthorized caller cannot infer
+    /// project existence; all other denials carry the typed code plus
+    /// a secret-free message.
+    fn authorization_denial(
+        request: &CoreRequest,
+        error: &codegg_core::authorization::AuthorizationError,
+    ) -> CoreResponse {
+        if matches!(request, CoreRequest::ProjectGet { .. }) && error.is_denial() {
+            let (code, message) = codegg_core::authorization::denial_as_not_found();
+            return CoreResponse::Error {
+                code: code.to_string(),
+                message,
+            };
+        }
+        CoreResponse::Error {
+            code: error.code().to_string(),
+            message: error.to_string(),
+        }
+    }
+
+    /// M003: evaluate one request against current team state.
+    ///
+    /// LocalOwner principals decide through this same API under the
+    /// broad local policy. All other principals need an active record;
+    /// project-scoped operations additionally need a resolved project
+    /// plus a current membership grant. Legacy in-memory daemons without
+    /// a pool are local-only and decide under the broad local policy.
+    async fn authorize_request(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        request_id: &str,
+        request: &CoreRequest,
+    ) -> Result<
+        codegg_core::authorization::AuthorizationDecision,
+        codegg_core::authorization::AuthorizationError,
+    > {
+        use codegg_core::authorization::{
+            operation_descriptor, AuthorizationRequest, AuthorizationService, ScopeKind,
+        };
+        let descriptor = operation_descriptor(request);
+        let correlation = format!("{}:{request_id}", authority.correlation_id());
+        let Some(pool) = self.pool.clone() else {
+            return Ok(codegg_core::authorization::AuthorizationDecision {
+                principal_id: authority.principal_id().clone(),
+                operation: descriptor.operation.to_owned(),
+                capability: descriptor.capability.map(|cap| cap.as_str().to_owned()),
+                project_id: None,
+                membership_revision: None,
+                policy: codegg_core::authorization::PolicyKind::LocalOwnerBroad,
+                decision_id: uuid::Uuid::new_v4().to_string(),
+                correlation_id: correlation,
+                reason: "no durable team store; local-only daemon".to_owned(),
+                decided_at_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        };
+        let service = AuthorizationService::new(codegg_core::team::TeamStore::new(pool.clone()));
+        if descriptor.scope_kind == ScopeKind::Enumeration && descriptor.operation == "project_list"
+        {
+            return service
+                .authorize_enumeration(authority.principal(), descriptor.operation, &correlation)
+                .await;
+        }
+        let project = Box::pin(self.resolve_authorization_project(&pool, request)).await;
+        let authz_request = AuthorizationRequest::new(
+            authority.principal().clone(),
+            descriptor,
+            project,
+            correlation,
+        );
+        service.authorize(&authz_request).await
+    }
+
+    /// M003: resolve one request to its project scope, if any.
+    ///
+    /// Direct `project_id` locators parse first; `session_id` locators
+    /// resolve through the owning session row; `job_id` locators resolve
+    /// through the job's owning session. Unresolvable scopes return
+    /// `None` so team principals fail closed; lookup failures (missing
+    /// rows, bad ids) likewise yield `None` rather than an error.
+    async fn resolve_authorization_project(
+        &self,
+        pool: &sqlx::SqlitePool,
+        request: &CoreRequest,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        use codegg_core::identity::ProjectId;
+        let direct: Option<&str> = match request {
+            CoreRequest::ProjectGet { project_id }
+            | CoreRequest::ProjectArchive { project_id }
+            | CoreRequest::ProjectRestore { project_id } => Some(project_id),
+            CoreRequest::ProjectHealth { project_id, .. } => Some(project_id),
+            CoreRequest::SessionList { project_id, .. } => Some(project_id),
+            CoreRequest::SessionCreate {
+                project_id: Some(project_id),
+                ..
+            }
+            | CoreRequest::SessionCreateFromTemplate {
+                project_id: Some(project_id),
+                ..
+            } => Some(project_id),
+            CoreRequest::ProjectionArtifactRead { project_id, .. }
+            | CoreRequest::ProjectionArtifactList { project_id } => Some(project_id),
+            CoreRequest::AssetRefresh { request } => Some(request.scope.project_id.as_str()),
+            CoreRequest::AssetRefreshStatus { scope } => Some(scope.project_id.as_str()),
+            CoreRequest::GoalSet { project_id, .. }
+            | CoreRequest::GoalFromFile { project_id, .. }
+            | CoreRequest::GoalCheckpoint { project_id, .. } => Some(project_id),
+            _ => None,
+        };
+        if let Some(raw) = direct {
+            return ProjectId::parse(raw).ok();
+        }
+        if let CoreRequest::ProjectionSubscribe { request } = request {
+            return match request.scope {
+                codegg_protocol::projection::replay::ProjectionStreamKind::Project => {
+                    ProjectId::parse(request.scope_id.as_str()).ok()
+                }
+                codegg_protocol::projection::replay::ProjectionStreamKind::Session => {
+                    self.session_project(pool, &request.scope_id).await
+                }
+            };
+        }
+        if let CoreRequest::ProjectionSnapshotGet { scope, scope_id } = request {
+            return match scope {
+                codegg_protocol::projection::replay::ProjectionStreamKind::Project => {
+                    ProjectId::parse(scope_id.as_str()).ok()
+                }
+                codegg_protocol::projection::replay::ProjectionStreamKind::Session => {
+                    self.session_project(pool, scope_id).await
+                }
+            };
+        }
+        if let Some(session_id) = Self::session_id_for_request(request) {
+            return self.session_project(pool, session_id).await;
+        }
+        let job_id: Option<&str> = match request {
+            CoreRequest::JobWait { job_id, .. }
+            | CoreRequest::JobGet { job_id }
+            | CoreRequest::JobCancel { job_id, .. }
+            | CoreRequest::JobRetry { job_id }
+            | CoreRequest::JobAttempts { job_id } => Some(job_id),
+            _ => None,
+        };
+        if let Some(job_id) = job_id {
+            return self.job_session_project(pool, job_id).await;
+        }
+        None
+    }
+
+    /// M003: `session_id` locator carried by one request, if any.
+    fn session_id_for_request(request: &CoreRequest) -> Option<&str> {
+        match request {
+            CoreRequest::SessionAttach { session_id }
+            | CoreRequest::SessionLoad { session_id }
+            | CoreRequest::SessionMessagesLoad { session_id }
+            | CoreRequest::SessionFork { session_id }
+            | CoreRequest::SessionDelete { session_id, .. }
+            | CoreRequest::SessionArchive { session_id, .. }
+            | CoreRequest::SessionRestore { session_id }
+            | CoreRequest::SessionShare { session_id }
+            | CoreRequest::SessionUnshare { session_id }
+            | CoreRequest::SessionRename { session_id, .. }
+            | CoreRequest::SessionExport { session_id }
+            | CoreRequest::TurnSubmit { session_id, .. }
+            | CoreRequest::TurnCancel { session_id, .. }
+            | CoreRequest::TurnSteer { session_id, .. }
+            | CoreRequest::AgentSelect { session_id, .. }
+            | CoreRequest::ModelSelect { session_id, .. }
+            | CoreRequest::SessionSelectionGet { session_id }
+            | CoreRequest::SessionSelectionList { session_id }
+            | CoreRequest::SessionSelectionModels { session_id, .. }
+            | CoreRequest::SessionLifecycleGet { session_id }
+            | CoreRequest::GoalShow { session_id }
+            | CoreRequest::GoalPause { session_id }
+            | CoreRequest::GoalResume { session_id }
+            | CoreRequest::GoalClear { session_id }
+            | CoreRequest::GoalDone { session_id }
+            | CoreRequest::TodoList { session_id }
+            | CoreRequest::ActiveGoalLoad { session_id }
+            | CoreRequest::GoalSetBudget { session_id, .. }
+            | CoreRequest::SnapshotSession { session_id }
+            | CoreRequest::ToolProgramList { session_id, .. }
+            | CoreRequest::ToolProgramNotificationReinject { session_id }
+            | CoreRequest::ToolProgramRecoveryDebugInspect { session_id, .. }
+            | CoreRequest::EditCheckpointList { session_id, .. }
+            | CoreRequest::EditCheckpointUndo { session_id, .. }
+            | CoreRequest::EditCheckpointUndoLatest { session_id, .. }
+            | CoreRequest::EditCheckpointReapply { session_id, .. }
+            | CoreRequest::EditCheckpointReapplyLatest { session_id, .. } => Some(session_id),
+            CoreRequest::SessionSelectionUpdate { request } => Some(request.session_id.as_str()),
+            CoreRequest::GoalSet { session_id, .. }
+            | CoreRequest::GoalFromFile { session_id, .. }
+            | CoreRequest::GoalCheckpoint { session_id, .. } => Some(session_id),
+            CoreRequest::JobSubmit { spec } => spec.session_id.as_deref(),
+            CoreRequest::ScheduleCreate { spec } => spec.session_id.as_deref(),
+            CoreRequest::RunRerun {
+                session_id: Some(session_id),
+                ..
+            } => Some(session_id),
+            _ => None,
+        }
+    }
+
+    /// M003: owning project of one session row, if resolvable.
+    async fn session_project(
+        &self,
+        pool: &sqlx::SqlitePool,
+        session_id: &str,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT project_id FROM session WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+        row.and_then(|(raw,)| codegg_core::identity::ProjectId::parse(&raw).ok())
+    }
+
+    /// M003: owning project of one job's session, if resolvable.
+    async fn job_session_project(
+        &self,
+        pool: &sqlx::SqlitePool,
+        job_id: &str,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT session_id FROM job WHERE id = ?")
+                .bind(job_id)
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
+        match row {
+            Some((Some(session_id),)) => self.session_project(pool, &session_id).await,
+            _ => None,
+        }
+    }
+
+    /// M003: filter catalog records to the projects `client_id` may
+    /// observe. LocalOwner broad policy observes everything; team
+    /// principals observe exactly their `project.read` grants so
+    /// enumeration cannot leak project existence.
+    async fn filter_projects_for_principal(
+        &self,
+        trusted_client_id: &str,
+        records: Vec<codegg_core::project_catalog::ProjectCatalogRecord>,
+    ) -> Vec<codegg_core::project_catalog::ProjectCatalogRecord> {
+        let authority = self.request_authority_for_client(trusted_client_id);
+        if codegg_core::authorization::is_local_owner_broad(authority.principal()) {
+            return records;
+        }
+        let Some(pool) = self.pool.clone() else {
+            return records;
+        };
+        let service = codegg_core::authorization::AuthorizationService::new(
+            codegg_core::team::TeamStore::new(pool),
+        );
+        let ids: Vec<codegg_core::identity::ProjectId> = records
+            .iter()
+            .map(|record| record.project_id.clone())
+            .collect();
+        let visible = Box::pin(codegg_core::authorization::visible_projects(
+            &service,
+            authority.principal(),
+            &ids,
+        ))
+        .await;
+        records
+            .into_iter()
+            .filter(|record| visible.contains(&record.project_id))
+            .collect()
+    }
+
+    /// M003: capture originating-principal attribution for durable work.
+    ///
+    /// Best-effort: the gate already authorized this request, so the
+    /// captured decision is the enforcement context. Attribution write
+    /// failures warn without failing the operation; the M004 audit
+    /// store will harden the failure policy.
+    async fn record_origin_with_decision(
+        &self,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+        scope_kind: &str,
+        scope_id: &str,
+    ) {
+        let Some(pool) = self.pool.clone() else {
+            return;
+        };
+        let attribution = codegg_core::authorization::OriginAttribution::from_authority(
+            authority.principal(),
+            decision,
+        );
+        let store = codegg_core::authorization::OriginAttributionStore::new(pool);
+        if let Err(error) = store.record(scope_kind, scope_id, &attribution).await {
+            tracing::warn!(
+                error = %error,
+                scope_kind,
+                scope_id,
+                "origin attribution write failed"
+            );
+        }
+    }
+
     async fn handle_request_with_client(
         &self,
         request: RequestEnvelope<CoreRequest>,
         trusted_client_id: Option<&str>,
     ) -> Result<CoreResponse, AppError> {
         let trusted_client_id = trusted_client_id.unwrap_or("local-daemon");
+        // M003: server-side authorization before any side effect. Denied
+        // requests reply here with zero side effect. The success decision
+        // stays in scope so creation arms can capture its context with
+        // the resulting durable work. The authorization future is boxed:
+        // the dispatch match below is already near the stack limit and
+        // must only hold the box.
+        let authority = self.request_authority_for_client(trusted_client_id);
+        let authz_decision = match Box::pin(self.authorize_request(
+            &authority,
+            &request.request_id,
+            &request.payload,
+        ))
+        .await
+        {
+            Ok(decision) => decision,
+            Err(error) => return Ok(Self::authorization_denial(&request.payload, &error)),
+        };
         match request.payload {
             CoreRequest::AssetRefresh { request } => {
                 let Some(resolver) = self.context_resolver.as_ref() else {
@@ -2568,10 +2888,21 @@ impl CoreDaemon {
                     Ok(outcome) => match outcome {
                         crate::core::session_selection::SelectionUpdateOutcome::Updated(
                             selection,
-                        ) => Ok(CoreResponse::SessionSelectionUpdated {
-                            session_id: req.session_id,
-                            selection,
-                        }),
+                        ) => {
+                            // M003: the provider selection carries the
+                            // requesting principal's origin.
+                            self.record_origin_with_decision(
+                                &authority,
+                                &authz_decision,
+                                "provider",
+                                connection_id.as_str(),
+                            )
+                            .await;
+                            Ok(CoreResponse::SessionSelectionUpdated {
+                                session_id: req.session_id,
+                                selection,
+                            })
+                        }
                         other => Ok(CoreResponse::Error {
                             code: crate::core::session_selection::selection_outcome_code(&other)
                                 .to_string(),
@@ -2750,6 +3081,15 @@ impl CoreDaemon {
                         },
                     )
                     .await;
+
+                // M003: capture originating-principal attribution for the turn.
+                self.record_origin_with_decision(
+                    &authority,
+                    &authz_decision,
+                    "turn",
+                    turn_id.as_str(),
+                )
+                .await;
 
                 // Build an immutable execution context from the bound
                 // runtime's workspace identity. The context flows through
@@ -2943,9 +3283,17 @@ impl CoreDaemon {
                                         message: error.to_string(),
                                     })
                                 } else {
-                                    Ok(CoreResponse::Session {
-                                        session: Self::session_dto(session, Some(&context)),
-                                    })
+                                    let created = Self::session_dto(session, Some(&context));
+                                    // M003: capture originating-principal
+                                    // attribution for the new session.
+                                    self.record_origin_with_decision(
+                                        &authority,
+                                        &authz_decision,
+                                        "session",
+                                        created.id.as_str(),
+                                    )
+                                    .await;
+                                    Ok(CoreResponse::Session { session: created })
                                 }
                             }
                             Err(error) => Ok(CoreResponse::Error {
@@ -3389,9 +3737,17 @@ impl CoreDaemon {
                                         message: error.to_string(),
                                     })
                                 } else {
-                                    Ok(CoreResponse::Session {
-                                        session: Self::session_dto(session, Some(&context)),
-                                    })
+                                    let created = Self::session_dto(session, Some(&context));
+                                    // M003: capture originating-principal
+                                    // attribution for the new session.
+                                    self.record_origin_with_decision(
+                                        &authority,
+                                        &authz_decision,
+                                        "session",
+                                        created.id.as_str(),
+                                    )
+                                    .await;
+                                    Ok(CoreResponse::Session { session: created })
                                 }
                             }
                             Err(error) => Ok(CoreResponse::Error {
@@ -3484,9 +3840,17 @@ impl CoreDaemon {
                                         message: error.to_string(),
                                     })
                                 } else {
-                                    Ok(CoreResponse::Session {
-                                        session: Self::session_dto(session, Some(&context)),
-                                    })
+                                    let created = Self::session_dto(session, Some(&context));
+                                    // M003: capture originating-principal
+                                    // attribution for the new session.
+                                    self.record_origin_with_decision(
+                                        &authority,
+                                        &authz_decision,
+                                        "session",
+                                        created.id.as_str(),
+                                    )
+                                    .await;
+                                    Ok(CoreResponse::Session { session: created })
                                 }
                             }
                             Err(error) => Ok(CoreResponse::Error {
@@ -3726,6 +4090,14 @@ impl CoreDaemon {
                                 },
                             )
                             .await;
+                        // M003: capture originating-principal attribution.
+                        self.record_origin_with_decision(
+                            &authority,
+                            &authz_decision,
+                            "job",
+                            job_id.as_str(),
+                        )
+                        .await;
                         Ok(CoreResponse::JobSubmitted { job_id })
                     }
                     Err(e) => Ok(CoreResponse::Error {
@@ -4280,14 +4652,21 @@ impl CoreDaemon {
                 };
                 let catalog = codegg_core::project_catalog::ProjectCatalog::new(pool);
                 match catalog.list_projects(include_archived).await {
-                    Ok(records) => Ok(CoreResponse::ProjectList {
-                        truncated: records.len() > limit,
-                        projects: records
-                            .iter()
-                            .take(limit)
-                            .map(codegg_core::protocol_conversions::project_catalog_record_to_dto)
-                            .collect(),
-                    }),
+                    Ok(records) => {
+                        // M003: enumeration is privacy-filtered to the
+                        // caller's `project.read` grants.
+                        let records = self
+                            .filter_projects_for_principal(trusted_client_id, records)
+                            .await;
+                        Ok(CoreResponse::ProjectList {
+                            truncated: records.len() > limit,
+                            projects: records
+                                .iter()
+                                .take(limit)
+                                .map(codegg_core::protocol_conversions::project_catalog_record_to_dto)
+                                .collect(),
+                        })
+                    }
                     Err(error) => Ok(Self::project_catalog_error("project list failed", &error)),
                 }
             }
@@ -6182,11 +6561,22 @@ impl CoreDaemon {
                 };
                 let child_job = crate::run_rerun::to_job(validated, workspace.clone());
                 match submission.submit(None, child_job).await {
-                    Ok(submitted) => Ok(CoreResponse::RunRerunAccepted {
-                        workspace_id: workspace.to_string(),
-                        parent_run_id,
-                        child_job_id: submitted.job_id.to_string(),
-                    }),
+                    Ok(submitted) => {
+                        // M003: the rerun child job carries the requesting
+                        // principal's origin, not the parent run's.
+                        self.record_origin_with_decision(
+                            &authority,
+                            &authz_decision,
+                            "job",
+                            submitted.job_id.as_str(),
+                        )
+                        .await;
+                        Ok(CoreResponse::RunRerunAccepted {
+                            workspace_id: workspace.to_string(),
+                            parent_run_id,
+                            child_job_id: submitted.job_id.to_string(),
+                        })
+                    }
                     Err(error) => Ok(CoreResponse::Error {
                         code: "scheduler_denied".to_string(),
                         message: error.to_string(),

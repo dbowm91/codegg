@@ -133,6 +133,11 @@ impl AgentLoop {
             workspace_path_policy_revision: None,
             permission_policy_revision: receipt.policy_revision.clone(),
             principal_identity: Some(agent_id),
+            // M003 origin: stamped by the agent loop via `apply_origin`
+            // once turn attribution is threaded through (M005).
+            origin_principal: None,
+            origin_auth_method: None,
+            origin_decision_id: None,
             caller_class: Some("agent".into()),
             max_effect_class: Some("non_idempotent".into()),
             decision_issued_at: Some(receipt.issued_at),

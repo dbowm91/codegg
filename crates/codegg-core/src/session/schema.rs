@@ -178,6 +178,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 52 {
         migrate_and_record(pool, 52).await?;
     }
+    if current_version < 53 {
+        migrate_and_record(pool, 53).await?;
+    }
 
     Ok(())
 }
@@ -242,6 +245,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             50 => migrate_v50(&mut tx).await?,
             51 => migrate_v51(&mut tx).await?,
             52 => migrate_v52(&mut tx).await?,
+            53 => migrate_v53(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2271,6 +2275,43 @@ async fn migrate_v52(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
     Ok(())
 }
 
+/// Identity, authorization, and audit M003: durable originating-principal
+/// attribution.
+///
+/// One row per attributed scope `(scope_kind, scope_id)` naming the
+/// transport-bound origin principal plus the captured authorization
+/// decision context. The first write wins (immutable origin); pre-M003
+/// records are attributed explicitly through the `legacy-local`
+/// provenance marker, never by fabricating a team identity.
+async fn migrate_v53(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS origin_attribution (
+            scope_kind TEXT NOT NULL CHECK (scope_kind IN ('session','turn','run','job','worktree','provider')),
+            scope_id TEXT NOT NULL,
+            origin_principal TEXT NOT NULL,
+            origin_kind TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            transport_class TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            membership_revision INTEGER,
+            decision_id TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            attribution_json TEXT NOT NULL,
+            PRIMARY KEY (scope_kind, scope_id)
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_principal ON origin_attribution(origin_principal)",
+        "CREATE INDEX IF NOT EXISTS idx_origin_attribution_decision ON origin_attribution(decision_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
 /// Hot-path lookup indexes: `job_attempt.run_id` backs the
 /// `JobAttempt.run_id → RunStore` linkage query and `schedule_occurrence`
 /// status scans filter by status. Additive `IF NOT EXISTS`, safe on

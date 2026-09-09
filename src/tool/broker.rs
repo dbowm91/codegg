@@ -666,6 +666,11 @@ impl ToolBroker {
             workspace_path_policy_revision: None,
             permission_policy_revision: None,
             principal_identity: None,
+            // M003 origin: stamped by the agent loop via `apply_origin`
+            // once turn attribution is threaded through (M005).
+            origin_principal: None,
+            origin_auth_method: None,
+            origin_decision_id: None,
             caller_class: None,
             max_effect_class: None,
             decision_issued_at: None,

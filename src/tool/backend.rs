@@ -103,6 +103,18 @@ pub struct ToolExecutionContext {
     pub permission_policy_revision: Option<String>,
     /// Principal identity resolved by the permission boundary.
     pub principal_identity: Option<String>,
+    /// M003: canonical originating principal for this execution, as a
+    /// [`codegg_core::identity::PrincipalId`] string. Set by the daemon
+    /// boundary from the transport-bound principal; never from a request
+    /// payload or model output. `principal_identity` remains the
+    /// compatibility projection.
+    pub origin_principal: Option<String>,
+    /// M003: authentication method that bound the origin principal
+    /// (`local_owner`, `personal_token`, ...). Diagnostic only.
+    pub origin_auth_method: Option<String>,
+    /// M003: authorization decision id that admitted the owning
+    /// request. Links tool receipts to the daemon decision context.
+    pub origin_decision_id: Option<String>,
     /// Caller class resolved by the permission boundary (agent/program/etc).
     pub caller_class: Option<String>,
     /// Maximum effect class the caller is authorized for.
@@ -143,6 +155,9 @@ impl ToolExecutionContext {
             workspace_path_policy_revision: None,
             permission_policy_revision: None,
             principal_identity: None,
+            origin_principal: None,
+            origin_auth_method: None,
+            origin_decision_id: None,
             caller_class: None,
             max_effect_class: None,
             decision_issued_at: None,
@@ -150,6 +165,27 @@ impl ToolExecutionContext {
             decision_revoked_at: None,
             program_contract_snapshot: None,
         }
+    }
+
+    /// Attach M003 originating-principal attribution from transport-bound
+    /// authority plus its authorization decision.
+    ///
+    /// Both inputs come from the daemon boundary, never from a request
+    /// payload or model output. Overwrites any previous origin: the
+    /// outermost daemon decision owns attribution for the execution.
+    pub fn apply_origin(
+        &mut self,
+        principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
+        decision: &codegg_core::authorization::AuthorizationDecision,
+    ) {
+        self.origin_principal = Some(principal.principal_id().as_str().to_owned());
+        self.origin_auth_method = Some(principal.auth_method().as_str().to_owned());
+        self.origin_decision_id = Some(decision.decision_id.clone());
+    }
+
+    /// Canonical origin principal, when attributed.
+    pub fn origin_principal_id(&self) -> Option<&str> {
+        self.origin_principal.as_deref()
     }
 }
 

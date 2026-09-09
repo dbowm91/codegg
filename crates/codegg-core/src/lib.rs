@@ -4,6 +4,7 @@ pub mod agent_convergence;
 pub mod agent_run;
 pub mod agent_run_control;
 pub mod agent_run_group;
+pub mod authorization;
 pub mod bus;
 pub mod context;
 pub mod error;

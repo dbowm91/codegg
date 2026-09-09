@@ -172,3 +172,41 @@ remains login-free.
   directory; per-connection `SO_PEERCRED` UID validation is future
   hardening and is explicitly not claimed. Authentication (who) stays
   separate from M003 authorization (may do what).
+
+## Daemon authorization and originating-principal attribution (M003)
+
+`codegg_core::authorization` enforces project/resource semantic
+capabilities at the daemon operation boundary using transport-bound
+principals, and propagates immutable originating-principal attribution
+into durable work. Full contract and the 135-row operation matrix live in
+`architecture/authorization.md`.
+
+- Inventory: `operation_descriptor` maps every native `CoreRequest` to a
+  scope (`global`, `direct_project`, `via_session`, `via_job`,
+  `enumeration`, `opaque`) plus a semantic `Capability`. The match is
+  exhaustive with no wildcard; `scripts/check_authorization_matrix.py`
+  pins coverage.
+- Service: `AuthorizationService::authorize` evaluates principal +
+  project/resource + capability + current membership revision and returns
+  a structured `AuthorizationDecision` (or a typed `AuthorizationError`:
+  `authorization_denied`, `authorization_scope_required`,
+  `authorization_scope_ambiguous`, `authorization_principal_inactive`,
+  `authorization_unavailable`). `LocalOwner` decides through the same API
+  under the broad local policy (`PolicyKind::LocalOwnerBroad`).
+- Boundary: `CoreDaemon::handle_request_with_client` authorizes before
+  dispatch; denials reply with zero side effect. `ProjectList` is
+  privacy-filtered to `project.read` grants (`visible_projects`);
+  `ProjectGet` denies as `project_not_found` so existence is not leaked.
+- Attribution: `OriginAttribution` (bound principal + captured decision)
+  persists per scope (`session`, `turn`, `job`, `provider`) in migration
+  v53 `origin_attribution` (`STORAGE_LAYOUT_VERSION` is 53); first write
+  wins. Pre-M003 records use the explicit `legacy-local` provenance
+  marker. `ToolExecutionContext` carries `origin_principal` /
+  `origin_auth_method` / `origin_decision_id` via `apply_origin`.
+- Narrowing: `authorize_child_delegation` fails closed on escalation;
+  every turn re-enters the gate with `agent.invoke` on the session
+  project. Provider scope follows `authorize_provider_use`
+  (personal owner-only, project grant-checked, deployment owner-gated).
+- Projection: `team_capabilities_to_projection` plus
+  `bounded_resolver_for_principal` converge the projection seam onto team
+  grants.
