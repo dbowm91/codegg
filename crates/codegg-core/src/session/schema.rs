@@ -187,6 +187,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 55 {
         migrate_and_record(pool, 55).await?;
     }
+    if current_version < 56 {
+        migrate_and_record(pool, 56).await?;
+    }
 
     Ok(())
 }
@@ -254,6 +257,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             53 => migrate_v53(&mut tx).await?,
             54 => migrate_v54(&mut tx).await?,
             55 => migrate_v55(&mut tx).await?,
+            56 => migrate_v56(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2395,6 +2399,22 @@ async fn migrate_v54(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
 /// have no table. Additive `IF NOT EXISTS`, safe on existing databases.
 async fn migrate_v55(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
     for statement in crate::collaboration::CHAT_SCHEMA_STATEMENTS {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Collaboration M003: durable structured chat-action projections.
+///
+/// `chat_action` rows are reference/status projections only; the job
+/// is canonical durable state in the scheduler/job stores. The
+/// `(channel_id, idempotency_key)` unique index is the retry backstop
+/// so duplicate submissions converge without a second job. Additive
+/// `IF NOT EXISTS`, safe on existing databases.
+async fn migrate_v56(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in crate::collaboration::CHAT_ACTION_SCHEMA_STATEMENTS {
         sqlx::query(statement)
             .execute(&mut **tx)
             .await

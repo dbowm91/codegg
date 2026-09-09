@@ -144,7 +144,8 @@ reason = "SubAgentPool wiring for --standalone, --stdio, daemon bootstrap, depre
 [[site]]
 path = "src/core/daemon.rs"
 owner = "standalone_compat"
-reason = "Production daemon bootstraps scheduler, submission service, and recovery here"
+reason = "Production daemon bootstraps scheduler, submission service, and recovery here; structured chat actions submit canonical jobs through JobSubmissionService"
+entrypoint = "JobSubmissionService::submit"
 
 [[site]]
 path = "src/core/instance.rs"

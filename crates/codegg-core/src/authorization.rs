@@ -899,6 +899,29 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::DirectProject,
             Some(Capability::ProjectChat),
         ),
+        // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
+        //
+        // The gate enforces `project.chat` on the owning project (same
+        // as M001 chat). The daemon handler additionally checks the
+        // ordinary semantic capability for the action kind before
+        // creating anything (`agent.delegate` / `job.submit` /
+        // `session.read`). Reads share the chat gate so unauthorized
+        // callers cannot enumerate actions.
+        R::ChatActionSubmit { .. } => OperationDescriptor::new(
+            "chat_action_submit",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatActionGet { .. } => OperationDescriptor::new(
+            "chat_action_get",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
+        R::ChatActionList { .. } => OperationDescriptor::new(
+            "chat_action_list",
+            ScopeKind::DirectProject,
+            Some(Capability::ProjectChat),
+        ),
     }
 }
 
@@ -1525,6 +1548,24 @@ fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::ChatSync {
             channel_id: String::new(),
             from_seq: 0,
+            limit: None,
+        },
+        R::ChatActionSubmit {
+            channel_id: String::new(),
+            message_id: String::new(),
+            action: codegg_protocol::core::ChatActionSubmitDto::JobReference {
+                job_id: String::new(),
+                title: None,
+            },
+            idempotency_key: String::new(),
+        },
+        R::ChatActionGet {
+            channel_id: String::new(),
+            action_id: String::new(),
+        },
+        R::ChatActionList {
+            channel_id: String::new(),
+            message_id: None,
             limit: None,
         },
     ]

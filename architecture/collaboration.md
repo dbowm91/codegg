@@ -1,4 +1,4 @@
-# Project Collaboration — Channels, Messages, Synchronization (M001), TUI Chat (M002)
+# Project Collaboration — Channels, Messages, Synchronization (M001), TUI Chat (M002), Structured Actions (M003)
 
 ## Purpose
 
@@ -235,11 +235,66 @@ only — no second websocket, no polling loop, no task-per-message.
   `/chat-sync`, `/chat-read`, `/chat-edit`, `/chat-redact`,
   `/chat-composing`.
 
+## Structured chat actions (M003)
+
+Explicit typed message-associated actions only. Free text never becomes
+an action by parsing, mention, prefix, or model inference: only
+`ChatActionSubmit` (with channel/message locators, a typed payload, and
+an idempotency key) can create work.
+
+- **Taxonomy** (`codegg-core::collaboration::ChatActionKind`, wire
+  `ChatActionKindDto`): `agent_task` and `review_request` submit
+  `JobKind::Subagent` via `JobSubmissionService` (requires
+  `agent.delegate`); `job_submit` forwards a `JobSubmitDto` via the
+  same boundary with `ToolProgram` rejected (requires `job.submit`);
+  `job_reference` links an existing job id with no new execution
+  (requires `session.read`; cross-project session jobs fail closed as
+  not-found). Every kind additionally requires `project.chat` on the
+  owning project (daemon gate); observers without the semantic
+  capability are denied and create nothing.
+- **Dispatcher** (`src/core/daemon.rs::handle_chat_action_submit`):
+  resolves channel→project server-side, validates message/channel/
+  project linkage (`chat_project_mismatch` on cross-link), converges
+  retries on `(channel, idempotency_key)` without a second job
+  (conflicting reuse → `chat_action_conflict`), validates
+  title/prompt/agent bounds and rejects credential-like material with
+  zero side effect, submits through `JobSubmissionService` with a
+  chat-derived submission key, stores only the reference/status
+  projection in `chat_action` (`submitted`/`referenced`), and emits
+  audit causation plus `ChatActionUpdated`/`JobCreated` liveness.
+  Chat never executes in its own store.
+- **Storage** (`migrate_v56`, `STORAGE_LAYOUT_VERSION = 56`):
+  `chat_action` with the unique retry backstop; restart preserves
+  idempotency via the durable table (composing still drops).
+- **Audit** (`chat_triggered_action`, live-mapped): structural
+  locators only (`chat.channel/message/action/action_kind/project/
+  status`, `job.id`, `decision.outcome`); titles/prompts never enter
+  audit. Denials create no job and no action row.
+- **TUI** (`/chat-action-task`, `/chat-action-review`,
+  `/chat-action-list`): explicit commands only, same stale-completion
+  guard as chat sends; the panel renders the bounded action
+  projection (`⚡ id kind job [status] title`). Observer insert input
+  still routes literally to `ChatSend` and never constructs an action.
+
+## Testing
+
+```bash
+cargo test -p codegg-core --lib collaboration  # 17 unit tests (domain/store/actions)
+cargo test --test collaboration_m001_chat      # 12 daemon boundary tests
+cargo test --test collaboration_m003_chat_actions  # 10 action boundary tests
+cargo test -p codegg --lib tui::app::state::chat  # 16 chat reducer tests (M002)
+cargo test --test collaboration_m002_chat_tui # 11 TUI boundary tests (M002)
+python3 scripts/check_authorization_matrix.py # matrix covers all 15 chat_* operations
+bash scripts/check-core-boundary.sh           # collaboration stays UI/server/plugin/auth-free
+```
+
 ## Related Docs
 
 - `architecture/authorization.md` — `project.chat` matrix rows and
-  not-found denial convention
-- `architecture/protocol.md` — `chat.v1` surface summary
-- `architecture/storage.md` — v55 migration entry
-- `architecture/audit.md` — why chat has no live audit mapping yet
+  not-found denial convention (M003 adds 3 `chat_action_*` rows)
+- `architecture/protocol.md` — `chat.v1` surface summary (M003 adds
+  `ChatActionSubmit/Get/List`, `ChatAction/ChatActionList`,
+  `ChatActionUpdated`)
+- `architecture/storage.md` — v55/v56 migration entries
+- `architecture/audit.md` — `chat_triggered_action` live mapping (M003)
 - `architecture/presence.md` — ephemeral-state design precedent

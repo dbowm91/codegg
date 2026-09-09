@@ -419,7 +419,11 @@ resolve through deterministic lookup of an existing unique locator.
   once a cursor predates the retention floor. Events
   (`ChatMessageCommitted/Edited/Redacted`, `ChatComposingUpdated`)
   are structural liveness hints. Older clients ignore the chat
-  surface. See `architecture/collaboration.md`.
+  surface. M003 adds explicit `ChatActionSubmit/Get/List`,
+  `ChatAction/ChatActionList`, and `ChatActionUpdated` for separately
+  authorized structured actions (typed payload + idempotency key;
+  `project.chat` plus the ordinary semantic capability; free text
+  never becomes an action). See `architecture/collaboration.md`.
 
 ## Testing
 

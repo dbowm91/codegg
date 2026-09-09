@@ -96,6 +96,10 @@ pub fn classify(event: &CoreEvent) -> SafePublicationClass {
         CoreEvent::ChatMessageEdited { .. } => SafePublicationClass::Safe,
         CoreEvent::ChatMessageRedacted { .. } => SafePublicationClass::Safe,
         CoreEvent::ChatComposingUpdated { .. } => SafePublicationClass::Safe,
+        // Collaboration M003: action hint carries the bounded action
+        // projection (ids/kind/title/status only) to project
+        // subscribers; prompts stay in the canonical job store.
+        CoreEvent::ChatActionUpdated { .. } => SafePublicationClass::Safe,
     }
 }
 

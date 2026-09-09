@@ -96,6 +96,14 @@ pub struct CollaborationConfig {
     pub max_idempotency_key_len: usize,
     /// Maximum UTF-8 bytes accepted for an author-agent label.
     pub max_author_agent_len: usize,
+    /// M003: maximum UTF-8 bytes accepted for a chat-action title.
+    pub max_action_title_bytes: usize,
+    /// M003: maximum UTF-8 bytes accepted for an agent-task prompt.
+    pub max_action_prompt_bytes: usize,
+    /// M003: maximum UTF-8 bytes accepted for an agent name.
+    pub max_action_agent_len: usize,
+    /// M003: maximum actions listed in one page.
+    pub max_action_page_limit: u32,
 }
 
 impl Default for CollaborationConfig {
@@ -112,6 +120,10 @@ impl Default for CollaborationConfig {
             composing_ttl: Duration::from_secs(30),
             max_idempotency_key_len: 128,
             max_author_agent_len: 128,
+            max_action_title_bytes: 512,
+            max_action_prompt_bytes: 8 * 1024,
+            max_action_agent_len: 128,
+            max_action_page_limit: 100,
         }
     }
 }
@@ -128,12 +140,20 @@ impl CollaborationConfig {
             max_references: self.max_references,
             composing_ttl_secs: self.composing_ttl.as_secs(),
             retention_max_messages: self.max_messages_per_channel,
+            actions_supported: true,
+            max_action_title_bytes: self.max_action_title_bytes,
+            max_action_prompt_bytes: self.max_action_prompt_bytes,
         }
     }
 
     fn clamp_page_limit(&self, requested: Option<u32>) -> u32 {
         let limit = requested.unwrap_or(self.default_page_limit).max(1);
         limit.min(self.max_page_limit)
+    }
+
+    fn clamp_action_page_limit(&self, requested: Option<u32>) -> u32 {
+        let limit = requested.unwrap_or(50).max(1);
+        limit.min(self.max_action_page_limit)
     }
 }
 
@@ -163,6 +183,14 @@ pub enum CollaborationError {
     Capacity(String),
     #[error("chat store unavailable: {0}")]
     Unavailable(String),
+    #[error("chat action not found: {0}")]
+    ActionNotFound(String),
+    #[error("chat action idempotency conflict for key {0}")]
+    ActionConflict(String),
+    #[error("chat action denied: {0}")]
+    ActionDenied(String),
+    #[error("chat project mismatch: {0}")]
+    ProjectMismatch(String),
     #[error("chat storage error: {0}")]
     Storage(#[from] StorageError),
 }
@@ -179,11 +207,15 @@ impl CollaborationError {
             Self::NotAuthor => "chat_not_author",
             Self::Capacity(_) => "chat_capacity",
             Self::Unavailable(_) => "chat_unavailable",
+            Self::ActionNotFound(_) => "chat_action_not_found",
+            Self::ActionConflict(_) => "chat_action_conflict",
+            Self::ActionDenied(_) => "chat_action_denied",
+            Self::ProjectMismatch(_) => "chat_project_mismatch",
             Self::Storage(_) => "chat_storage_error",
         }
     }
 
-    fn invalid(field: &'static str, message: impl Into<String>) -> Self {
+    pub fn invalid(field: &'static str, message: impl Into<String>) -> Self {
         Self::Invalid {
             field,
             message: message.into(),
@@ -423,6 +455,131 @@ pub struct SendOutcome {
     pub duplicate: bool,
 }
 
+// ── M003: Separately authorized structured chat actions ─────────────────
+//
+// Free text never executes. A structured action is an explicit typed
+// operation naming a message/channel plus a payload and an idempotency
+// key. The daemon checks `project.chat` plus the ordinary semantic
+// capability for the kind, then calls the existing canonical
+// Task/AgentRun/Job services. Chat stores only this
+// reference/status projection; the job is canonical durable state
+// elsewhere. Retries converge on `(channel_id, idempotency_key)`
+// without creating a second job.
+
+/// Kind of structured chat action. Each maps to an existing canonical
+/// service and capability:
+///
+/// - `AgentTask` → `JobKind::Subagent` via `JobSubmissionService`,
+///   requires `agent.delegate`.
+/// - `ReviewRequest` → `JobKind::Subagent` (reviewer) via
+///   `JobSubmissionService`, requires `agent.delegate`.
+/// - `JobSubmit` → generic `JobSubmitDto` via `JobSubmissionService`
+///   (ToolProgram excluded), requires `job.submit`.
+/// - `JobReference` → link an existing job id (no new execution),
+///   requires `session.read` to observe the job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatActionKind {
+    AgentTask,
+    ReviewRequest,
+    JobSubmit,
+    JobReference,
+}
+
+impl ChatActionKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentTask => "agent_task",
+            Self::ReviewRequest => "review_request",
+            Self::JobSubmit => "job_submit",
+            Self::JobReference => "job_reference",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "agent_task" => Some(Self::AgentTask),
+            "review_request" => Some(Self::ReviewRequest),
+            "job_submit" => Some(Self::JobSubmit),
+            "job_reference" => Some(Self::JobReference),
+            _ => None,
+        }
+    }
+
+    fn to_dto(self) -> codegg_protocol::core::ChatActionKindDto {
+        match self {
+            Self::AgentTask => codegg_protocol::core::ChatActionKindDto::AgentTask,
+            Self::ReviewRequest => codegg_protocol::core::ChatActionKindDto::ReviewRequest,
+            Self::JobSubmit => codegg_protocol::core::ChatActionKindDto::JobSubmit,
+            Self::JobReference => codegg_protocol::core::ChatActionKindDto::JobReference,
+        }
+    }
+
+    /// Ordinary semantic capability required in addition to
+    /// `project.chat` for this kind.
+    pub const fn required_capability(self) -> &'static str {
+        match self {
+            Self::AgentTask | Self::ReviewRequest => "agent.delegate",
+            Self::JobSubmit => "job.submit",
+            Self::JobReference => "session.read",
+        }
+    }
+}
+
+/// One durable structured chat action: reference/status projection only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatAction {
+    pub id: String,
+    pub channel_id: ChannelId,
+    pub message_id: crate::identity::ChatMessageId,
+    pub project_id: ProjectId,
+    pub actor: PrincipalId,
+    pub kind: ChatActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+impl ChatAction {
+    pub fn to_dto(&self) -> codegg_protocol::core::ChatActionDto {
+        codegg_protocol::core::ChatActionDto {
+            action_id: self.id.clone(),
+            channel_id: self.channel_id.as_str().to_owned(),
+            message_id: self.message_id.as_str().to_owned(),
+            project_id: self.project_id.as_str().to_owned(),
+            actor: self.actor.as_str().to_owned(),
+            kind: self.kind.to_dto(),
+            title: self.title.clone(),
+            job_id: self.job_id.clone(),
+            status: self.status.clone(),
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
+/// Outcome of an action submit: the durable projection plus whether a
+/// retry converged on an already-stored row (no second job created).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionOutcome {
+    pub action: ChatAction,
+    pub duplicate: bool,
+}
+
+/// Canonical status strings for [`ChatAction::status`]. Chat never owns
+/// execution state: `submitted` means a canonical job was created via
+/// the scheduler boundary; `referenced` means an existing job was
+/// linked (no new execution). Live job progress is observed through
+/// the canonical `JobGet` path, not duplicated here.
+pub const CHAT_ACTION_STATUS_SUBMITTED: &str = "submitted";
+pub const CHAT_ACTION_STATUS_REFERENCED: &str = "referenced";
+
 // ── Input validation and redaction ─────────────────────────────────────
 
 /// Lowercase substrings that mark surrounding text as credential-like.
@@ -604,7 +761,7 @@ fn validate_channel_name(
     Ok(trimmed.to_owned())
 }
 
-fn validate_idempotency_key(
+pub fn validate_idempotency_key(
     config: &CollaborationConfig,
     key: &str,
 ) -> Result<String, CollaborationError> {
@@ -624,6 +781,14 @@ fn validate_idempotency_key(
         )
     })?;
     Ok(key.to_owned())
+}
+
+/// Validate an action idempotency key against the default bounds.
+/// Daemon-side fast path for malformed retries before touching durable
+/// state; full validation (with the live config) happens in
+/// [`CollaborationService::insert_action`].
+pub fn validate_idempotency_key_for_action(key: &str) -> Result<String, CollaborationError> {
+    validate_idempotency_key(&CollaborationConfig::default(), key)
 }
 
 fn validate_author_agent(
@@ -754,6 +919,195 @@ pub fn audit_metadata_for_message(message: &ChatMessage) -> BTreeMap<String, Str
     metadata
 }
 
+// ── M003: action input validation ────────────────────────────────────
+
+/// Validate an optional action title: bounded, no NUL/control, no
+/// credential-like material (fail closed, no side effect). Returns the
+/// trimmed title or `None` when absent/blank.
+pub fn validate_action_title(
+    config: &CollaborationConfig,
+    title: Option<&str>,
+) -> Result<Option<String>, CollaborationError> {
+    let Some(raw) = title else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.len() > config.max_action_title_bytes {
+        return Err(CollaborationError::invalid(
+            "action_title",
+            format!(
+                "action title exceeds {} bytes",
+                config.max_action_title_bytes
+            ),
+        ));
+    }
+    if trimmed.bytes().any(|b| b == 0)
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    {
+        return Err(CollaborationError::invalid(
+            "action_title",
+            "action title contains an unsupported character",
+        ));
+    }
+    let (_, secret) = redact_secrets_in_body(trimmed);
+    if secret {
+        return Err(CollaborationError::invalid(
+            "action_title",
+            "action title must not carry credential-like material",
+        ));
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// Validate an agent-task prompt: bounded inert text, no secrets.
+/// Prompts are task descriptions, not chat bodies: secrets are
+/// rejected (not redacted) so a redacted prompt never silently
+/// changes the work that will run.
+pub fn validate_action_prompt(
+    config: &CollaborationConfig,
+    prompt: &str,
+) -> Result<String, CollaborationError> {
+    let trimmed = prompt.trim();
+    if trimmed.is_empty() {
+        return Err(CollaborationError::invalid(
+            "action_prompt",
+            "action prompt must not be empty",
+        ));
+    }
+    if trimmed.len() > config.max_action_prompt_bytes {
+        return Err(CollaborationError::invalid(
+            "action_prompt",
+            format!(
+                "action prompt exceeds {} bytes",
+                config.max_action_prompt_bytes
+            ),
+        ));
+    }
+    if trimmed.bytes().any(|b| b == 0)
+        || trimmed
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
+    {
+        return Err(CollaborationError::invalid(
+            "action_prompt",
+            "action prompt contains an unsupported character",
+        ));
+    }
+    let (_, secret) = redact_secrets_in_body(trimmed);
+    if secret {
+        return Err(CollaborationError::invalid(
+            "action_prompt",
+            "action prompt must not carry credential-like material",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Validate an agent name for an action: bounded identity, no secrets.
+pub fn validate_action_agent(
+    config: &CollaborationConfig,
+    agent: &str,
+) -> Result<String, CollaborationError> {
+    let trimmed = agent.trim();
+    if trimmed.is_empty() || trimmed.len() > config.max_action_agent_len {
+        return Err(CollaborationError::invalid(
+            "action_agent",
+            format!(
+                "action agent must be 1..={} bytes",
+                config.max_action_agent_len
+            ),
+        ));
+    }
+    crate::identity::validate_identity("action_agent", trimmed).map_err(|_| {
+        CollaborationError::invalid(
+            "action_agent",
+            "action agent contains an unsupported character",
+        )
+    })?;
+    let (_, secret) = redact_secrets_in_body(trimmed);
+    if secret {
+        return Err(CollaborationError::invalid(
+            "action_agent",
+            "action agent must not carry credential-like material",
+        ));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Validate a workspace locator for an action: bounded identity, no secrets.
+pub fn validate_action_workspace(workspace_id: &str) -> Result<String, CollaborationError> {
+    let trimmed = workspace_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return Err(CollaborationError::invalid(
+            "action_workspace",
+            "action workspace must be 1..=128 bytes",
+        ));
+    }
+    crate::identity::validate_identity("action_workspace", trimmed).map_err(|_| {
+        CollaborationError::invalid(
+            "action_workspace",
+            "action workspace contains an unsupported character",
+        )
+    })?;
+    Ok(trimmed.to_owned())
+}
+
+/// Validate a job locator for a reference action.
+pub fn validate_action_job_id(job_id: &str) -> Result<String, CollaborationError> {
+    let trimmed = job_id.trim();
+    if trimmed.is_empty() || trimmed.len() > 128 {
+        return Err(CollaborationError::invalid(
+            "action_job",
+            "action job id must be 1..=128 bytes",
+        ));
+    }
+    crate::identity::validate_identity("action_job", trimmed).map_err(|_| {
+        CollaborationError::invalid(
+            "action_job",
+            "action job id contains an unsupported character",
+        )
+    })?;
+    Ok(trimmed.to_owned())
+}
+
+/// Structural audit metadata for one chat action.
+///
+/// Titles/prompts never enter audit metadata: only channel, message,
+/// action, project, kind, job, actor, and status locators plus the
+/// decision outcome. Bodies stay in the canonical job store; chat
+/// storage remains separate from the audit store.
+pub fn audit_metadata_for_action(action: &ChatAction) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert(
+        "chat.channel".to_owned(),
+        action.channel_id.as_str().to_owned(),
+    );
+    metadata.insert(
+        "chat.message".to_owned(),
+        action.message_id.as_str().to_owned(),
+    );
+    metadata.insert("chat.action".to_owned(), action.id.clone());
+    metadata.insert(
+        "chat.action_kind".to_owned(),
+        action.kind.as_str().to_owned(),
+    );
+    metadata.insert(
+        "chat.project".to_owned(),
+        action.project_id.as_str().to_owned(),
+    );
+    if let Some(job) = action.job_id.as_deref() {
+        metadata.insert("job.id".to_owned(), job.to_owned());
+    }
+    metadata.insert("chat.status".to_owned(), action.status.clone());
+    metadata.insert("decision.outcome".to_owned(), "allow".to_owned());
+    metadata
+}
+
 // ── Durable tables ───────────────────────────────────────────────────
 
 /// Canonical `CREATE TABLE` statements for the chat domain.
@@ -820,9 +1174,43 @@ pub const CHAT_SCHEMA_STATEMENTS: &[&str] = &[
     "CREATE INDEX IF NOT EXISTS idx_chat_read_channel ON chat_read_marker(channel_id)",
 ];
 
+/// Canonical `CREATE TABLE` statements for structured chat actions
+/// (M003).
+///
+/// The session-schema migration (v56) executes these same statements;
+/// this helper keeps tests and pool-less guards on the identical shape.
+/// Chat stores only the reference/status projection; the job is
+/// canonical durable state elsewhere. `(channel_id, idempotency_key)`
+/// is unique so retries converge without a second job.
+pub const CHAT_ACTION_SCHEMA_STATEMENTS: &[&str] = &[
+    r#"
+    CREATE TABLE IF NOT EXISTS chat_action (
+        action_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        title TEXT,
+        job_id TEXT,
+        status TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(channel_id, idempotency_key)
+    )
+    "#,
+    "CREATE INDEX IF NOT EXISTS idx_chat_action_channel ON chat_action(channel_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_action_message ON chat_action(message_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_action_project ON chat_action(project_id)",
+];
+
 /// Ensure the chat tables exist. Idempotent.
 pub async fn ensure_collaboration_tables(pool: &SqlitePool) -> Result<(), CollaborationError> {
-    for statement in CHAT_SCHEMA_STATEMENTS {
+    for statement in CHAT_SCHEMA_STATEMENTS
+        .iter()
+        .chain(CHAT_ACTION_SCHEMA_STATEMENTS.iter())
+    {
         sqlx::query(statement)
             .execute(pool)
             .await
@@ -870,6 +1258,24 @@ type MessageRow = (
     Option<String>,
     i64,
     Option<i64>,
+);
+
+/// One decoded `chat_action` row: `(action_id, channel_id, message_id,
+/// project_id, actor, kind, title, job_id, status, idempotency_key,
+/// created_at, updated_at)`.
+type ActionRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -1971,6 +2377,253 @@ impl CollaborationService {
     pub fn clear_composing(&self) {
         self.composing.clear();
     }
+
+    // ── M003: structured chat actions ────────────────────────────────
+
+    fn row_to_action(row: ActionRow) -> Result<ChatAction, CollaborationError> {
+        let (
+            action_id,
+            channel_id,
+            message_id,
+            project_id,
+            actor,
+            kind_raw,
+            title,
+            job_id,
+            status,
+            idempotency_key,
+            created_at,
+            updated_at,
+        ) = row;
+        let bad = |field: &'static str| {
+            CollaborationError::invalid(field, "stored action row failed to parse")
+        };
+        let kind = ChatActionKind::parse(&kind_raw).ok_or(bad("action_kind"))?;
+        if status != CHAT_ACTION_STATUS_SUBMITTED && status != CHAT_ACTION_STATUS_REFERENCED {
+            return Err(bad("action_status"));
+        }
+        Ok(ChatAction {
+            id: action_id,
+            channel_id: ChannelId::parse(&channel_id).map_err(|_| bad("channel_id"))?,
+            message_id: crate::identity::ChatMessageId::parse(&message_id)
+                .map_err(|_| bad("message_id"))?,
+            project_id: ProjectId::parse(&project_id).map_err(|_| bad("project_id"))?,
+            actor: PrincipalId::parse(&actor).map_err(|_| bad("actor"))?,
+            kind,
+            title,
+            job_id,
+            status,
+            idempotency_key: Some(idempotency_key),
+            created_at_ms: created_at,
+            updated_at_ms: updated_at,
+        })
+    }
+
+    /// Fetch one action by channel-scoped idempotency key, if present.
+    /// Used for retry convergence: a duplicate key returns the stored
+    /// projection without creating a second job.
+    pub async fn find_action_by_idempotency(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+        idempotency_key: &str,
+    ) -> Result<Option<ChatAction>, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        let row: Option<ActionRow> = sqlx::query_as(
+            "SELECT action_id, channel_id, message_id, project_id, actor, kind, title, \
+                    job_id, status, idempotency_key, created_at, updated_at \
+             FROM chat_action WHERE channel_id = ? AND idempotency_key = ?",
+        )
+        .bind(channel_id.as_str())
+        .bind(idempotency_key)
+        .fetch_optional(&pool)
+        .await?;
+        row.map(Self::row_to_action).transpose()
+    }
+
+    /// Insert one action projection. The `(channel_id, idempotency_key)`
+    /// unique index is the retry backstop: concurrent inserts with the
+    /// same key converge via the stored row (callers map the unique
+    /// violation to a re-read, never to a second job).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_action(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+        message_id: &crate::identity::ChatMessageId,
+        actor: &PrincipalId,
+        kind: ChatActionKind,
+        title: Option<String>,
+        job_id: Option<String>,
+        status: &str,
+        idempotency_key: &str,
+        now_ms: i64,
+    ) -> Result<ChatAction, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        // The linked message must exist in the same channel; cross-channel
+        // linkage is rejected, never coerced. This also enforces the
+        // message/project match: the channel row already binds the
+        // project, so a message from another project cannot be named here.
+        let _linked = self
+            .get_message(project, channel_id, message_id)
+            .await
+            .map_err(|_| {
+                CollaborationError::ProjectMismatch(
+                    "action message does not belong to the named channel/project".to_owned(),
+                )
+            })?;
+        let clean_title = validate_action_title(&self.config, title.as_deref())?;
+        let clean_key = validate_idempotency_key(&self.config, idempotency_key)?;
+        if status != CHAT_ACTION_STATUS_SUBMITTED && status != CHAT_ACTION_STATUS_REFERENCED {
+            return Err(CollaborationError::invalid(
+                "action_status",
+                "action status must be submitted or referenced",
+            ));
+        }
+        let action_id = uuid::Uuid::new_v4().to_string();
+        let insert = sqlx::query(
+            "INSERT INTO chat_action \
+             (action_id, channel_id, message_id, project_id, actor, kind, title, \
+              job_id, status, idempotency_key, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&action_id)
+        .bind(channel_id.as_str())
+        .bind(message_id.as_str())
+        .bind(project.as_str())
+        .bind(actor.as_str())
+        .bind(kind.as_str())
+        .bind(clean_title.clone())
+        .bind(job_id.clone())
+        .bind(status)
+        .bind(&clean_key)
+        .bind(now_ms)
+        .bind(now_ms)
+        .execute(&pool)
+        .await;
+        match insert {
+            Ok(_) => Ok(ChatAction {
+                id: action_id,
+                channel_id: channel_id.clone(),
+                message_id: message_id.clone(),
+                project_id: project.clone(),
+                actor: actor.clone(),
+                kind,
+                title: clean_title,
+                job_id,
+                status: status.to_owned(),
+                idempotency_key: Some(clean_key),
+                created_at_ms: now_ms,
+                updated_at_ms: now_ms,
+            }),
+            Err(error)
+                if error
+                    .as_database_error()
+                    .is_some_and(|db| db.is_unique_violation()) =>
+            {
+                Err(CollaborationError::ActionConflict(clean_key))
+            }
+            Err(error) => Err(CollaborationError::from(error)),
+        }
+    }
+
+    /// Fetch one action in channel scope, asserting channel/project binding.
+    pub async fn get_action(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+        action_id: &str,
+    ) -> Result<ChatAction, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        if action_id.is_empty() || action_id.len() > 128 {
+            return Err(CollaborationError::invalid(
+                "action_id",
+                "action id must be 1..=128 bytes",
+            ));
+        }
+        let row: Option<ActionRow> = sqlx::query_as(
+            "SELECT action_id, channel_id, message_id, project_id, actor, kind, title, \
+                    job_id, status, idempotency_key, created_at, updated_at \
+             FROM chat_action WHERE action_id = ? AND channel_id = ?",
+        )
+        .bind(action_id)
+        .bind(channel_id.as_str())
+        .fetch_optional(&pool)
+        .await?;
+        let Some(row) = row else {
+            return Err(CollaborationError::ActionNotFound(action_id.to_owned()));
+        };
+        let action = Self::row_to_action(row)?;
+        if action.project_id != *project {
+            return Err(CollaborationError::ActionNotFound(action_id.to_owned()));
+        }
+        Ok(action)
+    }
+
+    /// Bounded action listing for one channel, oldest first, optionally
+    /// filtered to one message.
+    pub async fn list_actions(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+        message_id: Option<&crate::identity::ChatMessageId>,
+        limit: Option<u32>,
+    ) -> Result<Vec<ChatAction>, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        let bound = self.config.clamp_action_page_limit(limit);
+        let rows: Vec<ActionRow> = if let Some(message) = message_id {
+            sqlx::query_as(
+                "SELECT action_id, channel_id, message_id, project_id, actor, kind, title, \
+                        job_id, status, idempotency_key, created_at, updated_at \
+                 FROM chat_action WHERE channel_id = ? AND message_id = ? \
+                 ORDER BY created_at ASC, action_id ASC LIMIT ?",
+            )
+            .bind(channel_id.as_str())
+            .bind(message.as_str())
+            .bind(i64::from(bound) + 1)
+            .fetch_all(&pool)
+            .await?
+        } else {
+            sqlx::query_as(
+                "SELECT action_id, channel_id, message_id, project_id, actor, kind, title, \
+                        job_id, status, idempotency_key, created_at, updated_at \
+                 FROM chat_action WHERE channel_id = ? \
+                 ORDER BY created_at ASC, action_id ASC LIMIT ?",
+            )
+            .bind(channel_id.as_str())
+            .bind(i64::from(bound) + 1)
+            .fetch_all(&pool)
+            .await?
+        };
+        let mut actions = Vec::with_capacity(rows.len().min(bound as usize));
+        for row in rows.into_iter().take(bound as usize) {
+            let action = Self::row_to_action(row)?;
+            if action.project_id != *project {
+                continue;
+            }
+            actions.push(action);
+        }
+        Ok(actions)
+    }
+
+    /// Count of durable actions in one channel (test/observability seam).
+    pub async fn action_count(
+        &self,
+        project: &ProjectId,
+        channel_id: &ChannelId,
+    ) -> Result<usize, CollaborationError> {
+        let pool = self.durable_pool()?;
+        self.channel_in_project(&pool, project, channel_id).await?;
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chat_action WHERE channel_id = ?")
+            .bind(channel_id.as_str())
+            .fetch_one(&pool)
+            .await?;
+        Ok(usize::try_from(count.0).unwrap_or(0))
+    }
 }
 
 #[cfg(test)]
@@ -2556,5 +3209,182 @@ mod tests {
         assert!(reopened
             .list_composing(&channel_id, Instant::now())
             .is_empty());
+    }
+
+    // ── M003: structured chat actions ────────────────────────────────
+
+    async fn action_message(
+        service: &CollaborationService,
+        project: &ProjectId,
+        channel: &ChannelId,
+        author: &PrincipalId,
+    ) -> ChatMessage {
+        service
+            .send_message(
+                project,
+                channel,
+                author,
+                None,
+                "linked note",
+                None,
+                None,
+                &[],
+                &[],
+                None,
+                1_001,
+            )
+            .await
+            .expect("send message")
+            .message
+    }
+
+    #[test]
+    fn action_kinds_map_to_capabilities_closed() {
+        assert_eq!(
+            ChatActionKind::AgentTask.required_capability(),
+            "agent.delegate"
+        );
+        assert_eq!(
+            ChatActionKind::ReviewRequest.required_capability(),
+            "agent.delegate"
+        );
+        assert_eq!(
+            ChatActionKind::JobSubmit.required_capability(),
+            "job.submit"
+        );
+        assert_eq!(
+            ChatActionKind::JobReference.required_capability(),
+            "session.read"
+        );
+        for kind in [
+            ChatActionKind::AgentTask,
+            ChatActionKind::ReviewRequest,
+            ChatActionKind::JobSubmit,
+            ChatActionKind::JobReference,
+        ] {
+            assert_eq!(ChatActionKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(ChatActionKind::parse("shell_exec"), None);
+    }
+
+    #[test]
+    fn action_titles_and_prompts_reject_secrets() {
+        let config = CollaborationConfig::default();
+        assert!(validate_action_title(&config, Some("review the diff")).is_ok());
+        assert!(validate_action_title(&config, None).unwrap().is_none());
+        assert!(validate_action_title(&config, Some("  "))
+            .unwrap()
+            .is_none());
+        assert!(validate_action_title(&config, Some("note api_key=hunter2")).is_err());
+        assert!(validate_action_prompt(&config, "review this change").is_ok());
+        assert!(validate_action_prompt(&config, "deploy token=abc123-secret").is_err());
+        assert!(validate_action_prompt(&config, "").is_err());
+        assert!(validate_action_agent(&config, "reviewer").is_ok());
+        assert!(validate_action_agent(&config, "").is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn action_insert_finds_lists_and_rejects_mismatch() {
+        let pool = test_pool().await;
+        let service = service_with_pool(pool);
+        let (project, author, _) = ids();
+        let channel = service
+            .ensure_default_channel(&project, &author, 1_000)
+            .await
+            .unwrap();
+        let message = action_message(&service, &project, &channel.id, &author).await;
+
+        let stored = service
+            .insert_action(
+                &project,
+                &channel.id,
+                &message.id,
+                &author,
+                ChatActionKind::AgentTask,
+                Some("review".to_owned()),
+                Some("job-1".to_owned()),
+                CHAT_ACTION_STATUS_SUBMITTED,
+                "action-key-1",
+                2_000,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.kind, ChatActionKind::AgentTask);
+        assert_eq!(stored.status, CHAT_ACTION_STATUS_SUBMITTED);
+
+        // Idempotency lookup converges.
+        let found = service
+            .find_action_by_idempotency(&project, &channel.id, "action-key-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, stored.id);
+
+        // Duplicate insert with the same key conflicts (retry backstop).
+        let conflict = service
+            .insert_action(
+                &project,
+                &channel.id,
+                &message.id,
+                &author,
+                ChatActionKind::AgentTask,
+                None,
+                Some("job-2".to_owned()),
+                CHAT_ACTION_STATUS_SUBMITTED,
+                "action-key-1",
+                2_001,
+            )
+            .await;
+        assert!(matches!(
+            conflict,
+            Err(CollaborationError::ActionConflict(_))
+        ));
+
+        // Cross-channel linkage is a project mismatch, never coerced.
+        let other_channel = service
+            .ensure_channel_by_name(&project, &author, "other", 3_000)
+            .await
+            .unwrap();
+        let mismatch = service
+            .insert_action(
+                &project,
+                &other_channel.id,
+                &message.id,
+                &author,
+                ChatActionKind::JobReference,
+                None,
+                Some("job-1".to_owned()),
+                CHAT_ACTION_STATUS_REFERENCED,
+                "action-key-2",
+                3_001,
+            )
+            .await;
+        assert!(matches!(
+            mismatch,
+            Err(CollaborationError::ProjectMismatch(_))
+        ));
+
+        // Get and list project the stored reference without execution state.
+        let fetched = service
+            .get_action(&project, &channel.id, &stored.id)
+            .await
+            .unwrap();
+        assert_eq!(fetched.job_id.as_deref(), Some("job-1"));
+        let listed = service
+            .list_actions(&project, &channel.id, Some(&message.id), None)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        let audit = audit_metadata_for_action(&stored);
+        assert_eq!(
+            audit.get("chat.action").map(String::as_str),
+            Some(stored.id.as_str())
+        );
+        assert_eq!(
+            audit.get("chat.action_kind").map(String::as_str),
+            Some("agent_task")
+        );
+        // Prompts/titles never enter audit metadata.
+        assert!(!audit.values().any(|v| v.contains("review")));
     }
 }

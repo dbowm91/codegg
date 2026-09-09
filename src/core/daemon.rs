@@ -2209,6 +2209,8 @@ impl CoreDaemon {
         // Collaboration M001: single-project chat reads/writes deny as
         // not-found so unauthorized callers cannot infer project
         // existence, membership, channels, or message activity.
+        // M003 actions share the same gate so outsiders and viewers
+        // observe the identical shape.
         let chat_private = matches!(
             request,
             CoreRequest::ChatChannelEnsure { .. }
@@ -2222,6 +2224,9 @@ impl CoreDaemon {
                 | CoreRequest::ChatComposingSet { .. }
                 | CoreRequest::ChatComposingList { .. }
                 | CoreRequest::ChatSync { .. }
+                | CoreRequest::ChatActionSubmit { .. }
+                | CoreRequest::ChatActionGet { .. }
+                | CoreRequest::ChatActionList { .. }
         );
         if (matches!(
             request,
@@ -2390,7 +2395,8 @@ impl CoreDaemon {
 
     /// Collaboration M001: `channel_id` locator carried by one
     /// channel-scoped chat request, if any. Capability creation and
-    /// channel listing carry a direct `project_id` instead.
+    /// channel listing carry a direct `project_id` instead. M003
+    /// action requests are channel-scoped the same way.
     fn chat_channel_id_for_request(request: &CoreRequest) -> Option<&str> {
         match request {
             CoreRequest::ChatHistory { channel_id, .. }
@@ -2401,7 +2407,10 @@ impl CoreDaemon {
             | CoreRequest::ChatReadGet { channel_id }
             | CoreRequest::ChatComposingSet { channel_id, .. }
             | CoreRequest::ChatComposingList { channel_id }
-            | CoreRequest::ChatSync { channel_id, .. } => Some(channel_id),
+            | CoreRequest::ChatSync { channel_id, .. }
+            | CoreRequest::ChatActionSubmit { channel_id, .. }
+            | CoreRequest::ChatActionGet { channel_id, .. }
+            | CoreRequest::ChatActionList { channel_id, .. } => Some(channel_id),
             _ => None,
         }
     }
@@ -2423,6 +2432,9 @@ impl CoreDaemon {
                 | CoreRequest::ChatComposingSet { .. }
                 | CoreRequest::ChatComposingList { .. }
                 | CoreRequest::ChatSync { .. }
+                | CoreRequest::ChatActionSubmit { .. }
+                | CoreRequest::ChatActionGet { .. }
+                | CoreRequest::ChatActionList { .. }
         )
     }
     /// Collaboration M001: resolve one channel locator to its
@@ -2469,11 +2481,17 @@ impl CoreDaemon {
     /// The M003 gate enforced `project.chat` before this runs. Bodies
     /// are inert text: this handler never parses commands, mentions, or
     /// references into execution. Principals come from transport
-    /// authority, never from the payload.
+    /// authority, never from the payload. M003 structured actions are
+    /// the sole execution seam: they check the ordinary semantic
+    /// capability for the kind and call the existing canonical
+    /// Task/AgentRun/Job services; free text never reaches this path.
     async fn handle_chat_request(
         &self,
+        request_id: &str,
         request: CoreRequest,
         trusted_client_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
     ) -> Result<CoreResponse, crate::error::AppError> {
         use codegg_core::collaboration::CollaborationError;
         let chat_error = |error: CollaborationError| CoreResponse::Error {
@@ -2928,6 +2946,79 @@ impl CoreDaemon {
                     Err(error) => Ok(chat_error(error)),
                 }
             }
+            CoreRequest::ChatActionSubmit {
+                channel_id,
+                message_id,
+                action,
+                idempotency_key,
+            } => {
+                // Boxed so the chat dispatch future stays small; the
+                // action path submits durable jobs and emits audit.
+                // execution-ownership: scheduler
+                return Box::pin(self.handle_chat_action_submit(
+                    request_id,
+                    channel_id.as_str(),
+                    message_id.as_str(),
+                    action,
+                    idempotency_key.as_str(),
+                    trusted_client_id,
+                    authority,
+                    authz_decision,
+                ))
+                .await;
+            }
+            CoreRequest::ChatActionGet {
+                channel_id,
+                action_id,
+            } => match self.resolve_chat_channel(channel_id.as_str()).await {
+                Ok((channel, project)) => {
+                    match self
+                        .collaboration
+                        .get_action(&project, &channel, action_id.as_str())
+                        .await
+                    {
+                        Ok(action) => Ok(CoreResponse::ChatAction {
+                            action: action.to_dto(),
+                            duplicate: false,
+                        }),
+                        Err(error) => Ok(chat_error(error)),
+                    }
+                }
+                Err(response) => Ok(*response),
+            },
+            CoreRequest::ChatActionList {
+                channel_id,
+                message_id,
+                limit,
+            } => match self.resolve_chat_channel(channel_id.as_str()).await {
+                Ok((channel, project)) => {
+                    let message = match message_id
+                        .as_deref()
+                        .map(codegg_core::identity::ChatMessageId::parse)
+                        .transpose()
+                    {
+                        Ok(target) => target,
+                        Err(error) => {
+                            return Ok(CoreResponse::Error {
+                                code: "chat_invalid_input".to_owned(),
+                                message: error.to_string(),
+                            });
+                        }
+                    };
+                    match self
+                        .collaboration
+                        .list_actions(&project, &channel, message.as_ref(), limit)
+                        .await
+                    {
+                        Ok(actions) => Ok(CoreResponse::ChatActionList {
+                            channel_id: channel.as_str().to_owned(),
+                            actions: actions.iter().map(|a| a.to_dto()).collect(),
+                        }),
+                        Err(error) => Ok(chat_error(error)),
+                    }
+                }
+                Err(response) => Ok(*response),
+            },
             other => Ok(CoreResponse::Error {
                 code: "chat_invalid_input".to_owned(),
                 message: format!(
@@ -2936,6 +3027,685 @@ impl CoreDaemon {
                 ),
             }),
         }
+    }
+
+    /// Collaboration M003: check the ordinary semantic capability for
+    /// one action kind on the owning project.
+    ///
+    /// The `project.chat` gate already passed. LocalOwner broad policy
+    /// passes everything; pool-less daemons pass (local-only); team
+    /// principals pass exactly when their membership carries the
+    /// capability. Returns `true` when the caller may proceed.
+    async fn action_capability_allows(
+        &self,
+        project: &codegg_core::identity::ProjectId,
+        principal: &codegg_core::transport_auth::AuthenticatedPrincipal,
+        capability: codegg_core::team::Capability,
+    ) -> bool {
+        use codegg_core::authorization::is_local_owner_broad;
+        if is_local_owner_broad(principal) {
+            return true;
+        }
+        let Some(pool) = self.pool.clone() else {
+            return true;
+        };
+        let team = codegg_core::team::TeamStore::new(pool);
+        match team.get_membership(project, principal.principal_id()).await {
+            Ok(Some(membership)) => membership.effective_capabilities().has(capability),
+            _ => false,
+        }
+    }
+
+    /// Collaboration M003: owning project of one session row, if
+    /// resolvable. Used to enforce message/job project isolation for
+    /// actions. Returns `None` for unknown sessions so callers fail
+    /// closed without leaking existence.
+    async fn action_session_project(
+        &self,
+        session_id: &str,
+    ) -> Option<codegg_core::identity::ProjectId> {
+        let pool = self.pool.clone()?;
+        self.session_project(&pool, session_id).await
+    }
+
+    /// Collaboration M003: structured action dispatcher.
+    ///
+    /// Explicit typed operation only; free text never reaches here.
+    /// Checks `project.chat` (gate, already passed) plus the ordinary
+    /// semantic capability for the kind, validates message/channel/
+    /// project linkage, converges retries on `(channel, key)` without
+    /// a second job, calls the existing canonical Job services, stores
+    /// only the reference/status projection, and emits audit causation
+    /// plus a liveness event. Denials create no job and no action row.
+    #[allow(clippy::too_many_arguments)]
+    async fn handle_chat_action_submit(
+        &self,
+        request_id: &str,
+        channel_id: &str,
+        message_id: &str,
+        action: codegg_protocol::core::ChatActionSubmitDto,
+        idempotency_key: &str,
+        trusted_client_id: &str,
+        authority: &codegg_core::transport_auth::RequestAuthorityContext,
+        authz_decision: &codegg_core::authorization::AuthorizationDecision,
+    ) -> Result<CoreResponse, crate::error::AppError> {
+        use codegg_core::collaboration::{
+            CollaborationError, CHAT_ACTION_STATUS_REFERENCED, CHAT_ACTION_STATUS_SUBMITTED,
+        };
+        let chat_error = |error: CollaborationError| CoreResponse::Error {
+            code: error.code().to_owned(),
+            message: error.to_string(),
+        };
+        // Resolve channel -> project server-side; unknown channels fail
+        // closed without leaking existence.
+        let (channel, project) = match self.resolve_chat_channel(channel_id).await {
+            Ok(pair) => pair,
+            Err(response) => return Ok(*response),
+        };
+        let message = match codegg_core::identity::ChatMessageId::parse(message_id) {
+            Ok(id) => id,
+            Err(error) => {
+                return Ok(CoreResponse::Error {
+                    code: "chat_invalid_input".to_owned(),
+                    message: error.to_string(),
+                });
+            }
+        };
+        // Validate the idempotency key shape early so malformed retries
+        // fail without touching durable state.
+        if let Err(error) =
+            codegg_core::collaboration::validate_idempotency_key_for_action(idempotency_key)
+        {
+            return Ok(chat_error(error));
+        }
+        // Retry convergence: a duplicate key returns the stored
+        // projection without creating a second job and without a
+        // second audit/event. A key reused for a different
+        // message/kind fails as a conflict (never coerced).
+        if let Ok(Some(existing)) = self
+            .collaboration
+            .find_action_by_idempotency(&project, &channel, idempotency_key)
+            .await
+        {
+            let requested_kind = match &action {
+                codegg_protocol::core::ChatActionSubmitDto::AgentTask { .. } => {
+                    codegg_core::collaboration::ChatActionKind::AgentTask
+                }
+                codegg_protocol::core::ChatActionSubmitDto::ReviewRequest { .. } => {
+                    codegg_core::collaboration::ChatActionKind::ReviewRequest
+                }
+                codegg_protocol::core::ChatActionSubmitDto::JobSubmit { .. } => {
+                    codegg_core::collaboration::ChatActionKind::JobSubmit
+                }
+                codegg_protocol::core::ChatActionSubmitDto::JobReference { .. } => {
+                    codegg_core::collaboration::ChatActionKind::JobReference
+                }
+            };
+            if existing.message_id != message || existing.kind != requested_kind {
+                return Ok(chat_error(CollaborationError::ActionConflict(
+                    idempotency_key.to_owned(),
+                )));
+            }
+            return Ok(CoreResponse::ChatAction {
+                action: existing.to_dto(),
+                duplicate: true,
+            });
+        }
+        // The linked message must exist in the same channel; otherwise
+        // this is a message/project mismatch (never coerced, never
+        // executed).
+        if let Err(error) = self
+            .collaboration
+            .get_message(&project, &channel, &message)
+            .await
+        {
+            let _ = error;
+            return Ok(chat_error(CollaborationError::ProjectMismatch(
+                "action message does not belong to the named channel/project".to_owned(),
+            )));
+        }
+        let principal = authority.principal().principal_id().clone();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // Dispatch per kind: validate payload, check the ordinary
+        // semantic capability, then call the existing canonical service.
+        // No branch parses free text; every branch requires an explicit
+        // typed payload.
+        enum PendingAction {
+            SubmitJob {
+                kind: codegg_core::collaboration::ChatActionKind,
+                title: Option<String>,
+                new_job: Box<codegg_core::jobs::NewJob>,
+                session_id: Option<String>,
+            },
+            ReferenceJob {
+                title: Option<String>,
+                job_id: String,
+            },
+        }
+        let pending: PendingAction = match action {
+            codegg_protocol::core::ChatActionSubmitDto::AgentTask {
+                workspace_id,
+                agent,
+                prompt,
+                session_id,
+                title,
+            } => {
+                if !self
+                    .action_capability_allows(
+                        &project,
+                        authority.principal(),
+                        codegg_core::team::Capability::AgentDelegate,
+                    )
+                    .await
+                {
+                    return Ok(chat_error(CollaborationError::ActionDenied(
+                        "agent_task requires agent.delegate".to_owned(),
+                    )));
+                }
+                let config = self.collaboration.config().clone();
+                let workspace =
+                    match codegg_core::collaboration::validate_action_workspace(&workspace_id) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(chat_error(error)),
+                    };
+                let agent = match codegg_core::collaboration::validate_action_agent(&config, &agent)
+                {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let prompt =
+                    match codegg_core::collaboration::validate_action_prompt(&config, &prompt) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(chat_error(error)),
+                    };
+                let title = match codegg_core::collaboration::validate_action_title(
+                    &config,
+                    title.as_deref(),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let session = match session_id.as_deref() {
+                    Some(raw) => {
+                        let trimmed = raw.trim();
+                        if trimmed.is_empty() || trimmed.len() > 128 {
+                            return Ok(chat_error(CollaborationError::invalid(
+                                "action_session",
+                                "action session must be 1..=128 bytes",
+                            )));
+                        }
+                        match self.action_session_project(trimmed).await {
+                            Some(owner) if owner == project => Some(trimmed.to_owned()),
+                            _ => {
+                                return Ok(chat_error(CollaborationError::ProjectMismatch(
+                                    "action session does not belong to the named project"
+                                        .to_owned(),
+                                )));
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                let workspace_id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace);
+                let new_job = codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: session.clone(),
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Subagent,
+                    source: codegg_core::jobs::JobSource::AgentDelegated,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Subagent {
+                        prompt,
+                        agent,
+                        model: None,
+                        parent_id: session.clone(),
+                        denied_tools: Vec::new(),
+                        allowed_paths: Vec::new(),
+                        max_tool_calls: None,
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Subagent,
+                    ),
+                    timeout: None,
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                };
+                PendingAction::SubmitJob {
+                    kind: codegg_core::collaboration::ChatActionKind::AgentTask,
+                    title,
+                    new_job: Box::new(new_job),
+                    session_id: session,
+                }
+            }
+            codegg_protocol::core::ChatActionSubmitDto::ReviewRequest {
+                workspace_id,
+                agent,
+                prompt,
+                session_id,
+                title,
+            } => {
+                if !self
+                    .action_capability_allows(
+                        &project,
+                        authority.principal(),
+                        codegg_core::team::Capability::AgentDelegate,
+                    )
+                    .await
+                {
+                    return Ok(chat_error(CollaborationError::ActionDenied(
+                        "review_request requires agent.delegate".to_owned(),
+                    )));
+                }
+                let config = self.collaboration.config().clone();
+                let workspace =
+                    match codegg_core::collaboration::validate_action_workspace(&workspace_id) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(chat_error(error)),
+                    };
+                let agent = match codegg_core::collaboration::validate_action_agent(&config, &agent)
+                {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let prompt =
+                    match codegg_core::collaboration::validate_action_prompt(&config, &prompt) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(chat_error(error)),
+                    };
+                let title = match codegg_core::collaboration::validate_action_title(
+                    &config,
+                    title.as_deref(),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let session = match session_id.as_deref() {
+                    Some(raw) => {
+                        let trimmed = raw.trim();
+                        if trimmed.is_empty() || trimmed.len() > 128 {
+                            return Ok(chat_error(CollaborationError::invalid(
+                                "action_session",
+                                "action session must be 1..=128 bytes",
+                            )));
+                        }
+                        match self.action_session_project(trimmed).await {
+                            Some(owner) if owner == project => Some(trimmed.to_owned()),
+                            _ => {
+                                return Ok(chat_error(CollaborationError::ProjectMismatch(
+                                    "action session does not belong to the named project"
+                                        .to_owned(),
+                                )));
+                            }
+                        }
+                    }
+                    None => None,
+                };
+                let workspace_id = codegg_core::workspace::WorkspaceId::new_unchecked(workspace);
+                let new_job = codegg_core::jobs::NewJob {
+                    workspace_id,
+                    session_id: session.clone(),
+                    turn_id: None,
+                    kind: codegg_core::jobs::JobKind::Subagent,
+                    source: codegg_core::jobs::JobSource::AgentDelegated,
+                    priority: codegg_core::jobs::JobPriority::Interactive,
+                    payload: codegg_core::jobs::JobPayload::Subagent {
+                        prompt,
+                        agent,
+                        model: None,
+                        parent_id: session.clone(),
+                        denied_tools: Vec::new(),
+                        allowed_paths: Vec::new(),
+                        max_tool_calls: None,
+                    },
+                    resource_request: codegg_core::jobs::ResourceRequest::for_kind(
+                        codegg_core::jobs::JobKind::Subagent,
+                    ),
+                    timeout: None,
+                    retry_policy: codegg_core::jobs::RetryPolicy::no_retry(),
+                    idempotency: codegg_core::jobs::IdempotencyClass::NonIdempotent,
+                    not_before: None,
+                    deadline: None,
+                    schedule_id: None,
+                    depends_on: Vec::new(),
+                    parent_job_id: None,
+                    parent_attempt_id: None,
+                    parent_call_id: None,
+                    parent_program_id: None,
+                    parent_instruction_sequence: None,
+                    relation_kind: None,
+                };
+                PendingAction::SubmitJob {
+                    kind: codegg_core::collaboration::ChatActionKind::ReviewRequest,
+                    title,
+                    new_job: Box::new(new_job),
+                    session_id: session,
+                }
+            }
+            codegg_protocol::core::ChatActionSubmitDto::JobSubmit { spec, title } => {
+                if !self
+                    .action_capability_allows(
+                        &project,
+                        authority.principal(),
+                        codegg_core::team::Capability::JobSubmit,
+                    )
+                    .await
+                {
+                    return Ok(chat_error(CollaborationError::ActionDenied(
+                        "job_submit requires job.submit".to_owned(),
+                    )));
+                }
+                let config = self.collaboration.config().clone();
+                let title = match codegg_core::collaboration::validate_action_title(
+                    &config,
+                    title.as_deref(),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let new_job = match codegg_core::protocol_conversions::job_submit_from_dto(*spec) {
+                    Ok(job) => job,
+                    Err(message) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message,
+                        });
+                    }
+                };
+                if new_job.kind == codegg_core::jobs::JobKind::ToolProgram {
+                    return Ok(CoreResponse::Error {
+                        code: "chat_invalid_input".to_owned(),
+                        message: "tool_program jobs must be submitted through the authorized tool_program invocation boundary".to_owned(),
+                    });
+                }
+                if let Some(session) = new_job.session_id.clone() {
+                    match self.action_session_project(&session).await {
+                        Some(owner) if owner == project => {}
+                        _ => {
+                            return Ok(chat_error(CollaborationError::ProjectMismatch(
+                                "action job session does not belong to the named project"
+                                    .to_owned(),
+                            )));
+                        }
+                    }
+                }
+                // Chat idempotency owns the retry: the caller-supplied
+                // submission key (if any) is ignored so duplicate chat
+                // retries converge on the chat key.
+                let session_id = new_job.session_id.clone();
+                PendingAction::SubmitJob {
+                    kind: codegg_core::collaboration::ChatActionKind::JobSubmit,
+                    title,
+                    new_job: Box::new(new_job),
+                    session_id,
+                }
+            }
+            codegg_protocol::core::ChatActionSubmitDto::JobReference { job_id, title } => {
+                if !self
+                    .action_capability_allows(
+                        &project,
+                        authority.principal(),
+                        codegg_core::team::Capability::SessionRead,
+                    )
+                    .await
+                {
+                    return Ok(chat_error(CollaborationError::ActionDenied(
+                        "job_reference requires session.read".to_owned(),
+                    )));
+                }
+                let config = self.collaboration.config().clone();
+                let title = match codegg_core::collaboration::validate_action_title(
+                    &config,
+                    title.as_deref(),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                let job = match codegg_core::collaboration::validate_action_job_id(&job_id) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(chat_error(error)),
+                };
+                PendingAction::ReferenceJob { title, job_id: job }
+            }
+        };
+        // Execute the pending action against the canonical owners.
+        // No chat-owned execution exists: submits go through the
+        // daemon-owned `JobSubmissionService` boundary; references
+        // only read the canonical `JobStore`.
+        let (kind, title, job_id, status, session_id) = match pending {
+            PendingAction::SubmitJob {
+                kind,
+                title,
+                new_job,
+                session_id,
+            } => {
+                let Some(submission) = self.deps.submission.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "scheduler_unavailable".to_owned(),
+                        message: "daemon has no job submission service".to_owned(),
+                    });
+                };
+                let submission_key =
+                    format!("chat-action:{}:{}", channel.as_str(), idempotency_key);
+                let submission_key = match crate::scheduler::SubmissionKey::new(submission_key) {
+                    Ok(key) => Some(key),
+                    Err(_) => {
+                        return Ok(CoreResponse::Error {
+                            code: "chat_invalid_input".to_owned(),
+                            message: "action idempotency key is too long for job submission"
+                                .to_owned(),
+                        });
+                    }
+                };
+                let submitted = match submission.submit(submission_key, *new_job).await {
+                    Ok(submitted) => submitted,
+                    Err(error) => {
+                        let message = error.to_string();
+                        if message.contains("Submission key was reused")
+                            || message.contains("submission key was reused")
+                            || message.contains("SubmissionKeyConflict")
+                            || matches!(
+                                error,
+                                crate::scheduler::JobSubmissionError::SubmissionKeyConflict
+                            )
+                        {
+                            return Ok(chat_error(CollaborationError::ActionConflict(
+                                idempotency_key.to_owned(),
+                            )));
+                        }
+                        return Ok(CoreResponse::Error {
+                            code: "chat_action_submit_failed".to_owned(),
+                            message,
+                        });
+                    }
+                };
+                let job_id = submitted.job_id.as_str().to_owned();
+                // Origin attribution for the canonical job, mirroring
+                // the `JobSubmit` protocol path.
+                self.record_origin_with_decision(authority, authz_decision, "job", &job_id)
+                    .await;
+                (
+                    kind,
+                    title,
+                    Some(job_id),
+                    CHAT_ACTION_STATUS_SUBMITTED.to_owned(),
+                    session_id,
+                )
+            }
+            PendingAction::ReferenceJob { title, job_id } => {
+                let lookup = codegg_core::jobs::JobId::new_unchecked(job_id.clone());
+                let stored = match self.deps.job_store.get_job(&lookup).await {
+                    Ok(record) => record,
+                    Err(error) => {
+                        return Ok(chat_error(CollaborationError::Storage(
+                            codegg_core::error::StorageError::Database(error.to_string()),
+                        )));
+                    }
+                };
+                let Some(record) = stored else {
+                    return Ok(chat_error(CollaborationError::ActionNotFound(job_id)));
+                };
+                // Per-object project recheck when the job carries a
+                // session: cross-project references fail closed as
+                // not-found so existence cannot be probed across
+                // projects. Session-less (workspace-scoped) jobs are
+                // chat-gated only.
+                if let Some(session) = record.session_id.clone() {
+                    match self.action_session_project(&session).await {
+                        Some(owner) if owner == project => {}
+                        _ => {
+                            return Ok(chat_error(CollaborationError::ActionNotFound(job_id)));
+                        }
+                    }
+                }
+                let _ = record;
+                (
+                    codegg_core::collaboration::ChatActionKind::JobReference,
+                    title,
+                    Some(job_id),
+                    CHAT_ACTION_STATUS_REFERENCED.to_owned(),
+                    None,
+                )
+            }
+        };
+        // Persist the reference/status projection. The unique backstop
+        // converges concurrent retries: on conflict, return the winner
+        // without creating a second job (the job above is already
+        // idempotent via the submission key, so the loser converges).
+        let stored = match self
+            .collaboration
+            .insert_action(
+                &project,
+                &channel,
+                &message,
+                &principal,
+                kind,
+                title.clone(),
+                job_id.clone(),
+                &status,
+                idempotency_key,
+                now_ms,
+            )
+            .await
+        {
+            Ok(action) => (action, false),
+            Err(CollaborationError::ActionConflict(_)) => {
+                match self
+                    .collaboration
+                    .find_action_by_idempotency(&project, &channel, idempotency_key)
+                    .await
+                {
+                    Ok(Some(winner)) => (winner, true),
+                    Ok(None) => {
+                        return Ok(chat_error(CollaborationError::ActionConflict(
+                            idempotency_key.to_owned(),
+                        )));
+                    }
+                    Err(error) => return Ok(chat_error(error)),
+                }
+            }
+            Err(error) => return Ok(chat_error(error)),
+        };
+        let (action_record, duplicate) = stored;
+        // Audit causation: message -> auth decision -> action -> job.
+        // Structural locators only; titles/prompts never enter audit.
+        {
+            use codegg_core::audit_instrumentation as instr;
+            let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+            let mut chain = instr::AuditChainContext::new();
+            chain.project = Some(project.clone());
+            if let Some(session) = session_id.clone() {
+                chain.session_id = Some(session);
+            }
+            if let Some(job) = job_id.clone() {
+                chain.job_id = Some(job.clone());
+            }
+            let builder = instr::chat_triggered_action_event(
+                authority.principal(),
+                &provenance,
+                &chain,
+                channel.as_str(),
+                message.as_str(),
+                &action_record.id,
+                action_record.kind.as_str(),
+                job_id.as_deref(),
+                "allow",
+            );
+            self.append_audit_event(builder).await;
+        }
+        // Publish the durable projection (with the real action id) for
+        // live chat subscribers. Duplicate retries publish nothing.
+        if !duplicate {
+            self.event_log
+                .publish(
+                    session_id.clone(),
+                    None,
+                    CoreEvent::ChatActionUpdated {
+                        project_id: project.as_str().to_owned(),
+                        channel_id: channel.as_str().to_owned(),
+                        message_id: message.as_str().to_owned(),
+                        action: action_record.to_dto(),
+                    },
+                )
+                .await;
+        }
+        // Mirror the canonical job-submit audit for submitted jobs so
+        // job pages stay consistent for chat-triggered work.
+        if status == CHAT_ACTION_STATUS_SUBMITTED {
+            if let Some(job) = job_id.clone() {
+                use codegg_core::audit_instrumentation as instr;
+                let provenance = codegg_core::authorization::audit_provenance(authz_decision);
+                let mut chain = instr::AuditChainContext::new();
+                chain.project = Some(project.clone());
+                if let Some(session) = session_id.clone() {
+                    chain.session_id = Some(session);
+                }
+                chain.job_id = Some(job.clone());
+                let builder = instr::job_submit_event(
+                    authority.principal(),
+                    &provenance,
+                    &chain,
+                    &job,
+                    "allow",
+                );
+                self.append_audit_event(builder).await;
+                // Canonical job creation event for job subscribers.
+                if let Ok(Some(record)) = self
+                    .deps
+                    .job_store
+                    .get_job(&codegg_core::jobs::JobId::new_unchecked(job.clone()))
+                    .await
+                {
+                    self.event_log
+                        .publish(
+                            record.session_id.clone(),
+                            record.turn_id.clone(),
+                            CoreEvent::JobCreated {
+                                job_id: job.clone(),
+                                workspace_id: record.workspace_id.to_string(),
+                                kind: record.kind.as_str().to_owned(),
+                                session_id: record.session_id.clone(),
+                                turn_id: record.turn_id.clone(),
+                            },
+                        )
+                        .await;
+                }
+            }
+        }
+        let _ = (request_id, trusted_client_id);
+        Ok(CoreResponse::ChatAction {
+            action: action_record.to_dto(),
+            duplicate,
+        })
     }
 
     /// M003: `session_id` locator carried by one request, if any.
@@ -3214,6 +3984,7 @@ impl CoreDaemon {
         match request {
             CoreRequest::SessionCreate { .. }
             | CoreRequest::JobSubmit { .. }
+            | CoreRequest::ChatActionSubmit { .. }
             | CoreRequest::AuditQuery { .. }
             | CoreRequest::AuditExport { .. } => return,
             _ => {}
@@ -3585,9 +4356,18 @@ impl CoreDaemon {
         // the main dispatch future stays small (same rationale as the
         // boxed authorization preamble above). The M003 gate has already
         // enforced `project.chat`; the handler only records/reads the
-        // caller's project-scoped chat state.
+        // caller's project-scoped chat state. M003 actions receive the
+        // gate decision so audit causation links message -> decision ->
+        // action -> job without re-authorizing.
         if Self::is_chat_request(&request.payload) {
-            return Box::pin(self.handle_chat_request(request.payload, trusted_client_id)).await;
+            return Box::pin(self.handle_chat_request(
+                &request.request_id,
+                request.payload,
+                trusted_client_id,
+                &authority,
+                &authz_decision,
+            ))
+            .await;
         }
         // Interactive Process Sessions M002: the attach/resume family runs
         // on a fresh task (boxed at the call site). The dispatch match

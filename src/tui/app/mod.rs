@@ -1079,6 +1079,40 @@ pub enum TuiCommand {
         project_id: String,
         channel_id: String,
     },
+    /// Project Collaboration M003: structured-action submit completion.
+    /// Explicit typed operation only; free text never produces this.
+    /// `duplicate` marks idempotent retry convergence (no second job).
+    ChatActionSubmitted {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        action: Option<crate::protocol::core::ChatActionDto>,
+        duplicate: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M003: bounded action-list completion for
+    /// the active channel (optionally filtered to one message).
+    ChatActionListLoaded {
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        actions: Vec<crate::protocol::core::ChatActionDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    },
+    /// Project Collaboration M003: action liveness hint
+    /// (`ChatActionUpdated`). Flags the project for a bounded action
+    /// re-fetch; receivers re-fetch through the authorized list path.
+    ChatActionHint {
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+    },
 }
 
 /// Send a [`TuiCommand`] on the bounded command channel, logging when a
@@ -6554,6 +6588,102 @@ impl App {
                     return;
                 };
                 crate::tui::commands::chat::start_chat_composing(self, project_id, composing);
+            }
+            "/chat-action-task" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                // Explicit form: <message-id> <workspace-id> <agent> <prompt…>.
+                let mut parts = rest.splitn(4, ' ');
+                let message_id = parts.next().unwrap_or_default().trim();
+                let workspace_id = parts.next().unwrap_or_default().trim();
+                let agent = parts.next().unwrap_or_default().trim();
+                let prompt = parts.next().unwrap_or_default().trim();
+                if message_id.is_empty()
+                    || workspace_id.is_empty()
+                    || agent.is_empty()
+                    || prompt.is_empty()
+                {
+                    self.messages_state.toasts.warning(
+                        "Usage: /chat-action-task <message-id> <workspace-id> <agent> <prompt>",
+                    );
+                    return;
+                }
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_action_task(
+                    self,
+                    project_id,
+                    message_id.to_string(),
+                    workspace_id.to_string(),
+                    agent.to_string(),
+                    prompt.to_string(),
+                );
+            }
+            "/chat-action-review" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let mut parts = rest.splitn(4, ' ');
+                let message_id = parts.next().unwrap_or_default().trim();
+                let workspace_id = parts.next().unwrap_or_default().trim();
+                let agent = parts.next().unwrap_or_default().trim();
+                let prompt = parts.next().unwrap_or_default().trim();
+                if message_id.is_empty()
+                    || workspace_id.is_empty()
+                    || agent.is_empty()
+                    || prompt.is_empty()
+                {
+                    self.messages_state.toasts.warning(
+                        "Usage: /chat-action-review <message-id> <workspace-id> <agent> <prompt>",
+                    );
+                    return;
+                }
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_action_review(
+                    self,
+                    project_id,
+                    message_id.to_string(),
+                    workspace_id.to_string(),
+                    agent.to_string(),
+                    prompt.to_string(),
+                );
+            }
+            "/chat-action-list" => {
+                self.ui_state.command_mode = false;
+                let rest = raw_input
+                    .and_then(|input| input.trim().split_once(' ').map(|(_, rest)| rest.trim()))
+                    .unwrap_or_default();
+                self.prompt_state.prompt.clear();
+                self.prompt_state.show_completions = false;
+                let message_id = if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.to_string())
+                };
+                let Some(project_id) = self.active_project_id().map(str::to_string) else {
+                    self.messages_state
+                        .toasts
+                        .warning("No active project — open a project tab first");
+                    return;
+                };
+                crate::tui::commands::chat::start_chat_action_list(self, project_id, message_id);
+                crate::tui::commands::chat::show_chat(self);
             }
             "/sessions" => {
                 self.open_dialog(Dialog::Session);
@@ -13043,6 +13173,68 @@ impl App {
     /// it is showing.
     pub fn on_chat_composing_hint(&mut self, project_id: String, channel_id: String) {
         crate::tui::commands::chat::on_chat_composing_hint(self, project_id, channel_id);
+    }
+
+    /// Project Collaboration M003: apply a structured-action submit
+    /// completion. Explicit typed operation only; failures retain the
+    /// typed error and fabricate nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_action_submitted(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        action: Option<crate::protocol::core::ChatActionDto>,
+        duplicate: bool,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_action_submitted(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            action,
+            duplicate,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M003: apply a bounded action-list completion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_chat_action_list(
+        &mut self,
+        request_id: u64,
+        project_id: String,
+        channel_id: String,
+        actions: Vec<crate::protocol::core::ChatActionDto>,
+        error: Option<String>,
+        unauthorized: bool,
+        unsupported: bool,
+        reconnect_epoch: u64,
+    ) {
+        crate::tui::commands::chat::apply_chat_action_list_loaded(
+            self,
+            request_id,
+            project_id,
+            channel_id,
+            actions,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        );
+    }
+
+    /// Project Collaboration M003: route a daemon `ChatActionUpdated`
+    /// liveness hint into the bounded action projection.
+    pub fn on_chat_action_hint(&mut self, action: crate::protocol::core::ChatActionDto) {
+        crate::tui::commands::chat::on_chat_action_updated(self, action);
     }
 
     pub fn set_session_store(&mut self, store: Arc<SessionStore>) {

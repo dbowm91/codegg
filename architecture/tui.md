@@ -250,14 +250,19 @@ no durable messages. Full contract in `architecture/collaboration.md`.
   data; `/chat` opens a scrollable `InfoType::ProjectChat` dialog
   (`j`/`k` scroll, `Esc`/`Enter` close). Commands: `/chat-send`,
   `/chat-reply`, `/chat-history`, `/chat-sync`, `/chat-read`,
-  `/chat-edit`, `/chat-redact`, `/chat-composing`. While observing,
-  `/chat*` commands are allowlisted and bare insert-mode text routes to
-  the observed project's chat; observer-target disconnect leaves chat
-  usable.
+  `/chat-edit`, `/chat-redact`, `/chat-composing`. M003 adds explicit
+  `/chat-action-task`, `/chat-action-review`, `/chat-action-list`
+  (structured actions only; free text never becomes an action). While
+  observing, `/chat*` commands are allowlisted and bare insert-mode
+  text routes to the observed project's chat; observer-target
+  disconnect leaves chat usable. Action submits while observing go
+  through the same daemon gate plus the semantic capability check.
 - **Lifecycle**: tab switch refreshes the new active project when stale;
   `App::on_projection_reconnect` resumes the M001 cursor or resyncs the
   bounded window. Failed sends retain the editable draft with the typed
-  error and fabricate nothing.
+  error and fabricate nothing. Failed actions retain the typed error;
+  the bounded action projection (`⚡ id kind job [status] title`)
+  renders in the panel footer.
 
 ### Long Output → Info Dialog
 

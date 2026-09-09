@@ -4,8 +4,9 @@
 //! projection. The TUI owns no chat truth: every entry here is derived from
 //! an authorized `chat.v1` round-trip through `CoreClient` (M001 contract),
 //! keyed by canonical `project_id` / `channel_id`. Structured chat actions
-//! (M003) are explicitly out of scope: free text stored or rendered here
-//! never executes privileged work.
+//! (M003) render as bounded reference/status projections only; free text
+//! stored or rendered here never executes privileged work — only explicit
+//! `/chat-action-*` commands can create work through the daemon gate.
 //!
 //! Invariants:
 //!
@@ -188,6 +189,12 @@ pub struct ProjectChat {
     pub last_send_error: Option<String>,
     /// Local monotonic sequence bumped on each applied page/event.
     pub sequence: u64,
+    /// M003: bounded structured-action projection for the active
+    /// channel. Reference/status only (ids/kind/title/job/status);
+    /// prompts stay daemon-side in the canonical job store.
+    pub actions: Vec<crate::protocol::core::ChatActionDto>,
+    /// M003: last action-submit failure (secret-free, display-truncated).
+    pub last_action_error: Option<String>,
 }
 
 impl ProjectChat {
@@ -212,6 +219,8 @@ impl ProjectChat {
             draft: String::new(),
             last_send_error: None,
             sequence: 0,
+            actions: Vec::new(),
+            last_action_error: None,
         }
     }
 
@@ -893,6 +902,220 @@ impl ChatState {
         }
     }
 
+    // ── M003: structured chat actions ────────────────────────────────
+
+    /// Maximum actions retained per project (bounded projection;
+    /// full history stays daemon-side).
+    pub const MAX_ACTIONS: usize = 50;
+
+    /// Begin an action submit/list round-trip. Returns the request id
+    /// the completion must echo. Reuses the chat generation so stale
+    /// completions (tab switch, stop, reconnect) drop at apply time.
+    pub fn begin_action(&mut self, project_id: &str) -> Option<u64> {
+        if !valid_locator(project_id) {
+            return None;
+        }
+        self.request_counter = self.request_counter.saturating_add(1);
+        let request_id = self.request_counter;
+        let entry = self.ensure_project(project_id);
+        entry.current_request_id = request_id;
+        Some(request_id)
+    }
+
+    /// Apply an action-submit completion. Merges the durable projection
+    /// by `action_id` when it targets the cached active channel;
+    /// cross-channel pages are ignored (fail closed). Duplicate retries
+    /// converge (no second row). Returns `false` for stale completions.
+    pub fn apply_action_submitted(
+        &mut self,
+        request_id: u64,
+        project_id: &str,
+        channel_id: &str,
+        action: &crate::protocol::core::ChatActionDto,
+        reconnect_epoch: u64,
+    ) -> bool {
+        if reconnect_epoch != self.reconnect_epoch {
+            return false;
+        }
+        if !valid_locator(project_id) || !valid_locator(channel_id) {
+            return false;
+        }
+        if action.project_id != project_id || action.channel_id != channel_id {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(project_id) else {
+            return false;
+        };
+        if entry.current_request_id != 0 && entry.current_request_id != request_id {
+            return false;
+        }
+        entry.current_request_id = 0;
+        if entry.status == ChatStatus::Unavailable {
+            return false;
+        }
+        if entry
+            .active_channel_id
+            .as_deref()
+            .is_some_and(|active| active != channel_id)
+        {
+            return false;
+        }
+        entry.active_channel_id = Some(channel_id.to_string());
+        Self::merge_action(entry, action.clone());
+        entry.last_action_error = None;
+        self.sequence_counter = self.sequence_counter.saturating_add(1);
+        entry.sequence = self.sequence_counter;
+        true
+    }
+
+    /// Record a failed action submit: retains the typed error, fabricates
+    /// nothing into the action window.
+    pub fn note_failed_action(&mut self, project_id: &str, error: String) {
+        if !valid_locator(project_id) {
+            return;
+        }
+        let entry = self.ensure_project(project_id);
+        entry.current_request_id = 0;
+        entry.last_action_error = Some(truncate_error(&error));
+    }
+
+    /// Apply a bounded action-list page: replaces the cached projection
+    /// for the active channel (merge-or-replace by `action_id`).
+    /// Returns `false` for stale completions.
+    pub fn apply_action_list(
+        &mut self,
+        request_id: u64,
+        project_id: &str,
+        channel_id: &str,
+        actions: Vec<crate::protocol::core::ChatActionDto>,
+        reconnect_epoch: u64,
+    ) -> bool {
+        if reconnect_epoch != self.reconnect_epoch {
+            return false;
+        }
+        if !valid_locator(project_id) || !valid_locator(channel_id) {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(project_id) else {
+            return false;
+        };
+        if entry.current_request_id != 0 && entry.current_request_id != request_id {
+            return false;
+        }
+        entry.current_request_id = 0;
+        if entry.status == ChatStatus::Unavailable {
+            return false;
+        }
+        if entry
+            .active_channel_id
+            .as_deref()
+            .is_some_and(|active| active != channel_id)
+        {
+            return false;
+        }
+        entry.active_channel_id = Some(channel_id.to_string());
+        let mut merged: Vec<crate::protocol::core::ChatActionDto> = Vec::new();
+        for action in actions {
+            if action.project_id != project_id || action.channel_id != channel_id {
+                continue;
+            }
+            if merged.iter().any(|a| a.action_id == action.action_id) {
+                continue;
+            }
+            merged.push(action);
+            if merged.len() >= Self::MAX_ACTIONS {
+                break;
+            }
+        }
+        entry.actions = merged;
+        entry.last_action_error = None;
+        self.sequence_counter = self.sequence_counter.saturating_add(1);
+        entry.sequence = self.sequence_counter;
+        true
+    }
+
+    /// Apply a live action event. Routing is by project/channel match;
+    /// events for unknown projects are ignored (fail closed — no action
+    /// stored until an authorized list confirms it).
+    pub fn apply_event_action(&mut self, action: &crate::protocol::core::ChatActionDto) -> bool {
+        if !valid_locator(&action.project_id) || !valid_locator(&action.channel_id) {
+            return false;
+        }
+        let Some(entry) = self.entries.get_mut(action.project_id.as_str()) else {
+            return false;
+        };
+        if entry.status == ChatStatus::Unavailable {
+            return false;
+        }
+        if entry
+            .active_channel_id
+            .as_deref()
+            .is_some_and(|active| active != action.channel_id)
+        {
+            entry.needs_resync = true;
+            return true;
+        }
+        Self::merge_action(entry, action.clone());
+        self.sequence_counter = self.sequence_counter.saturating_add(1);
+        entry.sequence = self.sequence_counter;
+        true
+    }
+
+    fn merge_action(entry: &mut ProjectChat, action: crate::protocol::core::ChatActionDto) {
+        if let Some(slot) = entry
+            .actions
+            .iter_mut()
+            .find(|a| a.action_id == action.action_id)
+        {
+            *slot = action;
+            return;
+        }
+        entry.actions.push(action);
+        entry.actions.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then_with(|| a.action_id.cmp(&b.action_id))
+        });
+        while entry.actions.len() > Self::MAX_ACTIONS {
+            entry.actions.remove(0);
+        }
+    }
+
+    /// One-line rendering for an action projection (ids/kind/status
+    /// only; prompts stay daemon-side).
+    pub fn action_line(action: &crate::protocol::core::ChatActionDto) -> String {
+        let kind = match action.kind {
+            crate::protocol::core::ChatActionKindDto::AgentTask => "task",
+            crate::protocol::core::ChatActionKindDto::ReviewRequest => "review",
+            crate::protocol::core::ChatActionKindDto::JobSubmit => "job",
+            crate::protocol::core::ChatActionKindDto::JobReference => "ref",
+        };
+        let job = action.job_id.as_deref().unwrap_or("-");
+        let title = action
+            .title
+            .as_deref()
+            .map(|t| truncate_display(t, 80))
+            .unwrap_or_default();
+        if title.is_empty() {
+            format!(
+                "⚡ {} {} {} [{}]",
+                short_id(&action.action_id),
+                kind,
+                short_id(job),
+                action.status
+            )
+        } else {
+            format!(
+                "⚡ {} {} {} [{}] {}",
+                short_id(&action.action_id),
+                kind,
+                short_id(job),
+                action.status,
+                title
+            )
+        }
+    }
+
     /// Mark a liveness hint (`ChatMessageCommitted` / `ChatComposingUpdated`
     /// for a project without a cached entry). Records the project as
     /// needing data without starting a fetch here (the open path owns the
@@ -1072,9 +1295,26 @@ impl ChatState {
                     lines.push(String::new());
                     lines.push(format!("Last send failed: {err} — draft retained."));
                 }
+                if !entry.actions.is_empty() {
+                    lines.push(String::new());
+                    lines.push(format!("Actions ({}):", entry.actions.len()));
+                    let total = entry.actions.len();
+                    let start = total.saturating_sub(10);
+                    for action in entry.actions.iter().skip(start) {
+                        lines.push(Self::action_line(action));
+                    }
+                }
+                if let Some(err) = entry.last_action_error.as_deref() {
+                    lines.push(String::new());
+                    lines.push(format!("Last action failed: {err}."));
+                }
                 lines.push(String::new());
                 lines.push(
                     "Commands: /chat-send <text> · /chat-reply <id> <text> · /chat-history · /chat-read · /chat-edit · /chat-redact"
+                        .to_string(),
+                );
+                lines.push(
+                    "Actions (explicit only): /chat-action-task <msg> <agent> <prompt> · /chat-action-review <msg> <agent> <prompt> · /chat-action-list [msg]"
                         .to_string(),
                 );
                 lines

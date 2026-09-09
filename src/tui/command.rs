@@ -388,6 +388,12 @@ impl CommandRegistry {
                 .with_description("Redact your chat message (/chat-redact <message-id> [reason])"),
             Command::new("/chat-composing", CommandCategory::System, None)
                 .with_description("Set or clear your typing indicator (/chat-composing on|off)"),
+            Command::new("/chat-action-task", CommandCategory::System, None)
+                .with_description("Submit an agent task linked to a chat message (/chat-action-task <message-id> <agent> <prompt>)"),
+            Command::new("/chat-action-review", CommandCategory::System, None)
+                .with_description("Request a review linked to a chat message (/chat-action-review <message-id> <agent> <prompt>)"),
+            Command::new("/chat-action-list", CommandCategory::System, None)
+                .with_description("List structured chat actions for the active channel (/chat-action-list [message-id])"),
         ]
     }
 
@@ -576,7 +582,7 @@ mod tests {
 
     #[test]
     fn built_in_command_count_matches_release_docs() {
-        assert_eq!(CommandRegistry::built_in_commands().len(), 136);
+        assert_eq!(CommandRegistry::built_in_commands().len(), 139);
     }
 
     #[test]

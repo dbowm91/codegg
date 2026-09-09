@@ -367,14 +367,24 @@ pub const REQUIRED_AUDIT_COVERAGE: &[AuditCoverageEntry] = &[
     },
     AuditCoverageEntry {
         action: "chat_triggered_action",
-        owner: "future:collaboration",
+        owner: "daemon:collaboration",
         actor: "transport-bound principal",
         scope: "direct_project",
-        decision: "project_chat",
-        metadata: &["session.id", "chat.channel", "decision.outcome"],
-        causation: "out of scope; chat is never an execution interface in M005",
+        decision: "chat_action_submit",
+        metadata: &[
+            "chat.channel",
+            "chat.message",
+            "chat.action",
+            "chat.action_kind",
+            "chat.project",
+            "chat.status",
+            "job.id",
+            "session.id",
+            "decision.outcome",
+        ],
+        causation: "message -> auth decision -> action -> job; causation parent links submit to job where present",
         visibility: AuditVisibility::Project,
-        live_mapped: false,
+        live_mapped: true,
     },
     AuditCoverageEntry {
         action: "config_change",
@@ -499,6 +509,7 @@ pub const INSTRUMENTED_OPERATIONS: &[(&str, &str)] = &[
     ("connection_restore", "provider_select"),
     ("connection_purge", "provider_select"),
     ("provider_connection_use", "provider_select"),
+    ("chat_action_submit", "chat_triggered_action"),
 ];
 
 /// Explicitly uninstrumented operations.
@@ -584,6 +595,8 @@ pub const UNINSTRUMENTED_OPERATIONS: &[&str] = &[
     "workspace_services_snapshot",
     "workspace_snapshot_request",
     "worktree_list",
+    "chat_action_get",
+    "chat_action_list",
 ];
 
 /// Map one daemon operation name to its structural audit action.
@@ -1051,6 +1064,39 @@ pub fn job_complete_event(
         .with_metadata("job.id", truncate_label(job_id, 128))
         .with_metadata("job.outcome", truncate_label(job_outcome, 64))
         .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    apply_chain(builder, chain, provenance.project())
+}
+
+/// Structured chat-action structural event (M003).
+///
+/// Links message -> auth decision -> action -> job with structural
+/// locators only. Titles/prompts never enter metadata; job payloads
+/// stay in the canonical job store. `job_id` is `None` only for
+/// reference actions that failed open (never emitted); submit actions
+/// always carry the canonical job id.
+#[allow(clippy::too_many_arguments)]
+pub fn chat_triggered_action_event(
+    principal: &AuthenticatedPrincipal,
+    provenance: &AuditDecisionProvenance,
+    chain: &AuditChainContext,
+    channel_id: &str,
+    message_id: &str,
+    action_id: &str,
+    action_kind: &str,
+    job_id: Option<&str>,
+    outcome: &str,
+) -> AuditEventBuilder {
+    let mut builder =
+        AuditEventBuilder::new(AuditAction::ChatTriggeredAction, principal, provenance)
+            .with_visibility(AuditVisibility::Project)
+            .with_metadata("chat.channel", truncate_label(channel_id, 128))
+            .with_metadata("chat.message", truncate_label(message_id, 128))
+            .with_metadata("chat.action", truncate_label(action_id, 128))
+            .with_metadata("chat.action_kind", truncate_label(action_kind, 64))
+            .with_metadata("decision.outcome", truncate_label(outcome, 64));
+    if let Some(job) = job_id {
+        builder = builder.with_metadata("job.id", truncate_label(job, 128));
+    }
     apply_chain(builder, chain, provenance.project())
 }
 

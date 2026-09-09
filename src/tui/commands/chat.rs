@@ -1520,3 +1520,456 @@ fn start_chat_composing_refresh(app: &mut App, project_id: String) {
         },
     );
 }
+
+/// Re-fetch only the composing snapshot for the active channel — tail marker.
+/// M003 structured-action helpers follow (explicit typed operations only).
+fn _chat_m003_anchor() {}
+
+// ── M003: Separately authorized structured chat actions ───────────────
+//
+// Explicit typed operations only. Free text — including command-like
+// text sent via `start_chat_send` or `route_observer_insert_to_chat` —
+// never constructs a `ChatActionSubmit`; only these explicit
+// `/chat-action-*` entry points do. The daemon checks `project.chat`
+// plus the ordinary semantic capability and calls the canonical
+// Job services; denials create nothing.
+
+use crate::protocol::core::{ChatActionDto, ChatActionSubmitDto};
+
+/// Maximum prompt bytes accepted by the TUI composer (matches the
+/// daemon bound; oversized input fails fast with the draft retained).
+pub const CHAT_ACTION_PROMPT_MAX_BYTES: usize = 8192;
+
+/// Submit an agent task linked to a message. Explicit command only.
+pub(crate) fn start_chat_action_task(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    workspace_id: String,
+    agent: String,
+    prompt: String,
+) {
+    let payload = ChatActionSubmitDto::AgentTask {
+        workspace_id,
+        agent,
+        prompt,
+        session_id: None,
+        title: None,
+    };
+    start_chat_action_submit(app, project_id, message_id, payload);
+}
+
+/// Submit a review request linked to a message. Explicit command only.
+pub(crate) fn start_chat_action_review(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    workspace_id: String,
+    agent: String,
+    prompt: String,
+) {
+    let payload = ChatActionSubmitDto::ReviewRequest {
+        workspace_id,
+        agent,
+        prompt,
+        session_id: None,
+        title: None,
+    };
+    start_chat_action_submit(app, project_id, message_id, payload);
+}
+
+/// Generic explicit action submit through the daemon gate.
+fn start_chat_action_submit(
+    app: &mut App,
+    project_id: String,
+    message_id: String,
+    payload: ChatActionSubmitDto,
+) {
+    if message_id.is_empty() || message_id.len() > 128 {
+        app.messages_state
+            .toasts
+            .warning("Usage: /chat-action-* <message-id> … — invalid message id");
+        return;
+    }
+    let prompt_len = match &payload {
+        ChatActionSubmitDto::AgentTask { prompt, .. }
+        | ChatActionSubmitDto::ReviewRequest { prompt, .. } => Some(prompt.len()),
+        _ => None,
+    };
+    if prompt_len.is_some_and(|len| len > CHAT_ACTION_PROMPT_MAX_BYTES) {
+        app.chat.note_failed_action(
+            &project_id,
+            "chat_invalid_input: action prompt exceeds 8 KiB".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Action prompt exceeds 8 KiB and was not submitted");
+        refresh_chat_panel(app);
+        return;
+    }
+    let Some(request_id) = app.chat.begin_action(&project_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid project for chat action");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let known_channel = active_channel_for(app, &project_id);
+    if app.core_client.is_none() {
+        app.chat.note_failed_action(
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat action failed: core unavailable");
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    let idempotency_key = uuid::Uuid::new_v4().to_string();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_action_submit",
+        async move {
+            let finish = |action: Option<ChatActionDto>,
+                          duplicate: bool,
+                          channel_id: String,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatActionSubmitted {
+                    request_id,
+                    project_id: pid.clone(),
+                    channel_id,
+                    action,
+                    duplicate,
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    None,
+                    false,
+                    String::new(),
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(None, false, String::new(), None, false, true));
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(finish(
+                            None,
+                            false,
+                            String::new(),
+                            error,
+                            unauthorized,
+                            false,
+                        ));
+                    }
+                },
+            };
+            let req = crate::core::new_request(
+                format!("chat-action-submit-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatActionSubmit {
+                    channel_id: channel_id.clone(),
+                    message_id: message_id.clone(),
+                    action: payload,
+                    idempotency_key,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatAction { action, duplicate }) => Some(finish(
+                    Some(action),
+                    duplicate,
+                    channel_id,
+                    None,
+                    false,
+                    false,
+                )),
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code) || code == "chat_action_denied",
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    None,
+                    false,
+                    channel_id,
+                    Some(format!("Chat action failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// List structured actions for the active channel, optionally filtered
+/// to one message. Explicit command only.
+pub(crate) fn start_chat_action_list(
+    app: &mut App,
+    project_id: String,
+    message_id: Option<String>,
+) {
+    if let Some(ref target) = message_id {
+        if target.is_empty() || target.len() > 128 {
+            app.messages_state
+                .toasts
+                .warning("Usage: /chat-action-list [message-id] — invalid message id");
+            return;
+        }
+    }
+    let Some(request_id) = app.chat.begin_action(&project_id) else {
+        app.messages_state
+            .toasts
+            .warning("Invalid project for chat action list");
+        return;
+    };
+    let reconnect_epoch = app.chat.reconnect_epoch;
+    let known_channel = active_channel_for(app, &project_id);
+    if app.core_client.is_none() {
+        app.chat.note_failed_action(
+            &project_id,
+            "Core unavailable — check daemon status with /doctor".to_string(),
+        );
+        refresh_chat_panel(app);
+        return;
+    }
+    let core_client = app.core_client.clone();
+    let tx = app.tui_cmd_tx.clone();
+    let pid = project_id.clone();
+    spawn_registered_tui_task(
+        tx,
+        &mut app.task_registry,
+        TuiTaskKind::Command,
+        "chat_action_list",
+        async move {
+            let finish = |actions: Vec<ChatActionDto>,
+                          channel_id: String,
+                          error: Option<String>,
+                          unauthorized: bool,
+                          unsupported: bool| {
+                TuiCommand::ChatActionListLoaded {
+                    request_id,
+                    project_id: pid.clone(),
+                    channel_id,
+                    actions,
+                    error,
+                    unauthorized,
+                    unsupported,
+                    reconnect_epoch,
+                }
+            };
+            let Some(core_client) = core_client else {
+                return Some(finish(
+                    Vec::new(),
+                    String::new(),
+                    Some("Core unavailable".to_string()),
+                    false,
+                    true,
+                ));
+            };
+            if !negotiate_chat(&core_client).await {
+                return Some(finish(Vec::new(), String::new(), None, false, true));
+            }
+            let channel_id = match known_channel {
+                Some(id) => id,
+                None => match ensure_default_channel(&core_client, &pid).await {
+                    Ok(channel) => channel.channel_id,
+                    Err((error, unauthorized)) => {
+                        return Some(finish(
+                            Vec::new(),
+                            String::new(),
+                            error,
+                            unauthorized,
+                            false,
+                        ));
+                    }
+                },
+            };
+            let req = crate::core::new_request(
+                format!("chat-action-list-{}", uuid::Uuid::new_v4()),
+                CoreRequest::ChatActionList {
+                    channel_id: channel_id.clone(),
+                    message_id: message_id.clone(),
+                    limit: None,
+                },
+            );
+            match core_client.request(req).await {
+                Ok(CoreResponse::ChatActionList { actions, .. }) => {
+                    Some(finish(actions, channel_id, None, false, false))
+                }
+                Ok(CoreResponse::Error { code, message }) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("{code}: {message}")),
+                    unauthorized_of(&code),
+                    false,
+                )),
+                Ok(other) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("Unexpected core response: {other:?}")),
+                    false,
+                    false,
+                )),
+                Err(e) => Some(finish(
+                    Vec::new(),
+                    channel_id,
+                    Some(format!("Chat action list failed: {e}")),
+                    false,
+                    false,
+                )),
+            }
+        },
+    );
+}
+
+/// Apply a `ChatActionSubmitted` completion. Failures retain the typed
+/// error and fabricate nothing; duplicates converge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_action_submitted(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    action: Option<ChatActionDto>,
+    duplicate: bool,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        app.chat.note_failed_action(
+            &project_id,
+            "Chat actions unavailable — daemon does not support chat actions".to_string(),
+        );
+        app.messages_state
+            .toasts
+            .warning("Chat actions unavailable — daemon does not support chat actions");
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        app.chat.clear_project(&project_id);
+        app.messages_state
+            .toasts
+            .warning("Chat action denied — project not found or missing capability");
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(error) = error {
+        app.chat.note_failed_action(&project_id, error.clone());
+        app.messages_state
+            .toasts
+            .warning(&format!("Chat action failed: {error}"));
+        refresh_chat_panel(app);
+        return;
+    }
+    let Some(action) = action else {
+        app.chat.note_failed_action(
+            &project_id,
+            "Chat action failed: empty response".to_string(),
+        );
+        refresh_chat_panel(app);
+        return;
+    };
+    if app.chat.apply_action_submitted(
+        request_id,
+        &project_id,
+        &channel_id,
+        &action,
+        reconnect_epoch,
+    ) {
+        if duplicate {
+            app.messages_state
+                .toasts
+                .info("Chat action already submitted — retry converged");
+        } else {
+            app.messages_state.toasts.success("Chat action submitted");
+        }
+    }
+    refresh_chat_panel(app);
+}
+
+/// Apply a `ChatActionListLoaded` completion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_chat_action_list_loaded(
+    app: &mut App,
+    request_id: u64,
+    project_id: String,
+    channel_id: String,
+    actions: Vec<ChatActionDto>,
+    error: Option<String>,
+    unauthorized: bool,
+    unsupported: bool,
+    reconnect_epoch: u64,
+) {
+    if unsupported {
+        app.chat.set_capability(false);
+        refresh_chat_panel(app);
+        return;
+    }
+    if unauthorized {
+        app.chat.clear_project(&project_id);
+        refresh_chat_panel(app);
+        return;
+    }
+    if let Some(error) = error {
+        app.chat.note_failed_action(&project_id, error);
+        refresh_chat_panel(app);
+        return;
+    }
+    app.chat.apply_action_list(
+        request_id,
+        &project_id,
+        &channel_id,
+        actions,
+        reconnect_epoch,
+    );
+    refresh_chat_panel(app);
+}
+
+/// Route a daemon `ChatActionUpdated` payload into the reducer.
+pub(crate) fn on_chat_action_updated(app: &mut App, action: ChatActionDto) {
+    if app.chat.apply_event_action(&action) {
+        refresh_chat_panel(app);
+    } else if app.chat.note_hint(&action.project_id) {
+        let is_active = app.active_project_id() == Some(action.project_id.as_str());
+        if is_active {
+            start_chat_action_list(
+                app,
+                action.project_id.clone(),
+                Some(action.message_id.clone()),
+            );
+        }
+    }
+}

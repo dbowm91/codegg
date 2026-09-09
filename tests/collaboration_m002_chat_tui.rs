@@ -56,6 +56,9 @@ impl FakeChatClient {
             max_references: 8,
             composing_ttl_secs: 30,
             retention_max_messages: 1000,
+            actions_supported: true,
+            max_action_title_bytes: 512,
+            max_action_prompt_bytes: 8192,
         }
     }
 

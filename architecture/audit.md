@@ -234,11 +234,13 @@ Explicit gaps (builders + store fixtures landed, no live single-host
 emission by design):
 
 - `node_enrollment`, `remote_execute` — future node protocol.
-- `chat_triggered_action` — collaboration M003 owns structured chat
-  actions; chat is never an execution interface in M005.
 - `command_execute`, `git_operation` — execution-surface chains are
   proven via builders/fixtures in M005; the live tool-broker and
   git-executor hooks are deferred follow-ups.
+
+Live in M003: `chat_triggered_action` is emitted by the daemon
+collaboration owner for every authorized structured chat action
+(message -> decision -> action -> job; structural locators only).
 
 ## Verification
 

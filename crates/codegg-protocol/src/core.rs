@@ -402,6 +402,17 @@ pub struct ChatCapabilitiesDto {
     pub max_references: usize,
     pub composing_ttl_secs: u64,
     pub retention_max_messages: usize,
+    /// M003: true when the daemon supports separately authorized
+    /// structured chat actions (`chat_action_*`). Older daemons omit
+    /// this field (decodes as false); older clients ignore it.
+    #[serde(default)]
+    pub actions_supported: bool,
+    /// M003: maximum title bytes accepted for a chat action.
+    #[serde(default)]
+    pub max_action_title_bytes: usize,
+    /// M003: maximum prompt bytes accepted for agent-task actions.
+    #[serde(default)]
+    pub max_action_prompt_bytes: usize,
 }
 
 /// One ephemeral composing entry. Carries identity and expiry only, never
@@ -412,6 +423,108 @@ pub struct ChatComposingDto {
     pub principal_id: String,
     pub client_id: String,
     pub expires_at_ms: i64,
+}
+
+// ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
+//
+// Free text never executes: bodies stay inert bounded text (M001). A
+// structured action is a distinct explicit protocol operation naming a
+// message/channel plus a typed payload and an idempotency key. The
+// daemon resolves the actor from transport authority, checks
+// `project.chat` on the owning project plus the ordinary semantic
+// capability for the action kind (`agent.delegate` for agent
+// tasks/reviews, `job.submit` for job submits, `session.read` for job
+// references), then calls the existing canonical Task/AgentRun/Job
+// services. Chat stores only the reference/status projection; the
+// resulting task/run/job is canonical durable state owned elsewhere.
+
+/// Kind of structured chat action. Each maps to an existing canonical
+/// service and capability; no new workflow engine is introduced.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatActionKindDto {
+    AgentTask,
+    ReviewRequest,
+    JobSubmit,
+    JobReference,
+}
+
+impl ChatActionKindDto {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentTask => "agent_task",
+            Self::ReviewRequest => "review_request",
+            Self::JobSubmit => "job_submit",
+            Self::JobReference => "job_reference",
+        }
+    }
+}
+
+/// Typed payload for one structured chat action submission. Exactly one
+/// variant is present per request; unknown future variants fail closed
+/// at the serde layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ChatActionSubmitDto {
+    AgentTask {
+        workspace_id: String,
+        agent: String,
+        prompt: String,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    ReviewRequest {
+        workspace_id: String,
+        agent: String,
+        prompt: String,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    JobSubmit {
+        spec: Box<crate::dto::JobSubmitDto>,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    JobReference {
+        job_id: String,
+        #[serde(default)]
+        title: Option<String>,
+    },
+}
+
+impl ChatActionSubmitDto {
+    pub fn kind(&self) -> ChatActionKindDto {
+        match self {
+            Self::AgentTask { .. } => ChatActionKindDto::AgentTask,
+            Self::ReviewRequest { .. } => ChatActionKindDto::ReviewRequest,
+            Self::JobSubmit { .. } => ChatActionKindDto::JobSubmit,
+            Self::JobReference { .. } => ChatActionKindDto::JobReference,
+        }
+    }
+}
+
+/// Wire shape of one durable structured chat action. Chat stores only
+/// this reference/status projection; the resulting job is canonical
+/// durable state owned by the scheduler/job stores.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatActionDto {
+    pub action_id: String,
+    pub channel_id: String,
+    pub message_id: String,
+    pub project_id: String,
+    pub actor: String,
+    pub kind: ChatActionKindDto,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    pub status: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -966,6 +1079,21 @@ pub enum CoreResponse {
         next_cursor: u64,
         resync_required: bool,
         retention_floor_seq: u64,
+    },
+    // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
+    /// One durable structured chat action. `duplicate` is true when a
+    /// retry converged on an already-stored idempotency key (no second
+    /// job is created).
+    ChatAction {
+        action: ChatActionDto,
+        #[serde(default)]
+        duplicate: bool,
+    },
+    /// Bounded structured-action listing for one channel, optionally
+    /// filtered to one message.
+    ChatActionList {
+        channel_id: String,
+        actions: Vec<ChatActionDto>,
     },
 }
 
@@ -1781,6 +1909,42 @@ pub enum CoreRequest {
         #[serde(default)]
         limit: Option<u32>,
     },
+    // ── Project Collaboration M003: Separately Authorized Structured Chat Actions ──
+    //
+    // Every action operation below is project-scoped and requires
+    // `project.chat` on the owning project (same gate as M001 chat).
+    // The daemon additionally checks the ordinary semantic capability
+    // for the action kind before creating anything:
+    // `agent.delegate` for agent_task/review_request, `job.submit`
+    // for job_submit, `session.read` for job_reference. Channel-scoped
+    // requests carry only the channel locator; the owning project
+    // resolves server-side. Principals come from transport authority.
+    // Free text is never parsed: only this explicit typed operation
+    // can create work.
+    /// Submit one structured chat action linked to a message.
+    /// `idempotency_key` scopes retry convergence to
+    /// `(channel_id, key)`: a duplicate key returns the original action
+    /// without creating a second job.
+    ChatActionSubmit {
+        channel_id: String,
+        message_id: String,
+        action: ChatActionSubmitDto,
+        idempotency_key: String,
+    },
+    /// Fetch one structured chat action in channel scope.
+    ChatActionGet {
+        channel_id: String,
+        action_id: String,
+    },
+    /// Bounded action listing for one channel, optionally filtered to
+    /// one message. Oldest first.
+    ChatActionList {
+        channel_id: String,
+        #[serde(default)]
+        message_id: Option<String>,
+        #[serde(default)]
+        limit: Option<u32>,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -2255,6 +2419,20 @@ pub enum CoreEvent {
     ChatComposingUpdated {
         project_id: String,
         channel_id: String,
+    },
+    // ── Project Collaboration M003: Structured Chat Action Liveness ──
+    //
+    // Structural hint only. Carries the full action because the
+    // recipient already holds `project.chat` on the owning project;
+    // receivers re-fetch through the authorized action-list path on
+    // doubt. No prompt/secret content is carried beyond the bounded
+    // title (job payloads stay in the canonical job store).
+    /// A structured chat action was committed for a message.
+    ChatActionUpdated {
+        project_id: String,
+        channel_id: String,
+        message_id: String,
+        action: ChatActionDto,
     },
 }
 

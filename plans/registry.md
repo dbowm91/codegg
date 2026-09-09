@@ -30,7 +30,7 @@ Canonical direction remains in:
 | Residual runtime consolidation | active | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001/M002 ready | M003 waits for M002. |
 | Identity, authorization, and audit | closed | `plans/subsystems/identity-authorization-audit-roadmap.md` | M005 closed | — |
 | Presence and read-only observation | closed | `plans/subsystems/presence-observation-roadmap.md` | M001–M003 closed | — |
-| Project collaboration | active | `plans/subsystems/project-collaboration-roadmap.md` | M001+M002 closed, M003 ready | M003 unblocked by collaboration M001 closure (`plans/closure/project-collaboration/001-status.md`). |
+| Project collaboration | closed | `plans/subsystems/project-collaboration-roadmap.md` | M001+M002+M003 closed | — |
 | Interactive process sessions | closed | `plans/subsystems/interactive-process-sessions-roadmap.md` | M001–M003 closed | — |
 | Tool Program capability expansion | active | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M001 ready | M002/M003 depend on the M001 eligibility contract. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
@@ -60,17 +60,16 @@ Canonical direction remains in:
 |---|---|---|---|
 | Residual runtime consolidation | M001 — stranded coordination/metadata retirement | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | Canonical agent/process owners are already closed; no hard dependency. |
 | Residual runtime consolidation | M002 — CoreDaemon request-family decomposition | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | Behavior-preserving physical refactor over already stable domain owners. |
-| Project collaboration | M003 — separately authorized structured chat actions | `plans/implementation/project-collaboration/003-structured-chat-actions.md` | Collaboration M001 closed (`plans/closure/project-collaboration/001-status.md`); identity/audit M005 and agent-run/job owners closed. |
 | Tool Program capability expansion | M001 — deterministic local read expansion | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | Tool Programs are strictly closed and ADR-0001 supplies the authority contract. |
 
-These five plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
+These four plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
 
 ## Current execution order and dependency gates
 
 1. Residual M001 and M002 are independent ready cleanup/refactor handoffs. Residual M003 remains blocked until M002 closes.
 2. Identity/auth/audit is closed: M001 domain -> M002 transport identity -> M003 daemon authorization/attribution (closed) -> M004 audit store (closed) -> M005 instrumentation closure (closed).
 3. Presence M001/M002/M003 are closed and the subsystem is complete. Observation consumes the already-closed session-projection interface.
-4. Project collaboration M001 is closed (channel/message/sync contract landed with ordering/retry/restart/retention/auth/privacy evidence) and M002 TUI chat is closed (bounded panel, observer insert routing with zero-control proof, reconnect/paging evidence). M003 structured actions may now proceed. Chat UI and structured actions follow M001. Free text is never an execution interface.
+4. Project collaboration M001+M002+M003 are closed and the subsystem is complete: durable authorized channels/messages with ordering/retry/restart/retention/auth/privacy, bounded TUI chat with observer insert routing and zero-control proof, and separately authorized structured actions with idempotent scheduler-boundary submits and audit causation. Free text is never an execution interface.
 5. Interactive-process M001/M002/M003 are closed; the subsystem roadmap is closed.
 6. Tool Program expansion M001 may proceed independently. M002 external search and M003 narrow Git/LSP reads remain blocked behind the eligibility contract; no mutation authority is added.
 7. None of this work authorizes a new scheduler, service bus, verification framework, release automation, persistent search index, remote sandbox, or broader Windows support tier.
@@ -107,6 +106,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Presence and read-only observation | M003 closed | `plans/closure/presence-observation/003-status.md` |
 | Project collaboration | M001 closed | `plans/closure/project-collaboration/001-status.md` |
 | Project collaboration | M002 closed | `plans/closure/project-collaboration/002-status.md` |
+| Project collaboration | M003 closed | `plans/closure/project-collaboration/003-status.md` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. New defects receive new corrective plans under the owning subsystem.
 

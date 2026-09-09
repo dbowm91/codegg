@@ -1,6 +1,6 @@
 # Project Collaboration Milestone 003 — Separately Authorized Structured Chat Actions
 
-Status: ready for handoff (unblocked by collaboration M001 closure `plans/closure/project-collaboration/001-status.md`)
+Status: implemented (closed by `plans/closure/project-collaboration/003-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

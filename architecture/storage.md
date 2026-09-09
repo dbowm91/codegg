@@ -254,6 +254,7 @@ Key storage-layout migrations:
 - **v53**: `origin_attribution` for immutable originating-principal capture (M003)
 - **v54**: append-only `audit_event` + separate `audit_body` retention split (M004)
 - **v55**: project chat — `chat_channel`, `chat_message` (live retention window, per-channel `seq`, idempotency keys), append-only `chat_revision` history (survives retention pruning), `chat_read_marker` (collaboration M001; composing stays ephemeral in memory)
+- **v56**: structured chat actions — `chat_action` reference/status projection (`action_id`, channel/message/project locators, actor, kind, title, job, status, `(channel, idempotency_key)` unique retry backstop; collaboration M003, jobs stay canonical in scheduler/job stores)
 
 ## Testing
 

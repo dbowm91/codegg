@@ -434,6 +434,70 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 }
             }
         }
+        TuiCommand::ChatActionSubmitted {
+            request_id,
+            project_id,
+            channel_id,
+            action,
+            duplicate,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_action_submitted(
+                request_id,
+                project_id,
+                channel_id,
+                action,
+                duplicate,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatActionListLoaded {
+            request_id,
+            project_id,
+            channel_id,
+            actions,
+            error,
+            unauthorized,
+            unsupported,
+            reconnect_epoch,
+        } => {
+            app.apply_chat_action_list(
+                request_id,
+                project_id,
+                channel_id,
+                actions,
+                error,
+                unauthorized,
+                unsupported,
+                reconnect_epoch,
+            );
+        }
+        TuiCommand::ChatActionHint {
+            project_id,
+            channel_id,
+            message_id,
+        } => {
+            // Action liveness hint: flag for a bounded action re-fetch
+            // when the project is active; otherwise mark resync.
+            if app.chat.note_hint(&project_id) {
+                let is_active = app.active_project_id() == Some(project_id.as_str());
+                if is_active {
+                    super::super::commands::chat::start_chat_action_list(
+                        app,
+                        project_id,
+                        Some(message_id),
+                    );
+                } else {
+                    let _ = channel_id;
+                }
+            }
+        }
         TuiCommand::OpenTreeDialog => {
             start_open_tree_dialog(app);
         }

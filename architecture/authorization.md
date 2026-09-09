@@ -134,17 +134,21 @@ project subscribe plus artifact list/read gate denials use
 `project_not_found`, indistinguishable from absent (same convention
 as `ProjectGet` and presence reads).
 
-### Project chat (collaboration M001)
+### Project chat (collaboration M001) and structured actions (M003)
 
 Every `chat_*` operation except `chat_capabilities` requires
 `project.chat` on the owning project (`Contributor` and above;
 `Viewer` holds no chat grant). Channel-scoped requests carry only the
 channel locator; the daemon resolves the owning project server-side
 through the durable channel row, so unknown channels fail closed for
-team principals. All eleven project-scoped chat denials use
+team principals. All fourteen project-scoped chat denials use
 `project_not_found`, indistinguishable from absent — unauthorized
 callers cannot enumerate channels, read messages, or infer project,
-membership, or activity existence. See
+membership, or activity existence. M003 `chat_action_submit/get/list`
+share this gate; the submit path additionally checks the ordinary
+semantic capability for the kind (`agent.delegate` for agent
+tasks/reviews, `job.submit` for job submits, `session.read` for job
+references) before creating anything. See
 `architecture/collaboration.md`.
 
 ## Failure, restart, contention
@@ -165,10 +169,11 @@ membership, or activity existence. See
 Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization.rs`
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (150 native operations; M004 adds `audit_capabilities`,
+rendering (153 native operations; M004 adds `audit_capabilities`,
 `audit_export`, `audit_query` — see `architecture/audit.md` for the
 audit store contract; collaboration M001 adds the twelve `chat_*`
-operations below, all `project.chat`):
+operations below, all `project.chat`; M003 adds three `chat_action_*`
+rows on the same gate):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -181,6 +186,9 @@ operations below, all `project.chat`):
 | `audit_export` | direct_project | `audit.read` |
 | `audit_query` | direct_project | `audit.read` |
 | `chat_capabilities` | global | `none` |
+| `chat_action_get` | direct_project | `project.chat` |
+| `chat_action_list` | direct_project | `project.chat` |
+| `chat_action_submit` | direct_project | `project.chat` |
 | `chat_channel_ensure` | direct_project | `project.chat` |
 | `chat_channel_list` | direct_project | `project.chat` |
 | `chat_composing_list` | direct_project | `project.chat` |

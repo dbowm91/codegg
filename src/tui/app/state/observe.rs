@@ -487,8 +487,15 @@ pub fn is_observer_allowed_command(command: &str) -> bool {
         "observe" | "watch" | "stop-observing" | "unwatch" |
         // Project chat (M002 collaboration seam). Read/write through the
         // daemon-authorized `chat.v1` surface only; never session control.
+        // M003 structured actions are explicit typed operations through
+        // the same gate plus the ordinary semantic capability
+        // (`agent.delegate` / `job.submit` / `session.read`); the daemon
+        // denies callers lacking the capability and creates nothing.
+        // Free text never becomes an action: only these explicit
+        // commands can create work.
         "chat" | "chat-send" | "chat-reply" | "chat-history" | "chat-sync" |
         "chat-read" | "chat-edit" | "chat-redact" | "chat-composing" |
+        "chat-action-task" | "chat-action-review" | "chat-action-list" |
         // Help/status/navigation (read-only).
         "help" | "status" | "sessions" | "resume" | "continue" |
         "collaborators" | "presence" | "team" |
