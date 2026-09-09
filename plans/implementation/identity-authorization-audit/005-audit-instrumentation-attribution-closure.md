@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 005 — Audit Instrumentation and Attribution Closure
 
-Status: ready for handoff (unblocked by M004 closure at `plans/closure/identity-authorization-audit/004-status.md`)
+Status: closed (closure record at `plans/closure/identity-authorization-audit/005-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
