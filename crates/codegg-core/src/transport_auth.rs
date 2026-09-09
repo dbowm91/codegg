@@ -81,6 +81,11 @@ impl AuthMethod {
             ))),
         }
     }
+
+    /// Lenient parse for audit readers; unknown values degrade to `None`.
+    pub fn parse_for_audit(value: &str) -> Option<Self> {
+        Self::parse(value).ok()
+    }
 }
 
 /// Canonical transport class for a bound principal.
@@ -110,6 +115,11 @@ impl TransportClass {
                 "unknown transport class {value:?}"
             ))),
         }
+    }
+
+    /// Lenient parse for audit readers; unknown values degrade to `None`.
+    pub fn parse_for_audit(value: &str) -> Option<Self> {
+        Self::parse(value).ok()
     }
 }
 

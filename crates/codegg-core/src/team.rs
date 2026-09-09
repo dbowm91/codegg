@@ -91,6 +91,12 @@ impl PrincipalKind {
             ))),
         }
     }
+
+    /// Lenient parse for audit readers. Unknown stored kinds degrade to
+    /// `None` so a page decode never fails on forward-compatible data.
+    pub fn parse_for_audit(value: &str) -> Option<Self> {
+        Self::parse(value).ok()
+    }
 }
 
 /// Lifecycle state for a principal record.

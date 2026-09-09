@@ -1993,6 +1993,8 @@ impl CoreDaemon {
             CoreRequest::GoalSet { project_id, .. }
             | CoreRequest::GoalFromFile { project_id, .. }
             | CoreRequest::GoalCheckpoint { project_id, .. } => Some(project_id),
+            CoreRequest::AuditQuery { query } => Some(query.project_id.as_str()),
+            CoreRequest::AuditExport { request } => Some(request.project_id.as_str()),
             _ => None,
         };
         if let Some(raw) = direct {
@@ -6363,6 +6365,156 @@ impl CoreDaemon {
                     Ok(result) => Ok(CoreResponse::LspPreviewApplyResult { result }),
                     Err(error) => Ok(CoreResponse::Error {
                         code: "lsp_preview_apply_failed".into(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::AuditCapabilities => Ok(CoreResponse::AuditCapabilities {
+                capabilities: codegg_core::audit::audit_capabilities_dto(),
+            }),
+            CoreRequest::AuditQuery { query } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "audit query requires a durable database pool".into(),
+                    });
+                };
+                let project = match codegg_core::identity::ProjectId::parse(&query.project_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "audit_invalid_project".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let action_filter = query
+                    .action_filter
+                    .clone()
+                    .filter(|value| !value.is_empty());
+                if let Some(action) = action_filter.as_deref() {
+                    let unknown = codegg_core::audit::AuditAction::parse_lenient(action)
+                        == codegg_core::audit::AuditAction::Unknown
+                        && !action.eq_ignore_ascii_case("unknown");
+                    if unknown {
+                        return Ok(CoreResponse::AuditPage {
+                            events: Vec::new(),
+                            next_cursor: None,
+                            truncated: false,
+                        });
+                    }
+                }
+                let principal_filter =
+                    match query.principal_filter.clone().filter(|v| !v.is_empty()) {
+                        Some(raw) => match codegg_core::identity::PrincipalId::parse(&raw) {
+                            Ok(id) => Some(id),
+                            Err(_) => {
+                                return Ok(CoreResponse::AuditPage {
+                                    events: Vec::new(),
+                                    next_cursor: None,
+                                    truncated: false,
+                                });
+                            }
+                        },
+                        None => None,
+                    };
+                // M004: the M003 gate above already enforced `audit.read`
+                // for this project; the store read is coordinator-internal.
+                let mut filter = codegg_core::audit::AuditQueryFilter::new(Some(project));
+                if let Some(action) = action_filter {
+                    filter = filter.with_action(action);
+                }
+                if let Some(principal) = principal_filter {
+                    filter = filter.with_principal(principal);
+                }
+                if let Some(from_seq) = query.from_seq {
+                    filter = filter.with_from_seq(from_seq);
+                }
+                if let Some(limit) = query.limit {
+                    filter = filter.with_limit(limit);
+                }
+                let store = codegg_core::audit::AuditStore::new(pool);
+                match store.query(&filter).await {
+                    Ok(page) => Ok(CoreResponse::AuditPage {
+                        events: page.events.iter().map(|event| event.to_dto()).collect(),
+                        next_cursor: page.next_cursor,
+                        truncated: page.truncated,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: error.code().to_owned(),
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            CoreRequest::AuditExport { request } => {
+                let Some(pool) = self.pool.clone() else {
+                    return Ok(CoreResponse::Error {
+                        code: "missing_pool".into(),
+                        message: "audit export requires a durable database pool".into(),
+                    });
+                };
+                let project = match codegg_core::identity::ProjectId::parse(&request.project_id) {
+                    Ok(id) => id,
+                    Err(error) => {
+                        return Ok(CoreResponse::Error {
+                            code: "audit_invalid_project".into(),
+                            message: error.to_string(),
+                        });
+                    }
+                };
+                let action_filter = request.action_filter.clone().filter(|v| !v.is_empty());
+                if let Some(action) = action_filter.as_deref() {
+                    let unknown = codegg_core::audit::AuditAction::parse_lenient(action)
+                        == codegg_core::audit::AuditAction::Unknown
+                        && !action.eq_ignore_ascii_case("unknown");
+                    if unknown {
+                        let digest = codegg_core::audit::export_digest(&[]);
+                        return Ok(CoreResponse::AuditExport {
+                            events: Vec::new(),
+                            digest,
+                            count: 0,
+                        });
+                    }
+                }
+                let principal_filter =
+                    match request.principal_filter.clone().filter(|v| !v.is_empty()) {
+                        Some(raw) => match codegg_core::identity::PrincipalId::parse(&raw) {
+                            Ok(id) => Some(id),
+                            Err(_) => {
+                                let digest = codegg_core::audit::export_digest(&[]);
+                                return Ok(CoreResponse::AuditExport {
+                                    events: Vec::new(),
+                                    digest,
+                                    count: 0,
+                                });
+                            }
+                        },
+                        None => None,
+                    };
+                // M004: the M003 gate above already enforced `audit.read`
+                // for this project; the store read is coordinator-internal.
+                let mut filter = codegg_core::audit::AuditQueryFilter::new(Some(project));
+                if let Some(action) = action_filter {
+                    filter = filter.with_action(action);
+                }
+                if let Some(principal) = principal_filter {
+                    filter = filter.with_principal(principal);
+                }
+                if let Some(from_seq) = request.from_seq {
+                    filter = filter.with_from_seq(from_seq);
+                }
+                if let Some(limit) = request.limit {
+                    filter = filter.with_limit(limit);
+                }
+                let store = codegg_core::audit::AuditStore::new(pool);
+                match store.export(&filter).await {
+                    Ok(export) => Ok(CoreResponse::AuditExport {
+                        events: export.events.iter().map(|event| event.to_dto()).collect(),
+                        digest: export.digest,
+                        count: export.count,
+                    }),
+                    Err(error) => Ok(CoreResponse::Error {
+                        code: error.code().to_owned(),
                         message: error.to_string(),
                     }),
                 }

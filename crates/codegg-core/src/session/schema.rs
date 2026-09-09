@@ -181,6 +181,9 @@ pub async fn migrate(pool: &SqlitePool) -> Result<(), StorageError> {
     if current_version < 53 {
         migrate_and_record(pool, 53).await?;
     }
+    if current_version < 54 {
+        migrate_and_record(pool, 54).await?;
+    }
 
     Ok(())
 }
@@ -246,6 +249,7 @@ async fn migrate_and_record(pool: &SqlitePool, version: i64) -> Result<(), Stora
             51 => migrate_v51(&mut tx).await?,
             52 => migrate_v52(&mut tx).await?,
             53 => migrate_v53(&mut tx).await?,
+            54 => migrate_v54(&mut tx).await?,
             _ => {
                 return Err(StorageError::Migration(format!(
                     "unknown migration version {}",
@@ -2304,6 +2308,71 @@ async fn migrate_v53(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(),
         "#,
         "CREATE INDEX IF NOT EXISTS idx_origin_attribution_principal ON origin_attribution(origin_principal)",
         "CREATE INDEX IF NOT EXISTS idx_origin_attribution_decision ON origin_attribution(decision_id)",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Migration(e.to_string()))?;
+    }
+    Ok(())
+}
+/// Identity, authorization, and audit M004: append-only structural audit
+/// record/store with content-retention separation.
+///
+/// `audit_event` rows are append-only: the coordinator assigns `seq` via
+/// `AUTOINCREMENT` (restart-safe through `sqlite_sequence`) and `event_id`
+/// is `UNIQUE` for idempotent retransmission. There is no `UPDATE` or
+/// `DELETE` path for structural rows. Optional content bodies live in the
+/// separate `audit_body` table with their own expiry and may be deleted
+/// without touching the structural record or its digests.
+async fn migrate_v54(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>) -> Result<(), StorageError> {
+    for statement in [
+        r#"
+        CREATE TABLE IF NOT EXISTS audit_event (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT NOT NULL UNIQUE,
+            action TEXT NOT NULL,
+            visibility TEXT NOT NULL CHECK (visibility IN ('project','session_participants','actor_only','administrators')),
+            actor_principal TEXT NOT NULL,
+            actor_kind TEXT NOT NULL,
+            auth_method TEXT NOT NULL,
+            transport_class TEXT NOT NULL,
+            policy TEXT NOT NULL,
+            decision_id TEXT NOT NULL,
+            correlation_id TEXT NOT NULL,
+            causation_parent TEXT,
+            project_id TEXT,
+            session_id TEXT,
+            turn_id TEXT,
+            run_id TEXT,
+            job_id TEXT,
+            worktree_id TEXT,
+            provider_connection_id TEXT,
+            metadata_json TEXT NOT NULL,
+            metadata_digest TEXT NOT NULL,
+            content_digest TEXT,
+            body_ref TEXT,
+            body_expires_at INTEGER,
+            time_created INTEGER NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_audit_event_project_seq ON audit_event(project_id, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_event_actor ON audit_event(actor_principal, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_event_action ON audit_event(action, seq)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_event_decision ON audit_event(decision_id)",
+        r#"
+        CREATE TABLE IF NOT EXISTS audit_body (
+            body_ref TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            content_digest TEXT NOT NULL,
+            body BLOB NOT NULL,
+            byte_length INTEGER NOT NULL,
+            expires_at INTEGER,
+            time_created INTEGER NOT NULL
+        )
+        "#,
+        "CREATE INDEX IF NOT EXISTS idx_audit_body_event ON audit_body(event_id)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_body_expires ON audit_body(expires_at)",
     ] {
         sqlx::query(statement)
             .execute(&mut **tx)

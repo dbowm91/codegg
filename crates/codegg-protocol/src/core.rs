@@ -122,6 +122,93 @@ fn default_manual_refresh_reason() -> AssetRefreshReasonDto {
     AssetRefreshReasonDto::Manual
 }
 
+/// M004 append-only audit foundation: bounded query/page/export DTOs.
+///
+/// Structural metadata only; content bodies are referenced by digest/handle
+/// and expire independently under a separate retention policy. Unknown
+/// action/visibility strings degrade safely in readers (they are stored as
+/// opaque strings and never fail a page decode).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditQueryRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub action_filter: Option<String>,
+    #[serde(default)]
+    pub principal_filter: Option<String>,
+    #[serde(default)]
+    pub from_seq: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditExportRequestDto {
+    pub project_id: String,
+    #[serde(default)]
+    pub action_filter: Option<String>,
+    #[serde(default)]
+    pub principal_filter: Option<String>,
+    #[serde(default)]
+    pub from_seq: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Wire shape of one structural audit event. Bodies are never embedded;
+/// readers fetch them through the bounded body handle when retention
+/// still holds them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditEventDto {
+    pub seq: u64,
+    pub event_id: String,
+    pub action: String,
+    pub visibility: String,
+    pub actor_principal: String,
+    pub auth_method: String,
+    pub transport_class: String,
+    pub policy: String,
+    pub decision_id: String,
+    pub correlation_id: String,
+    #[serde(default)]
+    pub causation_parent: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub worktree_id: Option<String>,
+    #[serde(default)]
+    pub provider_connection_id: Option<String>,
+    #[serde(default)]
+    pub metadata: std::collections::BTreeMap<String, String>,
+    pub metadata_digest: String,
+    #[serde(default)]
+    pub content_digest: Option<String>,
+    #[serde(default)]
+    pub body_ref: Option<String>,
+    #[serde(default)]
+    pub body_expires_at: Option<i64>,
+    pub time_created: i64,
+}
+
+/// Capability negotiation for the audit surface. Clients MUST clamp
+/// query/export limits to these bounds before sending.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuditCapabilitiesDto {
+    pub supported: bool,
+    pub max_query_limit: u32,
+    pub max_export_events: u32,
+    pub max_metadata_entries: u32,
+    pub max_metadata_total_bytes: u32,
+    pub max_body_bytes: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub protocol_version: u32,
@@ -523,6 +610,25 @@ pub enum CoreResponse {
     },
     LspPreviewApplyResult {
         result: crate::lsp::LspPreviewApplyResultDto,
+    },
+    // ── Identity/Audit M004: Append-Only Audit Foundation ───────────────
+    /// Bounded structural audit page ordered by coordinator sequence.
+    AuditPage {
+        events: Vec<AuditEventDto>,
+        #[serde(default)]
+        next_cursor: Option<u64>,
+        truncated: bool,
+    },
+    /// Bounded structural audit export with an integrity digest over the
+    /// canonical event ordering.
+    AuditExport {
+        events: Vec<AuditEventDto>,
+        digest: String,
+        count: usize,
+    },
+    /// Audit capability negotiation response.
+    AuditCapabilities {
+        capabilities: AuditCapabilitiesDto,
     },
 }
 
@@ -1152,6 +1258,18 @@ pub enum CoreRequest {
     LspPreviewApply {
         request: crate::lsp::LspPreviewApplyRequestDto,
     },
+    /// M004: bounded structural audit query (project-scoped, `audit.read`).
+    /// Unknown action/principal filters degrade to empty pages, never to
+    /// an error that leaks existence.
+    AuditQuery {
+        query: AuditQueryRequestDto,
+    },
+    /// M004: bounded structural audit export with an integrity digest.
+    AuditExport {
+        request: AuditExportRequestDto,
+    },
+    /// M004: capability negotiation for audit bounds.
+    AuditCapabilities,
 }
 
 #[allow(clippy::large_enum_variant)]

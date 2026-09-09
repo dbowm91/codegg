@@ -758,6 +758,19 @@ pub fn operation_descriptor(request: &codegg_protocol::core::CoreRequest) -> Ope
             ScopeKind::Opaque,
             Some(Capability::FileModify),
         ),
+        R::AuditQuery { .. } => OperationDescriptor::new(
+            "audit_query",
+            ScopeKind::DirectProject,
+            Some(Capability::AuditRead),
+        ),
+        R::AuditExport { .. } => OperationDescriptor::new(
+            "audit_export",
+            ScopeKind::DirectProject,
+            Some(Capability::AuditRead),
+        ),
+        R::AuditCapabilities => {
+            OperationDescriptor::new("audit_capabilities", ScopeKind::Global, None)
+        }
     }
 }
 
@@ -1257,6 +1270,25 @@ fn representative_requests() -> Vec<codegg_protocol::core::CoreRequest> {
         R::LspPreviewApply {
             request: dummy_lsp_preview_apply(),
         },
+        R::AuditQuery {
+            query: codegg_protocol::core::AuditQueryRequestDto {
+                project_id: String::new(),
+                action_filter: None,
+                principal_filter: None,
+                from_seq: None,
+                limit: None,
+            },
+        },
+        R::AuditExport {
+            request: codegg_protocol::core::AuditExportRequestDto {
+                project_id: String::new(),
+                action_filter: None,
+                principal_filter: None,
+                from_seq: None,
+                limit: None,
+            },
+        },
+        R::AuditCapabilities,
     ]
 }
 
@@ -1905,6 +1937,23 @@ pub async fn bounded_resolver_for_principal(
         }
     }
     BoundedProjectResolver::new(allowed)
+}
+
+/// Copy audit decision provenance from a gate-enforced decision (M004).
+///
+/// The daemon boundary calls this with the [`AuthorizationDecision`] it
+/// just enforced, so the resulting
+/// [`crate::audit::AuditDecisionProvenance`] carries the real decision
+/// linkage into the append-only audit store. Instrumentation (M005) MUST
+/// use this bridge rather than fabricating provenance: request payloads
+/// supply locators but never authority.
+pub fn audit_provenance(decision: &AuthorizationDecision) -> crate::audit::AuditDecisionProvenance {
+    crate::audit::AuditDecisionProvenance::new(
+        decision.decision_id.clone(),
+        decision.correlation_id.clone(),
+        decision.policy.as_str().to_owned(),
+        decision.project_id.clone(),
+    )
 }
 
 /// Filter `candidates` to the projects where `principal` holds

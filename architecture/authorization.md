@@ -134,7 +134,9 @@ the capability on the scoped project, deployment connections require an
 Source of truth is `operation_descriptor` in
 `crates/codegg-core/src/authorization.rs`
 (`scripts/check_authorization_matrix.py` enforces coverage). Current
-rendering (135 native operations):
+rendering (138 native operations; M004 adds `audit_capabilities`,
+`audit_export`, `audit_query` — see `architecture/audit.md` for the
+audit store contract):
 
 | Operation | Scope | Capability |
 |---|---|---|
@@ -143,6 +145,9 @@ rendering (135 native operations):
 | `asset_refresh` | direct_project | `project.configure` |
 | `asset_refresh_capabilities` | global | `none` |
 | `asset_refresh_status` | direct_project | `project.read` |
+| `audit_capabilities` | global | `none` |
+| `audit_export` | direct_project | `audit.read` |
+| `audit_query` | direct_project | `audit.read` |
 | `connection_delete` | opaque | `project.configure` |
 | `connection_disable` | opaque | `project.configure` |
 | `connection_enable` | opaque | `project.configure` |
