@@ -1,6 +1,13 @@
 # Interactive Process Sessions Roadmap
 
-Status: active
+Status: closed
+
+All milestones M001–M003 are closed (see milestone status table). The
+subsystem is complete: CodeGG has a real bounded scheduler-owned
+interactive workspace terminal in the TUI with deterministic lifecycle
+cleanup, and obsolete/misleading terminal metadata/tool surfaces are
+truthfully dispositioned. `shell_session` full removal remains owned by
+the residual-runtime-consolidation roadmap and is not tracked here.
 
 Long-term references:
 
@@ -106,4 +113,4 @@ M001-M003 accepted: CodeGG has a real bounded scheduler-owned interactive worksp
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/interactive-process-sessions/001-scheduler-owned-pty-engine.md` | `plans/closure/interactive-process-sessions/001-status.md` | — |
 | M002 | closed | `plans/implementation/interactive-process-sessions/002-bounded-attach-resume-protocol.md` | `plans/closure/interactive-process-sessions/002-status.md` | — |
-| M003 | ready | `plans/implementation/interactive-process-sessions/003-tui-terminal-integration-and-legacy-disposition.md` | — | — |
+| M003 | closed | `plans/implementation/interactive-process-sessions/003-tui-terminal-integration-and-legacy-disposition.md` | `plans/closure/interactive-process-sessions/003-status.md` | — |

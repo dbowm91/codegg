@@ -1,6 +1,8 @@
 # Interactive Process Sessions Milestone 003 — TUI Terminal Integration and Legacy Disposition
 
-Status: ready for handoff
+Status: implemented
+
+Closure: `plans/closure/interactive-process-sessions/003-status.md` (closed).
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
