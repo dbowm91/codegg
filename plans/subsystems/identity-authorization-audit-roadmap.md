@@ -115,6 +115,6 @@ Roadmap closes when M001-M005 have accepted closure records and team network req
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/identity-authorization-audit/001-principal-membership-capability-domain.md` | `plans/closure/identity-authorization-audit/001-status.md` | — |
 | M002 | closed | `plans/implementation/identity-authorization-audit/002-transport-authentication-principal-binding.md` | `plans/closure/identity-authorization-audit/002-status.md` | — |
-| M003 | ready | `plans/implementation/identity-authorization-audit/003-daemon-authorization-and-attribution.md` | — | — |
-| M004 | blocked | `plans/implementation/identity-authorization-audit/004-append-only-audit-foundation.md` | — | M003 |
+| M003 | closed | `plans/implementation/identity-authorization-audit/003-daemon-authorization-and-attribution.md` | `plans/closure/identity-authorization-audit/003-status.md` | — |
+| M004 | ready | `plans/implementation/identity-authorization-audit/004-append-only-audit-foundation.md` | — | — |
 | M005 | blocked | `plans/implementation/identity-authorization-audit/005-audit-instrumentation-attribution-closure.md` | — | M004 |

@@ -1,6 +1,6 @@
 # Presence and Observation Milestone 001 — Project-Scoped Presence Leases
 
-Status: blocked
+Status: ready for handoff (unblocked by identity M003 closure at `plans/closure/identity-authorization-audit/003-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

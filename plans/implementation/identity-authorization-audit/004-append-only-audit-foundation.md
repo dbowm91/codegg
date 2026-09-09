@@ -1,6 +1,6 @@
 # Identity, Authorization, and Audit Milestone 004 — Append-Only Audit Foundation
 
-Status: blocked
+Status: ready for handoff (unblocked by M003 closure at `plans/closure/identity-authorization-audit/003-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
