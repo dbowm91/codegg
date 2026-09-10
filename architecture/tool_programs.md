@@ -191,11 +191,12 @@ program via the `tool_program` tool. The tool:
 7. Returns the `program_id` and submission status.
 
 The tool itself is `DirectOnly` — only the agent loop can call it.
-Programs it produces may only call `DirectOrProgrammatic` tools.
+Programs it produces may only call `DirectOrProgrammatic` tools and
+the hidden `ProgrammaticOnly` operation-scoped adapters (M003).
 
 ### Read-Only Tool Palette
 
-Six tools are eligible for programmatic invocation:
+Eight tools are eligible for programmatic invocation:
 
 | Tool | Caller Policy | Effect Class | Output Schema | Cache TTL |
 |------|--------------|--------------|---------------|-----------|
@@ -205,6 +206,8 @@ Six tools are eligible for programmatic invocation:
 | `list` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `entries`, `count`, `truncated` | 30s |
 | `diff` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `has_changes`, `diff`, `truncated`, `original_bytes`, `current_bytes` | 60s |
 | `repo_search` | `DirectOrProgrammatic` | `ReadOnly` | upstream eggsearch JSON object (backend-versioned) | disabled (nondeterministic external read) |
+| `git_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `truncated`, `results` (unwrapped `GitPayload`) | disabled (workspace-version dependent) |
+| `lsp_read` | `ProgrammaticOnly` (hidden) | `ReadOnly` | `operation`, `result_count`, `truncated`, `results` (canonical `LspToolOutput`) | disabled (server-state dependent) |
 
 ### Manifest Resolution
 
@@ -278,7 +281,8 @@ schema (`path`, `has_changes`, `diff`, `truncated`, byte counts):
 Admitted: `read`, `glob`, `grep`, `list`, `diff`. Deferred without promotion:
 mutations (`write`, `edit`, `apply_patch`, `replace`, `commit`), process
 execution (`bash`, `terminal`, `test`, `task`), multiplexed read/mutation
-surfaces (`git`, `lsp` — M003 scope), external network reads (`repo_search`
+surfaces (`git`, `lsp` — covered since Expansion M003 by the hidden
+`git_read`/`lsp_read` adapters; the multiplexed tools stay `DirectOnly`), external network reads (`repo_search`
 — M002 scope at the time; since admitted, see Expansion M002 — and other
 search/fetch wrappers, `websearch`, `webfetch` — still out of scope),
 `tool_program` itself (`DirectOnly`), and workflow/state surfaces (`skill`,
@@ -298,7 +302,8 @@ classified external read with daemon-owned runtime context,
 `ExternalUntrusted` provenance, and truthful nondeterministic
 cache/replay semantics. Admission requires all of:
 
-1. explicit `DirectOrProgrammatic` caller policy;
+1. explicit `DirectOrProgrammatic` caller policy (or
+   `ProgrammaticOnly` for the hidden M003 operation-scoped adapters);
 2. read-side effect class (`ReadOnly`);
 3. declared output schema (manifest-gated; intentionally permissive
    `object` because the upstream eggsearch JSON shape is
@@ -361,12 +366,94 @@ disabled program-call cache, and a permissive object output schema:
 
 Admitted: `read`, `glob`, `grep`, `list`, `diff` (M001) plus `repo_search`.
 Still deferred without promotion: mutations, process execution,
-multiplexed `git`/`lsp` (M003 scope), every other external search/fetch
+multiplexed `git`/`lsp` (admitted in M003 only as the hidden
+`git_read`/`lsp_read` operation-scoped adapters — the multiplexed
+tools themselves stay `DirectOnly`; see Expansion M003), every other
+external search/fetch
 surface (`websearch`, `webfetch`, `repo_fetch`, `repo_map`,
 `codesearch` compat alias, `batch_fetch`, `security_search`,
 `research_search`, `evidence_bundle`, `research`), `tool_program` itself,
 and workflow/state surfaces. The census is encoded in
 `tests/tool_program_search_palette.rs::candidate_census_*`.
+
+## Expansion M003: Operation-Scoped Git/LSP Read Adapters
+
+Status: implemented (see `plans/closure/tool-program-capability-expansion/003-status.md`).
+
+### Why adapters instead of promotion
+
+`git` and `lsp` are multiplexed tools: `ToolContract` is tool-level,
+so marking either `DirectOrProgrammatic` would structurally admit
+mutation-capable inputs (typed git `mutation`/`recover` actions, LSP
+`renamePreview`/`formatPreview`/code-action apply). The M003 adapters
+are separate hidden `ProgrammaticOnly` tools whose input schemas
+cannot name a mutation at all (strict `deny_unknown_fields` parsing
+plus an `operation` enum limited to the read subset).
+
+### Operation allow/deny table
+
+| Surface | Allowed (adapter op) | Denied (structurally unavailable) |
+|---|---|---|
+| `git_read` | `status`, `diff` (optional `base_ref`), `log` (`max_count` clamped 1–50), `branches` (local only) | `show`, `blame`, tags, remotes, worktrees, stashes, `rev-parse`, every typed `mutation`, `recover`, `operation_state`, raw `subcommand`/`args`, any `workdir` input |
+| `lsp_read` | `diagnostics`, `documentSymbol`, `workspaceSymbol`, `hover`, `goToDefinition`, `findReferences` | all previews (`renamePreview`, `formatPreview`, `sourceActionPreview`, `codeActionPreview`, `semanticCheckPreview`), contexts, hierarchies, workflows, capabilities, and every preview field (`new_name`, `action`, `content`, `patch`, …) |
+
+Deferred reads that stay out of the minimal subset (e.g. git
+`show`/`blame`, LSP `declaration`/`callHierarchy`) remain available
+to direct callers through the multiplexed tools; a future milestone
+may admit them through the same adapter pattern with fresh evidence.
+
+### Canonical delegation map
+
+- `git_read` executes typed `codegg_git::GitOperation`s through
+  `GitExecutionService` (the canonical read executor, itself
+  delegating to `egggit`). No `workdir` input: the broker
+  execution-context cwd (program workspace root) is the repository
+  root. Display is the canonical service stdout bounded to 64 KiB;
+  `results` is the unwrapped typed payload.
+- `lsp_read` executes through `LspTool::execute_scoped_read` — the
+  exact typed implementation behind the model-facing `lsp` read arms —
+  sharing the registry's `LspService` and the program workspace root
+  as `allowed_root`. Path validation, per-operation bounds, and
+  `egglsp`/`LocalUntrusted` provenance are therefore the canonical
+  rules; the adapter implements no LSP protocol logic and never calls
+  the `Tool` trait (tool-broker boundary stays intact).
+
+### Eligibility extension (workspace/server-state-dependent reads)
+
+Both adapters are admitted under the M001 matrix with the M002-style
+declared exception for state-dependent reads:
+
+1. explicit `ProgrammaticOnly` caller policy (hidden from model
+   definitions, `tool_search`, and all disclosure palettes);
+2. read-side effect class (`ReadOnly`);
+3. declared output schema (manifest-gated);
+4. explicit input/output bounds (log-count clamp, `base_ref`
+   alphabet/length bound, 1-indexed positions, 200-char symbol
+   query, 64 KiB git display cap, broker artifact boundary above);
+5. execution-context workspace authority (no `workdir` input; LSP
+   paths validated against the program root);
+6. explicitly version-dependent semantics (`Idempotent` means ledger
+   replay serves the recorded execution-time result, NOT that a
+   fresh rerun recomputes the same results — git races with worktree
+   mutations, LSP reflects live server state);
+7. conservative retry/cache declaration: no broker-side retries and
+   the program-call cache DISABLED so reruns re-observe state;
+8. truthful replay/ledger behavior (only `Success` maps to a
+   programmatic `Ok`; unavailable LSP servers fail closed as typed
+   `InfrastructureError`);
+9. no hidden mutable globals, no subprocess/shell of its own, no
+   mutation surface.
+
+`resolve_contract_snapshot` admits `ProgrammaticOnly` alongside
+`DirectOrProgrammatic` (manifest resolution already did); `DirectOnly`
+remains rejected everywhere. Contract-hash changes invalidate stale
+manifests by construction.
+
+Enforced by `tests/tool_program_git_lsp_palette.rs` (allow/deny
+table, delegation equivalence, broker matrix, mutation negatives,
+workspace isolation, bounds, rerun-vs-replay, disclosure invariance)
+plus the `src/tool/git_read.rs` / `src/tool/lsp_read.rs` contract
+unit tests.
 
 ## M007: Child-Job Composition
 

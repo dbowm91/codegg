@@ -111,7 +111,7 @@ callable     — broker + permission + contract allow this caller/input
 | `Core` | Ordinary coding immediate | `defer_loading=false`, in `CORE_PALETTE` |
 | `Deferred` | Registered, deferred initially, discoverable | `defer_loading=true`, in catalog + `tool_search` |
 | `ProfileSpecific` | Deferred by default; immediate for named roles | `deferred` + `immediate_for_agent(name, role)` |
-| `Hidden` | Never model-visible (e.g. `invalid`) | `expose_in_definitions=false` |
+| `Hidden` | Never model-visible (e.g. `invalid`, M003 `git_read`/`lsp_read` program-only adapters) | `expose_in_definitions=false` |
 
 Runtime-unavailable (disabled backend, task without spawner) is separate:
 omitted as `MissingBackend`/`NonCallable`, never advertised as merely

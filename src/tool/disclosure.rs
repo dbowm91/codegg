@@ -62,6 +62,11 @@ pub fn disclosure_for(name: &str) -> ToolDisclosure {
     match name {
         // Internal catch-all: never a model-called tool.
         "invalid" => ToolDisclosure::Hidden,
+        // M003 operation-scoped program adapters: hidden program-only
+        // reads delegating canonical Git/LSP owners. Registered and
+        // broker-callable by programs, never model-visible and never
+        // returned by `tool_search`.
+        "git_read" | "lsp_read" => ToolDisclosure::Hidden,
         // Specialist synthesis / evidence / fetch variants: deferred,
         // discoverable via `tool_search`. `repo_search` stays core as the
         // single canonical repo-inspect primitive; `codesearch` remains

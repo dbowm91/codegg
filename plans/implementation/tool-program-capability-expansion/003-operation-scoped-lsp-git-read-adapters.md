@@ -1,6 +1,6 @@
 # Tool Program Capability Expansion Milestone 003 — Operation-Scoped LSP and Git Read Adapters
 
-Status: ready for handoff (unblocked by M002 closure at `plans/closure/tool-program-capability-expansion/002-status.md`; M001 closed at `plans/closure/tool-program-capability-expansion/001-status.md`)
+Status: implemented (closed at `plans/closure/tool-program-capability-expansion/003-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

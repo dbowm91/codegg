@@ -26,6 +26,7 @@ pub mod evidence_bundle;
 pub mod factory;
 pub mod formatter;
 pub mod git;
+pub mod git_read;
 pub mod glob;
 pub mod goal;
 pub mod grep;
@@ -34,6 +35,7 @@ pub mod integrated_config;
 pub mod invalid;
 pub mod list;
 pub mod lsp;
+pub mod lsp_read;
 pub(crate) mod lsp_security;
 pub mod patch_util;
 pub mod plan;
@@ -584,6 +586,15 @@ impl ToolRegistry {
         };
         registry.register(git_tool);
 
+        // --- M003: hidden program-only git read adapter. ---
+        // Operation-scoped `ProgrammaticOnly` reads delegating the
+        // canonical git execution service. Hidden from model
+        // definitions and `tool_search`; broker-callable by programs.
+        registry.register(match workspace_root.as_ref() {
+            Some(root) => crate::tool::git_read::GitReadTool::default().with_workdir(root.clone()),
+            None => crate::tool::git_read::GitReadTool::default(),
+        });
+
         // --- LSP: consult resolved backend config. ---
         let lsp_backend = options
             .tool_backends
@@ -594,15 +605,18 @@ impl ToolRegistry {
             .as_ref()
             .map(|c| c.fallback_to_native())
             .unwrap_or(true);
+        // M003: one shared service for the model-facing `lsp` tool and
+        // the hidden program-only `lsp_read` adapter so both observe
+        // identical server state.
+        let lsp_service_shared = options.lsp_service.unwrap_or_else(|| {
+            crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
+                crate::config::schema::LspConfig::default(),
+            ))
+        });
         match lsp_backend {
             ToolImplementationBackend::Native | ToolImplementationBackend::Builtin => {
-                let lsp_service = options.lsp_service.unwrap_or_else(|| {
-                    crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
-                        crate::config::schema::LspConfig::default(),
-                    ))
-                });
                 let tool = crate::tool::lsp::LspTool::with_cache_config(
-                    lsp_service,
+                    lsp_service_shared.clone(),
                     options.lsp_cache_config,
                 );
                 registry.register(match workspace_root.as_ref() {
@@ -613,10 +627,7 @@ impl ToolRegistry {
             ToolImplementationBackend::Disabled => {
                 registry.register(crate::tool::disabled::DisabledTool::new(
                     "lsp",
-                    crate::tool::lsp::LspTool::new(crate::lsp::service::LspService::new_arc(
-                        crate::lsp::config_lsp_to_egglsp(crate::config::schema::LspConfig::default()),
-                    ))
-                    .description(),
+                    crate::tool::lsp::LspTool::new(lsp_service_shared.clone()).description(),
                     "lsp backend is configured as 'disabled' ([tool_backends.lsp].backend = \"disabled\")",
                 ));
             }
@@ -625,13 +636,8 @@ impl ToolRegistry {
                     // MCP-configured but no live server: keep the
                     // native wrapper as the active path. Diagnostics
                     // report this row as `fallback-native`.
-                    let lsp_service = options.lsp_service.clone().unwrap_or_else(|| {
-                        crate::lsp::service::LspService::new_arc(crate::lsp::config_lsp_to_egglsp(
-                            crate::config::schema::LspConfig::default(),
-                        ))
-                    });
                     let tool = crate::tool::lsp::LspTool::with_cache_config(
-                        lsp_service,
+                        lsp_service_shared.clone(),
                         options.lsp_cache_config,
                     );
                     registry.register(match workspace_root.as_ref() {
@@ -650,6 +656,19 @@ impl ToolRegistry {
                     ));
                 }
             }
+        }
+        // --- M003: hidden program-only LSP read adapter. ---
+        // Always registered (even when the model-facing `lsp` tool is
+        // a disabled stub): without a live server its reads fail
+        // closed as typed execution errors, exactly like the M002
+        // `repo_search` unavailable-backend behavior. Hidden from
+        // model definitions and `tool_search`.
+        {
+            let tool = crate::tool::lsp_read::LspReadTool::new(lsp_service_shared);
+            registry.register(match workspace_root.as_ref() {
+                Some(root) => tool.with_allowed_root(root.clone()),
+                None => tool,
+            });
         }
 
         let commit_tool = if let Some(root) = workspace_root.as_ref() {

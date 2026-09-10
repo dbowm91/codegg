@@ -330,6 +330,14 @@ action regardless of routing mode.
     paths but do not maintain copies. Drift is caught by the Git forbidden
     pattern guard and the existing policy tests.
 
+12. **Programmatic availability (M003).** Tool Programs cannot call the
+    multiplexed `git` tool (`DirectOnly`). The hidden `ProgrammaticOnly`
+    `git_read` adapter (`src/tool/git_read.rs`) exposes only
+    `status`/`diff`/`log`/`branches` through `GitExecutionService`
+    with the program workspace root as repository root, a 64 KiB
+    display cap, and disabled program-call cache. See
+    `architecture/tool_programs.md` (Expansion M003).
+
 12. **RunStore audit-safe rerun argv.** `RerunDescriptor.argv` is
     `Option<AuditSafeArgv>` — always sanitized via URL sanitizer. Raw URL
     reaches Git only ephemerally during execution.

@@ -118,6 +118,13 @@ This ensures existing tools work without modification.
    manifest, contract snapshot, and policy revision.
 4. **Programmatic failure mapping**: `into_programmatic_outcome()`
    maps terminal statuses — only `Success` becomes a `CompletedCall`.
+5. **Program-capable caller policies**: `resolve_manifest` admits
+   `DirectOrProgrammatic` and `ProgrammaticOnly` (rejecting
+   `DirectOnly`); `resolve_contract_snapshot`
+   (`src/tool/tool_program_context.rs`) admits the same two policies
+   with a read-side effect class. The hidden M003 `git_read`/`lsp_read`
+   adapters are `ProgrammaticOnly`: broker-callable by programs,
+   denied to `Agent` callers, and invisible to model disclosure.
 5. **Workspace artifacts**: `with_artifact_store()` attaches the
    canonical artifact store for large output spillover.
 

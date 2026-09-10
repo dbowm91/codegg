@@ -209,9 +209,17 @@ pub fn resolve_contract_snapshot(
         let contract = broker
             .lookup_contract(tool_name)
             .map_err(|e| format!("tool '{}' not found in catalog: {}", tool_name, e))?;
-        // M014-B1: Reject direct-only and programmatic-only contracts
-        // (only DirectOrProgrammatic is allowed for Tool Programs).
-        if contract.caller_policy != crate::tool::contract::ToolCallerPolicy::DirectOrProgrammatic {
+        // M014-B1 + M003: program-callable contracts are
+        // `DirectOrProgrammatic` (ordinary reads such as `read`,
+        // `diff`, `repo_search`) or `ProgrammaticOnly` (hidden
+        // operation-scoped adapters such as `git_read`/`lsp_read`
+        // that must never be model-called). `DirectOnly` remains
+        // rejected.
+        if !matches!(
+            contract.caller_policy,
+            crate::tool::contract::ToolCallerPolicy::DirectOrProgrammatic
+                | crate::tool::contract::ToolCallerPolicy::ProgrammaticOnly
+        ) {
             return Err(format!(
                 "tool '{}' has unsupported caller policy for Tool Programs",
                 tool_name

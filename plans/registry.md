@@ -32,7 +32,7 @@ Canonical direction remains in:
 | Presence and read-only observation | closed | `plans/subsystems/presence-observation-roadmap.md` | M001–M003 closed | — |
 | Project collaboration | closed | `plans/subsystems/project-collaboration-roadmap.md` | M001+M002+M003 closed | — |
 | Interactive process sessions | closed | `plans/subsystems/interactive-process-sessions-roadmap.md` | M001–M003 closed | — |
-| Tool Program capability expansion | active | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M003 ready | M003 ready on the M001 eligibility contract + M002 search seam. |
+| Tool Program capability expansion | closed | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M001–M003 closed | — |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | — |
@@ -56,9 +56,10 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Plan | Why ready |
-|---|---|---|---|
-| Tool Program capability expansion | M003 — operation-scoped Git/LSP reads | `plans/implementation/tool-program-capability-expansion/003-operation-scoped-lsp-git-read-adapters.md` | M001 eligibility contract + M002 search seam closed; ADR-0001 supplies the authority contract. |
+No implementation plan is currently dependency-ready in the Tool
+Program capability expansion subsystem (M001–M003 are closed; see the
+closure control points below). A plan moves to `active` only when
+implementation actually begins.
 
 These four plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
 
@@ -69,7 +70,7 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 3. Presence M001/M002/M003 are closed and the subsystem is complete. Observation consumes the already-closed session-projection interface.
 4. Project collaboration M001+M002+M003 are closed and the subsystem is complete: durable authorized channels/messages with ordering/retry/restart/retention/auth/privacy, bounded TUI chat with observer insert routing and zero-control proof, and separately authorized structured actions with idempotent scheduler-boundary submits and audit causation. Free text is never an execution interface.
 5. Interactive-process M001/M002/M003 are closed; the subsystem roadmap is closed.
-6. Tool Program expansion M001 is closed (eligibility contract + `diff` promotion, closure at `plans/closure/tool-program-capability-expansion/001-status.md`) and M002 is closed (external search seam, closure at `plans/closure/tool-program-capability-expansion/002-status.md`). M003 narrow Git/LSP reads may proceed on that contract. No mutation authority is added.
+6. Tool Program expansion M001 is closed (eligibility contract + `diff` promotion, closure at `plans/closure/tool-program-capability-expansion/001-status.md`), M002 is closed (external search seam, closure at `plans/closure/tool-program-capability-expansion/002-status.md`), and M003 is closed (operation-scoped Git/LSP read adapters, closure at `plans/closure/tool-program-capability-expansion/003-status.md`). The expansion subsystem is complete: programs hold a broader useful read capability through existing broker/manifest/ledger authority with no mutation authority added.
 7. None of this work authorizes a new scheduler, service bus, verification framework, release automation, persistent search index, remote sandbox, or broader Windows support tier.
 
 ## Blocked work
@@ -97,6 +98,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Tool Programs | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Tool Program capability expansion | M001 closed | `plans/closure/tool-program-capability-expansion/001-status.md` |
 | Tool Program capability expansion | M002 closed | `plans/closure/tool-program-capability-expansion/002-status.md` |
+| Tool Program capability expansion | M003 closed | `plans/closure/tool-program-capability-expansion/003-status.md` |
 | Residual runtime consolidation | M001 closed | `plans/closure/residual-runtime-consolidation/001-status.md` |
 | Residual runtime consolidation | M002 closed | `plans/closure/residual-runtime-consolidation/002-status.md` |
 | Residual runtime consolidation | M003 closed | `plans/closure/residual-runtime-consolidation/003-status.md` |

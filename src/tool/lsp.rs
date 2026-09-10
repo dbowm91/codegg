@@ -631,6 +631,25 @@ impl PartialEq for LspTool {
     }
 }
 
+/// M003 operation-scoped read request: the six program-readable LSP
+/// operations with only their read fields.
+///
+/// This is the single typed entry point behind both the model-facing
+/// `execute()` arms below and the hidden `lsp_read` program adapter
+/// (`src/tool/lsp_read.rs`), so programs observe the exact canonical
+/// path validation, server dispatch, bounds, display shaping, and
+/// error taxonomy — the adapter implements no LSP logic of its own.
+/// Preview/mutation-adjacent operations cannot be expressed here.
+#[derive(Debug, Clone)]
+pub(crate) struct ScopedLspRead {
+    pub(crate) operation: String,
+    pub(crate) file_path: Option<String>,
+    pub(crate) line: Option<u32>,
+    pub(crate) column: Option<u32>,
+    pub(crate) symbol: Option<String>,
+    pub(crate) execution_root: Option<PathBuf>,
+}
+
 impl LspTool {
     pub fn new(service: Arc<crate::lsp::service::LspService>) -> Self {
         Self::with_cache_config(service, None)
@@ -1344,6 +1363,305 @@ impl LspTool {
                 })
             }
         }
+    }
+
+    /// Execute one of the six program-readable operations
+    /// (`diagnostics`, `documentSymbol`, `workspaceSymbol`, `hover`,
+    /// `goToDefinition`, `findReferences`). Any other operation name
+    /// fails closed without touching a language server.
+    pub(crate) async fn execute_scoped_read(
+        &self,
+        req: &ScopedLspRead,
+    ) -> Result<String, ToolError> {
+        let ops = crate::lsp::operations::LspOperations::new(self.service.clone());
+        let file_path_str = req.file_path.clone();
+
+        let result = match req.operation.as_str() {
+            "goToDefinition" => {
+                let file = self.resolve_file(&req.file_path)?;
+                let (line, col) = self.require_line_col(&req.line, &req.column)?;
+                let pos = to_lsp_position(line, col);
+                let locs = ops
+                    .go_to_definition(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("goToDefinition: {e}")))?;
+                let summaries: Vec<LocationSummary> = locs
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.target_range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.target_uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "goToDefinition".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated: false,
+                    results: summaries,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "findReferences" => {
+                let file = self.resolve_file(&req.file_path)?;
+                let (line, col) = self.require_line_col(&req.line, &req.column)?;
+                let pos = to_lsp_position(line, col);
+                let refs = ops
+                    .find_references(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("findReferences: {e}")))?;
+                let truncated = refs.len() > MAX_REFERENCES;
+                let capped: Vec<_> = refs.into_iter().take(MAX_REFERENCES).collect();
+                let summaries: Vec<LocationSummary> = capped
+                    .iter()
+                    .map(|loc| {
+                        let range = loc.range;
+                        LocationSummary {
+                            file: uri_to_path(&loc.uri),
+                            start_line: range.start.line + 1,
+                            start_column: range.start.character + 1,
+                            end_line: range.end.line + 1,
+                            end_column: range.end.character + 1,
+                        }
+                    })
+                    .collect();
+                let output = LspToolOutput {
+                    operation: "findReferences".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "hover" => {
+                let file = self.resolve_file(&req.file_path)?;
+                let (line, col) = self.require_line_col(&req.line, &req.column)?;
+                let pos = to_lsp_position(line, col);
+                let hover_text = ops
+                    .hover(&file, pos.line, pos.character)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("hover: {e}")))?;
+                let contents = hover_text.unwrap_or_default();
+                let truncated = contents.len() > MAX_HOVER_CHARS;
+                let display = if truncated {
+                    &contents[..MAX_HOVER_CHARS]
+                } else {
+                    &contents
+                };
+                let summary = HoverSummary {
+                    file: file_path_str.clone().unwrap_or_default(),
+                    line,
+                    column: col,
+                    contents: display.to_string(),
+                };
+                let output = LspToolOutput {
+                    operation: "hover".to_string(),
+                    file_path: file_path_str,
+                    result_count: if summary.contents.is_empty() { 0 } else { 1 },
+                    truncated,
+                    results: summary,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "documentSymbol" => {
+                let file = self.resolve_file(&req.file_path)?;
+                let syms = ops
+                    .document_symbols(&file)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("documentSymbol: {e}")))?;
+                let file_str = file.to_string_lossy().to_string();
+                let mut remaining = MAX_SYMBOLS;
+                let mut summaries = Vec::new();
+                Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
+                let output = LspToolOutput {
+                    operation: "documentSymbol".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated: remaining == 0,
+                    results: summaries,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "diagnostics" => {
+                let file = self.resolve_file(&req.file_path)?;
+                let (key, uri_str) = self
+                    .service
+                    .ensure_file_open_from_disk(&file)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
+                let snapshot = self
+                    .service
+                    .get_diagnostic_snapshot_for_key(&key, &uri_str)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
+                let warming = snapshot.diagnostics_may_still_be_warming();
+                let summaries: Vec<DiagnosticSummary> = snapshot
+                    .diagnostics
+                    .iter()
+                    .map(|d| DiagnosticSummary {
+                        file: d.file.clone(),
+                        line: d.line + 1,
+                        column: d.column + 1,
+                        severity: severity_to_string(d.severity),
+                        source: d.source.clone(),
+                        code: d.code.clone(),
+                        message: d.message.clone(),
+                    })
+                    .collect();
+                #[derive(Serialize)]
+                struct DiagnosticsResult {
+                    diagnostics_may_still_be_warming: bool,
+                    freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
+                    source: crate::lsp::diagnostics::LspDiagnosticSource,
+                    age_ms: i64,
+                    usable_evidence: bool,
+                    diagnostics: Vec<DiagnosticSummary>,
+                }
+                let result = DiagnosticsResult {
+                    diagnostics_may_still_be_warming: warming,
+                    freshness: snapshot.freshness,
+                    source: snapshot.source,
+                    age_ms: snapshot.age_ms,
+                    usable_evidence: snapshot.is_usable_evidence(),
+                    diagnostics: summaries,
+                };
+                let output = LspToolOutput {
+                    operation: "diagnostics".to_string(),
+                    file_path: file_path_str,
+                    result_count: result.diagnostics.len(),
+                    truncated: false,
+                    results: result,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            "workspaceSymbol" => {
+                let sym = req.symbol.as_ref().ok_or_else(|| {
+                    ToolError::Execution("symbol required for workspaceSymbol".to_string())
+                })?;
+                let params = serde_json::json!({
+                    "query": sym,
+                    "workDoneToken": null,
+                    "partialResultToken": null,
+                });
+                let key = if req.file_path.is_some() {
+                    let file = self.resolve_file(&req.file_path)?;
+                    let (k, _) = self
+                        .service
+                        .get_or_create_client_for_file(&file)
+                        .await
+                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
+                    k
+                } else {
+                    let root = req.execution_root.as_deref().unwrap_or(&self.allowed_root);
+                    self.service
+                        .find_existing_client_for_root_hint(Some(root), None)
+                        .await
+                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?
+                        .0
+                };
+                let resp = self
+                    .service
+                    .send_request(&key, "workspace/symbol", params)
+                    .await
+                    .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
+
+                // Try to parse as Vec<WorkspaceSymbol> first, then Vec<SymbolInformation>.
+                let summaries: Vec<WorkspaceSymbolSummary> = if resp.as_array().is_some() {
+                    // Try WorkspaceSymbol form
+                    if let Ok(syms) = serde_json::from_value::<
+                        Vec<crate::lsp::lsp_types::WorkspaceSymbol>,
+                    >(resp.clone())
+                    {
+                        syms.into_iter()
+                            .take(MAX_WORKSPACE_SYMBOLS)
+                            .map(|s| {
+                                let (file, start_line, start_column) = match &s.location {
+                                    crate::lsp::lsp_types::OneOf::Left(loc) => (
+                                        Some(uri_to_path(&loc.uri)),
+                                        Some(loc.range.start.line + 1),
+                                        Some(loc.range.start.character + 1),
+                                    ),
+                                    crate::lsp::lsp_types::OneOf::Right(wloc) => {
+                                        (Some(uri_to_path(&wloc.uri)), None, None)
+                                    }
+                                };
+                                WorkspaceSymbolSummary {
+                                    name: s.name,
+                                    kind: symbol_kind_to_string(s.kind),
+                                    file,
+                                    start_line,
+                                    start_column,
+                                    container_name: s.container_name,
+                                }
+                            })
+                            .collect()
+                    } else if let Ok(syms) = serde_json::from_value::<
+                        Vec<crate::lsp::lsp_types::SymbolInformation>,
+                    >(resp.clone())
+                    {
+                        // SymbolInformation form
+                        syms.into_iter()
+                            .take(MAX_WORKSPACE_SYMBOLS)
+                            .map(|s| WorkspaceSymbolSummary {
+                                name: s.name,
+                                kind: symbol_kind_to_string(s.kind),
+                                file: Some(uri_to_path(&s.location.uri)),
+                                start_line: Some(s.location.range.start.line + 1),
+                                start_column: Some(s.location.range.start.character + 1),
+                                container_name: s.container_name,
+                            })
+                            .collect()
+                    } else {
+                        // Cannot parse - return empty
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                };
+                let truncated = resp
+                    .as_array()
+                    .is_some_and(|a| a.len() > MAX_WORKSPACE_SYMBOLS);
+                let output = LspToolOutput {
+                    operation: "workspaceSymbol".to_string(),
+                    file_path: file_path_str,
+                    result_count: summaries.len(),
+                    truncated,
+                    results: summaries,
+                    preview_id: None,
+                    preview_metadata: None,
+                };
+                serde_json::to_string_pretty(&output)
+                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            }
+            other => {
+                return Err(ToolError::Execution(format!(
+                    "unsupported scoped LSP read: {other}"
+                )));
+            }
+        };
+
+        Ok(result)
     }
 
     fn require_line_col(
@@ -2460,285 +2778,20 @@ impl Tool for LspTool {
         let file_path_str = parsed.file_path.clone();
 
         let result = match parsed.operation.as_str() {
-            "goToDefinition" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
-                let pos = to_lsp_position(line, col);
-                let locs = ops
-                    .go_to_definition(&file, pos.line, pos.character)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("goToDefinition: {e}")))?;
-                let summaries: Vec<LocationSummary> = locs
-                    .iter()
-                    .map(|loc| {
-                        let range = loc.target_range;
-                        LocationSummary {
-                            file: uri_to_path(&loc.target_uri),
-                            start_line: range.start.line + 1,
-                            start_column: range.start.character + 1,
-                            end_line: range.end.line + 1,
-                            end_column: range.end.character + 1,
-                        }
-                    })
-                    .collect();
-                let output = LspToolOutput {
-                    operation: "goToDefinition".to_string(),
-                    file_path: file_path_str,
-                    result_count: summaries.len(),
-                    truncated: false,
-                    results: summaries,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "findReferences" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
-                let pos = to_lsp_position(line, col);
-                let refs = ops
-                    .find_references(&file, pos.line, pos.character)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("findReferences: {e}")))?;
-                let truncated = refs.len() > MAX_REFERENCES;
-                let capped: Vec<_> = refs.into_iter().take(MAX_REFERENCES).collect();
-                let summaries: Vec<LocationSummary> = capped
-                    .iter()
-                    .map(|loc| {
-                        let range = loc.range;
-                        LocationSummary {
-                            file: uri_to_path(&loc.uri),
-                            start_line: range.start.line + 1,
-                            start_column: range.start.character + 1,
-                            end_line: range.end.line + 1,
-                            end_column: range.end.character + 1,
-                        }
-                    })
-                    .collect();
-                let output = LspToolOutput {
-                    operation: "findReferences".to_string(),
-                    file_path: file_path_str,
-                    result_count: summaries.len(),
-                    truncated,
-                    results: summaries,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "hover" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let (line, col) = self.require_line_col(&parsed.line, &parsed.column)?;
-                let pos = to_lsp_position(line, col);
-                let hover_text = ops
-                    .hover(&file, pos.line, pos.character)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("hover: {e}")))?;
-                let contents = hover_text.unwrap_or_default();
-                let truncated = contents.len() > MAX_HOVER_CHARS;
-                let display = if truncated {
-                    &contents[..MAX_HOVER_CHARS]
-                } else {
-                    &contents
-                };
-                let summary = HoverSummary {
-                    file: file_path_str.clone().unwrap_or_default(),
-                    line,
-                    column: col,
-                    contents: display.to_string(),
-                };
-                let output = LspToolOutput {
-                    operation: "hover".to_string(),
-                    file_path: file_path_str,
-                    result_count: if summary.contents.is_empty() { 0 } else { 1 },
-                    truncated,
-                    results: summary,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "documentSymbol" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let syms = ops
-                    .document_symbols(&file)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("documentSymbol: {e}")))?;
-                let file_str = file.to_string_lossy().to_string();
-                let mut remaining = MAX_SYMBOLS;
-                let mut summaries = Vec::new();
-                Self::flatten_symbols(&syms, &file_str, &mut summaries, &mut remaining);
-                let output = LspToolOutput {
-                    operation: "documentSymbol".to_string(),
-                    file_path: file_path_str,
-                    result_count: summaries.len(),
-                    truncated: remaining == 0,
-                    results: summaries,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "diagnostics" => {
-                let file = self.resolve_file(&parsed.file_path)?;
-                let (key, uri_str) = self
-                    .service
-                    .ensure_file_open_from_disk(&file)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
-                let snapshot = self
-                    .service
-                    .get_diagnostic_snapshot_for_key(&key, &uri_str)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("diagnostics: {e}")))?;
-                let warming = snapshot.diagnostics_may_still_be_warming();
-                let summaries: Vec<DiagnosticSummary> = snapshot
-                    .diagnostics
-                    .iter()
-                    .map(|d| DiagnosticSummary {
-                        file: d.file.clone(),
-                        line: d.line + 1,
-                        column: d.column + 1,
-                        severity: severity_to_string(d.severity),
-                        source: d.source.clone(),
-                        code: d.code.clone(),
-                        message: d.message.clone(),
-                    })
-                    .collect();
-                #[derive(Serialize)]
-                struct DiagnosticsResult {
-                    diagnostics_may_still_be_warming: bool,
-                    freshness: crate::lsp::diagnostics::LspDiagnosticFreshness,
-                    source: crate::lsp::diagnostics::LspDiagnosticSource,
-                    age_ms: i64,
-                    usable_evidence: bool,
-                    diagnostics: Vec<DiagnosticSummary>,
-                }
-                let result = DiagnosticsResult {
-                    diagnostics_may_still_be_warming: warming,
-                    freshness: snapshot.freshness,
-                    source: snapshot.source,
-                    age_ms: snapshot.age_ms,
-                    usable_evidence: snapshot.is_usable_evidence(),
-                    diagnostics: summaries,
-                };
-                let output = LspToolOutput {
-                    operation: "diagnostics".to_string(),
-                    file_path: file_path_str,
-                    result_count: result.diagnostics.len(),
-                    truncated: false,
-                    results: result,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
-            }
-            "workspaceSymbol" => {
-                let sym = parsed.symbol.as_ref().ok_or_else(|| {
-                    ToolError::Execution("symbol required for workspaceSymbol".to_string())
-                })?;
-                let params = serde_json::json!({
-                    "query": sym,
-                    "workDoneToken": null,
-                    "partialResultToken": null,
-                });
-                let key = if parsed.file_path.is_some() {
-                    let file = self.resolve_file(&parsed.file_path)?;
-                    let (k, _) = self
-                        .service
-                        .get_or_create_client_for_file(&file)
-                        .await
-                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
-                    k
-                } else {
-                    let root = parsed
-                        .execution_root
-                        .as_deref()
-                        .unwrap_or(&self.allowed_root);
-                    self.service
-                        .find_existing_client_for_root_hint(Some(root), None)
-                        .await
-                        .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?
-                        .0
-                };
-                let resp = self
-                    .service
-                    .send_request(&key, "workspace/symbol", params)
-                    .await
-                    .map_err(|e| ToolError::Execution(format!("workspaceSymbol: {e}")))?;
-
-                // Try to parse as Vec<WorkspaceSymbol> first, then Vec<SymbolInformation>.
-                let summaries: Vec<WorkspaceSymbolSummary> = if resp.as_array().is_some() {
-                    // Try WorkspaceSymbol form
-                    if let Ok(syms) = serde_json::from_value::<
-                        Vec<crate::lsp::lsp_types::WorkspaceSymbol>,
-                    >(resp.clone())
-                    {
-                        syms.into_iter()
-                            .take(MAX_WORKSPACE_SYMBOLS)
-                            .map(|s| {
-                                let (file, start_line, start_column) = match &s.location {
-                                    crate::lsp::lsp_types::OneOf::Left(loc) => (
-                                        Some(uri_to_path(&loc.uri)),
-                                        Some(loc.range.start.line + 1),
-                                        Some(loc.range.start.character + 1),
-                                    ),
-                                    crate::lsp::lsp_types::OneOf::Right(wloc) => {
-                                        (Some(uri_to_path(&wloc.uri)), None, None)
-                                    }
-                                };
-                                WorkspaceSymbolSummary {
-                                    name: s.name,
-                                    kind: symbol_kind_to_string(s.kind),
-                                    file,
-                                    start_line,
-                                    start_column,
-                                    container_name: s.container_name,
-                                }
-                            })
-                            .collect()
-                    } else if let Ok(syms) = serde_json::from_value::<
-                        Vec<crate::lsp::lsp_types::SymbolInformation>,
-                    >(resp.clone())
-                    {
-                        // SymbolInformation form
-                        syms.into_iter()
-                            .take(MAX_WORKSPACE_SYMBOLS)
-                            .map(|s| WorkspaceSymbolSummary {
-                                name: s.name,
-                                kind: symbol_kind_to_string(s.kind),
-                                file: Some(uri_to_path(&s.location.uri)),
-                                start_line: Some(s.location.range.start.line + 1),
-                                start_column: Some(s.location.range.start.character + 1),
-                                container_name: s.container_name,
-                            })
-                            .collect()
-                    } else {
-                        // Cannot parse - return empty
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                };
-                let truncated = resp
-                    .as_array()
-                    .is_some_and(|a| a.len() > MAX_WORKSPACE_SYMBOLS);
-                let output = LspToolOutput {
-                    operation: "workspaceSymbol".to_string(),
-                    file_path: file_path_str,
-                    result_count: summaries.len(),
-                    truncated,
-                    results: summaries,
-                    preview_id: None,
-                    preview_metadata: None,
-                };
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| ToolError::Execution(format!("serialize: {e}")))?
+            // M003 operation-scoped reads share one typed implementation
+            // (`execute_scoped_read`) with the hidden `lsp_read` program
+            // adapter, so programs observe the exact canonical behavior.
+            "goToDefinition" | "findReferences" | "hover" | "documentSymbol"
+            | "workspaceSymbol" | "diagnostics" => {
+                self.execute_scoped_read(&ScopedLspRead {
+                    operation: parsed.operation.clone(),
+                    file_path: parsed.file_path.clone(),
+                    line: parsed.line,
+                    column: parsed.column,
+                    symbol: parsed.symbol.clone(),
+                    execution_root: parsed.execution_root.clone(),
+                })
+                .await?
             }
             "renamePreview" => {
                 let file = self.resolve_file(&parsed.file_path)?;

@@ -1871,6 +1871,20 @@ Only these operations are model-facing:
 
 **LSP edit previews are strictly read-only**: `renamePreview`/`formatPreview` (and any future preview ops) return bounded unified-diff patches via `WorkspaceEditPreview` (title, per-file original_hash + TextEditPreview + patch). They never write files. Actual mutation requires the separate mutating `apply_patch` tool (or equivalent). The `lsp` tool remains `ToolCategory::ReadOnly`.
 
+### Programmatic availability (M003)
+
+Tool Programs cannot call the multiplexed `lsp` tool (`DirectOnly`).
+The hidden `ProgrammaticOnly` `lsp_read` adapter
+(`src/tool/lsp_read.rs`) exposes only `diagnostics`,
+`documentSymbol`, `workspaceSymbol`, `hover`, `goToDefinition`, and
+`findReferences` by forwarding to a short-lived inner `LspTool`
+sharing the registry's `LspService` and the program workspace root —
+path validation, per-operation bounds, and `egglsp`/`LocalUntrusted`
+provenance are the canonical rules. All preview/mutation-adjacent
+operations are structurally unavailable to programs, and the
+program-call cache is disabled (server-state dependent). See
+`architecture/tool_programs.md` (Expansion M003).
+
 ### Preview-only edits
 
 `renamePreview`, `formatPreview`, and `sourceActionPreview` request semantic edits from the language server, convert them into `WorkspaceEditPreview`, and return unified diff patches. They never write files. `sourceActionPreview` currently supports only `source.organizeImports` (with aliases `organizeImports` and `organize_imports`); arbitrary code actions and command execution are intentionally rejected. `CodeAction` values with `command: Some(_)` but `edit: None` are classified as command-only and rejected (command execution is disabled for safety). `format_preview` enforces `allowed_root` at the crate layer — paths outside the root are rejected with `LspError::PathOutsideRoot`. Large patches are structurally marked via `FileEditPreview.patch_omitted` (not by string matching). Applying a preview requires the existing mutating `apply_patch` tool and therefore follows normal Codegg permission handling. `semanticContext` can also include source-action hints (currently limited to `source.organizeImports`) when `include_source_actions` is true, reusing the same preview-only semantics described above. Source-action hints are collected handler-locally by `LspTool::collect_source_action_hints`, not by the shared `SemanticContextCollector`, because they produce `WorkspaceEditPreview` payloads that are preview-rich and tool-specific.
