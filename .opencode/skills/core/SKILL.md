@@ -48,9 +48,32 @@ coordinator, service bus, or DI framework:
   preamble, boxed chat pre-router, spawned interactive-process
   pre-router, then one `Box::pin` delegate per family. Keep it that way.
 - Family handlers are boring `impl CoreDaemon` methods on shared
-  daemon-owned state. Shared helpers live in `src/core/daemon.rs` as
-  `pub(crate)`; construction/lifecycle extraction belongs to M003, not
-  to request handlers.
+  daemon-owned state. Shared request helpers live in `src/core/daemon.rs`
+  as `pub(crate)`; lifecycle helpers live canonically in their owning
+  lifecycle modules below, not in request handlers.
+
+## Lifecycle Ownership (Residual M003)
+
+`CoreDaemon` is still the single composition/lifecycle authority. Lifecycle
+code is grouped by responsibility; do not add a new generic coordinator,
+service bus, or DI framework:
+
+| Responsibility | Entry points | Module |
+|---|---|---|
+| construction | `with_deps`, `with_deps_and_identity`, `new`, `SeamProjectionSink` | `src/core/daemon_construct.rs` |
+| bootstrap/recovery | `hydrate_workspace_registry`, `recover_state`, `recover_jobs`, `start_event_bridge`, `initialize_recovery_sequence`, `replay_from` | `src/core/daemon_bootstrap.rs` |
+| refresh | `refresh_project_context`, `refresh_project_activation`, `activate_project_workspace`, `project_health`, `refresh_runtime_assets` + binding resolvers | `src/core/daemon_refresh.rs` |
+| shutdown/join | `Drop`, `abort_background_handles` | `src/core/daemon_shutdown.rs` |
+
+- `initialize_recovery_sequence` is the canonical in-process hydrate ->
+  bridge -> recover order (`InprocCoreClient::initialize_recovery`
+  delegates to it). Socket/daemon paths keep their pre-existing bridge ->
+  recover shape; do not reorder startup to "fix" it here.
+- Construction has a single assembly point with no partial publish;
+  shutdown aborts projection-maintenance then worktree-reconcile in order
+  (scheduler loop stays detached by design).
+- New lifecycle behavior needs explicit ordering tests at the extracted seam,
+  not a line-count gate.
 
 ## Core Client Types
 

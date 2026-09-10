@@ -170,11 +170,13 @@ intentionally live outside it.
 
 ### Next Likely Extraction Target
 
-The daemon/agent/tool/permission boundary, not TUI. Residual M002 has
-split the `CoreDaemon` request dispatch into `core::daemon_family` plus
-nine `core::daemon_*` family modules; construction/startup/shutdown
-lifecycle extraction is tracked as Residual M003 and must preserve the
-exact initialization order and joined shutdown sequence.
+The daemon/agent/tool/permission boundary, not TUI. Residual M002 split
+the `CoreDaemon` request dispatch into `core::daemon_family` plus nine
+`core::daemon_*` family modules; Residual M003 has separated construction,
+bootstrap/recovery, refresh, and shutdown into `core::daemon_construct`,
+`core::daemon_bootstrap`, `core::daemon_refresh`, and
+`core::daemon_shutdown` while preserving the exact initialization order and
+joined shutdown sequence.
 
 ---
 
@@ -197,7 +199,7 @@ transport from the underlying agent and session logic.
 
 | Module | Key Types | Purpose |
 |--------|-----------|---------|
-| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router (~110 lines) that delegates each envelope to exactly one family handler. ~6,300 lines (was ~12,000 before M002). |
+| `core::daemon` | `CoreDaemon` | Single composition/lifecycle authority; owns workspace registry, event log, scheduler, workspace services, session runtime, notification router, asset refresh coordinator, and projection seam. `handle_request_with_client` runs authorization/audit, the boxed chat pre-router, the spawned interactive-process pre-router, then a thin `DaemonRequestFamily` router (~110 lines) that delegates each envelope to exactly one family handler. ~4,600 lines (was ~12,000 before M002, ~6,300 after M002; lifecycle now in `daemon_construct`/`daemon_bootstrap`/`daemon_refresh`/`daemon_shutdown`). |
 | `core::daemon_family` | `DaemonRequestFamily` | Sole request-to-owner routing table: `of(&CoreRequest)` maps all 166 variants to one family plus `owner_module()`. Chat/interactive classify here but are served pre-router to preserve stack/cancellation semantics. |
 | `core::daemon_assets` | `handle_assets_request` | Asset refresh/status/capabilities over the daemon-owned `AssetRefreshCoordinator`. |
 | `core::daemon_providers` | `handle_providers_request` | Eggpool provisioning and provider-connection lifecycle over the daemon-owned provisioner. |
@@ -208,6 +210,10 @@ transport from the underlying agent and session logic.
 | `core::daemon_goals` | `handle_goals_request` | Session goals, todos, edit checkpoints, LSP preview apply over daemon-owned domain stores. |
 | `core::daemon_projection` | `handle_projection_request` | Projection replay subscribe/resume/ack/snapshot/artifacts plus ephemeral presence leases. |
 | `core::daemon_ops` | `handle_ops_request` | Audit query/export, memory, notification routing over daemon-owned stores. |
+| `core::daemon_construct` | `with_deps`, `with_deps_and_identity`, `new`, `SeamProjectionSink` | Deterministic dependency construction in documented order; single `Self { .. }` assembly with no partial publish. |
+| `core::daemon_bootstrap` | `hydrate_workspace_registry`, `recover_state`, `recover_jobs`, `start_event_bridge`, `initialize_recovery_sequence` | Startup hydration, event bridge, turn/job recovery, and replay. `initialize_recovery_sequence` is the canonical in-process hydrate -> bridge -> recover order. |
+| `core::daemon_refresh` | `refresh_project_context`, `refresh_project_activation`, `activate_project_workspace`, `project_health`, `refresh_runtime_assets` | Runtime refresh coordinators plus shared workspace/binding resolvers. All refresh flows through the daemon-owned `AssetRefreshCoordinator`. |
+| `core::daemon_shutdown` | `Drop`, `abort_background_handles` | Joined shutdown: cancel precedes joins; aborts projection-maintenance and worktree-reconcile tasks in order. Scheduler loop stays detached by design. |
 | `core::instance` | `DaemonPaths`, `DaemonInstanceGuard`, `DaemonInstanceMetadata`, `CoreRuntimeMode`, `connect_or_start_daemon` | Singleton daemon lifecycle, user-scoped path resolution, flock-based lock, connect-or-start helper. |
 | `core::runtime_deps` | `CoreRuntimeDeps`, `LegacyAgentRuntimeDeps` | Bundles pool, memory_store, legacy_agent (subagent_pool), turn_runtime, lsp_service, workspace_services, workspace_service_policy, job_store, schedule_store, recovery_policy, daemon_generation, scheduler, submission, scheduler_config, connection_manager. Always has a default TurnRuntime; override via `with_turn_runtime()`. |
 | `core::transport` | `SocketCoreClient`, `StdioCoreClient` | JSONL-over-socket and JSONL-over-stdio transports. Also contains `daemon_socket` for daemon-side socket accept loop. |
@@ -478,19 +484,32 @@ compatibility boundary.
 
 - The core protocol version is currently `2` (`PROTOCOL_VERSION` in
   `crates/codegg-protocol/src/core.rs:26`).
-- `CoreDaemon` (~6,300 lines in `daemon.rs` plus nine `daemon_*`
-  family modules totaling ~6,400 lines) holds daemon identity, runtime
-  deps, event log, session/client registries, notification router,
-  workspace registry, workspace services, eggpool provisioner, selection
-  service, asset refresh coordinator, project activation, and projection
-  seam. Family handlers are boring `impl CoreDaemon` methods operating on
-  the same daemon-owned state; they introduce no new store, scheduler,
-  state machine, or authority. Shared helpers used across families
-  (`session_dto`, `record_origin_with_decision`, `projection_snapshot_for_session`,
-  asset DTOs, connection DTOs, tool-program DTOs, audit emitters) stay in
-  `daemon.rs` as `pub(crate)` so every family calls the same canonical
-  implementation. The dispatch futures stay boxed per family, preserving
-  the pre-M002 stack discipline that keeps the top-level dispatcher small.
+- `CoreDaemon` (~4,600 lines in `daemon.rs` plus nine `daemon_*`
+  family modules totaling ~6,400 lines plus four `daemon_*` lifecycle
+  modules totaling ~2,300 lines) holds daemon identity, runtime deps, event
+  log, session/client registries, notification router, workspace registry,
+  workspace services, eggpool provisioner, selection service, asset refresh
+  coordinator, project activation, and projection seam. Family handlers and
+  lifecycle helpers are boring `impl CoreDaemon` methods operating on the
+  same daemon-owned state; they introduce no new store, scheduler, state
+  machine, or authority. Shared helpers used across families
+  (`record_origin_with_decision`, connection DTOs, tool-program DTOs, audit
+  emitters) stay in `daemon.rs` as `pub(crate)` so every family calls the
+  same canonical implementation; refresh/binding helpers live canonically in
+  `daemon_refresh` and bootstrap helpers in `daemon_bootstrap`. The dispatch
+  futures stay boxed per family, preserving the pre-M002 stack discipline
+  that keeps the top-level dispatcher small.
+- Lifecycle ownership: `daemon_construct` owns `with_deps` /
+  `with_deps_and_identity` / `new` in the documented 11-phase order with a
+  single assembly point (no partial publish). `daemon_bootstrap` owns
+  hydrate, event bridge, `recover_state`, `recover_jobs`, and replay, with
+  `initialize_recovery_sequence` as the canonical in-process hydrate ->
+  bridge -> recover order. `daemon_refresh` owns all asset/activation/health
+  coordinators plus the shared binding resolvers. `daemon_shutdown` owns
+  `Drop` + `abort_background_handles` (cancel precedes joins; scheduler loop
+  stays detached by design). Two private join handles were widened
+  `private` -> `pub(crate)` so construction/shutdown can own them without a
+  public API change (same precedent as M002 helper widening).
 - Projection transport ownership is connection-local in
   `src/core/transport/projection.rs`. The Unix socket and `/core` WebSocket
   retain daemon-issued subscription IDs, persisted stream descriptors,
@@ -543,6 +562,15 @@ compatibility boundary.
   capability probe plus the legacy `TaskList` rejection and asserts no
   response falls through to the historical `unimplemented` contract,
   proving the thin router reaches each owning family handler.
+- Lifecycle ordering pins (`daemon_construct`, `daemon_bootstrap`,
+  `daemon_refresh`, `daemon_shutdown`) — `construction_phases_match_documented_order`,
+  `bootstrap_phases_match_documented_order`,
+  `refresh_coordinators_match_documented_set`, and
+  `shutdown_phases_match_documented_order` fail on silent reorder; the
+  19 new lifecycle tests (5 construct + 5 bootstrap + 5 refresh + 4
+  shutdown) cover wiring, pool-less shape, identity, service reuse,
+  hydrate/bridge/recover order, missing-pool/table tolerance, health/activation
+  fail-closed behavior, and abort-on-drop without new frameworks.
 
 ### Project context resolver
 

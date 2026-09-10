@@ -10,6 +10,8 @@ use crate::protocol::core::{
 pub mod client_registry;
 pub mod daemon;
 pub mod daemon_assets;
+pub mod daemon_bootstrap;
+pub mod daemon_construct;
 pub mod daemon_family;
 pub mod daemon_goals;
 pub mod daemon_jobs;
@@ -17,7 +19,9 @@ pub mod daemon_ops;
 pub mod daemon_projection;
 pub mod daemon_projects;
 pub mod daemon_providers;
+pub mod daemon_refresh;
 pub mod daemon_sessions;
+pub mod daemon_shutdown;
 pub mod daemon_turns;
 pub mod eggpool;
 pub mod event_log;
@@ -75,20 +79,13 @@ impl InprocCoreClient {
     ///
     /// Every transport, including the hidden stdio transport used by local
     /// process isolation, must run the same workspace hydration and job
-    /// generation recovery sequence.
+    /// generation recovery sequence. Canonical order lives in
+    /// `CoreDaemon::initialize_recovery_sequence`
+    /// (`src/core/daemon_bootstrap.rs`); this is a thin delegate so there is
+    /// exactly one bootstrap implementation.
     pub async fn initialize_recovery(&self) -> Result<(), AppError> {
         if let Some(daemon) = &self.daemon {
-            daemon
-                .hydrate_workspace_registry()
-                .await
-                .map_err(|error| AppError::Other(anyhow::anyhow!(error.to_string())))?;
-            daemon.start_event_bridge();
-            daemon.recover_state().await;
-            if daemon.recover_jobs().await.is_none() {
-                tracing::error!(
-                    "durable job recovery produced no report during core initialization"
-                );
-            }
+            daemon.initialize_recovery_sequence().await?;
         }
         Ok(())
     }

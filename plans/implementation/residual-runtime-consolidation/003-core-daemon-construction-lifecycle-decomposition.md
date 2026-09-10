@@ -1,6 +1,6 @@
 # Residual Runtime Consolidation Milestone 003 — CoreDaemon Construction and Lifecycle Decomposition
 
-Status: ready for handoff (M002 hard dependency closed via `plans/closure/residual-runtime-consolidation/002-status.md`)
+Status: implemented (closed via `plans/closure/residual-runtime-consolidation/003-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

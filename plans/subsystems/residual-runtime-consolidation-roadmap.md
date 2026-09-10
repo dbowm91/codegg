@@ -1,6 +1,6 @@
 # Residual Runtime Consolidation Roadmap
 
-Status: active
+Status: closed
 
 Long-term references:
 
@@ -131,4 +131,4 @@ This roadmap closes when M001-M003 have accepted closure records, obsolete paral
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/residual-runtime-consolidation/001-retire-stranded-coordination-and-metadata-surfaces.md` | `plans/closure/residual-runtime-consolidation/001-status.md` | — |
 | M002 | closed | `plans/implementation/residual-runtime-consolidation/002-core-daemon-request-family-decomposition.md` | `plans/closure/residual-runtime-consolidation/002-status.md` | — |
-| M003 | ready | `plans/implementation/residual-runtime-consolidation/003-core-daemon-construction-lifecycle-decomposition.md` | — | — |
+| M003 | closed | `plans/implementation/residual-runtime-consolidation/003-core-daemon-construction-lifecycle-decomposition.md` | `plans/closure/residual-runtime-consolidation/003-status.md` | — |
