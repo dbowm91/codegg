@@ -1,7 +1,7 @@
 use codegg::error::ToolError;
 use codegg::tool::{
     bash::BashTool, edit::EditTool, glob::GlobTool, grep::GrepTool, read::ReadTool,
-    write::WriteTool, Tool,
+    terminal::TerminalTool, write::WriteTool, Tool,
 };
 use std::fs;
 use std::time::Duration;
@@ -38,6 +38,21 @@ async fn test_bash_tool_simple_command() {
         "command": "echo hello"
     });
     let result = tool.execute(input).await.unwrap();
+    assert!(result.contains("hello"));
+    assert!(result.contains("[exit code: 0]"));
+}
+
+#[tokio::test]
+async fn test_terminal_tool_simple_command() {
+    let dir = setup_dir();
+    let tool = TerminalTool::new().with_workdir(dir.path().to_path_buf());
+    let result = tool
+        .execute(serde_json::json!({
+            "command": "printf",
+            "args": ["hello"]
+        }))
+        .await
+        .unwrap();
     assert!(result.contains("hello"));
     assert!(result.contains("[exit code: 0]"));
 }

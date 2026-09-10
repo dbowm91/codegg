@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface M006 — Terminal Compatibility Policy Convergence
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 

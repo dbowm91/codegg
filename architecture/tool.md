@@ -52,11 +52,11 @@ src/tool/
 │                       # re-exports DispatchOutcome and the child-workspace
 │                       # validator for terminal.rs compatibility
 ├── bash/
-│   ├── policy.rs       # Bash-owned classification/policy glue only
-│   │                   # (blocked patterns, blocked/allow lists, child
-│   │                   # worktree ceiling, kill switches, intent-family
-│   │                   # adapters). Invokes destructive/command-intent/
-│   │                   # sandbox owners; never spawns or submits.
+│   ├── policy.rs       # Canonical model-shell safety/classification seam
+│   │                   # plus Bash-owned policy glue (blocked patterns,
+│   │                   # blocked/allow lists, child worktree ceiling, kill
+│   │                   # switches, intent-family adapters). Terminal calls
+│   │                   # the shared safety seam; this module never spawns.
 │   ├── process.rs      # Supervised execution: raw-shell spawn via
 │   │                   # ManagedProcessService, native/managed dispatch,
 │   │                   # scheduler-owned submissions, DispatchOutcome.
@@ -566,12 +566,12 @@ projection policy. See [tool_broker.md](tool_broker.md).
 1. **Path validation**: All file paths validated before access
 2. **Symlink protection**: `check_path_for_symlinks()` rejects symlinks
 3. **Permission enforcement**: Tools check permissions before execution
-4. **BashTool blocked patterns**: Regex-based detection of 40+ dangerous patterns
-5. **BashTool blocked commands**: HashSet of full commands blocked (rm -rf /, etc.)
+4. **Canonical shell blocked patterns**: Bash policy owns regex-based detection of 40+ dangerous patterns; the retained terminal compatibility adapter delegates to it.
+5. **Canonical blocked commands**: Bash policy owns the shared HashSet of full commands blocked (rm -rf /, etc.); terminal may add only narrower adapter restrictions.
 6. **SSRF protection**: WebFetch validates URLs against internal IPs
 7. **Subprocess PATH**: Uses `std::env::var_os("PATH")` (not hardcoded)
-8. **Environment filtering**: TerminalTool filters LD_PRELOAD, DYLD_*
-9. **Allowlist support**: BashTool and TerminalTool support command allowlists
+8. **Environment filtering**: TerminalTool retains its compatibility-specific filtering of LD_PRELOAD, DYLD_*
+9. **Allowlist support**: Bash policy evaluates allowlists for Bash and terminal's effective `sh -c` payload
 
 ## Testing
 

@@ -1,6 +1,4 @@
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use serde_json::json;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -27,58 +25,6 @@ fn is_safe_env_var_name(name: &str) -> bool {
     }
     !DANGEROUS_ENV_VARS.contains(&name)
 }
-
-static BLOCKED_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?x)
-        \$\(            # command substitution
-        |`             # backtick substitution
-        |\|/.*sh       # pipe to shell
-        |\|/.*bash     # pipe to bash
-        |> /dev/       # redirect to dev
-        |2> /dev/      # redirect stderr to dev
-        |&[\s\n\r]*&[\s\n\r]*rm[\s\n\r]+-rf  # fork bomb with rm
-        |\|\|[\s\n\r]*rm[\s\n\r]+-rf       # || rm -rf
-        |%\{[^}]*\|\s*&                   # printf injection
-        |eval\s*\(                        # eval
-        |(?:^|[\s;&|()<>])exec\s+         # exec (as standalone command, not -exec flag)
-        |source\s+.*\.sh                  # source shell script
-        |\.\s+.*\.sh                      # dot source shell script
-        |base64\s+-d                       # base64 decode
-        |xxd\s+-r                          # hex reverse
-        |perl\s+-e                         # perl -e
-        |python\s+-c                       # python -c
-        |ruby\s+-e                         # ruby -e
-        |node\s+-e                         # node -e
-        |nohup\s+.*&\s*$                   # nohup background
-        |nohup\s+.*\s+&                   # nohup with &
-        |disown\s+-a                       # disown all
-        |kill\s+-9\s+-1                    # kill all
-        |killall\s+-9                      # killall -9
-        |pkill\s+-9                        # pkill -9
-        |chmod\s+[0-7]{4}\s+/etc           # chmod to /etc
-        |chmod\s+[0-7]{4}\s+/home          # chmod to /home
-        |chmod\s+[0-7]{4}\s+/root          # chmod to /root
-        |chmod\s+[0-7]{4}\s+/var           # chmod to /var
-        |chmod\s+[0-7]{4}\s+/ssh           # chmod to /ssh
-        |chmod\s+[0-7]{4}\s+/proc          # chmod to /proc
-        |chmod\s+[0-7]{4}\s+/sys           # chmod to /sys
-        |chmod\s+777\s+/                   # chmod 777 to root
-        |chown\s+.*\s+/etc                 # chown to /etc
-        |chown\s+.*\s+/home                # chown to /home
-        |chown\s+.*\s+/root                # chown to /root
-        |chown\s+.*\s+/var                # chown to /var
-        |chown\s+.*\s+/ssh                # chown to /ssh
-        |chown\s+.*\s+/proc               # chown to /proc
-        |chown\s+.*\s+/sys                # chown to /sys
-        |wget\s+.*-O\s+/                   # wget to root
-        |curl\s+.*-o\s+/                  # curl to root
-        |:\(\)\s*:\s*\|                   # fork bomb
-        |(?:^|\s)&(?:[\s]|$)               # standalone &
-    ",
-    )
-    .unwrap()
-});
 
 /// One-shot non-interactive shell execution (M003 disposition).
 ///
@@ -108,41 +54,7 @@ impl TerminalTool {
             max_output_lines: 2000,
             max_output_bytes: 50_000,
             workdir: None,
-            blocked_commands: HashSet::from([
-                "rm -rf /",
-                "rm -rf /*",
-                "rm -rf /home",
-                "rm -rf /root",
-                "rm -rf /var",
-                "mkfs",
-                "dd if=/dev/zero",
-                ":(){:|:&};:",
-                "chmod -R 777 /",
-                "chown -R",
-                "curl -sL | sh",
-                "wget -q -O- | sh",
-                "bash -c",
-                "zcat /dev/urandom",
-                "> /dev/sd",
-                "fdisk",
-                "parted",
-                "lsblk",
-                "umount /",
-                "init 0",
-                "shutdown",
-                "reboot",
-                "systemctl poweroff",
-                "telinit 0",
-                "poweroff",
-                "halt",
-                "cat /etc/passwd",
-                "cat /etc/shadow",
-                "sudo su",
-                "sudo -i",
-                "sudo bash",
-                "su root",
-                "pkexec",
-            ]),
+            blocked_commands: crate::tool::bash::policy::default_blocked_commands(),
             allowlist: None,
             allowed_root: None,
         }
@@ -173,56 +85,34 @@ impl TerminalTool {
         self
     }
 
-    fn check_command_security(&self, command: &str, args: &[String]) -> Result<(), ToolError> {
-        let full_command = format!("{} {}", command, args.join(" "));
-
-        if BLOCKED_PATTERN.is_match(&full_command) {
-            return Err(ToolError::Permission(
-                "command matches blocked pattern".to_string(),
-            ));
+    fn effective_script(command: &str, args: &[String]) -> String {
+        if args.is_empty() {
+            command.to_string()
+        } else {
+            format!("{} {}", command, args.join(" "))
         }
+    }
 
-        let normalized = full_command.as_str();
+    fn check_command_security(&self, effective_script: &str) -> Result<(), ToolError> {
+        // `terminal` is a compatibility/input adapter. The effective string
+        // is exactly the payload passed to `sh -c`, and Bash owns its shell
+        // safety decision so the two model-facing surfaces cannot drift.
+        let parts: Vec<&str> = effective_script.split_whitespace().collect();
+        crate::tool::bash::policy::check_shell_security(
+            effective_script,
+            &parts,
+            &self.blocked_commands,
+            self.allowlist.as_ref(),
+        )
+    }
 
-        let blocked = &self.blocked_commands;
-        if !blocked.is_empty() {
-            for blocked_cmd in blocked {
-                if normalized.starts_with(blocked_cmd) {
-                    return Err(ToolError::Permission(format!(
-                        "command matches blocked list: {}",
-                        blocked_cmd
-                    )));
-                }
-            }
-        }
-
-        if let Some(ref allowlist) = self.allowlist {
-            let mut cmd_parts = full_command.split_whitespace();
-            let mut cmd = cmd_parts.next().unwrap_or("");
-
-            while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
-                cmd = cmd_parts.next().unwrap_or("");
-            }
-
-            if (cmd == "bash" || cmd == "sh" || cmd == "dash") && full_command.contains(" -c ") {
-                if !allowlist.contains(&cmd) {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        cmd
-                    )));
-                }
-                return Ok(());
-            }
-
-            if !allowlist.contains(&cmd) {
-                return Err(ToolError::Permission(format!(
-                    "command '{}' not in allowlist",
-                    cmd
-                )));
-            }
-        }
-
-        Ok(())
+    #[cfg(test)]
+    fn check_command_security_for_args(
+        &self,
+        command: &str,
+        args: &[String],
+    ) -> Result<(), ToolError> {
+        self.check_command_security(&Self::effective_script(command, args))
     }
 }
 
@@ -304,18 +194,13 @@ impl Tool for TerminalTool {
             })
             .unwrap_or_default();
 
-        self.check_command_security(command, &args)?;
+        let full_command = Self::effective_script(command, &args);
+        self.check_command_security(&full_command)?;
         if let Some(root) = self.allowed_root.as_ref() {
             crate::tool::bash::validate_child_workspace_command(command, &args, root)?;
         }
 
         tracing::info!("Running terminal command: {} {:?}", command, args);
-
-        let full_command = if args.is_empty() {
-            command.to_string()
-        } else {
-            format!("{} {}", command, args.join(" "))
-        };
 
         let cwd = self
             .workdir
@@ -409,5 +294,123 @@ fn truncate_output(output: &str, max_lines: usize, max_bytes: usize) -> String {
         format!("{}... [output truncated]", &truncated[..truncate_at])
     } else {
         truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::bash::BashTool;
+
+    #[test]
+    fn effective_script_matches_the_shell_payload() {
+        let args = vec!["--label".to_string(), "café".to_string()];
+        assert_eq!(
+            TerminalTool::effective_script("printf", &args),
+            "printf --label café"
+        );
+        assert_eq!(TerminalTool::effective_script("true", &[]), "true");
+    }
+
+    #[test]
+    fn terminal_and_bash_share_shell_safety_decisions() {
+        let bash = BashTool::new();
+        let terminal = TerminalTool::new();
+        let cases = [
+            ("printf", vec!["%s".to_string(), "hello".to_string()], false),
+            (
+                "find",
+                vec![".".to_string(), "-name".to_string(), "*.rs".to_string()],
+                false,
+            ),
+            (
+                "find",
+                vec![".".to_string(), "-exec".to_string(), "rm".to_string()],
+                false,
+            ),
+            ("echo", vec!["${HOME}".to_string()], true),
+            ("printf", vec!["$(touch marker)".to_string()], true),
+            ("cat", vec![">".to_string(), "/dev/null".to_string()], true),
+            (
+                "python",
+                vec!["-c".to_string(), "print(1)".to_string()],
+                true,
+            ),
+            ("sleep", vec!["5".to_string(), "&".to_string()], true),
+            ("bash", vec!["-c".to_string(), "echo ok".to_string()], true),
+            (
+                "env",
+                vec!["rm".to_string(), "-rf".to_string(), "/".to_string()],
+                true,
+            ),
+        ];
+
+        for (command, args, should_block) in cases {
+            let script = TerminalTool::effective_script(command, &args);
+            let parts: Vec<&str> = script.split_whitespace().collect();
+            let bash_result = bash.check_command_security(&script, &parts);
+            let terminal_result = terminal.check_command_security_for_args(command, &args);
+            assert_eq!(
+                bash_result.is_err(),
+                should_block,
+                "unexpected Bash decision for {script:?}: {bash_result:?}"
+            );
+            assert_eq!(
+                terminal_result.is_err(),
+                should_block,
+                "unexpected terminal decision for {script:?}: {terminal_result:?}"
+            );
+            assert_eq!(
+                bash_result.is_err(),
+                terminal_result.is_err(),
+                "Bash and terminal diverged for {script:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_custom_restrictions_only_narrow_canonical_policy() {
+        let terminal = TerminalTool::new().with_blocked_commands(vec!["printf"]);
+        assert!(terminal
+            .check_command_security_for_args("printf", &["ok".to_string()])
+            .is_err());
+
+        let allowlisted = TerminalTool::new().with_allowlist(vec!["printf"]);
+        assert!(allowlisted
+            .check_command_security_for_args("printf", &["ok".to_string()])
+            .is_ok());
+        assert!(allowlisted
+            .check_command_security_for_args("echo", &["ok".to_string()])
+            .is_err());
+        assert!(allowlisted
+            .check_command_security_for_args("printf", &["$(touch marker)".to_string()])
+            .is_err());
+
+        let shell_allowlisted = TerminalTool::new().with_allowlist(vec!["sh"]);
+        assert!(shell_allowlisted
+            .check_command_security_for_args(
+                "sh",
+                &["-c".to_string(), "$(touch marker)".to_string()]
+            )
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn blocked_effective_script_does_not_spawn_a_side_effect() {
+        let workspace = tempfile::tempdir().expect("temporary terminal workspace");
+        let marker = workspace.path().join("marker");
+        let tool = TerminalTool::new().with_workdir(workspace.path().to_path_buf());
+        let result = tool
+            .execute(json!({
+                "command": "printf",
+                "args": ["$(touch marker)"]
+            }))
+            .await;
+
+        assert!(result.is_err(), "command substitution must be rejected");
+        assert!(
+            !marker.exists(),
+            "blocked command must not spawn its side effect"
+        );
     }
 }

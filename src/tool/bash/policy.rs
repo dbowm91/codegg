@@ -1,9 +1,11 @@
 //! Bash-owned command policy and classification glue.
 //!
-//! This module owns only the decision-making helpers that are local to the
-//! `bash` tool: blocked-pattern scanning, `blocked_commands` / `allowlist`
-//! enforcement, isolated child-workspace validation, kill-switch evaluation,
-//! and thin adapters over the canonical command-intent owners.
+//! This module owns the model-shell safety seam and decision-making helpers
+//! local to the `bash` tool: blocked-pattern scanning,
+//! `blocked_commands` / `allowlist` enforcement, isolated child-workspace
+//! validation, kill-switch evaluation, and thin adapters over the canonical
+//! command-intent owners. The retained `terminal` compatibility adapter calls
+//! the shared shell-safety seam here.
 //!
 //! Canonical behavior lives elsewhere and is invoked here, never copied:
 //!
@@ -40,6 +42,47 @@ use crate::config::schema::CommandIntentFamily;
 use crate::error::ToolError;
 
 pub(crate) const MAX_COMMAND_LENGTH: usize = 100_000;
+
+/// Command prefixes and full commands that are blocked before any shell is
+/// spawned. This is shared with the retained `terminal` compatibility tool so
+/// there is one owner for the default blocked-command policy.
+pub(crate) fn default_blocked_commands() -> std::collections::HashSet<&'static str> {
+    std::collections::HashSet::from([
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf /home",
+        "rm -rf /root",
+        "rm -rf /var",
+        "mkfs",
+        "dd if=/dev/zero",
+        ":(){:|:&};:",
+        "chmod -R 777 /",
+        "chown -R",
+        "curl -sL | sh",
+        "wget -q -O- | sh",
+        "bash -c",
+        "zcat /dev/urandom",
+        "> /dev/sd",
+        "fdisk",
+        "parted",
+        "lsblk",
+        "umount /",
+        "init 0",
+        "shutdown",
+        "reboot",
+        "systemctl poweroff",
+        "telinit 0",
+        "poweroff",
+        "halt",
+        "cat /etc/passwd",
+        "cat /etc/shadow",
+        "sudo su",
+        "sudo -i",
+        "sudo bash",
+        "su root",
+        "pkexec",
+    ])
+}
 
 /// Metrics for routing decisions — recorded per command execution.
 #[derive(Debug, Clone)]
@@ -306,89 +349,104 @@ impl BashTool {
         command: &str,
         parts: &[&str],
     ) -> Result<(), ToolError> {
-        if parts.is_empty() {
+        check_shell_security(
+            command,
+            parts,
+            &self.blocked_commands,
+            self.allowlist.as_ref(),
+        )
+    }
+}
+
+/// Apply the canonical pre-spawn shell safety policy to an effective shell
+/// script. Compatibility adapters may supply additional blocked commands or
+/// an allowlist, but they cannot bypass the canonical pattern scan.
+pub(crate) fn check_shell_security(
+    command: &str,
+    parts: &[&str],
+    blocked_commands: &std::collections::HashSet<&'static str>,
+    allowlist: Option<&std::collections::HashSet<&'static str>>,
+) -> Result<(), ToolError> {
+    if parts.is_empty() {
+        return Ok(());
+    }
+
+    let normalized = parts.join(" ");
+    let mut command_start = 0;
+    while command_start < parts.len()
+        && ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&parts[command_start])
+    {
+        command_start += 1;
+    }
+    let normalized_without_prefix = parts[command_start..].join(" ");
+
+    // Canonical shell patterns are checked before any compatibility
+    // restriction can return early. An allowlist may narrow authority, but it
+    // must never bypass a canonical rejection.
+    if let Some(pat) = find_blocked_pattern(command) {
+        return Err(ToolError::Permission(format!(
+            "command matches blocked pattern: {} (in: {:.80})",
+            pat, command
+        )));
+    }
+
+    // Check blocked commands next (entire command string)
+    if !blocked_commands.is_empty() {
+        for blocked_cmd in blocked_commands {
+            if normalized.starts_with(blocked_cmd)
+                || normalized_without_prefix.starts_with(blocked_cmd)
+            {
+                return Err(ToolError::Permission(format!(
+                    "command matches blocked list: {}",
+                    blocked_cmd
+                )));
+            }
+        }
+    }
+
+    // Check allowlist - must check entire command string
+    if let Some(allowlist) = allowlist {
+        let mut cmd_parts = parts.iter().copied();
+        let mut cmd = cmd_parts.next().unwrap_or("");
+
+        while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
+            cmd = cmd_parts.next().unwrap_or("");
+        }
+
+        if (cmd == "bash" || cmd == "sh" || cmd == "dash") && parts.len() > 2 && parts[1] == "-c" {
+            if !allowlist.contains(&cmd) {
+                return Err(ToolError::Permission(format!(
+                    "command '{}' not in allowlist",
+                    cmd
+                )));
+            }
+
+            let full_match = allowlist
+                .iter()
+                .any(|allowed| normalized.starts_with(allowed));
+            if !full_match {
+                return Err(ToolError::Permission(format!(
+                    "command '{}' not in allowlist",
+                    normalized
+                )));
+            }
             return Ok(());
         }
 
-        let normalized = parts.join(" ");
-        let mut command_start = 0;
-        while command_start < parts.len()
-            && ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&parts[command_start])
-        {
-            command_start += 1;
-        }
-        let normalized_without_prefix = parts[command_start..].join(" ");
-
-        // Check blocked commands first (entire command string)
-        let blocked = &self.blocked_commands;
-        if !blocked.is_empty() {
-            for blocked_cmd in blocked {
-                if normalized.starts_with(blocked_cmd)
-                    || normalized_without_prefix.starts_with(blocked_cmd)
-                {
-                    return Err(ToolError::Permission(format!(
-                        "command matches blocked list: {}",
-                        blocked_cmd
-                    )));
-                }
+        if !allowlist.contains(&cmd) {
+            let full_match = allowlist
+                .iter()
+                .any(|allowed| normalized.starts_with(allowed));
+            if !full_match {
+                return Err(ToolError::Permission(format!(
+                    "command '{}' not in allowlist",
+                    normalized
+                )));
             }
         }
-
-        // Check allowlist - must check entire command string
-        if let Some(ref allowlist) = self.allowlist {
-            let mut cmd_parts = parts.iter().copied();
-            let mut cmd = cmd_parts.next().unwrap_or("");
-
-            while ["env", "nohup", "time", "nice", "setuid", "sudo"].contains(&cmd) {
-                cmd = cmd_parts.next().unwrap_or("");
-            }
-
-            if (cmd == "bash" || cmd == "sh" || cmd == "dash")
-                && parts.len() > 2
-                && parts[1] == "-c"
-            {
-                if !allowlist.contains(&cmd) {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        cmd
-                    )));
-                }
-
-                let full_match = allowlist
-                    .iter()
-                    .any(|allowed| normalized.starts_with(allowed));
-                if !full_match {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        normalized
-                    )));
-                }
-                return Ok(());
-            }
-
-            if !allowlist.contains(&cmd) {
-                let full_match = allowlist
-                    .iter()
-                    .any(|allowed| normalized.starts_with(allowed));
-                if !full_match {
-                    return Err(ToolError::Permission(format!(
-                        "command '{}' not in allowlist",
-                        normalized
-                    )));
-                }
-            }
-        }
-
-        // Check blocked patterns (command injection)
-        if let Some(pat) = find_blocked_pattern(command) {
-            return Err(ToolError::Permission(format!(
-                "command matches blocked pattern: {} (in: {:.80})",
-                pat, command
-            )));
-        }
-
-        Ok(())
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
