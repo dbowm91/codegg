@@ -102,5 +102,5 @@ M001-M003 accepted: Tool Programs have materially broader useful read capability
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M001 | closed | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | `plans/closure/tool-program-capability-expansion/001-status.md` | — |
-| M002 | ready | `plans/implementation/tool-program-capability-expansion/002-external-search-programmatic-read-seam.md` | — | — |
-| M003 | blocked | `plans/implementation/tool-program-capability-expansion/003-operation-scoped-lsp-git-read-adapters.md` | — | M002 |
+| M002 | closed | `plans/implementation/tool-program-capability-expansion/002-external-search-programmatic-read-seam.md` | `plans/closure/tool-program-capability-expansion/002-status.md` | — |
+| M003 | ready | `plans/implementation/tool-program-capability-expansion/003-operation-scoped-lsp-git-read-adapters.md` | — | — |

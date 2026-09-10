@@ -195,7 +195,7 @@ Programs it produces may only call `DirectOrProgrammatic` tools.
 
 ### Read-Only Tool Palette
 
-Five tools are eligible for programmatic invocation:
+Six tools are eligible for programmatic invocation:
 
 | Tool | Caller Policy | Effect Class | Output Schema | Cache TTL |
 |------|--------------|--------------|---------------|-----------|
@@ -204,6 +204,7 @@ Five tools are eligible for programmatic invocation:
 | `grep` | `DirectOrProgrammatic` | `ReadOnly` | `pattern`, `matches`, `total_matches`, `files_searched`, `truncated` | 60s |
 | `list` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `entries`, `count`, `truncated` | 30s |
 | `diff` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `has_changes`, `diff`, `truncated`, `original_bytes`, `current_bytes` | 60s |
+| `repo_search` | `DirectOrProgrammatic` | `ReadOnly` | upstream eggsearch JSON object (backend-versioned) | disabled (nondeterministic external read) |
 
 ### Manifest Resolution
 
@@ -278,11 +279,94 @@ Admitted: `read`, `glob`, `grep`, `list`, `diff`. Deferred without promotion:
 mutations (`write`, `edit`, `apply_patch`, `replace`, `commit`), process
 execution (`bash`, `terminal`, `test`, `task`), multiplexed read/mutation
 surfaces (`git`, `lsp` — M003 scope), external network reads (`repo_search`
-and other search/fetch wrappers, `websearch`, `webfetch` — M002 scope),
+— M002 scope at the time; since admitted, see Expansion M002 — and other
+search/fetch wrappers, `websearch`, `webfetch` — still out of scope),
 `tool_program` itself (`DirectOnly`), and workflow/state surfaces (`skill`,
 `question`, `security`, `review`, `image`, `research`). The census is encoded
 in `tests/tool_program_diff_palette.rs::candidate_census_*` so future
 promotions must satisfy the same matrix evidence.
+
+## Expansion M002: External Repository-Search Programmatic Read Seam
+
+Status: implemented (see `plans/closure/tool-program-capability-expansion/002-status.md`).
+
+### Eligibility extension (explicitly nondeterministic external read)
+
+`repo_search` is admitted under the M001 matrix extended by one declared
+exception: the network-surface ban is lifted for a single explicitly
+classified external read with daemon-owned runtime context,
+`ExternalUntrusted` provenance, and truthful nondeterministic
+cache/replay semantics. Admission requires all of:
+
+1. explicit `DirectOrProgrammatic` caller policy;
+2. read-side effect class (`ReadOnly`);
+3. declared output schema (manifest-gated; intentionally permissive
+   `object` because the upstream eggsearch JSON shape is
+   backend-versioned — display/provenance bounds still apply);
+4. explicit input/output bounds (`query` required, `max_results` capped
+   at 30 by the eggsearch adapter, display capped at
+   `max_repo_search_output_chars`, broker artifact boundary above);
+5. daemon-owned `SearchRuntimeContext` threaded through
+   `ToolRegistry::with_options` (the same registry serves direct and
+   program calls; no isolated default silently replaces the configured
+   service; no process-global slot);
+6. explicitly nondeterministic `ExternalUntrusted` semantics
+   (`Idempotent` means ledger replay serves the recorded
+   execution-time result, NOT that a fresh rerun recomputes the same
+   results);
+7. conservative retry/cache declaration: no broker-side retries and the
+   program-call cache DISABLED so repeated identical queries within one
+   run re-execute against the backend instead of implying determinism;
+8. truthful replay/ledger behavior (only `Success` maps to a
+   programmatic `Ok`; restart replay serves the recorded result and
+   divergence fails closed via existing ledger semantics);
+9. no hidden mutable globals, no credential choice (programs supply only
+   query/filters — the input schema admits no `url`, `api_key`, `token`,
+   `credential`, or `env` field; provider credentials stay in the
+   daemon-owned context), no mutation surface.
+
+Enforced by `tests/tool_program_search_palette.rs` (matrix, network
+census, manifest, runtime-threading, broker, bounds, provenance,
+cancellation, disabled-cache, ledger, rerun-vs-replay tests) plus the
+`src/tool/repo_search.rs` contract unit tests and the
+`tests/tool_contract_guards.rs` palette pin.
+
+### `repo_search` promotion
+
+`src/tool/repo_search.rs` — the canonical repository-search operation is
+`DirectOrProgrammatic` / `ReadOnly` / `Idempotent` with no broker retry,
+disabled program-call cache, and a permissive object output schema:
+
+- `execute()` keeps the direct string behavior (framed
+  `external_untrusted` evidence).
+- `execute_structured()` returns the same display plus the upstream
+  structured value with `Mcp` / `eggsearch/search` /
+  `ExternalUntrusted` provenance.
+- The tool holds the daemon-owned `SearchRuntimeContext` clone installed
+  at registry construction; program calls execute through the same
+  broker pipeline (caller policy, input-schema validation, verified
+  authority, deadline/cancellation, output validation, artifact
+  spillover) as direct calls.
+- Bounds: `query` required, `max_results` capped at 30, display capped at
+  `max_repo_search_output_chars` (default 15 KiB) with an explicit
+  truncation marker and `truncated` metadata.
+- Backend/policy failures (disabled, builtin-without-eggsearch,
+  unavailable MCP service) surface as typed `InfrastructureError`
+  programmatic failures under existing policy; cancellation propagates
+  through `BrokerAdapter` before dispatch.
+- Contract-hash changes invalidate stale manifests/caches by construction
+  (canonical `ContractEntry` digest covers caller policy and schemas).
+
+### Candidate census (M002 disposition)
+
+Admitted: `read`, `glob`, `grep`, `list`, `diff` (M001) plus `repo_search`.
+Still deferred without promotion: mutations, process execution,
+multiplexed `git`/`lsp` (M003 scope), every other external search/fetch
+surface (`websearch`, `webfetch`, `repo_fetch`, `repo_map`,
+`codesearch` compat alias, `batch_fetch`, `security_search`,
+`research_search`, `evidence_bundle`, `research`), `tool_program` itself,
+and workflow/state surfaces. The census is encoded in
+`tests/tool_program_search_palette.rs::candidate_census_*`.
 
 ## M007: Child-Job Composition
 

@@ -218,8 +218,10 @@ fn broker_catalog_exposes_diff_with_programmatic_contract() {
 // ── E. Candidate census: eligible vs deferred ─────────────────────────────
 //
 // Disposition for every other nearby read-looking tool. Only the five local
-// deterministic reads are admitted; everything else records why it stays
-// direct-only without being promoted by this milestone.
+// deterministic reads are admitted by THIS milestone; everything else
+// records why M001 does not promote it. `repo_search` was deferred here
+// as M002 scope and is now covered by `tests/tool_program_search_palette.rs`
+// (external nondeterministic matrix with cache disabled).
 
 #[test]
 fn candidate_census_only_deterministic_local_reads_are_eligible() {
@@ -243,10 +245,10 @@ fn candidate_census_only_deterministic_local_reads_are_eligible() {
             "lsp",
             "multiplexed: mixes reads with mutation-adjacent ops (M003 scope)",
         ),
-        (
-            "repo_search",
-            "external network read with nondeterministic results (M002 scope)",
-        ),
+        // NOTE (M002): `repo_search` is intentionally absent. M001 deferred
+        // it as M002 scope; M002 admitted it under the external
+        // nondeterministic matrix (cache disabled). Its census now lives in
+        // `tests/tool_program_search_palette.rs`.
         ("repo_fetch", "external network fetch (out of scope)"),
         ("repo_map", "external-backed mapping (out of scope)"),
         ("codesearch", "external-backed search (out of scope)"),
@@ -302,10 +304,13 @@ fn mutation_and_network_tools_rejected_from_program_manifest() {
         "bash",
         "git",
         "lsp",
-        "repo_search",
         "websearch",
         "tool_program",
     ] {
+        // NOTE (M002): `repo_search` is intentionally absent here. It was
+        // deferred by M001 as M002 scope and is now admitted under the
+        // external nondeterministic matrix (cache disabled); its positive
+        // manifest coverage lives in `tool_program_search_palette.rs`.
         if broker.lookup_contract(name).is_err() {
             continue;
         }

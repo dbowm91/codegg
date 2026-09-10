@@ -235,6 +235,21 @@ Each dispatch function has a corresponding `provenance_for_*` helper
 that builds a `ToolProvenance` describing the backend, implementation,
 and trust level. Used by the agent loop for audit trails.
 
+### Programmatic (Tool Program) availability
+
+Only `repo_search` is callable from Tool Programs (expansion M002; see
+`architecture/tool_programs.md#expansion-m002`). Its tool contract is
+`DirectOrProgrammatic` / `ReadOnly` / `Idempotent` with no broker retry
+and the program-call cache disabled: repeated identical queries
+re-execute against the backend, ledger replay serves the recorded
+execution-time result, and a fresh rerun may return different results.
+Every other search/fetch wrapper (`websearch`, `webfetch`,
+`repo_fetch`, `repo_map`, `codesearch`, `batch_fetch`,
+`security_search`, `research_search`, `evidence_bundle`) remains
+`DirectOnly`. Programs supply only query/filters through the existing
+broker pipeline; provider credentials stay in the daemon-owned
+`SearchRuntimeContext`.
+
 ### Hiding Raw MCP Tools
 
 The agent loop's `build_tool_definitions` filters out tools whose

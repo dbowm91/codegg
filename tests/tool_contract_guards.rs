@@ -284,7 +284,8 @@ fn tool_program_is_direct_only() {
 #[test]
 fn palette_tools_are_direct_or_programmatic() {
     let registry = ToolRegistry::with_defaults();
-    let palette = ["read", "glob", "grep", "list"];
+    // M001 local deterministic reads plus the M002 external search seam.
+    let palette = ["read", "glob", "grep", "list", "diff", "repo_search"];
     for name in &palette {
         if let Some(tool) = registry.get(name) {
             let contract = tool.contract(name, tool.parameters());

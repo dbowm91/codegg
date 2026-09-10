@@ -1,6 +1,6 @@
 # Tool Program Capability Expansion Milestone 002 — External Repository Search Programmatic Read Seam
 
-Status: ready for handoff (unblocked by M001 closure at `plans/closure/tool-program-capability-expansion/001-status.md`)
+Status: implemented — closed by `plans/closure/tool-program-capability-expansion/002-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 

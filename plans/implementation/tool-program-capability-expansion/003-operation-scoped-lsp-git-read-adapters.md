@@ -1,6 +1,6 @@
 # Tool Program Capability Expansion Milestone 003 — Operation-Scoped LSP and Git Read Adapters
 
-Status: blocked
+Status: ready for handoff (unblocked by M002 closure at `plans/closure/tool-program-capability-expansion/002-status.md`; M001 closed at `plans/closure/tool-program-capability-expansion/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Expose a small selected subset of high-value Git and LSP read operations to Tool
 
 ## 2. Why this milestone is ready
 
-Blocked on M002 (M001 closed at `plans/closure/tool-program-capability-expansion/001-status.md`) so eligibility/trust/replay policy is stable. Git/worktree ownership and LSP mutation-preview/application correctness are already closed; these are read adapters only.
+Unblocked by M002 closure (`plans/closure/tool-program-capability-expansion/002-status.md`; M001 closed at `plans/closure/tool-program-capability-expansion/001-status.md`) so eligibility/trust/replay policy is stable. Git/worktree ownership and LSP mutation-preview/application correctness are already closed; these are read adapters only.
 
 ## 3. Current implementation evidence
 
