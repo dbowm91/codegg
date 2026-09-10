@@ -29,7 +29,9 @@ crates/codegg-protocol/src/core.rs        # PresenceActivityDto, heartbeat/snaps
                                           # CoreRequest::Presence{Capabilities,Heartbeat,SnapshotGet},
                                           # CoreResponse::Presence{HeartbeatAck,Snapshot,Capabilities},
                                           # CoreEvent::PresenceUpdated
-crates/codegg-core/src/authorization.rs   # operation_descriptor + representative requests
+crates/codegg-core/src/authorization/policy.rs
+                                          # operation_descriptor + representative requests,
+                                          # re-exported by the authorization facade
                                           # (heartbeat/snapshot require project.observe, DirectProject)
 src/core/daemon.rs                        # daemon-owned PresenceService, handlers, activity touches,
                                           # disconnect expiry, restart clear
@@ -237,7 +239,8 @@ activity model in an explicitly read-only state.
 
 ```
 crates/codegg-core/src/projection_replay/context.rs  # authorize_scope: session scope needs ObserveSessionProjection
-crates/codegg-core/src/authorization.rs               # team_capabilities_to_projection (existing mapping reused)
+crates/codegg-core/src/authorization/authority.rs     # team_capabilities_to_projection (existing mapping reused)
+                                                      # re-exported by the authorization facade
 src/core/daemon.rs                                    # canonical_observe_access_for_project, session_observe_allowed,
                                                       # subscribe/resume/artifact rechecks, denial shapes
 src/tui/app/state/observe.rs                          # ObserverState reducer + central read-only policy

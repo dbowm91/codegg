@@ -1,6 +1,6 @@
 # Post-Implementation Maintainability Closure Roadmap
 
-Status: ready
+Status: closed
 
 Repository baseline: `f04866b1d817eee06fb3e51e73cc8f7b6679ad86`
 
@@ -146,4 +146,4 @@ This roadmap closes when M001 has an accepted closure record showing a correctne
 
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
-| M001 | ready | `plans/implementation/post-implementation-maintainability-closure/001-authorization-collaboration-physical-decomposition.md` | `plans/closure/post-implementation-maintainability-closure/001-status.md` | — |
+| M001 | closed | `plans/implementation/post-implementation-maintainability-closure/001-authorization-collaboration-physical-decomposition.md` | `plans/closure/post-implementation-maintainability-closure/001-status.md` | — |

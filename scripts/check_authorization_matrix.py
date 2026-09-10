@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-AUTHZ_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization.rs"
+AUTHZ_POLICY_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization" / "policy.rs"
+AUTHZ_AUTHORITY_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "authorization" / "authority.rs"
 PROTOCOL_CORE = REPO_ROOT / "crates" / "codegg-protocol" / "src" / "core.rs"
 SCHEMA_MODULE = REPO_ROOT / "crates" / "codegg-core" / "src" / "session" / "schema.rs"
 DAEMON_MODULE = REPO_ROOT / "src" / "core" / "daemon.rs"
@@ -42,7 +43,7 @@ def check_matrix_covers_every_request() -> bool:
     variants = _request_variants()
     if not variants:
         return False
-    source = _read(AUTHZ_MODULE)
+    source = _read(AUTHZ_POLICY_MODULE)
     match = re.search(r"pub fn operation_descriptor\(.*?\{", source, re.DOTALL)
     if not match:
         print("  FAIL: operation_descriptor not found")
@@ -76,7 +77,7 @@ def check_no_role_checks_in_daemon_dispatch() -> bool:
 
 def check_denials_carry_no_project_signal() -> bool:
     """denial_as_not_found must not embed project ids or secrets."""
-    source = _read(AUTHZ_MODULE)
+    source = _read(AUTHZ_AUTHORITY_MODULE)
     match = re.search(r"pub fn denial_as_not_found\(\)(.*?)\n\}", source, re.DOTALL)
     if not match:
         print("  FAIL: denial_as_not_found not found")

@@ -27,7 +27,7 @@ Canonical direction remains in:
 |---|---|---|---|---|
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
-| Post-implementation maintainability closure | ready | `plans/subsystems/post-implementation-maintainability-closure-roadmap.md` | M001 ready | — |
+| Post-implementation maintainability closure | closed | `plans/subsystems/post-implementation-maintainability-closure-roadmap.md` | M001 closed | — |
 | Residual runtime consolidation | closed | `plans/subsystems/residual-runtime-consolidation-roadmap.md` | M001–M003 closed | — |
 | Identity, authorization, and audit | closed | `plans/subsystems/identity-authorization-audit-roadmap.md` | M005 closed | — |
 | Presence and read-only observation | closed | `plans/subsystems/presence-observation-roadmap.md` | M001–M003 closed | — |
@@ -57,11 +57,9 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-| Subsystem | Milestone | Status | Implementation plan | Dependencies or blockers |
-|---|---|---|---|---|
-| Post-implementation maintainability closure | M001 authorization/collaboration physical decomposition | ready | `plans/implementation/post-implementation-maintainability-closure/001-authorization-collaboration-physical-decomposition.md` | All functional owner subsystems are closed; no hard blocker. |
+No dependency-ready implementation plans remain in this milestone batch.
 
-A plan moves to `active` only when implementation actually begins. The previously stale dependency-ready count/prose has been removed; completed Tool Program expansion work remains represented in closure control points rather than as ready work.
+A plan moves to `active` only when implementation actually begins. Completed Tool Program expansion work remains represented in closure control points rather than as ready work.
 
 ## Current execution order and dependency gates
 
@@ -71,7 +69,7 @@ A plan moves to `active` only when implementation actually begins. The previousl
 4. Project collaboration M001+M002+M003 are closed and the subsystem is complete: durable authorized channels/messages with ordering/retry/restart/retention/auth/privacy, bounded TUI chat with observer insert routing and zero-control proof, and separately authorized structured actions with idempotent scheduler-boundary submits and audit causation. Free text is never an execution interface.
 5. Interactive-process M001/M002/M003 are closed; the subsystem roadmap is closed.
 6. Tool Program expansion M001 is closed (eligibility contract + `diff` promotion, closure at `plans/closure/tool-program-capability-expansion/001-status.md`), M002 is closed (external search seam, closure at `plans/closure/tool-program-capability-expansion/002-status.md`), and M003 is closed (operation-scoped Git/LSP read adapters, closure at `plans/closure/tool-program-capability-expansion/003-status.md`). The expansion subsystem is complete: programs hold a broader useful read capability through existing broker/manifest/ledger authority with no mutation authority added.
-7. Post-implementation maintainability M001 is dependency-ready. It is a correctness-neutral physical decomposition of the canonical authorization/collaboration core modules plus registry reconciliation; it MUST NOT change authority, schema, protocol, transaction/idempotency semantics, or scheduler/job ownership.
+7. Post-implementation maintainability M001 is closed by `plans/closure/post-implementation-maintainability-closure/001-status.md`. It delivered a correctness-neutral physical decomposition of the canonical authorization/collaboration core modules plus registry reconciliation; it did not change authority, schema, protocol, transaction/idempotency semantics, or scheduler/job ownership.
 8. None of this work authorizes a new scheduler, service bus, verification framework, release automation, persistent search index, remote sandbox, or broader Windows support tier.
 
 ## Blocked work
@@ -87,7 +85,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Post-implementation maintainability closure | M001 ready | `plans/implementation/post-implementation-maintainability-closure/001-authorization-collaboration-physical-decomposition.md` |
+| Post-implementation maintainability closure | M001 closed | `plans/closure/post-implementation-maintainability-closure/001-status.md` |
 | Identity, authorization, and audit | M001 closed | `plans/closure/identity-authorization-audit/001-status.md` |
 | Identity, authorization, and audit | M002 closed | `plans/closure/identity-authorization-audit/002-status.md` |
 | Identity, authorization, and audit | M003 closed | `plans/closure/identity-authorization-audit/003-status.md` |

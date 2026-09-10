@@ -33,12 +33,17 @@ Closure: `plans/closure/project-collaboration/002-status.md`.
 ## Where It Lives
 
 ```
-crates/codegg-core/src/collaboration.rs   # domain service: channels/messages/revisions/
-                                          # markers/retention/ephemeral composing (M001)
+crates/codegg-core/src/collaboration.rs   # canonical facade/domain service: channels/messages/
+                                          # revisions/markers/retention/composing (M001)
+crates/codegg-core/src/collaboration/validation.rs
+                                          # message/action bounds, secret redaction, and
+                                          # structural audit metadata
 crates/codegg-core/src/identity.rs        # ChatMessageId (ChannelId reused for channels)
 crates/codegg-core/src/session/schema.rs  # v55 chat tables (additive, IF NOT EXISTS)
 crates/codegg-core/src/storage/mod.rs     # STORAGE_LAYOUT_VERSION = 55
-crates/codegg-core/src/authorization.rs   # 12 chat_* operation descriptors (project.chat)
+crates/codegg-core/src/authorization/policy.rs
+                                          # chat_* operation descriptors (project.chat),
+                                          # re-exported by the authorization facade
 crates/codegg-core/src/projection_replay/safe_publication.rs  # chat events classify Safe
 crates/codegg-protocol/src/core.rs        # chat.v1 DTOs, 12 CoreRequests, 8 CoreResponses,
                                           # 4 CoreEvents (CHAT_CAPABILITY, CHAT_PROTOCOL_VERSION)
