@@ -183,8 +183,12 @@ pub struct CommandRegistry {
 }
 ```
 
-Accessed via `static COMMAND_REGISTRY: LazyLock<CommandRegistry>`.
-The `built_in_commands()` method returns all 108 built-in commands.
+`COMMAND_REGISTRY` exposes the immutable built-in/global catalog for
+compatibility and tests. Each TUI `App` owns a `CommandRegistry` containing
+those definitions plus project-local commands discovered from its active
+tab's explicit workspace root. Switching tabs replaces the project-local
+catalog and re-filters the command palette; discovery never reads process
+cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
 ### Built-in Commands (108 total)
 

@@ -8,7 +8,12 @@ use super::super::task_lifecycle::TuiTaskKind;
 use crate::tui::app::send_tui;
 use crate::util::truncate::truncate_prefix;
 
-pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promote_after: bool) {
+pub(crate) fn handle_run_human_shell(
+    app: &mut app::App,
+    command: String,
+    promote_after: bool,
+    cwd: std::path::PathBuf,
+) {
     use crate::shell::policy::evaluate_command;
 
     let policy = evaluate_command(&command);
@@ -22,7 +27,7 @@ pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promot
         crate::shell::policy::HumanShellPolicyDecision::Warn { reason } => {
             let confirm_enabled = app.shell_confirm_dangerous;
             if confirm_enabled {
-                app.dialog_state.pending_shell_command = Some((command, promote_after));
+                app.dialog_state.pending_shell_command = Some((command, promote_after, cwd));
                 let title = "Dangerous Command".to_string();
                 let msg = format!("{}\n\nRun this command anyway?", reason);
                 app.ui_state.dialog = crate::tui::Dialog::Confirm;
@@ -39,14 +44,18 @@ pub(crate) fn handle_run_human_shell(app: &mut app::App, command: String, promot
         crate::shell::policy::HumanShellPolicyDecision::Allow => {}
     }
 
-    spawn_human_shell(app, command, promote_after);
+    spawn_human_shell(app, command, promote_after, cwd);
 }
 
-pub(crate) fn spawn_human_shell(app: &mut app::App, command: String, promote_after: bool) {
+pub(crate) fn spawn_human_shell(
+    app: &mut app::App,
+    command: String,
+    promote_after: bool,
+    cwd: std::path::PathBuf,
+) {
     use crate::shell::types::{ShellCapturePolicy, ShellEnvPolicy, ShellOrigin, ShellRequest};
 
     let id = app.shell_store.alloc_id();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let capture_policy = if promote_after {
         ShellCapturePolicy::StoreAndPromote
     } else {
@@ -455,12 +464,20 @@ pub(crate) fn handle_shell_rerun(app: &mut app::App, id: u64) {
     if let Some(entry) = app.shell_store.get(cmd_id) {
         let command = entry.command.clone();
         let promote_after = entry.promote_after;
+        let cwd = match app.project_execution_context() {
+            Ok(context) => context.workspace_root,
+            Err(error) => {
+                app.messages_state.toasts.error(&error);
+                return;
+            }
+        };
         if let Some(ref tx) = app.tui_cmd_tx {
             let _ = send_tui(
                 tx,
                 app::TuiCommand::RunHumanShell {
                     command,
                     promote_after,
+                    cwd,
                 },
             );
         }

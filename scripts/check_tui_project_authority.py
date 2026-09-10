@@ -2,19 +2,16 @@
 """Static guard that rejects reintroduction of path/current-focus
 authority into the multi-project TUI frontend.
 
-Milestone 4 of the Multi-Project TUI roadmap establishes the
+Corrective milestone M005 of the Multi-Project TUI roadmap establishes the
 project catalog and the routing registry as the authoritative
 identity surface. The legacy single-project TUI read `project_dir`
 as a project authority in several places; new code must not
 re-introduce that pattern.
 
-This script scans `src/tui/app/state/`, `src/tui/app/mod.rs`, and
-`src/tui/commands/` for patterns that read global session fields
-(`App::session_state.project_dir`, etc.) as if they were project
-identity. The check is intentionally conservative — existing
-compat-mode call sites that legitimately read `session_state` for
-rendering (without making it a project identity decision) are
-allowlisted individually.
+This script scans the TUI execution surface for direct ambient project
+authority. Project-scoped operations must resolve the active tab's explicit
+execution context before dispatch; process cwd is allowed only at a clearly
+marked bootstrap boundary and test fixtures are allowed only in test code.
 
 Exit code 1 if violations are found.
 
@@ -22,7 +19,7 @@ Usage::
 
     python3 scripts/check_tui_project_authority.py
 
-This is invoked from `make test` and the CI pipeline.
+This is invoked by `scripts/verify.sh quick` and the CI `verify` job.
 """
 
 from __future__ import annotations
@@ -41,6 +38,8 @@ PROTECTED_GLOBS: list[str] = [
     "tui/app/mod.rs",
     "tui/commands/**/*.rs",
     "tui/runtime/**/*.rs",
+    "tui/command.rs",
+    "tui/components/dialogs/command.rs",
 ]
 
 # Patterns that indicate a session/project identity read. Each
@@ -52,9 +51,9 @@ PROTECTED_GLOBS: list[str] = [
 # `session_state.session.is_some()`) are explicitly allowlisted
 # because the legacy surface continues to drive rendering.
 PATTERNS: list[re.Pattern] = [
-    # Reading session_state.project_dir directly as a project identity.
-    re.compile(r"session_state\.project_dir"),
-    # Treating the legacy single-project cwd as a project identity.
+    # Any direct legacy mirror read can select the wrong project after a tab
+    # switch, including reads that do not look like an identity comparison.
+    re.compile(r"\bsession_state\.project_dir\b"),
     re.compile(r"std::env::current_dir\(\)"),
 ]
 
@@ -63,10 +62,6 @@ PATTERNS: list[re.Pattern] = [
 # suppressed. New allowlist entries must be added with a comment
 # explaining the legitimate compat-mode usage.
 ALLOWLIST: list[re.Pattern] = [
-    # Existing compat-mode rendering surface: legacy single-project
-    # state continues to drive rendering under milestone 004.
-    re.compile(r"//\s*compat"),
-    re.compile(r"///\s*compat"),
     # Doc comments are excluded.
     re.compile(r"^\s*///"),
     re.compile(r"^\s*//\s*!"),
@@ -75,19 +70,10 @@ ALLOWLIST: list[re.Pattern] = [
     re.compile(r"#\[test"),
     re.compile(r"#\[cfg\(test"),
     re.compile(r"mod tests"),
-    # Existing allowlist for the cwd check that pre-dates this guard.
-    re.compile(r"std::env::current_dir\(\)\.ok"),
-    re.compile(r"let cwd = std::env::current_dir"),
-    # Doc-only references in module headers.
-    re.compile(r"project_dir"),
-    # Manifest restore pipeline: reads session_state.session for
-    # compat-mode compat-startup (single-tab mode). Documented.
-    re.compile(r"if app\.session_state\.session\.is_some\(\)"),
-    re.compile(r"if let Some\(.*\) = app\.session_state\.session"),
-    re.compile(r"app\.session_state\.session ="),
-    # Pre-existing fallback paths unrelated to project authority.
-    re.compile(r"std::env::current_dir\(\)\.unwrap_or_else"),
-    re.compile(r"let workdir = std::env::current_dir"),
+    # One-time bootstrap locators must be marked at the exact source line.
+    re.compile(r"//\s*bootstrap\b"),
+    # Test-only fixtures may use cwd when constructing isolated test data.
+    re.compile(r"//\s*test-fixture\b"),
 ]
 
 

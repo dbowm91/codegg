@@ -81,6 +81,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::AssetRefreshFinished { report, error } => {
             apply_asset_refresh_finished(app, report, error);
+            app.refresh_project_command_registry();
         }
         TuiCommand::LspPreviewApplyFinished {
             session_id,
@@ -1050,8 +1051,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         TuiCommand::RunHumanShell {
             command,
             promote_after,
+            cwd,
         } => {
-            handle_run_human_shell(app, command, promote_after);
+            handle_run_human_shell(app, command, promote_after, cwd);
         }
         TuiCommand::TestRun { scope, args } => {
             start_test_run(app, scope, args);
@@ -1271,8 +1273,9 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
             args,
             session_id,
             model,
+            workspace_root,
         } => {
-            start_plugin_command(app, spec, args, session_id, model);
+            start_plugin_command(app, spec, args, session_id, model, workspace_root);
         }
         TuiCommand::PluginCommandFinished {
             invocation_id,

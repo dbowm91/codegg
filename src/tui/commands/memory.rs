@@ -15,9 +15,11 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
             .warning("Core unavailable — check daemon status with /doctor");
         return;
     };
-    let project_namespace = crate::memory::project_namespace(&app.session_state.project_dir);
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_dir = project_dir.to_string_lossy().into_owned();
+    let project_namespace = crate::memory::project_namespace(&project_dir);
     if let Some(store) = app.memory_store.as_ref() {
-        let _ = store.migrate_project_namespace(&app.session_state.project_dir);
+        let _ = store.migrate_project_namespace(&project_dir);
     }
     let req_prefs = crate::core::new_request(
         format!("memory-list-{}", uuid::Uuid::new_v4()),
@@ -51,7 +53,7 @@ pub(crate) async fn handle_memory_summary(app: &mut App) {
         let legacy_request = crate::core::new_request(
             format!("memory-list-{}", uuid::Uuid::new_v4()),
             CoreRequest::MemoryList {
-                namespace: crate::memory::legacy_project_namespace(&app.session_state.project_dir),
+                namespace: crate::memory::legacy_project_namespace(&project_dir),
             },
         );
         proj = match core_client.request(legacy_request).await {
@@ -279,7 +281,8 @@ pub(crate) async fn handle_memory_forget(app: &mut App, id: String) {
 
 pub(crate) fn start_memory_summary(app: &mut App) {
     let core_client = app.core_client.clone();
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_dir = project_dir.to_string_lossy().into_owned();
     if let Some(store) = app.memory_store.as_ref() {
         let _ = store.migrate_project_namespace(&project_dir);
     }
@@ -621,7 +624,8 @@ pub(crate) fn apply_memory_result(app: &mut App, toast_message: String, is_error
 }
 
 pub(crate) fn start_habit_list(app: &mut App, ready_only: bool) {
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_dir = project_dir.to_string_lossy().into_owned();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -681,7 +685,8 @@ pub(crate) fn start_habit_dismiss(app: &mut App, id: String) {
             .warning("Invalid habit candidate ID");
         return;
     };
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_dir = project_dir.to_string_lossy().into_owned();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,
@@ -744,7 +749,8 @@ pub(crate) fn start_skill_publish(
             .warning("Invalid skill proposal ID");
         return;
     };
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_dir = project_dir.to_string_lossy().into_owned();
     let tx = app.tui_cmd_tx.clone();
     spawn_registered_tui_task(
         tx,

@@ -3,7 +3,7 @@ use crate::tui::app::Dialog;
 use crate::util::fuzzy::fuzzy_score;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,16 +81,25 @@ impl Command {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct CommandRegistry {
-    commands: Vec<Command>,
+    pub(crate) commands: Vec<Command>,
 }
 
 impl CommandRegistry {
+    /// Construct the immutable built-in/global command catalog.
     pub fn new() -> Self {
-        let mut commands = Self::built_in_commands();
+        Self {
+            commands: Self::built_in_commands(),
+        }
+    }
 
-        Self::append_dynamic_commands(&mut commands);
-        Self { commands }
+    /// Construct a command catalog scoped to one explicit workspace root.
+    /// Project-local command files are never discovered from process cwd.
+    pub fn new_for_workspace_root(root: &Path) -> Self {
+        let mut registry = Self::new();
+        registry.append_dynamic_commands(root);
+        registry
     }
 
     fn built_in_commands() -> Vec<Command> {
@@ -397,7 +406,8 @@ impl CommandRegistry {
         ]
     }
 
-    fn append_dynamic_commands(commands: &mut Vec<Command>) {
+    fn append_dynamic_commands(&mut self, root: &Path) {
+        let commands = &mut self.commands;
         let mut seen: HashMap<String, String> = HashMap::new();
 
         for cmd in commands.iter() {
@@ -420,8 +430,7 @@ impl CommandRegistry {
             }
         }
 
-        let base = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let base = base.canonicalize().unwrap_or(base);
+        let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let dynamic_commands = std::thread::scope(|s| {
             s.spawn(|| {
                 crate::command::find_command_files_sync(&base)
@@ -677,5 +686,31 @@ mod tests {
         assert!(converted.is_process());
         assert!(converted.process.is_some());
         assert!(converted.template.is_none());
+    }
+
+    #[test]
+    fn project_command_catalog_is_scoped_to_explicit_root() {
+        let root = tempfile::tempdir().unwrap();
+        let project_a = root.path().join("a");
+        let project_b = root.path().join("b");
+        std::fs::create_dir_all(project_a.join("commands")).unwrap();
+        std::fs::create_dir_all(project_b.join("commands")).unwrap();
+        std::fs::write(
+            project_a.join("commands/a-only.md"),
+            "---\ndescription: A only\n---\nA\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project_b.join("commands/b-only.md"),
+            "---\ndescription: B only\n---\nB\n",
+        )
+        .unwrap();
+
+        let a = CommandRegistry::new_for_workspace_root(&project_a);
+        let b = CommandRegistry::new_for_workspace_root(&project_b);
+        assert!(a.find_by_name_or_alias("/a-only").is_some());
+        assert!(a.find_by_name_or_alias("/b-only").is_none());
+        assert!(b.find_by_name_or_alias("/b-only").is_some());
+        assert!(b.find_by_name_or_alias("/a-only").is_none());
     }
 }

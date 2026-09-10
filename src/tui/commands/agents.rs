@@ -142,22 +142,26 @@ fn cli_compat_context(workspace_root: &std::path::Path) -> AssetContext {
         .expect("workspace root is valid")
 }
 
-/// Production CLI bootstrap helper. Reads `current_dir` exactly once at
-/// the boundary so the agent registry no longer needs to.
-fn cli_compat_context_from_cwd() -> AssetContext {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    cli_compat_context(&cwd)
-}
-
-fn load_cli_registry() -> Result<AgentRegistry, crate::error::AgentError> {
+fn load_registry_for_root(
+    workspace_root: &std::path::Path,
+) -> Result<AgentRegistry, crate::error::AgentError> {
     let config = Config::load_or_default();
-    let ctx = cli_compat_context_from_cwd();
+    let ctx = cli_compat_context(workspace_root);
     AgentRegistry::load_for_context(&config, &ctx)
 }
 
 /// Format `/agents` output: visible agents grouped by mode.
+#[allow(dead_code)]
 pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Vec<String> {
-    let registry = match load_cli_registry() {
+    format_agents_list_for_root(agent_state, show_all, std::path::Path::new("."))
+}
+
+pub(crate) fn format_agents_list_for_root(
+    agent_state: &AgentState,
+    show_all: bool,
+    workspace_root: &std::path::Path,
+) -> Vec<String> {
+    let registry = match load_registry_for_root(workspace_root) {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -238,8 +242,16 @@ pub(crate) fn format_agents_list(agent_state: &AgentState, show_all: bool) -> Ve
 }
 
 /// Format `/agents show <name>` output: resolved agent metadata.
+#[allow(dead_code)]
 pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
-    let registry = match load_cli_registry() {
+    format_agent_show_for_root(name, std::path::Path::new("."))
+}
+
+pub(crate) fn format_agent_show_for_root(
+    name: &str,
+    workspace_root: &std::path::Path,
+) -> Vec<String> {
+    let registry = match load_registry_for_root(workspace_root) {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -340,8 +352,16 @@ pub(crate) fn format_agent_show(name: &str) -> Vec<String> {
 }
 
 /// Format `/agents diff <name>` output: overlay changes.
+#[allow(dead_code)]
 pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
-    let registry = match load_cli_registry() {
+    format_agent_diff_for_root(name, std::path::Path::new("."))
+}
+
+pub(crate) fn format_agent_diff_for_root(
+    name: &str,
+    workspace_root: &std::path::Path,
+) -> Vec<String> {
+    let registry = match load_registry_for_root(workspace_root) {
         Ok(r) => r,
         Err(e) => return vec![format!("Failed to load agent registry: {e}")],
     };
@@ -499,15 +519,18 @@ pub(crate) fn format_agent_diff(name: &str) -> Vec<String> {
 }
 
 /// Format `/agents validate` output: registry diagnostics.
+#[allow(dead_code)]
 pub(crate) fn format_agents_validate() -> Vec<String> {
-    let (lines, _has_errors) = format_agents_validate_inner();
+    let (lines, _has_errors) = format_agents_validate_inner(std::path::Path::new("."));
     lines
 }
 
 /// Validate agents and return diagnostics with error status.
 /// Returns (lines, has_errors) for headless/CLI mode.
-fn format_agents_validate_inner() -> (Vec<String>, bool) {
-    let registry = match load_cli_registry() {
+pub(crate) fn format_agents_validate_inner(
+    workspace_root: &std::path::Path,
+) -> (Vec<String>, bool) {
+    let registry = match load_registry_for_root(workspace_root) {
         Ok(r) => r,
         Err(e) => return (vec![format!("error: failed to load registry: {e}")], true),
     };
@@ -574,8 +597,15 @@ fn format_agents_validate_inner() -> (Vec<String>, bool) {
 /// Rebuild the agent registry from scratch and return new agent list + diagnostics.
 /// Unlike reload, this uses the full AgentRegistry to capture source provenance
 /// and diagnostics, then converts to plain agents.
+#[allow(dead_code)]
 pub(crate) fn rebuild_agents() -> (Vec<crate::agent::Agent>, Vec<String>) {
-    match load_cli_registry() {
+    rebuild_agents_for_root(std::path::Path::new("."))
+}
+
+pub(crate) fn rebuild_agents_for_root(
+    workspace_root: &std::path::Path,
+) -> (Vec<crate::agent::Agent>, Vec<String>) {
+    match load_registry_for_root(workspace_root) {
         Ok(registry) => {
             let count = registry.list().count();
             let visible = registry.list_visible().len();

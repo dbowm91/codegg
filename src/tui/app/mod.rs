@@ -516,6 +516,7 @@ pub enum TuiCommand {
     RunHumanShell {
         command: String,
         promote_after: bool,
+        cwd: PathBuf,
     },
     /// Run supervised tests from the /test slash command.
     TestRun {
@@ -695,6 +696,7 @@ pub enum TuiCommand {
         args: Vec<String>,
         session_id: Option<String>,
         model: Option<String>,
+        workspace_root: PathBuf,
     },
     /// Completion: a plugin command has finished executing.
     PluginCommandFinished {
@@ -1215,6 +1217,9 @@ pub struct App {
     pub messages_state: MessagesState,
     pub dialog_state: DialogState,
     pub agent_state: AgentState,
+    /// Built-in/global commands plus the catalog discovered for the active
+    /// project's explicit workspace root.
+    pub command_registry: crate::tui::command::CommandRegistry,
     pub sidebar: SidebarWidget,
     pub status_bar: StatusBarWidget,
     pub session_store: Option<Arc<SessionStore>>,
@@ -1428,8 +1433,11 @@ impl App {
             "opencode_zen/nemotron-3-super-free".to_string(),
         ];
         let current_model = models[0].clone();
+        let command_registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new(&project_dir),
+        );
         use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
-        let slash_completions: Vec<CompletionItem> = crate::tui::command::COMMAND_REGISTRY
+        let slash_completions: Vec<CompletionItem> = command_registry
             .commands()
             .iter()
             .map(|c| CompletionItem {
@@ -1633,7 +1641,7 @@ impl App {
                 theme_picker: None,
                 question_dialog: None,
                 question_session_id: None,
-                command_palette: CommandPalette::new(),
+                command_palette: CommandPalette::new_with_registry(&command_registry),
                 permission_dialog: None,
                 permission_perm_id: None,
                 keybind_dialog: None,
@@ -1689,6 +1697,7 @@ impl App {
                 plan_mode: false,
                 plan_topic: None,
             },
+            command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             session_store: None,
@@ -1989,8 +1998,11 @@ impl App {
             "opencode_zen/nemotron-3-super-free".to_string(),
         ];
         let current_model = models[0].clone();
+        let command_registry = crate::tui::command::CommandRegistry::new_for_workspace_root(
+            std::path::Path::new(&project_dir),
+        );
         use crate::tui::components::completion_overlay::{CompletionItem, CompletionItemKind};
-        let slash_completions: Vec<CompletionItem> = crate::tui::command::COMMAND_REGISTRY
+        let slash_completions: Vec<CompletionItem> = command_registry
             .commands()
             .iter()
             .map(|c| CompletionItem {
@@ -2162,6 +2174,7 @@ impl App {
                 plan_mode: false,
                 plan_topic: None,
             },
+            command_registry,
             sidebar: SidebarWidget::new(Arc::clone(&theme)),
             status_bar: StatusBarWidget::new(Arc::clone(&theme)),
             session_store: None,
@@ -2265,6 +2278,74 @@ impl App {
         self.core_client = Some(client);
     }
 
+    /// Resolve the active tab's immutable project execution context. This
+    /// must be called before spawning project-scoped work.
+    pub fn project_execution_context(
+        &self,
+    ) -> Result<crate::tui::app::state::ProjectExecutionContext, String> {
+        crate::tui::app::state::resolve_active_execution_context(&self.project_tabs)
+    }
+
+    /// Return the active workspace root for legacy local services. The
+    /// value is still resolved from the active tab, never from process cwd.
+    pub fn active_workspace_root(&self) -> Option<PathBuf> {
+        self.project_execution_context()
+            .ok()
+            .map(|context| context.workspace_root)
+    }
+
+    /// Return the typed project id, or the explicit compatibility key for
+    /// legacy requests that still use a directory-shaped project field.
+    pub fn active_project_key(&self) -> Option<String> {
+        self.project_execution_context()
+            .ok()
+            .map(|context| context.project_key())
+    }
+
+    /// Refresh project-local commands after an active-tab or asset-source
+    /// change. Built-ins remain stable; only the explicit active root is
+    /// consulted for project-local command files.
+    pub fn refresh_project_command_registry(&mut self) {
+        let Ok(context) = self.project_execution_context() else {
+            self.command_registry = crate::tui::command::CommandRegistry::new();
+            self.prompt_state.slash_completions = self
+                .command_registry
+                .commands()
+                .iter()
+                .map(
+                    |command| crate::tui::components::completion_overlay::CompletionItem {
+                        label: command.name.clone(),
+                        description: (!command.description.is_empty())
+                            .then(|| command.description.clone()),
+                        kind: crate::tui::components::completion_overlay::CompletionItemKind::File,
+                    },
+                )
+                .collect();
+            self.dialog_state
+                .command_palette
+                .set_registry(&self.command_registry);
+            return;
+        };
+        self.command_registry =
+            crate::tui::command::CommandRegistry::new_for_workspace_root(&context.workspace_root);
+        self.prompt_state.slash_completions = self
+            .command_registry
+            .commands()
+            .iter()
+            .map(
+                |command| crate::tui::components::completion_overlay::CompletionItem {
+                    label: command.name.clone(),
+                    description: (!command.description.is_empty())
+                        .then(|| command.description.clone()),
+                    kind: crate::tui::components::completion_overlay::CompletionItemKind::File,
+                },
+            )
+            .collect();
+        self.dialog_state
+            .command_palette
+            .set_registry(&self.command_registry);
+    }
+
     /// Switch the active tab and update projection client state to
     /// match. Returns `true` when the switch succeeded.
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
@@ -2272,6 +2353,7 @@ impl App {
         if switched {
             self.projection_client
                 .set_active_tab(Some(tab_id.as_str().to_string()));
+            self.refresh_project_command_registry();
             // Presence M002: bounded refresh for the newly active
             // project; routing stays keyed by project_id.
             if let Some(pid) = self.active_project_id().map(str::to_string) {
@@ -4380,12 +4462,13 @@ impl App {
                         }) {
                             self.dialog_state.session_dialog.toggle_bulk_mode();
                         }
-                    } else if let Some((command, promote_after)) =
+                    } else if let Some((command, promote_after, cwd)) =
                         self.dialog_state.pending_shell_command.take()
                     {
                         self.enqueue_tui_command(TuiCommand::RunHumanShell {
                             command,
                             promote_after,
+                            cwd,
                         });
                     }
                 } else {
@@ -5973,10 +6056,10 @@ impl App {
                 self.dialog_state.command_palette.cursor_down();
             }
             Some(InputAction::Send) => {
-                if let Some(cmd) = self.dialog_state.command_palette.selected() {
+                if let Some(cmd) = self.dialog_state.command_palette.selected().cloned() {
                     debug_log!("handle_command_key: executing command: {}", cmd.name);
                     let command_query = self.dialog_state.command_palette.query.clone();
-                    self.execute_command(cmd, Some(&command_query));
+                    self.execute_command(&cmd, Some(&command_query));
                     self.ui_state.command_mode = false;
                     self.dialog_state.command_palette.set_query("");
                     self.prompt_state.prompt.clear();
@@ -6043,7 +6126,14 @@ impl App {
                 args.split_whitespace().map(String::from).collect()
             };
             if let Some(ref tx) = self.tui_cmd_tx {
-                let session_id = self.session_state.session.as_ref().map(|s| s.id.clone());
+                let context = match self.project_execution_context() {
+                    Ok(context) => context,
+                    Err(error) => {
+                        self.messages_state.toasts.error(&error);
+                        return;
+                    }
+                };
+                let session_id = context.session_id.clone();
                 let model = Some(self.agent_state.current_model.clone());
                 let _ = send_tui(
                     tx,
@@ -6052,6 +6142,7 @@ impl App {
                         args: arg_list,
                         session_id,
                         model,
+                        workspace_root: context.workspace_root,
                     },
                 );
             }
@@ -6142,6 +6233,13 @@ impl App {
                 }
             }
             "/agents" => {
+                let workspace_root = match self.project_execution_context() {
+                    Ok(context) => context.workspace_root,
+                    Err(error) => {
+                        self.messages_state.toasts.error(&error);
+                        return;
+                    }
+                };
                 let query = self.dialog_state.command_palette.query.trim().to_string();
                 // Strip the leading "/agents" to get subcommand args
                 let args = query
@@ -6152,8 +6250,11 @@ impl App {
 
                 if args.is_empty() {
                     // Bare `/agents`: list visible agents
-                    let lines =
-                        crate::tui::commands::agents::format_agents_list(&self.agent_state, false);
+                    let lines = crate::tui::commands::agents::format_agents_list_for_root(
+                        &self.agent_state,
+                        false,
+                        &workspace_root,
+                    );
                     self.show_short_or_info(
                         crate::tui::components::dialogs::info::InfoType::Agents,
                         lines,
@@ -6167,9 +6268,10 @@ impl App {
 
                 match subcmd {
                     "--all" | "-a" => {
-                        let lines = crate::tui::commands::agents::format_agents_list(
+                        let lines = crate::tui::commands::agents::format_agents_list_for_root(
                             &self.agent_state,
                             true,
+                            &workspace_root,
                         );
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
@@ -6183,7 +6285,10 @@ impl App {
                                 .warning("Usage: /agents show <name>");
                             return;
                         }
-                        let lines = crate::tui::commands::agents::format_agent_show(subargs);
+                        let lines = crate::tui::commands::agents::format_agent_show_for_root(
+                            subargs,
+                            &workspace_root,
+                        );
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
                             lines,
@@ -6196,21 +6301,27 @@ impl App {
                                 .warning("Usage: /agents diff <name>");
                             return;
                         }
-                        let lines = crate::tui::commands::agents::format_agent_diff(subargs);
+                        let lines = crate::tui::commands::agents::format_agent_diff_for_root(
+                            subargs,
+                            &workspace_root,
+                        );
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
                             lines,
                         );
                     }
                     "validate" => {
-                        let lines = crate::tui::commands::agents::format_agents_validate();
+                        let (lines, _) = crate::tui::commands::agents::format_agents_validate_inner(
+                            &workspace_root,
+                        );
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
                             lines,
                         );
                     }
                     "reload" | "rebuild" => {
-                        let (new_agents, diags) = crate::tui::commands::agents::rebuild_agents();
+                        let (new_agents, diags) =
+                            crate::tui::commands::agents::rebuild_agents_for_root(&workspace_root);
                         if !new_agents.is_empty() {
                             // Preserve current agent if still valid
                             let current_name = self
@@ -6263,7 +6374,10 @@ impl App {
                     _ => {
                         // Treat unknown subcommand as agent name for convenience
                         // e.g., `/agents build` shows that agent
-                        let lines = crate::tui::commands::agents::format_agent_show(subcmd);
+                        let lines = crate::tui::commands::agents::format_agent_show_for_root(
+                            subcmd,
+                            &workspace_root,
+                        );
                         self.show_short_or_info(
                             crate::tui::components::dialogs::info::InfoType::Agents,
                             lines,
@@ -6824,7 +6938,7 @@ impl App {
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(tx, TuiCommand::WorktreeList);
                 } else {
-                    let git_root = std::path::PathBuf::from(&self.session_state.project_dir);
+                    let git_root = self.active_workspace_root().unwrap_or_default();
                     let trees = tokio::runtime::Handle::current().block_on(async {
                         match crate::worktree::find_git_root(&git_root) {
                             Some(root) => crate::worktree::list_worktrees(&root)
@@ -6991,7 +7105,7 @@ impl App {
                         .warning("Start or select a session before promoting a habit");
                     return;
                 };
-                let project_dir = self.session_state.project_dir.clone();
+                let project_dir = self.active_workspace_root().unwrap_or_default();
                 let config = crate::skills::AssetDiscoveryConfig::default();
                 let mut global_roots = Vec::new();
                 if let Some(root) = crate::agent::asset_context::default_global_skills_root() {
@@ -6999,7 +7113,7 @@ impl App {
                 }
                 let registry = crate::skills::AssetRegistry::build(
                     &config,
-                    PathBuf::from(&project_dir).as_path(),
+                    project_dir.as_path(),
                     &global_roots,
                 );
                 let names = registry
@@ -7011,7 +7125,7 @@ impl App {
                 let result =
                     crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
                         store.begin_request(
-                            &project_dir,
+                            project_dir.to_string_lossy().as_ref(),
                             &session_id,
                             &habit_id,
                             names,
@@ -7033,10 +7147,10 @@ impl App {
                 }
             }
             "/skill-proposals" => {
-                let project_dir = self.session_state.project_dir.clone();
-                match crate::skills::promotion::SkillPromotionStore::new()
-                    .and_then(|store| store.list_proposals(&project_dir, 32))
-                {
+                let project_dir = self.active_workspace_root().unwrap_or_default();
+                match crate::skills::promotion::SkillPromotionStore::new().and_then(|store| {
+                    store.list_proposals(project_dir.to_string_lossy().as_ref(), 32)
+                }) {
                     Ok(proposals) if proposals.is_empty() => self
                         .messages_state
                         .toasts
@@ -7115,7 +7229,7 @@ impl App {
                         .warning("Usage: /skill-proposal <id> or /skill-proposal reject <id>");
                     return;
                 };
-                let project_dir = self.session_state.project_dir.clone();
+                let project_dir = self.active_workspace_root().unwrap_or_default();
                 let store = match crate::skills::promotion::SkillPromotionStore::new() {
                     Ok(store) => store,
                     Err(error) => {
@@ -7127,7 +7241,7 @@ impl App {
                 };
                 if reject {
                     match store.reject_proposal(
-                        &project_dir,
+                        project_dir.to_string_lossy().as_ref(),
                         &id,
                         chrono::Utc::now().timestamp_millis(),
                     ) {
@@ -7143,11 +7257,11 @@ impl App {
                     }
                 } else {
                     let _ = store.mark_previewed(
-                        &project_dir,
+                        project_dir.to_string_lossy().as_ref(),
                         &id,
                         chrono::Utc::now().timestamp_millis(),
                     );
-                    match store.get_proposal(&project_dir, &id) {
+                    match store.get_proposal(project_dir.to_string_lossy().as_ref(), &id) {
                         Ok(Some(proposal)) => {
                             // Advisory live collision view: the registry may have
                             // changed since submission, so surface the current
@@ -7252,7 +7366,7 @@ impl App {
                     return;
                 };
                 let session_id = session.id.clone();
-                let project_id = self.session_state.project_dir.clone();
+                let project_id = self.active_project_key().unwrap_or_default();
 
                 match subcmd {
                     "set" => {
@@ -8527,8 +8641,13 @@ impl App {
                 let raw_args = raw_input.unwrap_or("").trim();
                 let parsed_args = crate::security::workflow::parse_security_review_args(raw_args);
 
-                let root =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let root = match self.project_execution_context() {
+                    Ok(context) => context.workspace_root,
+                    Err(error) => {
+                        self.messages_state.toasts.error(&error);
+                        return;
+                    }
+                };
 
                 // Reentrancy guard: only one security review runs at a
                 // time. The flag is cleared by the handler in
@@ -9619,12 +9738,20 @@ impl App {
                 debug_log!("send_prompt: intercepted human shell command: {}", command);
                 self.prompt_state.prompt.clear();
                 self.prompt_state.show_completions = false;
+                let cwd = match self.project_execution_context() {
+                    Ok(context) => context.workspace_root,
+                    Err(error) => {
+                        self.messages_state.toasts.error(&error);
+                        return;
+                    }
+                };
                 if let Some(ref tx) = self.tui_cmd_tx {
                     let _ = send_tui(
                         tx,
                         TuiCommand::RunHumanShell {
                             command,
                             promote_after,
+                            cwd,
                         },
                     );
                 }
@@ -9719,9 +9846,12 @@ impl App {
             .next()
             .unwrap_or(trimmed)
             .trim_start_matches('/');
-        if let Some(cmd) = crate::tui::command::COMMAND_REGISTRY.find_by_name_or_alias(command_name)
+        if let Some(cmd) = self
+            .command_registry
+            .find_by_name_or_alias(command_name)
+            .cloned()
         {
-            self.execute_command(cmd, Some(trimmed));
+            self.execute_command(&cmd, Some(trimmed));
             return true;
         }
 
@@ -10237,11 +10367,17 @@ impl App {
                     .as_ref()
                     .map(|d| d.project.display_name.clone())
                     .unwrap_or_default();
-                (project_id, workspace_id, display_name)
+                let workspace_root = p
+                    .cached_detail
+                    .as_ref()
+                    .and_then(|d| d.workspaces.get(p.selected_row))
+                    .and_then(|w| w.canonical_root.clone())
+                    .map(std::path::PathBuf::from);
+                (project_id, workspace_id, display_name, workspace_root)
             }
             None => return,
         };
-        let (project_id, workspace_id, display_name) = snapshot;
+        let (project_id, workspace_id, display_name, workspace_root) = snapshot;
         let workspace_id = match workspace_id {
             Some(id) => id,
             None => return,
@@ -10256,6 +10392,7 @@ impl App {
             project_id,
             Some(workspace_id.clone()),
             Some(display_name),
+            workspace_root,
         );
 
         // Start session list for the active tab.
@@ -11493,7 +11630,7 @@ impl App {
     }
 
     fn handle_diff_command(&mut self, path: Option<&str>) {
-        let project_dir = std::path::PathBuf::from(&self.session_state.project_dir);
+        let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
             None => {
@@ -11643,7 +11780,7 @@ impl App {
     }
 
     fn handle_revert_command(&mut self, path: &str) {
-        let project_dir = std::path::PathBuf::from(&self.session_state.project_dir);
+        let project_dir = self.active_workspace_root().unwrap_or_default();
         let git_root = match crate::worktree::find_git_root(&project_dir) {
             Some(r) => r,
             None => {
@@ -11694,8 +11831,10 @@ impl App {
             }
         };
 
-        let project_namespace = crate::memory::project_namespace(&self.session_state.project_dir);
-        let _ = mem_store.migrate_project_namespace(&self.session_state.project_dir);
+        let project_dir = self.active_workspace_root().unwrap_or_default();
+        let project_dir_text = project_dir.to_string_lossy().into_owned();
+        let project_namespace = crate::memory::project_namespace(&project_dir_text);
+        let _ = mem_store.migrate_project_namespace(&project_dir_text);
 
         match action {
             None | Some(("list", "")) => {
@@ -11803,7 +11942,7 @@ impl App {
                 let message_store = self.message_store.clone();
                 let core_client = self.core_client.clone();
                 let mem_store_clone = mem_store.clone();
-                let project_identity = self.session_state.project_dir.clone();
+                let project_identity = self.active_workspace_root().unwrap_or_default();
                 self.messages_state
                     .toasts
                     .info("Consolidating session memories...");
@@ -11837,6 +11976,7 @@ impl App {
                         if messages.is_empty() {
                             return;
                         }
+                        let project_identity = project_identity.to_string_lossy().into_owned();
                         let _ = mem_store_clone.migrate_project_namespace(&project_identity);
                         let new_memories =
                             mem_store_clone.consolidate_session(&messages, &project_identity);
@@ -11904,16 +12044,14 @@ impl App {
             }
         };
 
-        let project_dir = self.session_state.project_dir.clone();
+        let project_dir = self.active_workspace_root().unwrap_or_default();
         self.messages_state
             .toasts
             .info(&format!("Starting research: {}", question));
 
         self.task_registry
             .spawn(TuiTaskKind::Research, "research-answer", async move {
-                let service = crate::research::service::ResearchService::new(
-                    std::path::PathBuf::from(&project_dir),
-                );
+                let service = crate::research::service::ResearchService::new(project_dir.clone());
                 match service
                     .answer_for_agent(&question, parsed_mode, parsed_depth)
                     .await
@@ -12598,6 +12736,7 @@ impl App {
 
     pub fn set_session(&mut self, sess: Session) {
         let sess_id = sess.id.clone();
+        let session_directory = sess.directory.clone();
         let project_id = if sess.project_id.is_empty() {
             None
         } else {
@@ -12621,6 +12760,10 @@ impl App {
             }
             if workspace_id.is_some() {
                 tab.workspace_id = workspace_id.clone();
+            }
+            if tab.workspace_root.is_none() && !session_directory.is_empty() {
+                let root = std::path::PathBuf::from(session_directory);
+                tab.workspace_root = Some(root.canonicalize().unwrap_or(root));
             }
         }
         // Milestone 3: register the now-open session in the routing
@@ -13252,7 +13395,7 @@ impl App {
             .core_client
             .clone()
             .ok_or_else(|| AppError::Tui("core client unavailable for session list".to_string()))?;
-        let project_id = self.session_state.project_dir.clone();
+        let project_id = self.active_project_key().unwrap_or_default();
         let show_archived = self.dialog_state.session_dialog.show_archived;
         let request = crate::core::new_request(
             uuid::Uuid::new_v4().to_string(),
@@ -13493,7 +13636,7 @@ impl App {
                 let list_req = crate::core::new_request(
                     uuid::Uuid::new_v4().to_string(),
                     CoreRequest::SessionList {
-                        project_id: self.session_state.project_dir.clone(),
+                        project_id: self.active_project_key().unwrap_or_default(),
                         show_archived: false,
                         limit: 1,
                     },
@@ -14438,11 +14581,13 @@ impl App {
 
     fn export_handoff(&mut self) {
         let derived = &self.session_state_derived;
-        let session = self.session_state.session.as_ref();
 
         let goal = derived.goal.as_deref().unwrap_or("(no goal set)");
         let model = self.agent_state.current_model.clone();
-        let branch = session.map(|s| s.directory.clone()).unwrap_or_default();
+        let branch = self
+            .active_workspace_root()
+            .map(|root| root.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let ctx_pct = if self.session_state.context_limit > 0 {
             format!(
                 "{:.0}%",
@@ -15446,11 +15591,13 @@ mod lsp_command_dispatch_tests {
             .next()
             .unwrap()
             .trim_start_matches('/');
-        let cmd = crate::tui::command::COMMAND_REGISTRY
+        let cmd = app
+            .command_registry
             .find_by_name_or_alias(name)
-            .expect("command must exist in registry");
+            .expect("command must exist in registry")
+            .clone();
         app.dialog_state.command_palette.query = query.to_string();
-        app.execute_command(cmd, Some(query));
+        app.execute_command(&cmd, Some(query));
     }
 
     // ── /lsp-servers ──

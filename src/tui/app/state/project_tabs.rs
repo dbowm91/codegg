@@ -28,6 +28,7 @@
 //! projects.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -182,6 +183,9 @@ pub struct ProjectTabState {
     /// Daemon-typed workspace identity. `None` until `ProjectGet`
     /// resolves or the daemon reports a default workspace.
     pub workspace_id: Option<String>,
+    /// Canonical workspace root locator supplied by the daemon workspace
+    /// binding or captured once at the CLI/bootstrap boundary.
+    pub workspace_root: Option<PathBuf>,
     /// Daemon-typed session identity. `None` when the tab is open but
     /// no session has been selected yet.
     pub session_id: Option<String>,
@@ -219,6 +223,7 @@ impl ProjectTabState {
             label,
             project_id: None,
             workspace_id: None,
+            workspace_root: None,
             session_id: None,
             model: String::new(),
             agent: String::new(),
@@ -435,6 +440,10 @@ impl ProjectTabs {
             label,
             project_id,
             workspace_id,
+            workspace_root: (!project_dir.is_empty()).then(|| {
+                let root = PathBuf::from(project_dir);
+                root.canonicalize().unwrap_or(root)
+            }),
             session_id,
             model: model.to_string(),
             agent: agent.to_string(),
@@ -466,6 +475,7 @@ impl ProjectTabs {
             label: "default".to_string(),
             project_id: None,
             workspace_id: None,
+            workspace_root: None,
             session_id: None,
             model: String::new(),
             agent: String::new(),

@@ -127,10 +127,6 @@ fn spawn_restore_project_gets(
         let Some(pid) = tab.project_id.as_deref() else {
             continue;
         };
-        if snapshot.catalog.iter().any(|e| e.project_id == pid) {
-            // Already covered by the catalog fast-path.
-            continue;
-        }
         if snapshot.project_details.contains_key(pid) {
             continue;
         }
@@ -222,6 +218,7 @@ fn apply_plan(app: &mut App, plan: RestorePlan) {
 
     // Materialize lightweight tabs.
     let heavy_target = apply_restore_plan(&mut app.project_tabs, &plan);
+    app.refresh_project_command_registry();
 
     // Persist the normalized manifest. The TUI's existing save
     // scheduling will debounce and write.
@@ -306,6 +303,15 @@ pub(crate) fn apply_manifest_project_get_loaded(
             .workspaces
             .iter()
             .map(|w| w.workspace_id.clone())
+            .collect(),
+        workspace_roots: details
+            .workspaces
+            .iter()
+            .filter_map(|w| {
+                w.canonical_root
+                    .as_deref()
+                    .map(|root| (w.workspace_id.clone(), std::path::PathBuf::from(root)))
+            })
             .collect(),
         sessions: Vec::new(),
     };

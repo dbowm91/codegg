@@ -22,9 +22,8 @@ fn bullet_list(items: &[String]) -> String {
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_research_list_runs(app: &mut App) {
-    let project_dir = app.session_state.project_dir.clone();
-    let service =
-        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let service = crate::research::service::ResearchService::new(project_dir);
     match service.list_runs().await {
         Ok(runs) => {
             if let Some(ref mut browser) = app.dialog_state.research_browser {
@@ -50,9 +49,8 @@ pub(crate) async fn handle_research_list_runs(app: &mut App) {
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_research_load_run(app: &mut App, run_id: String) {
-    let project_dir = app.session_state.project_dir.clone();
-    let service =
-        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let service = crate::research::service::ResearchService::new(project_dir);
     match service.load_run(&run_id).await {
         Ok(bundle) => {
             if let Some(ref mut browser) = app.dialog_state.research_browser {
@@ -78,9 +76,8 @@ pub(crate) async fn handle_research_load_run(app: &mut App, run_id: String) {
 #[allow(dead_code)]
 #[cfg(test)]
 pub(crate) async fn handle_research_load_section(app: &mut App, run_id: String, section: String) {
-    let project_dir = app.session_state.project_dir.clone();
-    let service =
-        crate::research::service::ResearchService::new(std::path::PathBuf::from(&project_dir));
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let service = crate::research::service::ResearchService::new(project_dir);
 
     let result = match section.as_str() {
         "Research Plan" => {
@@ -211,7 +208,7 @@ pub(crate) fn start_research_list_runs(app: &mut App) {
         browser.loading = true;
     }
 
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -220,9 +217,7 @@ pub(crate) fn start_research_list_runs(app: &mut App) {
         TuiTaskKind::Research,
         "research_list_runs",
         async move {
-            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
-                &project_dir,
-            ));
+            let service = crate::research::service::ResearchService::new(project_dir.clone());
             match service.list_runs().await {
                 Ok(runs) => Some(TuiCommand::ResearchRunsLoaded {
                     request_id,
@@ -276,7 +271,7 @@ pub(crate) fn start_research_load_run(app: &mut App, run_id: String) {
         browser.loading = true;
     }
 
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -285,9 +280,7 @@ pub(crate) fn start_research_load_run(app: &mut App, run_id: String) {
         TuiTaskKind::Research,
         "research_load_run",
         async move {
-            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
-                &project_dir,
-            ));
+            let service = crate::research::service::ResearchService::new(project_dir.clone());
             match service.load_run(&run_id).await {
                 Ok(bundle) => Some(TuiCommand::ResearchRunLoaded {
                     request_id,
@@ -342,7 +335,7 @@ pub(crate) fn apply_research_run_loaded(
 pub(crate) fn start_research_load_section(app: &mut App, run_id: String, section: String) {
     let request_id = app.dialog_state.research_request.begin();
 
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -351,9 +344,7 @@ pub(crate) fn start_research_load_section(app: &mut App, run_id: String, section
         TuiTaskKind::Research,
         "research_load_section",
         async move {
-            let service = crate::research::service::ResearchService::new(std::path::PathBuf::from(
-                &project_dir,
-            ));
+            let service = crate::research::service::ResearchService::new(project_dir.clone());
 
             let result = match section.as_str() {
                 "Research Plan" => {

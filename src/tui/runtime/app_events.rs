@@ -256,7 +256,11 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
                     let message_store = app.message_store.clone();
                     let core_client = app.core_client.clone();
                     let memory_store = app.memory_store.clone();
-                    let project_dir = app.session_state.project_dir.clone();
+                    let project_dir = app
+                        .active_workspace_root()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
 
                     app.task_registry.spawn(
                         crate::tui::task_lifecycle::TuiTaskKind::Memory,
@@ -419,7 +423,10 @@ fn handle_event_inner(app: &mut App, event: AppEvent) -> bool {
 
             crate::tui::file_diff::spawn_sidebar_diff_stats(
                 app.tui_cmd_tx.clone(),
-                app.session_state.project_dir.clone(),
+                app.active_workspace_root()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
                 path,
                 old_content,
                 generation,

@@ -550,7 +550,11 @@ pub(crate) fn start_task_schedule(app: &mut App, interval_secs: u64, message: St
 pub(crate) fn start_worktree_list(app: &mut App) {
     let request_id = app.dialog_state.worktree_list_request.begin();
     let core_client = app.core_client.clone();
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app
+        .active_workspace_root()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let tx = app.tui_cmd_tx.clone();
 
     spawn_registered_tui_task(
@@ -735,8 +739,18 @@ pub(crate) fn handle_spawn_subagent(app: &mut App, agent_name: String, prompt: S
             .error("No active session for subagent");
         return;
     };
-    let session_id = session.id.clone();
-    let workspace_root = session.directory.clone();
+    let context = match app.project_execution_context() {
+        Ok(context) => context,
+        Err(error) => {
+            app.messages_state.toasts.error(&error);
+            return;
+        }
+    };
+    let session_id = context
+        .session_id
+        .clone()
+        .unwrap_or_else(|| session.id.clone());
+    let workspace_root = context.workspace_root.to_string_lossy().into_owned();
 
     app.messages_state
         .messages

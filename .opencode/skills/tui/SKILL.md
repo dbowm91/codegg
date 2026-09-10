@@ -21,7 +21,7 @@ to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
 |------|---------|
 | `src/tui/app/mod.rs` | The `App` struct (~15K lines). State, rendering, event handling. |
 | `src/tui/app/types.rs` | `Dialog` enum and app-level types |
-| `src/tui/app/state/` | App state helpers; `async_request.rs` holds the finish/fail guard |
+| `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope and `async_request.rs` holds the finish/fail guard |
 | `src/tui/command.rs` | Slash-command registry (`CommandRegistry::built_in_commands()`) |
 | `src/tui/commands/` | 19 command-handler submodules (sessions, git_sidebar, research, ...) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
@@ -71,6 +71,11 @@ to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
   `RenderFrame` support - do not add pixel/frame-style remote messages.
 - **Human shell cells** render via `MsgPart::ShellCell`; `/shell-*` commands
   live in `commands/shell.rs` (see the `human-shell` skill).
+- **Project scope**: resolve `App::project_execution_context()` before
+  spawning project-scoped work. The active tab supplies project/workspace/
+  session identities and the workspace root. Never use process cwd or the
+  legacy `session_state.project_dir` mirror as project authority; do not
+  change process cwd to switch tabs.
 
 ## Testing
 

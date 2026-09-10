@@ -20,10 +20,16 @@ pub(crate) fn open_or_focus_project(
     project_id: String,
     workspace_hint: Option<String>,
     display_name: Option<String>,
+    workspace_root: Option<std::path::PathBuf>,
 ) {
     // Check if already open
     if let Some(existing) = app.project_tabs.find_by_project(&project_id) {
         let tab_id = existing.tab_id.clone();
+        if workspace_root.is_some() {
+            if let Some(tab) = app.project_tabs.get_mut(&tab_id) {
+                tab.workspace_root = workspace_root;
+            }
+        }
         switch_active_tab(app, &tab_id);
         return;
     }
@@ -44,6 +50,7 @@ pub(crate) fn open_or_focus_project(
     let mut tab = ProjectTabState::empty(tab_id.clone(), label);
     tab.project_id = Some(project_id.clone());
     tab.workspace_id = workspace_hint;
+    tab.workspace_root = workspace_root;
 
     app.project_tabs.add_and_activate(tab);
     switch_active_tab(app, &tab_id);
@@ -86,6 +93,10 @@ pub(crate) fn switch_active_tab(
 
     // Set the tab active
     app.project_tabs.set_active(target_tab_id);
+    // Project-local command discovery follows the newly active tab. This
+    // refresh is synchronous and uses the captured tab root; no process
+    // directory mutation is involved.
+    app.refresh_project_command_registry();
 
     // Check if the target has a session to load
     let target_session = app
@@ -334,6 +345,7 @@ pub(crate) fn apply_project_get_loaded(
                 target_project_id,
                 None,
                 Some(details.project.display_name.clone()),
+                None,
             );
             app.ui_state.dialog = crate::tui::Dialog::None;
             app.focus_manager.pop();
@@ -357,6 +369,7 @@ pub(crate) fn apply_project_get_loaded(
                 target_project_id.clone(),
                 Some(ws_id.clone()),
                 Some(details.project.display_name.clone()),
+                ws.canonical_root.clone().map(std::path::PathBuf::from),
             );
 
             // Start loading sessions for the new tab
@@ -944,5 +957,5 @@ pub(crate) fn apply_project_registered(
 
     // Refresh catalog and open the project
     super::project_catalog::start_refresh_project_catalog(app);
-    open_or_focus_project(app, proj_id, None, None);
+    open_or_focus_project(app, proj_id, None, None, None);
 }

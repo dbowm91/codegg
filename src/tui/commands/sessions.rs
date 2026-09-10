@@ -21,7 +21,7 @@ pub(crate) fn start_reload_sessions(app: &mut App) {
     let request_id = app.dialog_state.session_reload_request.begin();
 
     let core_client = app.core_client.clone();
-    let project_id = app.session_state.project_dir.clone();
+    let project_id = app.active_project_key().unwrap_or_default();
     let show_archived = app.dialog_state.session_dialog.show_archived;
     let tx = app.tui_cmd_tx.clone();
 
@@ -1047,7 +1047,7 @@ pub(crate) async fn handle_open_tree_dialog(app: &mut App) {
     let list_request = crate::core::new_request(
         format!("session-tree-list-{}", uuid::Uuid::new_v4()),
         CoreRequest::SessionList {
-            project_id: app.session_state.project_dir.clone(),
+            project_id: app.active_project_key().unwrap_or_default(),
             show_archived: true,
             limit: 1000,
         },
@@ -1170,7 +1170,7 @@ pub(crate) fn start_open_tree_dialog(app: &mut App) {
     app.open_dialog(crate::tui::app::Dialog::Tree);
 
     let core_client = app.core_client.clone();
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_project_key().unwrap_or_default();
     let current_session_id = current_session.id.clone();
     let tx = app.tui_cmd_tx.clone();
 
@@ -1680,7 +1680,8 @@ pub(crate) fn start_create_from_template(
 ) {
     let request_id = app.dialog_state.template_create_request.begin();
     let core_client = app.core_client.clone();
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_id = app.active_project_key().unwrap_or_default();
     let template_name = template.name.clone();
     let agent = template.agent.clone();
     let model = template.model.clone();
@@ -1707,8 +1708,8 @@ pub(crate) fn start_create_from_template(
                 CoreRequest::SessionCreateFromTemplate {
                     template: crate::protocol_conversions::session_template_to_dto(template)
                         .unwrap_or_default(),
-                    project_id: Some(project_dir.clone()),
-                    directory: project_dir,
+                    project_id: Some(project_id),
+                    directory: project_dir.to_string_lossy().into_owned(),
                     workspace_id: None,
                 },
             );
@@ -1825,7 +1826,8 @@ pub(crate) async fn handle_create_from_template(
     _key: String,
     template: crate::config::schema::SessionTemplate,
 ) {
-    let project_dir = app.session_state.project_dir.clone();
+    let project_dir = app.active_workspace_root().unwrap_or_default();
+    let project_id = app.active_project_key().unwrap_or_default();
     let template_name = template.name.clone();
     let agent = template.agent.clone();
     let model = template.model.clone();
@@ -1835,8 +1837,8 @@ pub(crate) async fn handle_create_from_template(
             CoreRequest::SessionCreateFromTemplate {
                 template: crate::protocol_conversions::session_template_to_dto(template.clone())
                     .unwrap_or_default(),
-                project_id: Some(project_dir.clone()),
-                directory: project_dir.clone(),
+                project_id: Some(project_id),
+                directory: project_dir.to_string_lossy().into_owned(),
                 workspace_id: None,
             },
         );
@@ -1908,7 +1910,7 @@ pub(crate) async fn handle_create_from_template(
 pub(crate) async fn reload_sessions(app: &mut App) {
     use std::collections::HashMap;
 
-    let project_id = app.session_state.project_dir.clone();
+    let project_id = app.active_project_key().unwrap_or_default();
     let show_archived = app.dialog_state.session_dialog.show_archived;
 
     app.dialog_state.session_dialog.set_loading(true);

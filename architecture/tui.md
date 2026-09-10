@@ -21,6 +21,21 @@ The TUI routes session, history, task, memory, and worktree actions through
 `CoreClient` so the same logic can run in-process, over stdio, or over a
 socket transport.
 
+### Project execution context
+
+Project-scoped TUI actions resolve `ProjectExecutionContext` from the active
+project tab before dispatch. The context carries the tab's project,
+workspace, and session identities plus its canonical workspace-root locator,
+and is moved into background tasks as an immutable value. TUI code must not
+use `session_state.project_dir` or process `current_dir()` to choose a
+project, and must never change process cwd. The launch directory is used only
+once by the CLI/bootstrap composition path to create the initial compatibility
+tab.
+
+The command catalog follows the same boundary: built-ins/global definitions
+remain shared, while project-local command files are loaded by the active
+workspace root and refreshed on tab activation or explicit asset reload.
+
 Local transport selection is handled by `CoreRuntimeMode` (default
 `DaemonClient`):
 

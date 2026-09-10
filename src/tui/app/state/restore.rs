@@ -38,6 +38,7 @@
 //! - The plan carries at most one `pending_heavy_load` entry.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::tui::app::state::manifest::{
     PersistedProjectTab, TuiWorkspaceManifest, MAX_PERSISTED_TABS,
@@ -85,6 +86,10 @@ pub struct RestoreEntry {
     pub resolved_project_id: Option<String>,
     /// Daemon-authoritative workspace_id (validated).
     pub resolved_workspace_id: Option<String>,
+    /// Daemon-authoritative workspace root for the resolved workspace.
+    /// This is captured during restore so the active tab never falls
+    /// back to the process launch directory while its session loads.
+    pub resolved_workspace_root: Option<PathBuf>,
     /// Daemon-authoritative session_id (validated).
     pub resolved_session_id: Option<String>,
     /// Optional bounded diagnostic for `Missing`/`Unsupported`/etc.
@@ -279,6 +284,9 @@ pub struct ProjectDetailSnapshot {
     /// Workspace ids known to the daemon for this project. Used to
     /// validate persisted `workspace_id`.
     pub workspaces: Vec<String>,
+    /// Canonical roots keyed by workspace id. Roots are routing data,
+    /// not project identity, and are copied only into the live tab.
+    pub workspace_roots: HashMap<String, PathBuf>,
     /// Session ids known to the daemon for this project, each
     /// tagged with the canonical project binding. Used to detect
     /// `Rebound` and `Missing`.
@@ -377,6 +385,7 @@ impl DaemonLookupSnapshot {
                 status: RestoreEntryStatus::Unknown,
                 resolved_project_id: None,
                 resolved_workspace_id: None,
+                resolved_workspace_root: None,
                 resolved_session_id: None,
                 diagnostic: Some("missing project_id".into()),
             };
@@ -404,6 +413,7 @@ impl DaemonLookupSnapshot {
                 status: RestoreEntryStatus::Missing,
                 resolved_project_id: None,
                 resolved_workspace_id: None,
+                resolved_workspace_root: None,
                 resolved_session_id: None,
                 diagnostic,
             };
@@ -423,6 +433,7 @@ impl DaemonLookupSnapshot {
                     status: RestoreEntryStatus::Archived,
                     resolved_project_id: None,
                     resolved_workspace_id: None,
+                    resolved_workspace_root: None,
                     resolved_session_id: None,
                     diagnostic: Some(format!("project {pid} is archived")),
                 };
@@ -443,6 +454,7 @@ impl DaemonLookupSnapshot {
                     status: RestoreEntryStatus::Archived,
                     resolved_project_id: None,
                     resolved_workspace_id: None,
+                    resolved_workspace_root: None,
                     resolved_session_id: None,
                     diagnostic: Some(format!("project {pid} is archived")),
                 };
@@ -520,12 +532,18 @@ impl DaemonLookupSnapshot {
 
         let _ = diagnostic;
 
+        let resolved_workspace_root = resolved_workspace_id
+            .as_deref()
+            .and_then(|workspace_id| detail.and_then(|d| d.workspace_roots.get(workspace_id)))
+            .cloned();
+
         RestoreEntry {
             tab_id,
             persisted: persisted.clone(),
             status,
             resolved_project_id,
             resolved_workspace_id,
+            resolved_workspace_root,
             resolved_session_id,
             diagnostic: None,
         }
@@ -563,6 +581,7 @@ pub fn apply_restore_plan(
         let mut tab = tab;
         tab.project_id = Some(project_id);
         tab.workspace_id = entry.resolved_workspace_id.clone();
+        tab.workspace_root = entry.resolved_workspace_root.clone();
         tab.session_id = entry.resolved_session_id.clone();
         if let Some(model) = entry.persisted.selected_model_id.as_deref() {
             tab.model = model.to_string();
@@ -727,6 +746,7 @@ mod tests {
                 project_id: "p1".into(),
                 archived: false,
                 workspaces: vec![],
+                workspace_roots: HashMap::new(),
                 sessions: vec![SessionBinding {
                     session_id: "s1".into(),
                     canonical_project_id: "p1".into(),
@@ -756,6 +776,7 @@ mod tests {
                 project_id: "p1".into(),
                 archived: false,
                 workspaces: vec![],
+                workspace_roots: HashMap::new(),
                 sessions: vec![SessionBinding {
                     session_id: "s1".into(),
                     canonical_project_id: "p-other".into(),
@@ -785,6 +806,7 @@ mod tests {
                 project_id: "p1".into(),
                 archived: false,
                 workspaces: vec![],
+                workspace_roots: HashMap::new(),
                 sessions: vec![],
             },
         );
@@ -811,6 +833,7 @@ mod tests {
                 project_id: "p1".into(),
                 archived: false,
                 workspaces: vec!["w-known".into()],
+                workspace_roots: HashMap::new(),
                 sessions: vec![],
             },
         );
@@ -828,6 +851,48 @@ mod tests {
         let plan = snap.build_restore_plan(&m);
         assert!(plan.entries[0].opens_tab());
         assert!(plan.entries[0].resolved_workspace_id.is_none());
+    }
+
+    #[test]
+    fn restore_carries_canonical_workspace_root_into_tab() {
+        let mut snap = snapshot();
+        snap.catalog.push(CatalogEntry {
+            project_id: "project-b".into(),
+            archived: false,
+        });
+        let mut workspace_roots = HashMap::new();
+        workspace_roots.insert("workspace-b".into(), PathBuf::from("/projects/b"));
+        snap.project_details.insert(
+            "project-b".into(),
+            ProjectDetailSnapshot {
+                project_id: "project-b".into(),
+                archived: false,
+                workspaces: vec!["workspace-b".into()],
+                workspace_roots,
+                sessions: vec![],
+            },
+        );
+        let mut manifest = TuiWorkspaceManifest {
+            active_project_id: Some("project-b".into()),
+            ..TuiWorkspaceManifest::default()
+        };
+        manifest.ordered_tabs.push(PersistedProjectTab {
+            project_id: Some("project-b".into()),
+            workspace_id: Some("workspace-b".into()),
+            session_id: None,
+            label_hint: None,
+            selected_model_id: None,
+            selected_agent: None,
+            order_key: None,
+        });
+
+        let plan = snap.build_restore_plan(&manifest);
+        let mut tabs = crate::tui::app::state::project_tabs::ProjectTabs::new();
+        apply_restore_plan(&mut tabs, &plan);
+        assert_eq!(
+            tabs.active().and_then(|tab| tab.workspace_root.clone()),
+            Some(PathBuf::from("/projects/b"))
+        );
     }
 
     #[test]

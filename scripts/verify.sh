@@ -59,6 +59,9 @@ run_quick() {
     echo "==> python3 scripts/check_execution_ownership.py"
     (cd "$REPO_ROOT" && python3 scripts/check_execution_ownership.py)
 
+    echo "==> python3 scripts/check_tui_project_authority.py"
+    (cd "$REPO_ROOT" && python3 scripts/check_tui_project_authority.py)
+
     echo "==> CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS cargo check --workspace --all-targets --locked"
     (cd "$REPO_ROOT" && cargo check --workspace --all-targets --locked)
 

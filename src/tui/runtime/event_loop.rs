@@ -55,7 +55,11 @@ async fn ensure_local_session(app: &mut app::App) {
     }
     tracing::debug!(target: "codegg::tui::session", "no session exists, creating new session");
     if let Some(core_client) = app.core_client.clone() {
-        let project_dir = app.session_state.project_dir.clone();
+        let project_dir = app
+            .active_workspace_root()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         let request = crate::core::new_request(
             format!("session-create-{}", uuid::Uuid::new_v4()),
             CoreRequest::SessionCreate {

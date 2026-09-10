@@ -23,13 +23,22 @@ pub(crate) fn start_plugin_command(
     args: Vec<String>,
     session_id: Option<String>,
     model: Option<String>,
+    workspace_root: std::path::PathBuf,
 ) {
     let invocation_id = uuid::Uuid::new_v4().to_string();
     let command_name = spec.command.clone();
     let tx = app.tui_cmd_tx.clone();
 
     crate::tui::async_cmd::spawn_tui_task(tx, "plugin_command_run", async move {
-        let result = execute_via_runtime(&spec, &args, &invocation_id, session_id, model).await;
+        let result = execute_via_runtime_scoped(
+            &spec,
+            &args,
+            &invocation_id,
+            session_id,
+            model,
+            workspace_root,
+        )
+        .await;
         match result {
             Ok(response) => Some(TuiCommand::PluginCommandFinished {
                 invocation_id,
@@ -52,6 +61,57 @@ pub(crate) fn start_plugin_command(
 }
 
 /// Execute a process command through `ProcessRuntime`.
+async fn execute_via_runtime_scoped(
+    spec: &ProcessCommandSpec,
+    args: &[String],
+    invocation_id: &str,
+    session_id: Option<String>,
+    model: Option<String>,
+    workspace_root: std::path::PathBuf,
+) -> Result<PluginResponse, String> {
+    let mut runtime_spec: ProcessRuntimeSpec = spec.clone().into();
+    // The caller captured this root from the active project tab before the
+    // task was spawned. Resolve configured command directories beneath that
+    // root and never let ProcessRuntime fall back to process cwd.
+    runtime_spec.cwd = Some(resolve_scoped_cwd(spec.cwd.as_deref(), &workspace_root)?);
+    let runtime = ProcessRuntime::new(runtime_spec, RuntimeLimits::default());
+
+    let invocation =
+        build_invocation_scoped(spec, args, invocation_id, session_id, model, workspace_root);
+    runtime.invoke(invocation).await.map_err(|e| e.to_string())
+}
+
+fn resolve_scoped_cwd(
+    configured: Option<&str>,
+    workspace_root: &std::path::Path,
+) -> Result<String, String> {
+    let canonical_root = workspace_root
+        .canonicalize()
+        .map_err(|error| format!("workspace root is unavailable: {error}"))?;
+    let configured = configured.unwrap_or("");
+    let candidate = if configured.is_empty() {
+        canonical_root.clone()
+    } else {
+        let configured = std::path::Path::new(configured);
+        if configured.is_absolute() {
+            configured.to_path_buf()
+        } else {
+            canonical_root.join(configured)
+        }
+    };
+    let canonical_candidate = candidate
+        .canonicalize()
+        .map_err(|error| format!("plugin command cwd is unavailable: {error}"))?;
+    if !canonical_candidate.starts_with(&canonical_root) {
+        return Err(format!(
+            "plugin command cwd escapes workspace root: {}",
+            canonical_candidate.display()
+        ));
+    }
+    Ok(canonical_candidate.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
 async fn execute_via_runtime(
     spec: &ProcessCommandSpec,
     args: &[String],
@@ -59,19 +119,24 @@ async fn execute_via_runtime(
     session_id: Option<String>,
     model: Option<String>,
 ) -> Result<PluginResponse, String> {
-    let runtime_spec: ProcessRuntimeSpec = spec.clone().into();
-    let runtime = ProcessRuntime::new(runtime_spec, RuntimeLimits::default());
-
-    let invocation = build_invocation(spec, args, invocation_id, session_id, model);
-    runtime.invoke(invocation).await.map_err(|e| e.to_string())
+    execute_via_runtime_scoped(
+        spec,
+        args,
+        invocation_id,
+        session_id,
+        model,
+        std::path::PathBuf::from("."),
+    )
+    .await
 }
 
-fn build_invocation(
+fn build_invocation_scoped(
     spec: &ProcessCommandSpec,
     args: &[String],
     invocation_id: &str,
     session_id: Option<String>,
     model: Option<String>,
+    workspace_root: std::path::PathBuf,
 ) -> PluginInvocation {
     use crate::protocol::plugin::{
         PluginCapabilityInvocation, PluginContext, PLUGIN_PROTOCOL_VERSION,
@@ -104,14 +169,30 @@ fn build_invocation(
         input: serde_json::Value::Null,
         context: PluginContext {
             session_id,
-            project_dir: std::env::current_dir()
-                .ok()
-                .map(|p| p.to_string_lossy().to_string()),
+            project_dir: Some(workspace_root.to_string_lossy().into_owned()),
             model,
             metadata,
             ..PluginContext::default()
         },
     }
+}
+
+#[cfg(test)]
+fn build_invocation(
+    spec: &ProcessCommandSpec,
+    args: &[String],
+    invocation_id: &str,
+    session_id: Option<String>,
+    model: Option<String>,
+) -> PluginInvocation {
+    build_invocation_scoped(
+        spec,
+        args,
+        invocation_id,
+        session_id,
+        model,
+        std::path::PathBuf::from("."),
+    )
 }
 
 /// Apply a completed plugin command to the TUI state.
@@ -275,6 +356,16 @@ mod tests {
 
     fn make_test_app() -> App {
         App::new_for_testing("/tmp".into())
+    }
+
+    #[test]
+    fn process_command_cwd_is_scoped_to_workspace_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("subdir")).unwrap();
+        let cwd = resolve_scoped_cwd(Some("subdir"), root.path()).unwrap();
+        assert_eq!(std::path::PathBuf::from(cwd), root.path().join("subdir"));
+        let error = resolve_scoped_cwd(Some("/tmp"), root.path()).unwrap_err();
+        assert!(error.contains("escapes workspace root"));
     }
 
     fn text_node(s: &str) -> UiNode {

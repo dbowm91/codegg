@@ -210,6 +210,7 @@ fn restore_coordinator_validates_workspace_membership() {
             project_id: "p1".into(),
             archived: false,
             workspaces: vec!["ws-known".into()],
+            workspace_roots: HashMap::new(),
             sessions: vec![],
         },
     );
@@ -246,6 +247,7 @@ fn restore_coordinator_drops_rebound_session() {
             project_id: "p1".into(),
             archived: false,
             workspaces: vec![],
+            workspace_roots: HashMap::new(),
             sessions: vec![SessionBinding {
                 session_id: "s1".into(),
                 canonical_project_id: "p-other".into(),
@@ -552,6 +554,7 @@ fn restore_coordinator_returns_no_heavy_load_when_session_missing() {
             project_id: "p1".into(),
             archived: false,
             workspaces: vec![],
+            workspace_roots: HashMap::new(),
             sessions: vec![],
         },
     );
@@ -638,6 +641,7 @@ fn restore_apply_restore_plan_with_pending_heavy_load() {
             project_id: "p1".into(),
             archived: false,
             workspaces: vec![],
+            workspace_roots: HashMap::new(),
             sessions: vec![SessionBinding {
                 session_id: "s1".into(),
                 canonical_project_id: "p1".into(),

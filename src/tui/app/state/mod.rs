@@ -3,6 +3,7 @@ pub mod async_request;
 pub mod chat;
 pub mod diagnostics;
 pub mod dialog;
+pub mod execution_context;
 pub mod manifest;
 pub mod messages;
 pub mod observe;
@@ -28,6 +29,9 @@ pub use chat::{
 };
 pub use diagnostics::TuiDiagnostics;
 pub use dialog::DialogState;
+pub use execution_context::{
+    resolve_active as resolve_active_execution_context, ProjectExecutionContext,
+};
 pub use messages::MessagesState;
 pub use observe::{
     is_observer_allowed_command, observer_blocked_message, ObserveStatus, ObservedTarget,

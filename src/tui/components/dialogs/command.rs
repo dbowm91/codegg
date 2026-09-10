@@ -8,13 +8,14 @@ use std::sync::Arc;
 use super::super::super::theme::Theme;
 use super::super::component::{Component, DialogType};
 use crate::tui::app::TuiMsg;
-use crate::tui::command::{Command, COMMAND_REGISTRY};
+use crate::tui::command::{Command, CommandRegistry};
 use crossterm::event::KeyEvent;
 
 #[derive(Clone)]
 pub struct CommandPalette {
     pub query: String,
-    pub filtered: Vec<&'static Command>,
+    pub filtered: Vec<Command>,
+    commands: Vec<Command>,
     pub cursor: usize,
     pub scroll: usize,
     visible_height: usize,
@@ -22,9 +23,14 @@ pub struct CommandPalette {
 
 impl CommandPalette {
     pub fn new() -> Self {
+        Self::new_with_registry(&CommandRegistry::new())
+    }
+
+    pub fn new_with_registry(registry: &CommandRegistry) -> Self {
         Self {
             query: String::new(),
             filtered: Vec::new(),
+            commands: registry.commands().to_vec(),
             cursor: 0,
             scroll: 0,
             visible_height: 7,
@@ -37,10 +43,23 @@ impl CommandPalette {
 
     pub fn set_query(&mut self, query: &str) {
         self.query = query.to_string();
-        let results = COMMAND_REGISTRY.filter(&self.query);
-        self.filtered = results.into_iter().map(|(cmd, _)| cmd).collect();
+        let registry = CommandRegistry {
+            commands: self.commands.clone(),
+        };
+        self.filtered = registry
+            .filter(&self.query)
+            .into_iter()
+            .map(|(cmd, _)| cmd.clone())
+            .collect();
         self.cursor = 0;
         self.scroll = 0;
+    }
+
+    /// Replace the project-scoped catalog and re-filter the current query.
+    pub fn set_registry(&mut self, registry: &CommandRegistry) {
+        self.commands = registry.commands().to_vec();
+        let query = self.query.clone();
+        self.set_query(&query);
     }
 
     pub fn cursor_down(&mut self) {
@@ -67,8 +86,8 @@ impl CommandPalette {
         }
     }
 
-    pub fn selected(&self) -> Option<&'static Command> {
-        self.filtered.get(self.cursor).copied()
+    pub fn selected(&self) -> Option<&Command> {
+        self.filtered.get(self.cursor)
     }
 
     pub fn is_empty(&self) -> bool {
