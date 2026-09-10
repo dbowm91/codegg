@@ -221,4 +221,4 @@ The closed search/eggsearch roadmap remains closed unless new evidence shows its
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M006 | closed | `plans/implementation/post-audit-maintainability-surface/006-terminal-compatibility-policy-convergence.md` | `plans/closure/post-audit-maintainability-surface/006-status.md` | — |
-| M007 | ready | `plans/implementation/post-audit-maintainability-surface/007-mcp-oauth-crypto-key-lifecycle-convergence.md` | `plans/closure/post-audit-maintainability-surface/007-status.md` | — |
+| M007 | active | `plans/implementation/post-audit-maintainability-surface/007-mcp-oauth-crypto-key-lifecycle-convergence.md` | `plans/closure/post-audit-maintainability-surface/007-status.md` | implementation landed; closure evidence in progress |

@@ -15,6 +15,13 @@ Resolve provider credentials through a priority-based lookup chain
 fields). Store and retrieve encrypted API keys via a master-key-backed
 credential store. Provide CLI commands for credential management.
 
+MCP OAuth is intentionally separate from `CredentialStore`: an MCP
+`TokenSet` is a server-scoped multi-field lifecycle (access token, optional
+refresh token, expiry, type, and scope), whereas `CredentialStore` stores one
+encrypted secret per provider/account binding. MCP uses the canonical master
+key and crypto implementation for its own versioned whole-store envelope and
+retains a decrypt-only reader for historical `CODEGG_ENC_v1` files.
+
 ## Where It Lives
 
 | Artifact | Location |
@@ -131,6 +138,11 @@ config-aware path registers zero providers.
 - **Master key required to store.** `CredentialStore::put` and
   `AuthResolver` decryption both return `MasterKeyMissing` if no key
   is configured.
+- **MCP token-store key lifecycle.** New MCP OAuth token writes require the
+  canonical master-key lookup (`CODEGG_MASTER_KEY`, then the existing
+  compatibility aliases). `CODEGG_TOKEN_KEY` is deprecated and only reads
+  historical MCP v1 stores during safe migration; it is never used for new
+  ciphertext.
 - **Resolver `tracing::debug!` lines** use `source.as_str()` (a stable
   label like `"env(explicit)"`, `"config(inline)"`) and never the
   secret.

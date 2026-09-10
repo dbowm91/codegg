@@ -169,11 +169,28 @@ for Unix socket mode exists but is `#[allow(dead_code)]`.
 
 `OAuthManager` manages per-server token storage with encryption:
 
-- **Encryption**: AES-256-GCM with 12-byte random nonce. Key from
-  `CODEGG_TOKEN_KEY` env var (SHA-256 hashed if <32 bytes). Magic
-  bytes `CODEGG_ENC_v1` prefix for version detection.
-- **Token storage**: `~/.config/codegg/mcp_tokens.json` (encrypted),
-  `~/.config/codegg/mcp_used_codes.json` (plaintext, 0600 perms).
+- **Current encryption**: New token-store writes use the canonical
+  `codegg_config::encryption::get_master_key()` lookup and
+  `codegg_providers::crypto` Argon2id/AES-256-GCM encryption. The MCP
+  envelope is explicitly prefixed with `CODEGG_MCP_ENC_v2:` and contains
+  the canonical `v2:` ciphertext.
+- **Legacy migration**: `CODEGG_ENC_v1` stores remain readable only through
+  the named legacy v1 decrypt path when `CODEGG_TOKEN_KEY` is available.
+  When a canonical master key is available, startup writes a 0600 temporary
+  file, decrypts and compares it semantically, then atomically replaces the
+  legacy file. Missing keys, write/read-back/replace failures, corrupt data,
+  and unknown or plaintext formats fail closed without overwriting the
+  source. With only the legacy key, tokens remain available in memory but
+  mutations require a canonical master key and do not produce new v1 data.
+- **Token storage**: `~/.config/codegg/mcp_tokens.json` is encrypted and
+  `~/.config/codegg/mcp_used_codes.json` is owner-only. New used-code entries
+  store SHA-256 digests of authorization codes in a versioned JSON envelope;
+  legacy raw-key entries are digest-migrated while preserving expiry and
+  replay equality.
+- **Key configuration**: `CODEGG_MASTER_KEY` is preferred, followed by the
+  existing canonical compatibility aliases `CODEGG_ENCRYPTION_KEY` and
+  `OPENCODE_ENCRYPTION_KEY`. `CODEGG_TOKEN_KEY` is deprecated and is
+  retained only to read and migrate historical MCP token stores.
 - **PKCE**: S256 challenge, callback server on `127.0.0.1:0`.
 - **Replay protection**: Used authorization codes tracked with expiry.
 - **Redirect validation**: Must be HTTPS or `localhost`/`127.0.0.1`.

@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface M007 — MCP OAuth Crypto and Key-Lifecycle Convergence
 
-Status: ready for handoff
+Status: active
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 

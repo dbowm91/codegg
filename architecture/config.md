@@ -271,6 +271,7 @@ Web search/fetch backend: `backend` (Eggsearch/Builtin/Disabled),
 | `CODEGG_MASTER_KEY` | Master key for encryption |
 | `CODEGG_ENCRYPTION_KEY` | Fallback encryption key |
 | `OPENCODE_ENCRYPTION_KEY` | Legacy encryption key |
+| `CODEGG_TOKEN_KEY` | Deprecated MCP OAuth v1 migration-read key; never used for new writes |
 | `{PROVIDER}_API_KEY` | Provider API key fallback |
 
 ### Key Config Sections

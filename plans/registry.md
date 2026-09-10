@@ -26,7 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Multi-project TUI and sessions — frontend convergence corrective | active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` | M005 ready; M007 ready | Original M001-M004 remain closed. M006/M008/M009/M010 are dependency-gated by the addendum. |
-| Post-audit maintainability and surface — corrective | active | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M007 ready | M006 closed; original M001-M005 remain closed. Search/eggsearch configured fallback remains intentionally closed/retained. |
+| Post-audit maintainability and surface — corrective | active | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M007 active | M006 closed; original M001-M005 remain closed. Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Post-implementation maintainability closure | closed | `plans/subsystems/post-implementation-maintainability-closure-roadmap.md` | M001 closed | — |
@@ -63,7 +63,6 @@ Only plans whose hard dependencies are currently satisfied are listed here.
 |---|---|---|---|---|
 | Multi-project TUI/frontend convergence | M005 | invariant / correctness | `plans/implementation/tui-project-sessions/005-project-execution-context-command-scope.md` | Project/catalog/workspace/session/routing foundations are closed; current ambient-cwd authority defect is source-local to the frontend. |
 | Multi-project TUI/frontend convergence | M007 | invariant / polish | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | Component/focus infrastructure exists; no daemon/protocol dependency is outstanding. |
-| Post-audit maintainability corrective | M007 | invariant / security / maintainability | `plans/implementation/post-audit-maintainability-surface/007-mcp-oauth-crypto-key-lifecycle-convergence.md` | Canonical master-key/crypto infrastructure exists; migration is local to MCP at-rest persistence. |
 
 A plan moves to `active` only when implementation actually begins. Dependency-ready does not imply parallel execution is required; M005 is the recommended first frontend correctness handoff.
 
@@ -97,7 +96,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 |---|---|---|
 | TUI/frontend convergence corrective | M005/M007 ready | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
-| Post-audit maintainability corrective | M006 closed; M007 ready | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
+| Post-audit maintainability corrective | M006 closed; M007 active | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
 | Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
 | Post-implementation maintainability closure | M001 closed | `plans/closure/post-implementation-maintainability-closure/001-status.md` |
 | Frontend-neutral session projections | closed | `plans/closure/session-projections/012-status.md` |

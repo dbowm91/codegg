@@ -164,6 +164,11 @@ export CODEGG_MASTER_KEY="your-master-key-here"
   `~/.config/codegg/credentials.json`. Each `StoredCredentialRecord`'s
   `encrypted_secret` is a `v2:`-prefixed ciphertext under the same
   master key.
+- `mcp::OAuthManager` — MCP-owned multi-server OAuth token-set persistence.
+  New whole-store writes use the same master-key lookup and canonical
+  `v2:` ciphertext inside the explicit `CODEGG_MCP_ENC_v2:` envelope.
+  Its `CODEGG_ENC_v1`/`CODEGG_TOKEN_KEY` path is a decrypt-only migration
+  reader for historical files and is not a second new-write crypto policy.
 - `auth::AuthResolver` — Decrypts `AuthConfig::ApiKey.encrypted_value`
   from provider config.
 
