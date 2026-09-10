@@ -26,7 +26,7 @@ Canonical direction remains in:
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
 | Multi-project TUI and sessions — frontend convergence corrective | active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` | M005 ready; M007 ready | Original M001-M004 remain closed. M006/M008/M009/M010 are dependency-gated by the addendum. |
-| Post-audit maintainability and surface — corrective | active | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006 active; M007 ready | Original M001-M005 remain closed. Search/eggsearch configured fallback remains intentionally closed/retained. |
+| Post-audit maintainability and surface — corrective | active | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M007 ready | M006 closed; original M001-M005 remain closed. Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
 | Post-implementation maintainability closure | closed | `plans/subsystems/post-implementation-maintainability-closure-roadmap.md` | M001 closed | — |
@@ -97,7 +97,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 |---|---|---|
 | TUI/frontend convergence corrective | M005/M007 ready | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
-| Post-audit maintainability corrective | M006 active; M007 ready | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
+| Post-audit maintainability corrective | M006 closed; M007 ready | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
 | Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
 | Post-implementation maintainability closure | M001 closed | `plans/closure/post-implementation-maintainability-closure/001-status.md` |
 | Frontend-neutral session projections | closed | `plans/closure/session-projections/012-status.md` |
@@ -110,6 +110,12 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Tool Programs | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
 | Tool Program capability expansion | M001-M003 closed | `plans/closure/tool-program-capability-expansion/001-status.md` through `003-status.md` |
 | Residual runtime consolidation | M001-M003 closed | `plans/closure/residual-runtime-consolidation/001-status.md` through `003-status.md` |
+
+## Recently closed or conditionally closed work
+
+| Subsystem | Milestone | Status | Closure record | Implementation commit |
+|---|---|---|---|---|
+| Post-audit maintainability corrective | M006 terminal compatibility policy convergence | closed | `plans/closure/post-audit-maintainability-surface/006-status.md` | `f80b08d5` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. The new corrective addenda explicitly preserve the original closed records and own new closure evidence.
 

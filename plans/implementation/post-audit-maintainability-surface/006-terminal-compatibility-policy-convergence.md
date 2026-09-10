@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface M006 — Terminal Compatibility Policy Convergence
 
-Status: active
+Status: implemented — closed; see `plans/closure/post-audit-maintainability-surface/006-status.md`
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
@@ -25,7 +25,7 @@ Applicable ADRs: none. Bash/managed-process ownership is already established.
 
 Primary class: invariant / polish
 
-Closure record to create: `plans/closure/post-audit-maintainability-surface/006-status.md`
+Closure record: `plans/closure/post-audit-maintainability-surface/006-status.md`
 
 ## 1. Objective
 
