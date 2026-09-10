@@ -32,7 +32,7 @@ Canonical direction remains in:
 | Presence and read-only observation | closed | `plans/subsystems/presence-observation-roadmap.md` | M001–M003 closed | — |
 | Project collaboration | closed | `plans/subsystems/project-collaboration-roadmap.md` | M001+M002+M003 closed | — |
 | Interactive process sessions | closed | `plans/subsystems/interactive-process-sessions-roadmap.md` | M001–M003 closed | — |
-| Tool Program capability expansion | active | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M001 ready | M002/M003 depend on the M001 eligibility contract. |
+| Tool Program capability expansion | active | `plans/subsystems/tool-program-capability-expansion-roadmap.md` | M002 ready | M003 depends on the M002 seam; M001 eligibility contract closed. |
 | Domain identity and compatibility | closed | `plans/subsystems/domain-identity-roadmap.md` | Milestone 4 closed | — |
 | Runtime assets and harness interoperability | closed | `plans/subsystems/runtime-assets-roadmap.md` | Milestone 4 closed | — |
 | Provider connections and Eggpool | closed | `plans/subsystems/provider-direct-call-session-context-corrective-addendum.md` | M009 closed | — |
@@ -58,7 +58,7 @@ Canonical direction remains in:
 
 | Subsystem | Milestone | Plan | Why ready |
 |---|---|---|---|
-| Tool Program capability expansion | M001 — deterministic local read expansion | `plans/implementation/tool-program-capability-expansion/001-deterministic-local-read-contract-expansion.md` | Tool Programs are strictly closed and ADR-0001 supplies the authority contract. |
+| Tool Program capability expansion | M002 — external repo search | `plans/implementation/tool-program-capability-expansion/002-external-search-programmatic-read-seam.md` | M001 eligibility contract closed; ADR-0001 supplies the authority contract. |
 
 These four plans may be implemented in parallel if agents avoid overlapping documentation/module edits. A plan moves to `active` only when implementation actually begins.
 
@@ -69,7 +69,7 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 3. Presence M001/M002/M003 are closed and the subsystem is complete. Observation consumes the already-closed session-projection interface.
 4. Project collaboration M001+M002+M003 are closed and the subsystem is complete: durable authorized channels/messages with ordering/retry/restart/retention/auth/privacy, bounded TUI chat with observer insert routing and zero-control proof, and separately authorized structured actions with idempotent scheduler-boundary submits and audit causation. Free text is never an execution interface.
 5. Interactive-process M001/M002/M003 are closed; the subsystem roadmap is closed.
-6. Tool Program expansion M001 may proceed independently. M002 external search and M003 narrow Git/LSP reads remain blocked behind the eligibility contract; no mutation authority is added.
+6. Tool Program expansion M001 is closed (eligibility contract + `diff` promotion, closure at `plans/closure/tool-program-capability-expansion/001-status.md`). M002 external search may proceed on that contract. M003 narrow Git/LSP reads remain blocked behind M002; no mutation authority is added.
 7. None of this work authorizes a new scheduler, service bus, verification framework, release automation, persistent search index, remote sandbox, or broader Windows support tier.
 
 ## Blocked work
@@ -78,8 +78,7 @@ These four plans may be implemented in parallel if agents avoid overlapping docu
 |---|---|---|
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
-| Tool Program capability expansion | M002 external repo search | TP expansion M001 closure. |
-| Tool Program capability expansion | M003 operation-scoped Git/LSP reads | TP expansion M001/M002 closures. |
+| Tool Program capability expansion | M003 operation-scoped Git/LSP reads | TP expansion M002 closure. |
 
 ## Closure work and current control points
 
@@ -97,6 +96,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | Frontend-neutral session projections | closed | `plans/closure/session-projections/012-status.md` |
 | Agent runs/worktree concurrency | closed | `plans/closure/agent-run-worktree-concurrency/009-status.md` |
 | Tool Programs | closed | `plans/closure/tool-programs/019-status.md`; `plans/closure/tool-programs/020-status.md` |
+| Tool Program capability expansion | M001 closed | `plans/closure/tool-program-capability-expansion/001-status.md` |
 | Residual runtime consolidation | M001 closed | `plans/closure/residual-runtime-consolidation/001-status.md` |
 | Residual runtime consolidation | M002 closed | `plans/closure/residual-runtime-consolidation/002-status.md` |
 | Residual runtime consolidation | M003 closed | `plans/closure/residual-runtime-consolidation/003-status.md` |

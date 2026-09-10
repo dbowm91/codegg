@@ -16,7 +16,7 @@ Expose a small selected subset of high-value Git and LSP read operations to Tool
 
 ## 2. Why this milestone is ready
 
-Blocked on M001/M002 so eligibility/trust/replay policy is stable. Git/worktree ownership and LSP mutation-preview/application correctness are already closed; these are read adapters only.
+Blocked on M002 (M001 closed at `plans/closure/tool-program-capability-expansion/001-status.md`) so eligibility/trust/replay policy is stable. Git/worktree ownership and LSP mutation-preview/application correctness are already closed; these are read adapters only.
 
 ## 3. Current implementation evidence
 

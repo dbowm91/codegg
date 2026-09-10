@@ -1,6 +1,6 @@
 # Tool Program Capability Expansion Milestone 002 — External Repository Search Programmatic Read Seam
 
-Status: blocked
+Status: ready for handoff (unblocked by M001 closure at `plans/closure/tool-program-capability-expansion/001-status.md`)
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
@@ -16,7 +16,7 @@ Allow Tool Programs to invoke canonical `repo_search` through the existing broke
 
 ## 2. Why this milestone is ready
 
-Blocked on M001 eligibility contract. Search/eggsearch integration and explicit runtime context are closed; `RepoSearchTool` already has structured output/provenance and is read-only but lacks a programmatic caller contract.
+Unblocked by M001 closure (`plans/closure/tool-program-capability-expansion/001-status.md`). Search/eggsearch integration and explicit runtime context are closed; `RepoSearchTool` already has structured output/provenance and is read-only but lacks a programmatic caller contract.
 
 ## 3. Current implementation evidence
 

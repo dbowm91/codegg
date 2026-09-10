@@ -195,7 +195,7 @@ Programs it produces may only call `DirectOrProgrammatic` tools.
 
 ### Read-Only Tool Palette
 
-Four tools are eligible for programmatic invocation:
+Five tools are eligible for programmatic invocation:
 
 | Tool | Caller Policy | Effect Class | Output Schema | Cache TTL |
 |------|--------------|--------------|---------------|-----------|
@@ -203,6 +203,7 @@ Four tools are eligible for programmatic invocation:
 | `glob` | `DirectOrProgrammatic` | `ReadOnly` | `pattern`, `files`, `count`, `truncated` | 60s |
 | `grep` | `DirectOrProgrammatic` | `ReadOnly` | `pattern`, `matches`, `total_matches`, `files_searched`, `truncated` | 60s |
 | `list` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `entries`, `count`, `truncated` | 30s |
+| `diff` | `DirectOrProgrammatic` | `ReadOnly` | `path`, `has_changes`, `diff`, `truncated`, `original_bytes`, `current_bytes` | 60s |
 
 ### Manifest Resolution
 
@@ -227,6 +228,61 @@ tool calls within a program run.
 - **Eviction**: oldest-first when limits reached
 - **Thread-safe**: `parking_lot::RwLock<HashMap<...>>`
 - Per-execution; does not persist across daemon restarts
+
+## Expansion M001: Deterministic Local Read Contract Expansion
+
+Status: implemented (see `plans/closure/tool-program-capability-expansion/001-status.md`).
+
+### Eligibility matrix
+
+Programmatic admission is governed by an executable checklist, not by
+`ToolCategory::ReadOnly` alone. A tool is admitted only with all of:
+
+1. explicit `DirectOrProgrammatic` caller policy;
+2. read-side effect class (`ReadOnly` / `ReadValidate`);
+3. declared output schema (manifest-gated);
+4. explicit input/output bounds (file bytes, original bytes, diff display);
+5. execution-context-derived workspace/path policy (no process-CWD authority);
+6. deterministic `LocalTrusted` semantics (or explicitly nondeterministic);
+7. conservative retry/cache declaration (local reads: no broker retry);
+8. truthful replay/ledger behavior (only `Success` replays);
+9. no hidden mutable globals, network, or mutation surface.
+
+Enforced by `tests/tool_program_diff_palette.rs` (matrix, census, broker,
+manifest, cache, ledger tests) plus `tests/tool_contract_guards.rs`.
+
+### `diff` promotion
+
+`src/tool/diff.rs` — the local `diff` operation is `DirectOrProgrammatic` /
+`ReadOnly` / `Idempotent` with a 60s cache policy and a structured output
+schema (`path`, `has_changes`, `diff`, `truncated`, byte counts):
+
+- `execute()` keeps the direct string behavior (unified diff or
+  `(no changes)`).
+- `execute_structured()` returns the same display plus a bounded structured
+  value with `Native` / `codegg/diff` / `LocalTrusted` provenance.
+- Relative paths resolve against the broker-supplied
+  `ToolExecutionContext.cwd` (workspace root for program calls); the
+  tool-default root remains only for legacy context-free direct callers.
+- Path policy rejects escapes, `..` traversal outside the root, and symlink
+  components (via `check_path_for_symlinks`); failures are deterministic
+  (`Denied` for policy violations, typed errors for missing/invalid input).
+- Bounds: 10 MiB file and `original` caps, 256 KiB diff display with an
+  explicit truncation marker and `truncated` metadata.
+- Contract-hash changes invalidate stale manifests/caches by construction
+  (canonical `ContractEntry` digest covers caller policy and schemas).
+
+### Candidate census (M001 disposition)
+
+Admitted: `read`, `glob`, `grep`, `list`, `diff`. Deferred without promotion:
+mutations (`write`, `edit`, `apply_patch`, `replace`, `commit`), process
+execution (`bash`, `terminal`, `test`, `task`), multiplexed read/mutation
+surfaces (`git`, `lsp` — M003 scope), external network reads (`repo_search`
+and other search/fetch wrappers, `websearch`, `webfetch` — M002 scope),
+`tool_program` itself (`DirectOnly`), and workflow/state surfaces (`skill`,
+`question`, `security`, `review`, `image`, `research`). The census is encoded
+in `tests/tool_program_diff_palette.rs::candidate_census_*` so future
+promotions must satisfy the same matrix evidence.
 
 ## M007: Child-Job Composition
 

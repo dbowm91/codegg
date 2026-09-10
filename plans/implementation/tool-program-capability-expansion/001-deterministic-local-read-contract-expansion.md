@@ -1,6 +1,6 @@
 # Tool Program Capability Expansion Milestone 001 — Deterministic Local Read Contract Expansion
 
-Status: ready for handoff
+Status: implemented — closed by `plans/closure/tool-program-capability-expansion/001-status.md`
 
 Repository baseline: `9dfbc6e1f842a76ab6154d1bd99cbadfdff4b2e6`
 
