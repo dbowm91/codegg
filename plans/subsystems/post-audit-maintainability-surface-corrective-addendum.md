@@ -1,6 +1,6 @@
 # Post-Audit Maintainability and Surface Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository audit baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
@@ -221,4 +221,4 @@ The closed search/eggsearch roadmap remains closed unless new evidence shows its
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M006 | closed | `plans/implementation/post-audit-maintainability-surface/006-terminal-compatibility-policy-convergence.md` | `plans/closure/post-audit-maintainability-surface/006-status.md` | — |
-| M007 | active | `plans/implementation/post-audit-maintainability-surface/007-mcp-oauth-crypto-key-lifecycle-convergence.md` | `plans/closure/post-audit-maintainability-surface/007-status.md` | implementation landed; closure evidence in progress |
+| M007 | closed | `plans/implementation/post-audit-maintainability-surface/007-mcp-oauth-crypto-key-lifecycle-convergence.md` | `plans/closure/post-audit-maintainability-surface/007-status.md` | — |
