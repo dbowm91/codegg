@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Multi-project TUI and sessions — frontend convergence corrective | active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` | M005 ready; M007 ready | Original M001-M004 remain closed. M006/M008/M009/M010 are dependency-gated by the addendum. |
+| Multi-project TUI and sessions — frontend convergence corrective | active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` | M005 closed; M006/M007/M010 ready | Original M001-M004 remain closed. M008/M009 remain dependency-gated by the addendum. |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -61,19 +61,20 @@ Only plans whose hard dependencies are currently satisfied are listed here.
 
 | Subsystem | Milestone | Class | Implementation plan | Why ready |
 |---|---|---|---|---|
-| Multi-project TUI/frontend convergence | M005 | invariant / correctness | `plans/implementation/tui-project-sessions/005-project-execution-context-command-scope.md` | Project/catalog/workspace/session/routing foundations are closed; current ambient-cwd authority defect is source-local to the frontend. |
+| Multi-project TUI/frontend convergence | M006 | invariant / correctness | `plans/implementation/tui-project-sessions/006-nonblocking-session-submit-lifecycle.md` | M005 project execution context is closed; session submission can now capture explicit project scope. |
 | Multi-project TUI/frontend convergence | M007 | invariant / polish | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | Component/focus infrastructure exists; no daemon/protocol dependency is outstanding. |
+| Multi-project TUI/frontend convergence | M010 | capability / polish | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | M005 scoped command catalog is closed; M009 remains a soft sequencing preference only. |
 
 A plan moves to `active` only when implementation actually begins. Dependency-ready does not imply parallel execution is required; M005 is the recommended first frontend correctness handoff.
 
 ## Current execution order and dependency gates
 
-1. Implement TUI M005 first: remove ambient `cwd` project/workspace authority and make project-local command discovery follow the active project. This is the highest correctness priority and unblocks M006 and M010.
+1. M005 is closed: ambient `cwd` project/workspace authority is removed and project-local command discovery follows the active project. This unblocks M006 and M010.
 2. TUI M007 is independently ready and may be implemented after M005 (recommended to reduce TUI merge conflicts) or on a controlled parallel branch. It establishes one modal/focus state owner and unblocks M009/M008.
 3. Post-audit M006 and M007 are both closed independently of the TUI sequence. Their corrective addendum is complete; no follow-on post-audit milestone is registered.
-4. After TUI M005 closes, M006 becomes ready: move session creation/prompt continuation off the event loop with route-generation and exactly-once protection.
+4. M006 is ready: move session creation/prompt continuation off the event loop with route-generation and exactly-once protection.
 5. After TUI M007 closes, M009 becomes ready: keyboard sidebar plus canonical agent-tree inspection. M005 is a soft dependency for project-correct detail actions and should normally already be closed.
-6. After TUI M005 closes, M010 becomes technically ready; implementing it after M009 is preferred so new sidebar/agent-tree actions enter the same help/keybinding census once.
+6. M010 is technically ready; implementing it after M009 is preferred so new sidebar/agent-tree actions enter the same help/keybinding census once.
 7. TUI M008 is intentionally last among state-architecture work: it becomes ready only after M005+M006+M007 close, then physically decomposes `App`/dispatch around stable contracts rather than moving transitional debt into more files.
 8. None of this work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
 
@@ -81,10 +82,8 @@ A plan moves to `active` only when implementation actually begins. Dependency-re
 
 | Subsystem | Milestone | Blocker |
 |---|---|---|
-| TUI/frontend convergence | M006 nonblocking session submit | Hard: M005 project execution context must close first. |
 | TUI/frontend convergence | M008 App decomposition | Hard: M005 + M006 + M007 must close so final ownership/state contracts are stable. |
 | TUI/frontend convergence | M009 keyboard sidebar/agent tree | Hard: M007 modal/focus ownership. Existing projection/agent-run interfaces are already closed. |
-| TUI/frontend convergence | M010 command discovery/keybindings | Hard: M005 scoped command catalog; M009 is a soft sequencing preference only. |
 | Architecture convergence | M009 strict operational evidence | Compatible-host root runtime / all-feature Clippy evidence. |
 | Runtime safety | C002 supported-Linux evidence | Historical Landlock supported-Linux fixture evidence. |
 
@@ -94,7 +93,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| TUI/frontend convergence corrective | M005/M007 ready | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
+| TUI/frontend convergence corrective | M005 closed; M006/M007/M010 ready | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
 | Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
@@ -116,6 +115,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 |---|---|---|---|---|
 | Post-audit maintainability corrective | M006 terminal compatibility policy convergence | closed | `plans/closure/post-audit-maintainability-surface/006-status.md` | `f80b08d5` |
 | Post-audit maintainability corrective | M007 MCP OAuth crypto/key lifecycle convergence | closed | `plans/closure/post-audit-maintainability-surface/007-status.md` | `aacf584` |
+| TUI/frontend convergence corrective | M005 project execution context and command scope | closed | `plans/closure/tui-project-sessions/005-status.md` | `4a963e0` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. The new corrective addenda explicitly preserve the original closed records and own new closure evidence.
 

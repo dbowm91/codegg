@@ -1,6 +1,6 @@
 # Multi-Project TUI Frontend Convergence M010 — Command Discovery and Keybinding Convergence
 
-Status: blocked — hard dependency on M005
+Status: ready for handoff; M009 remains a soft sequencing preference
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
