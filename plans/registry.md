@@ -25,6 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
+| Repository surface housekeeping corrective | active | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 ready | TUI M005-M010, post-audit M006/M007, project-catalog, and verification/release foundations are closed. |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -60,18 +61,16 @@ Only plans whose hard dependencies are currently satisfied are listed here.
 
 | Subsystem | Milestone | Class | Implementation plan | Why ready |
 |---|---|---|---|---|
-No dependency-ready implementation plan remains in this subsystem; M010 is closed.
+| Repository surface housekeeping corrective | M001 | polish / maintainability | `plans/implementation/repository-surface-housekeeping/001-active-surface-guard-traceability-reconciliation.md` | All functional foundations being documented are closed; the remaining work is behavior-neutral guard/comment/docs/skills/README/registry reconciliation. |
+
+A plan moves to `active` only when implementation actually begins.
 
 ## Current execution order and dependency gates
 
-1. M005 is closed: ambient `cwd` project/workspace authority is removed and project-local command discovery follows the active project. This unblocks M006 and M010.
-2. TUI M007 is closed independently of M005 and establishes one modal/focus state owner, unblocking M008 and M009.
-3. Post-audit M006 and TUI M007 are both closed independently of the TUI sequence. Their corrective evidence is complete; no follow-on post-audit milestone is registered.
-4. M006 is closed: session creation/prompt continuation moved off the event loop with route-generation and exactly-once protection.
-5. M009 is closed: keyboard sidebar plus canonical agent-tree inspection. M007 is closed and M005's soft dependency is also closed.
-6. M010 is closed after M005 and the soft M009 sequencing preference closed; its command/action census includes the sidebar and agent-tree actions.
-7. TUI M008 is closed: `App`/dispatch are physically decomposed around the stable M005-M007 contracts without introducing a new state framework. M009 and M010 are closed.
-8. None of this work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
+1. Repository-surface housekeeping M001 is the only dependency-ready implementation plan in the current batch. It may proceed without reopening the closed TUI, project-catalog, maintainability, or release milestones.
+2. Architecture convergence M009 remains conditionally closed on compatible-host root/runtime and strict all-feature Clippy evidence; M001 does not satisfy that operational condition.
+3. Runtime Safety C002 remains conditionally closed on supported-Linux Landlock fixture evidence; M001 does not satisfy that operational condition.
+4. No housekeeping work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
 
 ## Blocked work
 
@@ -86,6 +85,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
+| Repository surface housekeeping corrective | M001 ready | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md`; `plans/implementation/repository-surface-housekeeping/001-active-surface-guard-traceability-reconciliation.md` |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
@@ -115,13 +115,13 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | TUI/frontend convergence corrective | M009 keyboard sidebar and agent-tree inspector | closed | `plans/closure/tui-project-sessions/009-status.md` | `2d10e72` |
 | TUI/frontend convergence corrective | M010 command discovery and keybinding convergence | closed | `plans/closure/tui-project-sessions/010-status.md` | `876a956b` |
 
-Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. The new corrective addenda explicitly preserve the original closed records and own new closure evidence.
+Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. Corrective passes own new closure evidence rather than editing history.
 
 ## Verification policy
 
 Verification remains deliberately light. Newly registered milestones may add focused unit/integration tests or a narrow static guard where it enforces a real ownership invariant, but they MUST NOT add new CI lanes, scanners, coverage/benchmark/binary-size gates, dependency bots, release automation, or fixed release cadence.
 
-TUI M005 is allowed to add the corrected existing `check_tui_project_authority.py` command to the current `scripts/verify.sh quick` and current single CI verify job because that script already claims the Phase-4 invariant and the change does not create a lane/framework.
+Repository-surface M001 may repair the existing project-catalog guard and use temporary census commands for documentation review, but it MUST NOT introduce a permanent docs-lint framework or network-dependent CI check.
 
 Normal broad local posture remains:
 
@@ -150,7 +150,7 @@ These remain outside active handoff unless concrete product priority/evidence ma
 - persistent search indexing;
 - deletion of the explicitly configured legacy search fallback absent new compatibility evidence;
 - automatic dependency-update bots or continuous binary-size/audit gates;
-- OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now registered;
+- OAuth device/provider expansion beyond the bounded MCP at-rest crypto/key migration now closed;
 - generalized OAuth/provider credential-store unification absent a token-set abstraction justified by multiple consumers;
 - remote workspace/node/distributed execution phases until identity/audit dependencies make them ready;
 - release automation or a fixed release cadence.
