@@ -1,6 +1,9 @@
 # Repository Surface Housekeeping Corrective Addendum
 
-Status: active
+Status: closed
+
+Closure record: `plans/closure/repository-surface-housekeeping/001-status.md`
+(implementation commit `931fb709`).
 
 Repository audit baseline: `db6fe01920624ccaaed4200dbd98a38628f85abb`
 

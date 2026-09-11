@@ -25,7 +25,7 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Repository surface housekeeping corrective | active | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 active | TUI M005-M010, post-audit M006/M007, project-catalog, and verification/release foundations are closed. |
+| Repository surface housekeeping corrective | closed | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md` | M001 closed | — |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -57,20 +57,19 @@ Canonical direction remains in:
 
 ## Dependency-ready implementation plans
 
-Only plans whose hard dependencies are currently satisfied are listed here.
-
-| Subsystem | Milestone | Class | Implementation plan | Why ready |
-|---|---|---|---|---|
-| Repository surface housekeeping corrective | M001 | polish / maintainability | `plans/implementation/repository-surface-housekeeping/001-active-surface-guard-traceability-reconciliation.md` | All functional foundations being documented are closed; the remaining work is behavior-neutral guard/comment/docs/skills/README/registry reconciliation. |
-
-A plan moves to `active` only when implementation actually begins.
+No implementation plan is currently dependency-ready. A plan is listed here
+only after dependency and handoff review, and moves to `active` only when
+implementation actually begins.
 
 ## Current execution order and dependency gates
 
-1. Repository-surface housekeeping M001 is the only dependency-ready implementation plan in the current batch. It may proceed without reopening the closed TUI, project-catalog, maintainability, or release milestones.
-2. Architecture convergence M009 remains conditionally closed on compatible-host root/runtime and strict all-feature Clippy evidence; M001 does not satisfy that operational condition.
-3. Runtime Safety C002 remains conditionally closed on supported-Linux Landlock fixture evidence; M001 does not satisfy that operational condition.
-4. No housekeeping work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
+No implementation plan is currently dependency-ready, so there is no active
+execution order. Architecture convergence M009 and Runtime Safety C002
+remain conditionally closed on the operational evidence listed under
+Blocked work; repository-surface M001 did not satisfy those conditions.
+No housekeeping work authorizes a new daemon, scheduler, service bus,
+command router, state-management framework, verification framework, release
+automation, persistent search index, or generic secret-store/DI system.
 
 ## Blocked work
 
@@ -85,7 +84,6 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| Repository surface housekeeping corrective | M001 ready | `plans/subsystems/repository-surface-housekeeping-corrective-addendum.md`; `plans/implementation/repository-surface-housekeeping/001-active-surface-guard-traceability-reconciliation.md` |
 | TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
@@ -106,6 +104,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Milestone | Status | Closure record | Implementation commit |
 |---|---|---|---|---|
+| Repository surface housekeeping corrective | M001 active surface, guard, and traceability reconciliation | closed | `plans/closure/repository-surface-housekeeping/001-status.md` | `931fb709` |
 | Post-audit maintainability corrective | M006 terminal compatibility policy convergence | closed | `plans/closure/post-audit-maintainability-surface/006-status.md` | `f80b08d5` |
 | Post-audit maintainability corrective | M007 MCP OAuth crypto/key lifecycle convergence | closed | `plans/closure/post-audit-maintainability-surface/007-status.md` | `aacf584` |
 | TUI/frontend convergence corrective | M005 project execution context and command scope | closed | `plans/closure/tui-project-sessions/005-status.md` | `4a963e0` |

@@ -1,6 +1,9 @@
 # Repository Surface Housekeeping M001 — Active Surface, Guard, and Traceability Reconciliation
 
-Status: active
+Status: closed
+
+Closure record: `plans/closure/repository-surface-housekeeping/001-status.md`
+(implementation commit `931fb709`).
 
 Source subsystem roadmap:
 
