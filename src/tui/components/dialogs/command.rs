@@ -172,16 +172,29 @@ impl CommandPalette {
                     base_style
                 };
 
-                let cat_style = if is_selected {
+                let metadata_style = if is_selected {
                     Style::default().fg(theme.background).bg(theme.muted)
                 } else {
                     Style::default().fg(theme.muted)
                 };
 
                 let mut spans = vec![
-                    Span::styled(format!("{:?} ", cmd.category), cat_style),
+                    Span::styled(format!("{} ", cmd.domain), metadata_style),
                     Span::styled(&cmd.name, name_style),
                 ];
+
+                if cmd.source_kind != crate::tui::command::CommandSource::BuiltIn {
+                    spans.push(Span::raw(" ["));
+                    spans.push(Span::styled(
+                        bounded_label(&cmd.source_label(), 24),
+                        if is_selected {
+                            Style::default().fg(theme.background)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ));
+                    spans.push(Span::raw("]"));
+                }
 
                 if !cmd.aliases.is_empty() {
                     spans.push(Span::raw(" ("));
@@ -241,6 +254,15 @@ impl CommandPalette {
             hints_area,
         );
     }
+}
+
+fn bounded_label(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let mut output: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        output.push('…');
+    }
+    output
 }
 
 impl Default for CommandPalette {

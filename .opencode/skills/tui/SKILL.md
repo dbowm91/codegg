@@ -30,7 +30,7 @@ root and lifecycle modules.
 | `src/tui/app/modal.rs` | FocusManager-backed modal lifecycle |
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
 | `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope and `async_request.rs` holds the finish/fail guard |
-| `src/tui/command.rs` | Slash-command registry (`CommandRegistry::built_in_commands()`) |
+| `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
 | `src/tui/commands/` | 19 command-handler submodules (sessions, git_sidebar, research, ...) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
 | `src/tui/runtime/` | Runtime loop and event routing |
@@ -54,7 +54,8 @@ root and lifecycle modules.
 ## Adding a New Command
 
 1. Add the variant to the command list in `CommandRegistry::built_in_commands()`
-   (`src/tui/command.rs`). A test asserts the exact total (108) - update it.
+   (`src/tui/command.rs`). Keep its description and discovery domain searchable;
+   the exact built-in count is asserted by the registry tests.
 2. Add a `TuiCommand` variant if the command needs backend work.
 3. Handle the variant in `src/tui/runtime/command_dispatch.rs`.
 
@@ -89,6 +90,14 @@ root and lifecycle modules.
   `active_dialog_type()` controls modal lifecycle.
 
 ## Other Invariants
+
+- **Command discovery metadata**: `CommandRegistry` is the only command
+  catalog. Its domain/source/scope/keywords fields are presentation metadata;
+  they do not authorize or execute commands. The palette searches those fields
+  with a bounded result set and must use the active project catalog. Built-in,
+  config, project, and plugin collisions are deterministic, with existing
+  entries winning. `ActionKey::all()` is the exhaustive configurable action
+  list; `Char` is the explicit non-configurable input exception.
 
 - **Sidebar focus is projection-only**: `SidebarFocusTarget` identities are
   shared by keyboard navigation and mouse hit testing. Selection is cleared on

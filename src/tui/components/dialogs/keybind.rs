@@ -56,102 +56,11 @@ impl KeybindDialog {
     }
 
     pub fn actions() -> Vec<ActionKey> {
-        vec![
-            ActionKey::Send,
-            ActionKey::Newline,
-            ActionKey::Cancel,
-            ActionKey::NavigateUp,
-            ActionKey::NavigateDown,
-            ActionKey::SwitchAgent,
-            ActionKey::SelectModel,
-            ActionKey::ClearSession,
-            ActionKey::NewSession,
-            ActionKey::ToggleSidebar,
-            ActionKey::FocusSidebar,
-            ActionKey::ToggleSection,
-            ActionKey::CloseSession,
-            ActionKey::Help,
-            ActionKey::FocusPrompt,
-            ActionKey::StashPrompt,
-            ActionKey::RestorePrompt,
-            ActionKey::CopyMessage,
-            ActionKey::CycleModelForward,
-            ActionKey::CycleModelBackward,
-            ActionKey::ToggleReasoning,
-            ActionKey::Quit,
-            ActionKey::Backspace,
-            ActionKey::Delete,
-            ActionKey::Left,
-            ActionKey::Right,
-            ActionKey::Home,
-            ActionKey::End,
-            ActionKey::PageUp,
-            ActionKey::PageDown,
-            ActionKey::Search,
-            ActionKey::SearchNext,
-            ActionKey::SearchPrev,
-            ActionKey::ClearSearch,
-            ActionKey::ToggleTts,
-            ActionKey::StopTts,
-            ActionKey::ToggleFullscreen,
-            ActionKey::TogglePermissionMode,
-            ActionKey::GoToTop,
-            ActionKey::GoToBottom,
-            ActionKey::OpenProjectPicker,
-            ActionKey::NextProjectTab,
-            ActionKey::PreviousProjectTab,
-            ActionKey::CloseProjectTab,
-        ]
+        ActionKey::all().to_vec()
     }
 
     pub fn action_name(action: &ActionKey) -> &'static str {
-        match action {
-            ActionKey::Send => "Send",
-            ActionKey::Newline => "Newline",
-            ActionKey::Cancel => "Cancel",
-            ActionKey::NavigateUp => "NavigateUp",
-            ActionKey::NavigateDown => "NavigateDown",
-            ActionKey::SwitchAgent => "SwitchAgent",
-            ActionKey::SelectModel => "SelectModel",
-            ActionKey::ClearSession => "ClearSession",
-            ActionKey::NewSession => "NewSession",
-            ActionKey::ToggleSidebar => "ToggleSidebar",
-            ActionKey::FocusSidebar => "FocusSidebar",
-            ActionKey::ToggleSection => "ToggleSection",
-            ActionKey::CloseSession => "CloseSession",
-            ActionKey::Help => "Help",
-            ActionKey::FocusPrompt => "FocusPrompt",
-            ActionKey::StashPrompt => "StashPrompt",
-            ActionKey::RestorePrompt => "RestorePrompt",
-            ActionKey::CopyMessage => "CopyMessage",
-            ActionKey::CycleModelForward => "CycleModelForward",
-            ActionKey::CycleModelBackward => "CycleModelBackward",
-            ActionKey::ToggleReasoning => "ToggleReasoning",
-            ActionKey::Quit => "Quit",
-            ActionKey::Backspace => "Backspace",
-            ActionKey::Delete => "Delete",
-            ActionKey::Left => "Left",
-            ActionKey::Right => "Right",
-            ActionKey::Home => "Home",
-            ActionKey::End => "End",
-            ActionKey::PageUp => "PageUp",
-            ActionKey::PageDown => "PageDown",
-            ActionKey::Search => "Search",
-            ActionKey::SearchNext => "SearchNext",
-            ActionKey::SearchPrev => "SearchPrev",
-            ActionKey::ClearSearch => "ClearSearch",
-            ActionKey::Command => "Command",
-            ActionKey::ToggleTts => "ToggleTts",
-            ActionKey::StopTts => "StopTts",
-            ActionKey::ToggleFullscreen => "ToggleFullscreen",
-            ActionKey::TogglePermissionMode => "TogglePermissionMode",
-            ActionKey::GoToTop => "GoToTop",
-            ActionKey::GoToBottom => "GoToBottom",
-            ActionKey::OpenProjectPicker => "OpenProjectPicker",
-            ActionKey::NextProjectTab => "NextProjectTab",
-            ActionKey::PreviousProjectTab => "PreviousProjectTab",
-            ActionKey::CloseProjectTab => "CloseProjectTab",
-        }
+        action.label()
     }
 
     pub fn get_binding(&self, action: &ActionKey) -> Option<String> {
@@ -196,14 +105,17 @@ impl KeybindDialog {
     pub fn start_export(&mut self) {
         let mut items: Vec<String> = Vec::new();
         for (key, action) in &self.bindings {
-            let action_name = Self::action_name(action);
+            let action_name = serde_json::to_string(action).unwrap_or_default();
             items.push(format!(
-                "    {}: {}",
+                "        {}: {}",
                 serde_json::to_string(key).unwrap_or_default(),
-                serde_json::to_string(action_name).unwrap_or_default()
+                action_name
             ));
         }
-        self.export_text = format!("{{\n{}\n}}", items.join(",\n"));
+        self.export_text = format!(
+            "{{\n    \"bindings\": {{\n{}\n    }}\n}}",
+            items.join(",\n")
+        );
         self.mode = KeybindMode::Export;
     }
 
@@ -231,6 +143,43 @@ impl KeybindDialog {
 
     pub fn clear_conflict(&mut self) {
         self.conflict = None;
+    }
+
+    /// Apply the currently selected remap while rejecting collisions instead
+    /// of silently overwriting another action's binding.
+    pub fn bind_waiting_key(&mut self, key_str: String) -> Result<(), String> {
+        let Some(action_idx) = self.waiting_for_key else {
+            return Ok(());
+        };
+        let actions = Self::actions();
+        let Some(action) = actions.get(action_idx).copied() else {
+            return Err("invalid keybinding action selection".to_string());
+        };
+
+        if let Some((_, other_action)) = self
+            .bindings
+            .iter()
+            .find(|(key, value)| *key == &key_str && **value != action)
+        {
+            return Err(format!(
+                "{} is already bound to {}",
+                key_str,
+                Self::action_name(other_action)
+            ));
+        }
+
+        if let Some(existing_key) = self
+            .bindings
+            .iter()
+            .find(|(_, value)| **value == action)
+            .map(|(key, _)| key.clone())
+        {
+            if existing_key != key_str {
+                self.bindings.remove(&existing_key);
+            }
+        }
+        self.bindings.insert(key_str, action);
+        Ok(())
     }
 
     fn format_key_event_for_dialog(&self, key: &crossterm::event::KeyEvent) -> String {
@@ -505,7 +454,7 @@ impl Component for KeybindDialog {
 
                             let current_binding_for_action = self.get_binding(action);
                             if current_binding_for_action.as_ref() != Some(&key_str) {
-                                self.bindings.insert(key_str.clone(), action.clone());
+                                self.bindings.insert(key_str.clone(), *action);
                             }
                             self.clear_conflict();
                             return Some(TuiMsg::KeybindChanged {
@@ -679,5 +628,54 @@ impl Component for KeybindDialog {
 
     fn dialog_type(&self) -> DialogType {
         DialogType::Keybind
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_list_matches_canonical_descriptors() {
+        assert_eq!(KeybindDialog::actions(), ActionKey::all().to_vec());
+        assert!(ActionKey::all()
+            .iter()
+            .all(|action| !KeybindDialog::action_name(action).is_empty()));
+    }
+
+    #[test]
+    fn remap_rejects_collision_without_overwriting() {
+        let mut dialog = KeybindDialog::default();
+        dialog
+            .bindings
+            .insert("ctrl+a".to_string(), ActionKey::Send);
+        dialog
+            .bindings
+            .insert("ctrl+b".to_string(), ActionKey::Cancel);
+        dialog.selected = ActionKey::all()
+            .iter()
+            .position(|action| *action == ActionKey::Cancel)
+            .unwrap();
+        dialog.start_remap();
+
+        let error = dialog.bind_waiting_key("ctrl+a".to_string()).unwrap_err();
+        assert!(error.contains("Send"));
+        assert_eq!(dialog.bindings.get("ctrl+a"), Some(&ActionKey::Send));
+        assert_eq!(dialog.bindings.get("ctrl+b"), Some(&ActionKey::Cancel));
+    }
+
+    #[test]
+    fn export_uses_config_compatible_snake_case_action_names() {
+        let mut dialog = KeybindDialog::default();
+        dialog
+            .bindings
+            .insert("ctrl+e".to_string(), ActionKey::ExternalEditor);
+        dialog.start_export();
+        assert!(dialog.export_text.contains("external_editor"));
+        let parsed: KeybindConfig = serde_json::from_str(&dialog.export_text).unwrap();
+        assert_eq!(
+            parsed.bindings.get("ctrl+e"),
+            Some(&ActionKey::ExternalEditor)
+        );
     }
 }

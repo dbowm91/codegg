@@ -27,56 +27,14 @@ impl HelpOverlay {
     }
 
     fn load_bindings() -> Vec<(String, String)> {
-        use crate::tui::input::InputAction;
-
         let default_bindings = crate::tui::input::default_bindings();
         let mut pairs: Vec<(String, String)> = default_bindings
             .iter()
             .filter_map(|((mods, code), action)| {
-                let action_str = match action {
-                    InputAction::Send => Some("Send prompt"),
-                    InputAction::Newline => Some("New line"),
-                    InputAction::Cancel => Some("Cancel / Close"),
-                    InputAction::NavigateUp => Some("Navigate up"),
-                    InputAction::NavigateDown => Some("Navigate down"),
-                    InputAction::SwitchAgent => Some("Switch agent"),
-                    InputAction::SelectModel => Some("Select model"),
-                    InputAction::ClearSession => Some("Clear session"),
-                    InputAction::NewSession => Some("New session"),
-                    InputAction::ToggleSidebar => Some("Toggle sidebar"),
-                    InputAction::ToggleSection => Some("Toggle section"),
-                    InputAction::CloseSession => Some("Close session"),
-                    InputAction::Help => Some("Show help"),
-                    InputAction::FocusPrompt => Some("Focus prompt"),
-                    InputAction::StashPrompt => Some("Stash prompt"),
-                    InputAction::RestorePrompt => Some("Restore prompt"),
-                    InputAction::CopyMessage => Some("Copy message"),
-                    InputAction::CycleModelForward => Some("Cycle model forward"),
-                    InputAction::CycleModelBackward => Some("Cycle model backward"),
-                    InputAction::ToggleReasoning => Some("Toggle reasoning"),
-                    InputAction::Quit => Some("Quit"),
-                    InputAction::ExternalEditor => Some("External editor"),
-                    InputAction::Backspace => Some("Backspace"),
-                    InputAction::Delete => Some("Delete"),
-                    InputAction::Left => Some("Move left"),
-                    InputAction::Right => Some("Move right"),
-                    InputAction::Home => Some("Home"),
-                    InputAction::End => Some("End"),
-                    InputAction::PageUp => Some("Page up"),
-                    InputAction::PageDown => Some("Page down"),
-                    InputAction::Search => Some("Search"),
-                    InputAction::SearchNext => Some("Search next"),
-                    InputAction::SearchPrev => Some("Search previous"),
-                    InputAction::ClearSearch => Some("Clear search"),
-                    InputAction::Command => Some("Command mode"),
-                    InputAction::ToggleTts => Some("Toggle TTS"),
-                    InputAction::StopTts => Some("Stop TTS"),
-                    InputAction::ToggleFullscreen => Some("Toggle fullscreen"),
-                    InputAction::ToggleSelect => Some("Toggle select"),
-                    InputAction::SelectAll => Some("Select all"),
-                    InputAction::DeselectAll => Some("Deselect all"),
-                    InputAction::Char(_) => None,
-                }?;
+                let action_str = crate::tui::input::ActionKey::all()
+                    .iter()
+                    .find(|key| key.to_input_action() == *action)
+                    .map(|key| key.label())?;
 
                 let key_str = format_key_combo(*mods, *code);
                 Some((key_str, action_str.to_string()))

@@ -325,4 +325,4 @@ The original M001-M004 closure records remain historical evidence and must not b
 | M007 | closed | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | `plans/closure/tui-project-sessions/007-status.md` | — |
 | M008 | closed | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | — |
 | M009 | closed | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | — |
-| M010 | ready | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | soft: M009 |
+| M010 | active | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | — |

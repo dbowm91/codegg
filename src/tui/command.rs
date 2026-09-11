@@ -13,6 +13,84 @@ pub enum CommandCategory {
     System,
 }
 
+/// Stable user-facing task domains used by discovery surfaces.
+///
+/// `CommandCategory` remains available for compatibility with the older
+/// three-way classification.  This taxonomy is presentation metadata only;
+/// it does not decide whether a command may execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
+pub enum CommandDomain {
+    Project,
+    Session,
+    Agent,
+    Execution,
+    GitReview,
+    Research,
+    Provider,
+    Collaboration,
+    Memory,
+    Diagnostics,
+    System,
+}
+
+impl fmt::Display for CommandDomain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Project => "Project",
+            Self::Session => "Session",
+            Self::Agent => "Agent",
+            Self::Execution => "Execution",
+            Self::GitReview => "Git/Review",
+            Self::Research => "Research",
+            Self::Provider => "Provider",
+            Self::Collaboration => "Collaboration",
+            Self::Memory => "Memory",
+            Self::Diagnostics => "Diagnostics",
+            Self::System => "System",
+        };
+        write!(f, "{label}")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandScope {
+    Global,
+    Project,
+}
+
+impl fmt::Display for CommandScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            if matches!(self, Self::Project) {
+                "project"
+            } else {
+                "global"
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandSource {
+    BuiltIn,
+    Config,
+    Project,
+    Plugin { id: String },
+}
+
+impl fmt::Display for CommandSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BuiltIn => write!(f, "built-in"),
+            Self::Config => write!(f, "config"),
+            Self::Project => write!(f, "project"),
+            Self::Plugin { id } => write!(f, "plugin:{id}"),
+        }
+    }
+}
+
 impl fmt::Display for CommandCategory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -29,11 +107,15 @@ pub struct Command {
     pub aliases: Vec<String>,
     pub description: String,
     pub category: CommandCategory,
+    pub domain: CommandDomain,
+    pub scope: CommandScope,
     pub dialog: Option<Dialog>,
     pub template: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
     pub source: Option<String>,
+    pub source_kind: CommandSource,
+    pub keywords: Vec<String>,
     /// Process execution spec for `runtime: process` commands.
     pub process: Option<crate::command::ProcessCommandSpec>,
 }
@@ -45,11 +127,15 @@ impl Command {
             aliases: Vec::new(),
             description: String::new(),
             category,
+            domain: classify_domain(name, category),
+            scope: CommandScope::Global,
             dialog,
             template: None,
             agent: None,
             model: None,
-            source: None,
+            source: Some("built-in".to_string()),
+            source_kind: CommandSource::BuiltIn,
+            keywords: Vec::new(),
             process: None,
         }
     }
@@ -61,6 +147,13 @@ impl Command {
 
     pub fn with_description(mut self, desc: &str) -> Self {
         self.description = desc.to_string();
+        self.keywords = search_terms(&self.name, &self.description);
+        self
+    }
+
+    pub fn with_keywords(mut self, keywords: &[&str]) -> Self {
+        self.keywords
+            .extend(keywords.iter().map(|keyword| keyword.to_string()));
         self
     }
 
@@ -79,6 +172,99 @@ impl Command {
     pub fn is_process(&self) -> bool {
         self.process.is_some()
     }
+
+    pub fn source_label(&self) -> String {
+        self.source_kind.to_string()
+    }
+}
+
+fn classify_domain(name: &str, category: CommandCategory) -> CommandDomain {
+    let name = name.trim_start_matches('/').to_ascii_lowercase();
+    let first = name.split('-').next().unwrap_or(name.as_str());
+    if [
+        "project",
+        "projects",
+        "workspace",
+        "workspaces",
+        "tree",
+        "editor",
+    ]
+    .contains(&first)
+    {
+        return CommandDomain::Project;
+    }
+    if ["agent", "agents"].contains(&first) {
+        return CommandDomain::Agent;
+    }
+    if [
+        "connect",
+        "connections",
+        "connection",
+        "models",
+        "model",
+        "mcps",
+        "mcp",
+        "tool",
+    ]
+    .contains(&first)
+    {
+        return CommandDomain::Provider;
+    }
+    if ["research", "search"].contains(&first) {
+        return CommandDomain::Research;
+    }
+    if ["memory", "habits", "habit", "skill", "skills"].contains(&first) {
+        return CommandDomain::Memory;
+    }
+    if ["git", "diff", "review", "pr", "issue", "revert"].contains(&first) {
+        return CommandDomain::GitReview;
+    }
+    if ["chat", "collaborators", "collaborator", "observe", "stop"].contains(&first) {
+        return CommandDomain::Collaboration;
+    }
+    if [
+        "loop",
+        "task",
+        "tasks",
+        "test",
+        "tests",
+        "shell",
+        "terminal",
+        "checkpoint",
+        "goal",
+        "plan",
+        "state",
+        "run",
+        "runs",
+    ]
+    .contains(&first)
+    {
+        return CommandDomain::Execution;
+    }
+    if name.starts_with("lsp-") || ["doctor", "diagnostics", "status"].contains(&first) {
+        return CommandDomain::Diagnostics;
+    }
+    match category {
+        CommandCategory::Session => CommandDomain::Session,
+        CommandCategory::Agent => CommandDomain::Agent,
+        CommandCategory::System => CommandDomain::System,
+    }
+}
+
+fn search_terms(name: &str, description: &str) -> Vec<String> {
+    let mut terms = Vec::new();
+    for value in [name, description] {
+        for term in value
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|term| term.len() >= 2)
+        {
+            let term = term.to_ascii_lowercase();
+            if !terms.contains(&term) {
+                terms.push(term);
+            }
+        }
+    }
+    terms
 }
 
 #[derive(Debug, Clone)]
@@ -431,23 +617,21 @@ impl CommandRegistry {
         }
 
         let base = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let dynamic_commands = std::thread::scope(|s| {
+        let mut dynamic_commands = std::thread::scope(|s| {
             s.spawn(|| {
                 crate::command::find_command_files_sync(&base)
                     .into_iter()
                     .filter_map(|r| r.ok())
-                    .map(|cmd| {
-                        let normalized = Self::normalize_name(&cmd.name);
-                        (normalized, cmd)
-                    })
-                    .collect::<HashMap<_, _>>()
+                    .collect::<Vec<_>>()
             })
             .join()
             .unwrap_or_default()
         });
-        for (normalized, cmd) in dynamic_commands {
-            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
-                e.insert(cmd.name.clone());
+        dynamic_commands.sort_by_key(|cmd| Self::normalize_name(&cmd.name));
+        for cmd in dynamic_commands {
+            let normalized = Self::normalize_name(&cmd.name);
+            if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(normalized) {
+                entry.insert(cmd.name.clone());
                 new_commands.push(Self::from_dynamic_command(cmd));
             }
         }
@@ -456,11 +640,25 @@ impl CommandRegistry {
     }
 
     fn from_dynamic_command(cmd: crate::command::Command) -> Command {
+        let source_kind = if cmd.source == "config" {
+            CommandSource::Config
+        } else {
+            CommandSource::Project
+        };
+        let scope = if matches!(source_kind, CommandSource::Config) {
+            CommandScope::Global
+        } else {
+            CommandScope::Project
+        };
+        let name = Self::to_slash_name(&cmd.name);
+        let description = cmd.description.unwrap_or_default();
         Command {
-            name: Self::to_slash_name(&cmd.name),
+            name: name.clone(),
             aliases: Vec::new(),
-            description: cmd.description.unwrap_or_default(),
+            description: description.clone(),
             category: CommandCategory::Agent,
+            domain: classify_domain(&name, CommandCategory::Agent),
+            scope,
             dialog: None,
             template: if cmd.process.is_some() {
                 None
@@ -470,6 +668,8 @@ impl CommandRegistry {
             agent: cmd.agent,
             model: cmd.model,
             source: Some(cmd.source),
+            source_kind,
+            keywords: search_terms(&name, &description),
             process: cmd.process,
         }
     }
@@ -504,10 +704,20 @@ impl CommandRegistry {
             }
         }
 
-        for reg in plugin_registry.commands().await {
-            let normalized = Self::normalize_name(&reg.name);
-            if let std::collections::hash_map::Entry::Vacant(e) = seen.entry(normalized) {
-                e.insert(reg.name.clone());
+        let mut registrations = plugin_registry.commands().await;
+        registrations.sort_by_key(|reg| Self::normalize_name(&reg.name));
+        for reg in registrations {
+            let names =
+                std::iter::once(reg.name.as_str()).chain(reg.aliases.iter().map(String::as_str));
+            if names
+                .map(Self::normalize_name)
+                .all(|normalized| !seen.contains_key(&normalized))
+            {
+                for name in
+                    std::iter::once(reg.name.as_str()).chain(reg.aliases.iter().map(String::as_str))
+                {
+                    seen.insert(Self::normalize_name(name), reg.name.clone());
+                }
                 commands.push(Self::from_plugin_command(reg));
             }
         }
@@ -516,22 +726,59 @@ impl CommandRegistry {
     /// Convert a plugin command registration into a TUI `Command`.
     fn from_plugin_command(reg: PluginCommandRegistration) -> Command {
         let name = Self::to_slash_name(&reg.name);
+        let description = reg.description.unwrap_or_default();
+        let source_kind = CommandSource::Plugin {
+            id: reg.plugin_id.clone(),
+        };
         Command {
-            name,
+            name: name.clone(),
             aliases: reg.aliases,
-            description: reg.description.unwrap_or_default(),
+            description: description.clone(),
             category: CommandCategory::Agent,
+            domain: classify_domain(&name, CommandCategory::Agent),
+            scope: CommandScope::Global,
             dialog: None,
             template: None,
             agent: None,
             model: None,
-            source: Some(format!("plugin:{}", reg.plugin_id)),
+            source: Some(source_kind.to_string()),
+            source_kind,
+            keywords: search_terms(&name, &description),
             process: None,
         }
     }
 
     pub fn commands(&self) -> &[Command] {
         &self.commands
+    }
+
+    /// Validate the declarative catalog before a discovery surface consumes
+    /// it.  A repeated alias belonging to the same command is harmless, but
+    /// a name/alias collision across commands is rejected deterministically.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut names: HashMap<String, String> = HashMap::new();
+        for command in &self.commands {
+            if command.name.trim().is_empty() || command.description.trim().is_empty() {
+                return Err(format!(
+                    "command {:?} has incomplete metadata",
+                    command.name
+                ));
+            }
+            for name in command.all_names() {
+                let normalized = Self::normalize_name(name);
+                if let Some(owner) = names.get(&normalized) {
+                    if owner != &command.name {
+                        return Err(format!(
+                            "command name/alias collision: {name:?} belongs to {owner} and {}",
+                            command.name
+                        ));
+                    }
+                } else {
+                    names.insert(normalized, command.name.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn find_by_name_or_alias(&self, name: &str) -> Option<&Command> {
@@ -558,7 +805,16 @@ impl CommandRegistry {
                 let mut best_score = 0usize;
                 for name in cmd.all_names() {
                     let name_without_slash = name.trim_start_matches('/');
-                    let score = fuzzy_score(query, name_without_slash);
+                    let mut score = fuzzy_score(query, name_without_slash);
+                    score = score.max(fuzzy_score(query, &cmd.description));
+                    score = score.max(fuzzy_score(query, &cmd.domain.to_string()));
+                    score = score.max(
+                        cmd.keywords
+                            .iter()
+                            .map(|keyword| fuzzy_score(query, keyword))
+                            .max()
+                            .unwrap_or(0),
+                    );
                     if score > best_score {
                         best_score = score;
                     }
@@ -595,6 +851,20 @@ mod tests {
     }
 
     #[test]
+    fn builtins_have_discovery_metadata() {
+        let registry = CommandRegistry::new();
+        registry.validate().expect("built-in catalog is valid");
+        assert!(registry
+            .commands()
+            .iter()
+            .all(|command| command.source_kind == CommandSource::BuiltIn));
+        assert!(registry
+            .commands()
+            .iter()
+            .all(|command| !command.keywords.is_empty()));
+    }
+
+    #[test]
     fn filter_matches_aliases_once_through_all_names() {
         let registry = CommandRegistry {
             commands: CommandRegistry::built_in_commands(),
@@ -605,6 +875,22 @@ mod tests {
             results.first().map(|(cmd, _)| cmd.name.as_str()),
             Some("/lsp-preview")
         );
+    }
+
+    #[test]
+    fn filter_matches_domain_and_description_terms() {
+        let registry = CommandRegistry::new();
+        assert_eq!(
+            registry
+                .filter("provider")
+                .first()
+                .map(|(command, _)| command.name.as_str()),
+            Some("/connect")
+        );
+        assert!(registry
+            .filter("collaboration")
+            .iter()
+            .any(|(command, _)| command.name == "/chat"));
     }
 
     #[test]
@@ -627,6 +913,8 @@ mod tests {
         assert_eq!(converted.agent.as_deref(), Some("build"));
         assert_eq!(converted.model.as_deref(), Some("model-a"));
         assert_eq!(converted.source.as_deref(), Some("test"));
+        assert_eq!(converted.source_kind, CommandSource::Project);
+        assert_eq!(converted.scope, CommandScope::Project);
         assert!(converted.process.is_none());
     }
 
@@ -712,5 +1000,40 @@ mod tests {
         assert!(a.find_by_name_or_alias("/b-only").is_none());
         assert!(b.find_by_name_or_alias("/b-only").is_some());
         assert!(b.find_by_name_or_alias("/a-only").is_none());
+    }
+
+    #[test]
+    fn project_catalog_order_is_stable_and_builtin_wins_collisions() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("commands")).unwrap();
+        std::fs::write(
+            root.path().join("commands/zeta.md"),
+            "---\ndescription: Zeta command\n---\nZeta\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("commands/alpha.md"),
+            "---\ndescription: Alpha command\n---\nAlpha\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("commands/help.md"),
+            "---\ndescription: Must lose to builtin\n---\nNope\n",
+        )
+        .unwrap();
+
+        let registry = CommandRegistry::new_for_workspace_root(root.path());
+        let dynamic: Vec<&str> = registry
+            .commands()
+            .iter()
+            .filter(|command| command.source_kind == CommandSource::Project)
+            .map(|command| command.name.as_str())
+            .collect();
+        assert_eq!(dynamic, vec!["/alpha", "/zeta"]);
+        assert_eq!(
+            registry.find_by_name_or_alias("/help").unwrap().source_kind,
+            CommandSource::BuiltIn
+        );
+        registry.validate().expect("scoped catalog is valid");
     }
 }

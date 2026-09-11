@@ -2898,28 +2898,18 @@ impl App {
                     let actions =
                         crate::tui::components::dialogs::keybind::KeybindDialog::actions();
                     if action_idx < actions.len() {
-                        let action = &actions[action_idx];
-                        let existing_key_for_action = kd
-                            .bindings
-                            .iter()
-                            .find(|(_, val)| *val == action)
-                            .map(|(k, _)| k.clone());
-
-                        if let Some(ref existing_key) = existing_key_for_action {
-                            if existing_key != &key_str {
-                                kd.bindings.remove(existing_key);
+                        match kd.bind_waiting_key(key_str) {
+                            Ok(()) => {
+                                kd.clear_conflict();
+                                kd.waiting_for_key = None;
+                                kd.mode = KeybindMode::Normal;
+                                self.save_keybinds();
+                            }
+                            Err(error) => {
+                                kd.conflict = Some(error);
                             }
                         }
-
-                        let current_binding_for_action = kd.get_binding(action);
-                        if current_binding_for_action.as_ref() != Some(&key_str) {
-                            kd.bindings.insert(key_str, action.clone());
-                        }
-                        kd.clear_conflict();
                     }
-                    kd.waiting_for_key = None;
-                    kd.mode = KeybindMode::Normal;
-                    self.save_keybinds();
                 }
             }
             KeybindMode::Export => {

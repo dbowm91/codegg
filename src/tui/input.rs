@@ -49,7 +49,7 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use once_cell::sync::Lazy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[cfg(feature = "debug-logging")]
@@ -97,7 +97,7 @@ pub struct HelpEntry {
     pub condition: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputAction {
     Send,
     Newline,
@@ -149,7 +149,7 @@ pub enum InputAction {
     CloseProjectTab,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKey {
     Send,
@@ -174,6 +174,7 @@ pub enum ActionKey {
     CycleModelBackward,
     ToggleReasoning,
     Quit,
+    ExternalEditor,
     Backspace,
     Delete,
     Left,
@@ -191,6 +192,7 @@ pub enum ActionKey {
     StopTts,
     ToggleFullscreen,
     TogglePermissionMode,
+    OpenDiff,
     GoToTop,
     GoToBottom,
     OpenProjectPicker,
@@ -199,21 +201,191 @@ pub enum ActionKey {
     CloseProjectTab,
 }
 
-macro_rules! map_action {
-    ($key:expr, $($variant:ident),+) => {
-        match $key {
-            $(ActionKey::$variant => InputAction::$variant),+
-        }
-    };
+/// Declarative metadata shared by the keybinding editor and discovery/help
+/// surfaces.  `ActionKey::all()` is the exhaustive configurable-action list;
+/// `InputAction::Char` remains intentionally non-configurable because it is
+/// ordinary prompt text rather than an application action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActionDescriptor {
+    pub key: ActionKey,
+    pub label: &'static str,
+    pub description: &'static str,
 }
 
-#[allow(unused_macros)]
-macro_rules! map_action_extended {
-    ($key:expr, $($variant:ident),+) => {
-        match $key {
-            $(ActionKey::$variant => InputAction::$variant),+
+impl ActionKey {
+    pub const fn all() -> &'static [Self] {
+        &[
+            Self::Send,
+            Self::Newline,
+            Self::Cancel,
+            Self::NavigateUp,
+            Self::NavigateDown,
+            Self::SwitchAgent,
+            Self::SelectModel,
+            Self::ClearSession,
+            Self::NewSession,
+            Self::ToggleSidebar,
+            Self::FocusSidebar,
+            Self::ToggleSection,
+            Self::CloseSession,
+            Self::Help,
+            Self::FocusPrompt,
+            Self::StashPrompt,
+            Self::RestorePrompt,
+            Self::CopyMessage,
+            Self::CycleModelForward,
+            Self::CycleModelBackward,
+            Self::ToggleReasoning,
+            Self::Quit,
+            Self::ExternalEditor,
+            Self::Backspace,
+            Self::Delete,
+            Self::Left,
+            Self::Right,
+            Self::Home,
+            Self::End,
+            Self::PageUp,
+            Self::PageDown,
+            Self::Search,
+            Self::SearchNext,
+            Self::SearchPrev,
+            Self::ClearSearch,
+            Self::Command,
+            Self::ToggleTts,
+            Self::StopTts,
+            Self::ToggleFullscreen,
+            Self::TogglePermissionMode,
+            Self::OpenDiff,
+            Self::GoToTop,
+            Self::GoToBottom,
+            Self::OpenProjectPicker,
+            Self::NextProjectTab,
+            Self::PreviousProjectTab,
+            Self::CloseProjectTab,
+        ]
+    }
+
+    pub const fn to_input_action(self) -> InputAction {
+        match self {
+            Self::Send => InputAction::Send,
+            Self::Newline => InputAction::Newline,
+            Self::Cancel => InputAction::Cancel,
+            Self::NavigateUp => InputAction::NavigateUp,
+            Self::NavigateDown => InputAction::NavigateDown,
+            Self::SwitchAgent => InputAction::SwitchAgent,
+            Self::SelectModel => InputAction::SelectModel,
+            Self::ClearSession => InputAction::ClearSession,
+            Self::NewSession => InputAction::NewSession,
+            Self::ToggleSidebar => InputAction::ToggleSidebar,
+            Self::FocusSidebar => InputAction::FocusSidebar,
+            Self::ToggleSection => InputAction::ToggleSection,
+            Self::CloseSession => InputAction::CloseSession,
+            Self::Help => InputAction::Help,
+            Self::FocusPrompt => InputAction::FocusPrompt,
+            Self::StashPrompt => InputAction::StashPrompt,
+            Self::RestorePrompt => InputAction::RestorePrompt,
+            Self::CopyMessage => InputAction::CopyMessage,
+            Self::CycleModelForward => InputAction::CycleModelForward,
+            Self::CycleModelBackward => InputAction::CycleModelBackward,
+            Self::ToggleReasoning => InputAction::ToggleReasoning,
+            Self::Quit => InputAction::Quit,
+            Self::ExternalEditor => InputAction::ExternalEditor,
+            Self::Backspace => InputAction::Backspace,
+            Self::Delete => InputAction::Delete,
+            Self::Left => InputAction::Left,
+            Self::Right => InputAction::Right,
+            Self::Home => InputAction::Home,
+            Self::End => InputAction::End,
+            Self::PageUp => InputAction::PageUp,
+            Self::PageDown => InputAction::PageDown,
+            Self::Search => InputAction::Search,
+            Self::SearchNext => InputAction::SearchNext,
+            Self::SearchPrev => InputAction::SearchPrev,
+            Self::ClearSearch => InputAction::ClearSearch,
+            Self::Command => InputAction::Command,
+            Self::ToggleTts => InputAction::ToggleTts,
+            Self::StopTts => InputAction::StopTts,
+            Self::ToggleFullscreen => InputAction::ToggleFullscreen,
+            Self::TogglePermissionMode => InputAction::TogglePermissionMode,
+            Self::OpenDiff => InputAction::OpenDiff,
+            Self::GoToTop => InputAction::GoToTop,
+            Self::GoToBottom => InputAction::GoToBottom,
+            Self::OpenProjectPicker => InputAction::OpenProjectPicker,
+            Self::NextProjectTab => InputAction::NextProjectTab,
+            Self::PreviousProjectTab => InputAction::PreviousProjectTab,
+            Self::CloseProjectTab => InputAction::CloseProjectTab,
         }
-    };
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Send => "Send",
+            Self::Newline => "Newline",
+            Self::Cancel => "Cancel",
+            Self::NavigateUp => "Navigate up",
+            Self::NavigateDown => "Navigate down",
+            Self::SwitchAgent => "Switch agent",
+            Self::SelectModel => "Select model",
+            Self::ClearSession => "Clear session",
+            Self::NewSession => "New session",
+            Self::ToggleSidebar => "Toggle sidebar",
+            Self::FocusSidebar => "Focus sidebar",
+            Self::ToggleSection => "Toggle section",
+            Self::CloseSession => "Close session",
+            Self::Help => "Show help",
+            Self::FocusPrompt => "Focus prompt",
+            Self::StashPrompt => "Stash prompt",
+            Self::RestorePrompt => "Restore prompt",
+            Self::CopyMessage => "Copy message",
+            Self::CycleModelForward => "Cycle model forward",
+            Self::CycleModelBackward => "Cycle model backward",
+            Self::ToggleReasoning => "Toggle reasoning",
+            Self::Quit => "Quit",
+            Self::ExternalEditor => "External editor",
+            Self::Backspace => "Backspace",
+            Self::Delete => "Delete",
+            Self::Left => "Move left",
+            Self::Right => "Move right",
+            Self::Home => "Home",
+            Self::End => "End",
+            Self::PageUp => "Page up",
+            Self::PageDown => "Page down",
+            Self::Search => "Search",
+            Self::SearchNext => "Search next",
+            Self::SearchPrev => "Search previous",
+            Self::ClearSearch => "Clear search",
+            Self::Command => "Command mode",
+            Self::ToggleTts => "Toggle TTS",
+            Self::StopTts => "Stop TTS",
+            Self::ToggleFullscreen => "Toggle fullscreen",
+            Self::TogglePermissionMode => "Toggle permission mode",
+            Self::OpenDiff => "Open diff",
+            Self::GoToTop => "Go to top",
+            Self::GoToBottom => "Go to bottom",
+            Self::OpenProjectPicker => "Open project picker",
+            Self::NextProjectTab => "Next project tab",
+            Self::PreviousProjectTab => "Previous project tab",
+            Self::CloseProjectTab => "Close project tab",
+        }
+    }
+
+    pub const fn descriptor(self) -> ActionDescriptor {
+        ActionDescriptor {
+            key: self,
+            label: self.label(),
+            description: self.label(),
+        }
+    }
+
+    pub fn descriptors() -> Vec<ActionDescriptor> {
+        Self::all().iter().copied().map(Self::descriptor).collect()
+    }
+}
+
+impl InputAction {
+    pub fn is_configurable(&self) -> bool {
+        !matches!(self, Self::Char(_))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -1203,54 +1375,7 @@ pub fn build_bindings(
     if let Some(cfg) = overrides {
         for (key_str, action) in &cfg.bindings {
             if let Some((mods, code)) = parse_key(key_str) {
-                let action = map_action!(
-                    action,
-                    Send,
-                    Newline,
-                    Cancel,
-                    NavigateUp,
-                    NavigateDown,
-                    SwitchAgent,
-                    SelectModel,
-                    ClearSession,
-                    NewSession,
-                    ToggleSidebar,
-                    FocusSidebar,
-                    ToggleSection,
-                    CloseSession,
-                    Help,
-                    FocusPrompt,
-                    StashPrompt,
-                    RestorePrompt,
-                    CopyMessage,
-                    CycleModelForward,
-                    CycleModelBackward,
-                    ToggleReasoning,
-                    Quit,
-                    Backspace,
-                    Delete,
-                    Left,
-                    Right,
-                    Home,
-                    End,
-                    PageUp,
-                    PageDown,
-                    Search,
-                    SearchNext,
-                    SearchPrev,
-                    ClearSearch,
-                    Command,
-                    ToggleTts,
-                    StopTts,
-                    ToggleFullscreen,
-                    TogglePermissionMode,
-                    GoToTop,
-                    GoToBottom,
-                    OpenProjectPicker,
-                    NextProjectTab,
-                    PreviousProjectTab,
-                    CloseProjectTab
-                );
+                let action = action.to_input_action();
                 bindings.insert((mods, code), action);
             }
         }
@@ -1589,6 +1714,35 @@ mod tests {
         let key = make_key(KeyCode::Esc, KeyModifiers::NONE);
         let result = handle_key_with_bindings(key, None, InputMode::Insert);
         assert_eq!(result, Some(InputAction::Cancel));
+    }
+
+    #[test]
+    fn configurable_action_catalog_is_exhaustive() {
+        let descriptors = ActionKey::descriptors();
+        assert_eq!(descriptors.len(), ActionKey::all().len());
+        assert!(descriptors.iter().all(|descriptor| {
+            descriptor.key.to_input_action().is_configurable()
+                && !descriptor.label.is_empty()
+                && !descriptor.description.is_empty()
+        }));
+        assert!(!InputAction::Char('x').is_configurable());
+    }
+
+    #[test]
+    fn custom_bindings_round_trip_new_editor_actions() {
+        let config: KeybindConfig = serde_json::from_str(
+            r#"{"bindings":{"ctrl+e":"external_editor","ctrl+o":"open_diff"}}"#,
+        )
+        .expect("action keys deserialize");
+        let bindings = build_bindings(Some(&config), false);
+        assert_eq!(
+            bindings.get(&(KeyModifiers::CONTROL, KeyCode::Char('e'))),
+            Some(&InputAction::ExternalEditor)
+        );
+        assert_eq!(
+            bindings.get(&(KeyModifiers::CONTROL, KeyCode::Char('o'))),
+            Some(&InputAction::OpenDiff)
+        );
     }
 
     // --- Help builder tests (Phase 5) ---

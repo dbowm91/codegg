@@ -36,6 +36,14 @@ The command catalog follows the same boundary: built-ins/global definitions
 remain shared, while project-local command files are loaded by the active
 workspace root and refreshed on tab activation or explicit asset reload.
 
+Command discovery is presentation-only. `CommandRegistry` retains the legacy
+`CommandCategory` for compatibility, and adds canonical domain, scope, source,
+and keyword metadata for the palette and help surfaces. The palette searches
+names, aliases, descriptions, domains, and keywords with a bounded result
+window; dynamic project/plugin entries include bounded source labels so
+same-named commands are understandable. Metadata does not bypass command
+dispatch, observer mode, daemon authorization, or permission gates.
+
 Local transport selection is handled by `CoreRuntimeMode` (default
 `DaemonClient`):
 
@@ -878,6 +886,13 @@ No direct TUI config keys in `opencode.jsonc`. TUI state is driven by:
 - Keybindings via `[keybindings]` config
 - Vim mode via config
 - Agent/model selection stored in session
+
+`ActionKey::all()` and `ActionDescriptor` in `src/tui/input.rs` are the single
+exhaustive catalog for configurable actions. The keybinding dialog and
+keyboard help consume that catalog; prompt characters remain an explicit
+non-configurable exception. Exported bindings use the same snake_case names
+accepted by config import, and collision checks reject overwriting another
+action.
 
 ## Invariants & Gotchas
 

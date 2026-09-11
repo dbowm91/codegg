@@ -12,7 +12,7 @@ template substitution or process-backed execution.
 ## Where It Lives
 
 - `src/command/` — Core `Command` struct, file loading, template processing
-- `src/tui/command.rs` — TUI `CommandRegistry` with 108 built-in commands
+- `src/tui/command.rs` — TUI `CommandRegistry` with 139 built-in commands
 - `src/config/schema.rs` — `CommandConfig` for config-file commands
 
 ## How It Works
@@ -21,7 +21,8 @@ template substitution or process-backed execution.
 
 1. **Built-in commands**: 108 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
-3. **File commands**: From `command/` or `commands/` directories in CWD
+3. **Project commands**: From `command/` or `commands/` directories under the
+   active project's explicit workspace root
 
 Built-in commands take precedence — duplicates from config/files are
 skipped.
@@ -124,14 +125,31 @@ pub struct Command {
     pub aliases: Vec<String>,
     pub description: String,
     pub category: CommandCategory,
+    pub domain: CommandDomain,
+    pub scope: CommandScope,
     pub dialog: Option<Dialog>,
     pub template: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
     pub source: Option<String>,
+    pub source_kind: CommandSource,
+    pub keywords: Vec<String>,
     pub process: Option<ProcessCommandSpec>,
 }
 ```
+
+`CommandCategory` is retained as a compatibility classification. Discovery
+surfaces use the stable `CommandDomain` taxonomy (Project, Session, Agent,
+Execution, Git/Review, Research, Provider, Collaboration, Memory,
+Diagnostics, System). `scope` and `source_kind` are presentation metadata;
+they never grant execution or authorization. Built-ins win deterministic
+name/alias collisions, config commands are global, and project-file commands
+are scoped to the active workspace. Plugin registrations are shown with their
+plugin id and lose collisions to existing entries.
+
+The palette searches the canonical name, aliases, description, domain, and
+keywords, and caps visible fuzzy results. Switching project tabs replaces the
+project catalog without rediscovering files during palette input.
 
 ### CommandCategory (`src/tui/command.rs:9`)
 
@@ -190,7 +208,7 @@ tab's explicit workspace root. Switching tabs replaces the project-local
 catalog and re-filters the command palette; discovery never reads process
 cwd. Dynamic commands cannot change daemon authorization or execution scope.
 
-### Built-in Commands (108 total)
+### Built-in Commands (139 total)
 
 Representative built-ins:
 

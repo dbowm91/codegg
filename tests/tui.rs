@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use codegg::session::message::ToolStatus;
+use codegg::tui::command::CommandRegistry;
 use codegg::tui::components::completion_overlay::{
     CompletionItem, CompletionItemKind, CompletionOverlay, CompletionType,
 };
@@ -1307,6 +1308,45 @@ fn test_command_palette_visible_count() {
     let mut palette = CommandPalette::new();
     palette.set_query("/");
     assert!(palette.visible_count() > 0);
+}
+
+#[test]
+fn test_command_palette_switches_active_project_catalog() {
+    let root = tempfile::tempdir().unwrap();
+    let project_a = root.path().join("a");
+    let project_b = root.path().join("b");
+    std::fs::create_dir_all(project_a.join("commands")).unwrap();
+    std::fs::create_dir_all(project_b.join("commands")).unwrap();
+    std::fs::write(
+        project_a.join("commands/a-only.md"),
+        "---\ndescription: A project action\n---\nA\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project_b.join("commands/b-only.md"),
+        "---\ndescription: B project action\n---\nB\n",
+    )
+    .unwrap();
+
+    let mut palette =
+        CommandPalette::new_with_registry(&CommandRegistry::new_for_workspace_root(&project_a));
+    palette.set_query("a-only");
+    assert!(palette
+        .filtered
+        .iter()
+        .any(|command| command.name == "/a-only"));
+
+    palette.set_registry(&CommandRegistry::new_for_workspace_root(&project_b));
+    palette.set_query("a-only");
+    assert!(!palette
+        .filtered
+        .iter()
+        .any(|command| command.name == "/a-only"));
+    palette.set_query("b-only");
+    assert!(palette
+        .filtered
+        .iter()
+        .any(|command| command.name == "/b-only"));
 }
 
 #[test]
