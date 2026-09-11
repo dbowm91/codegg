@@ -1,4 +1,4 @@
-use codegg::upgrade::{current_version, VersionInfo};
+use codegg::upgrade::{current_version, installer_invocation, VersionInfo};
 
 #[test]
 fn test_current_version() {
@@ -41,4 +41,17 @@ fn test_version_info_up_to_date() {
     };
 
     assert!(!info.needs_update);
+}
+
+#[test]
+fn test_installer_invocation_pins_supported_env() {
+    // Regression: the installer honors CODEGG_VERSION. Exporting any other
+    // name (e.g. INSTALL_VERSION) silently installs latest instead.
+    let (script_url, env) = installer_invocation("v2.0.0");
+
+    assert_eq!(
+        script_url,
+        "https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh"
+    );
+    assert_eq!(env, vec![("CODEGG_VERSION", "v2.0.0".to_string())]);
 }

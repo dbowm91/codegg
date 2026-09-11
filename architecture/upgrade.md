@@ -21,7 +21,7 @@ but is not wired to the CLI.
 compares with `CARGO_PKG_VERSION`, and prints manual install instructions:
 
 ```
-curl -fsSL https://codegg.ai/install.sh
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
 ```
 
 It does **not** call `upgrade()`.
@@ -38,12 +38,13 @@ and compares with the compiled `VERSION`.
 `upgrade()` validates semver, then runs:
 
 ```
-curl -fsSL https://codegg.ai/install.sh
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh
 ```
 
-with `INSTALL_VERSION=v{latest}` in a sanitized environment
+with `CODEGG_VERSION=v{latest}` in a sanitized environment
 (`env_clear()` + only `PATH`). Uses `std::process::Command`
-(blocking, not async).
+(blocking, not async). The script URL and pin env are built by the pure
+`installer_invocation()` constructor so the contract is unit-tested.
 
 ## Key Types & APIs
 
@@ -96,13 +97,11 @@ read by `check_for_updates()` or `upgrade()`.
 - **Version comparison is exact string match**: `l != VERSION` — does
   not use semver ordering. Two different strings always trigger
   `needs_update: true`.
-- **Version-pin env mismatch**: `upgrade()` exports the target as
-  `INSTALL_VERSION`, but the repository `install.sh` honors
-  `CODEGG_VERSION`. Pinning depends on the hosted
-  `https://codegg.ai/install.sh` honoring `INSTALL_VERSION`; against the
-  repo installer the pin is ignored and latest is installed. Re-run
-  `check_for_updates()` after any `upgrade()` call to confirm the
-  installed version.
+- **Version-pin env mismatch (fixed)**: `upgrade()` once exported the
+  target as `INSTALL_VERSION`, which `install.sh` ignores. It now exports
+  `CODEGG_VERSION` via the `installer_invocation()` constructor, matching
+  the installer's supported surface. `tests/upgrade.rs` pins the env name;
+  renaming it requires updating `install.sh` first.
 
 ## Related Docs
 

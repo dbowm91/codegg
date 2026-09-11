@@ -123,7 +123,7 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
 | `skills` | Skill discovery/precedence, portable schema, proposal/publication boundary | `architecture/skills.md` |
 | `tool-program-harness` | Tool Program scenario/chaos/resource evaluation across harness modes | `architecture/tool_programs.md` |
 | `tui` | TUI commands, sync dispatch, async spawn-and-complete, dialogs, project scope | `architecture/tui.md` |
-| `upgrade` | Self-upgrade check (`codegg upgrade` is check-only; `INSTALL_VERSION` pin caveat) | `architecture/upgrade.md` |
+| `upgrade` | Self-upgrade check (`codegg upgrade` is check-only; pin via `CODEGG_VERSION`) | `architecture/upgrade.md` |
 | `util` | Clipboard, fuzzy, truncate, metrics, interner, pricing | `architecture/util.md` |
 
 No skill exists yet for agent-loop, provider/auth, MCP/plugin, session/storage,

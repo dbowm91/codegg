@@ -68,18 +68,28 @@ The function:
 1. Checks for updates via `check_for_updates()`
 2. Returns "Already on latest version" if `needs_update` is false
 3. Validates the latest version is valid semver
-4. Runs `curl -fsSL https://codegg.ai/install.sh` with `INSTALL_VERSION` env var set to `v{version}`
+4. Runs `curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh` with `CODEGG_VERSION` env var set to `v{version}` (the only pin name `install.sh` honors; see `installer_invocation()`)
 5. Returns error if installer fails
 
 **Note**: This function is currently **not called** by `cmd_upgrade()` in `main.rs`. The CLI command only checks and reports, but does not actually perform the upgrade.
 
-**Version-pin caveat**: `upgrade()` exports the target as `INSTALL_VERSION`,
-but the repository `install.sh` honors `CODEGG_VERSION` (not
-`INSTALL_VERSION`). Version pinning therefore depends on the hosted
-`https://codegg.ai/install.sh` honoring `INSTALL_VERSION`; against the repo
-installer the pin is ignored and latest is installed. Do not assume a
-successful `upgrade()` call installed the checked version — re-run
-`check_for_updates()` afterwards to confirm.
+### installer_invocation()
+
+Pure constructor for the installer script URL plus the version-pin env
+entries, so the pin contract is unit-testable without spawning `curl`:
+
+```rust
+pub const INSTALLER_SCRIPT_URL: &str = "https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh";
+pub const INSTALLER_VERSION_ENV: &str = "CODEGG_VERSION";
+
+pub fn installer_invocation(target: &str) -> (&'static str, Vec<(&'static str, String)>)
+```
+
+Regression history: an earlier revision exported `INSTALL_VERSION`,
+which `install.sh` ignores — the pin was silently dropped and latest was
+installed instead. `tests/upgrade.rs::test_installer_invocation_pins_supported_env`
+pins the supported name; do not rename the env var without updating
+`install.sh` first.
 
 ## Module Implementation
 

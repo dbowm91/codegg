@@ -1028,7 +1028,7 @@ async fn cmd_upgrade() -> Result<(), AppError> {
         info.current
     );
     println!("Run the following to upgrade:");
-    println!("  curl -fsSL https://codegg.ai/install.sh");
+    println!("  curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh");
 
     Ok(())
 }
