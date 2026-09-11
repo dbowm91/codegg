@@ -15,7 +15,7 @@ All source is in `crates/codegg-core/src/session/`:
 ```
 session/
 ├── mod.rs               # Public re-exports, constants, JSON helpers
-├── schema.rs            # Database migrations (v1–v36), all in sqlx
+├── schema.rs            # Database migrations (see migrate() chain), all in sqlx
 ├── store.rs             # SessionStore, TodoStore, MessageStore,
 │                        # PartStore, PermissionStore, UsageStore,
 │                        # EventStore
@@ -42,8 +42,10 @@ session/
 
 ### Database Schema
 
-The schema is managed by `schema.rs` which contains **36 sequential
-migrations** (v1–v36), each wrapped in an explicit `BEGIN IMMEDIATE`
+The schema is managed by `schema.rs`, whose sequential `migrate()` chain
+applies every wired `migrate_vN` migration in order (current highest wiring
+is checked against `storage::STORAGE_LAYOUT_VERSION` by
+`scripts/check_project_catalog_invariants.py`), each wrapped in an explicit `BEGIN IMMEDIATE`
 transaction. The `migration_version` table tracks the current version.
 On startup, `migrate()` checks the version and runs all unapplied
 migrations in order.

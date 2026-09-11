@@ -84,8 +84,9 @@ A single user prompt flows through the system along this path:
    events into a frontend-neutral session projection; clients subscribe to
    scoped views and replay durable history ([projection.md](projection.md)).
 8. **Persistence** — Sessions, messages, todos, checkpoints, usage, goals,
-   research runs, jobs, and schedules persist in SQLite (63 tables across 48
-   migrations) ([session.md](session.md), [storage.md](storage.md)). Command,
+   research runs, jobs, and schedules persist in SQLite (migration chain in
+   `session/schema.rs`, current layout in `storage::STORAGE_LAYOUT_VERSION`)
+   ([session.md](session.md), [storage.md](storage.md)). Command,
    script, and test outputs land in the RunStore artifact store
    ([run_store.md](run_store.md)).
 9. **Render** — The TUI applies projected state and renders
@@ -163,7 +164,7 @@ The tool layer defines the built-in tools the agent can invoke, the backend abst
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
 | TUI | Ratatui terminal UI, async command pattern (spawn-and-complete), state management across 6 domains | `app/mod.rs`, `components/`, `commands/`, `runtime/` | [tui.md](tui.md) |
-| Command | Slash command registry (108 built-in commands) from markdown files | `tui/command.rs` | [command.md](command.md) |
+| Command | Slash command registry from markdown files (count asserted by registry tests) | `tui/command.rs` | [command.md](command.md) |
 | Theme | Frontend-neutral theme system (SemanticTheme → ratatui, Halloy) | `theme/` | [theme.md](theme.md) |
 | Shell | Human shell `!`/`!!` commands, projection pipeline (10 phases), safety policy, RTK integration, redaction | `shell/` | [human_shell.md](human_shell.md) |
 
@@ -204,7 +205,7 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 
 | Module | Purpose | Key Files | Docs |
 |--------|---------|-----------|------|
-| LSP | Language Server Protocol client — 39 servers, diagnostics, code navigation, preview-only edits, semantic tokens | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
+| LSP | Language Server Protocol client — diagnostics, code navigation, preview-only edits, semantic tokens (servers in `server_definitions()`) | `lsp/` (thin shim), `egglsp/` (authoritative) | [lsp.md](lsp.md) |
 | MCP | Model Context Protocol client — local/remote server connections, OAuth auth, auto-reconnection | `mcp/` | [mcp.md](mcp.md) |
 | Search Backend | Wrapper between `websearch`/`webfetch` tools and eggsearch MCP server, with legacy in-tree fallback | `search_backend/` | [search_backend.md](search_backend.md) |
 | Plugin | WASM plugin system (Wasmtime), manifest parsing, hook system, built-in plugins, install/registry, lifecycle/policy | `plugin/` | [plugin.md](plugin.md) |
@@ -265,14 +266,14 @@ Counts below were re-verified against the current tree (see source column).
 | Tools (registration sites) | 50 | `src/tool/mod.rs::with_options()` |
 | Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / eggsact / context-read config |
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
-| LSP servers | 39 | `crates/egglsp/src/server.rs` |
+| LSP servers | see `server_definitions()` | `crates/egglsp/src/server.rs` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
-| AppEvent variants | 52 | `crates/codegg-core/src/bus/events.rs` |
-| Built-in slash commands | 108 | `src/tui/command.rs` |
+| AppEvent variants | 53 | `crates/codegg-core/src/bus/events.rs` |
+| Built-in slash commands | 139 (asserted by `built_in_command_count_matches_release_docs`) | `src/tui/command.rs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
-| Database tables | 63 | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | 49 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
-| Integration test files | 168 | `tests/*.rs` |
+| Database tables | see `session/schema.rs` | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | current (see `storage::STORAGE_LAYOUT_VERSION`) | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Integration test files | see `tests/` | `tests/*.rs` |
 | Architecture docs | 72 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
@@ -297,7 +298,7 @@ Counts below were re-verified against the current tree (see source column).
 
 ```
 ┌───────────────────────────────────────────────────────────────────┐
-│ Tables (63, STORAGE_LAYOUT_VERSION = 49)                          │
+│ Tables (see session/schema.rs; version in storage/mod.rs)               │
 ├───────────────────────────────────────────────────────────────────┤
 │ migration_version  │ project        │ session        │ message    │
 │ part               │ todo           │ permission     │ session_share │
@@ -382,7 +383,7 @@ Deep-dive index. Every architecture document in this directory is listed here.
 - [Deterministic Tools](deterministic_tools.md) — Eggsact in-process validators
 - [Preflight](preflight.md) — Harness-side validation before mutations
 - [Git](git.md) — Git service, mutations, network, recovery, credential lifecycle
-- [LSP](lsp.md) — Language Server Protocol (39 servers, egglsp authoritative)
+- [LSP](lsp.md) — Language Server Protocol (egglsp authoritative)
 - [MCP](mcp.md) — Model Context Protocol client
 - [Search Backend](search_backend.md) — Web search/fetch with eggsearch backend
 - [Plugin](plugin.md) — WASM plugin system (Wasmtime)
@@ -392,7 +393,7 @@ Deep-dive index. Every architecture document in this directory is listed here.
 
 ### User Interface
 - [TUI](tui.md) — Ratatui terminal UI, async commands, state management
-- [Command](command.md) — 108 built-in slash commands
+- [Command](command.md) — 139 built-in slash commands (count asserted by `built_in_command_count_matches_release_docs`)
 - [Theme](theme.md) — Frontend-neutral theme system
 - [Human Shell](human_shell.md) — `!`/`!!` commands, 10-phase projection pipeline
 
@@ -510,7 +511,7 @@ codegg/
 │   ├── agents/                 # 9 built-in agent TOML definitions
 │   └── prompts/                # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
-├── architecture/               # Architecture documentation (72 docs)
+├── architecture/               # Architecture documentation (see index below)
 ├── plans/                      # Design proposals and phase plans
 ├── docs/                       # Validation docs, manifests
 └── examples/plugins/           # Plugin SDKs and reference plugins
@@ -521,7 +522,7 @@ codegg/
 Run these after changing execution surfaces or adding workspace crate dependencies:
 
 ```bash
-python3 scripts/check-core-boundary.sh           # codegg-core boundary enforcement
+bash scripts/check-core-boundary.sh           # codegg-core boundary enforcement
 python3 scripts/check_daemon_cwd_usage.py        # workspace-bound daemon path guard
 python3 scripts/check_scheduler_bypass.py        # scheduler-bypass guard
 python3 scripts/check_execution_ownership.py     # process-spawn site ownership manifest

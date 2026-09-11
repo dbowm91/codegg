@@ -79,7 +79,7 @@ in-memory daemons without a pool decide under the same broad policy.
 `OriginAttribution` is built from the bound principal plus the captured
 `AuthorizationDecision` (`from_authority`). One row per scope
 (`session`, `turn`, `job`, `provider`) in `origin_attribution`
-(migration v53, `STORAGE_LAYOUT_VERSION` 53); the first write wins so the
+(introduced by migration v53 at storage layout 53); the first write wins so the
 origin is immutable under concurrent writers. Restart-safe: file-DB
 close/reopen preserves rows.
 

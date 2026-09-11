@@ -19,7 +19,7 @@ template substitution or process-backed execution.
 
 ### Command Loading (priority order)
 
-1. **Built-in commands**: 108 hardcoded commands (highest priority)
+1. **Built-in commands**: 139 hardcoded commands (highest priority)
 2. **Config commands**: From `opencode.jsonc` `commands` section
 3. **Project commands**: From `command/` or `commands/` directories under the
    active project's explicit workspace root
@@ -321,9 +321,9 @@ Frontmatter supports: `description`, `agent`, `model`, `template`,
 
 ## Invariants & Gotchas
 
-- **Built-in count is 108**: Tested by
+- **Built-in count is 139**: Tested by
   `built_in_command_count_matches_release_docs` in
-  `src/tui/command.rs:520`. Update both the test assertion and this doc
+  `src/tui/command.rs`. Update both the test assertion and this doc
   when adding built-ins.
 - **Core Command has no `subtask` field**: The `subtask` field exists
   only in `CommandConfig` (config schema), not in `src/command::Command`.
@@ -339,7 +339,7 @@ cargo test -p codegg -- command     # includes built_in_command_count test
 ```
 
 The `built_in_command_count_matches_release_docs` test ensures the
-108 count stays in sync with this documentation.
+139 count stays in sync with this documentation.
 
 ## Related Docs
 

@@ -395,7 +395,7 @@ impl ProjectTabs {
 
     /// Update the daemon-side identities for the active tab. No-op when
     /// no tab is active. Used by the startup compatibility path and
-    /// future picker "open project" handlers.
+    /// picker "open project" handlers.
     pub fn set_active_identities(
         &mut self,
         project_id: Option<String>,

@@ -391,7 +391,7 @@ divergent context, source, authority, or call identity fails closed.
 cargo test -p codegg-core jobs                              # unit tests
 cargo test -p codegg-core schedule                          # schedule tests
 cargo test --test durable_jobs_phase4                       # integration tests
-python3 scripts/check-core-boundary.sh                      # boundary guard
+bash scripts/check-core-boundary.sh                        # boundary guard
 ```
 
 ## Related Docs

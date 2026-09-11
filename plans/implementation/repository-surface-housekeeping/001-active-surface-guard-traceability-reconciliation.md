@@ -1,6 +1,6 @@
 # Repository Surface Housekeeping M001 — Active Surface, Guard, and Traceability Reconciliation
 
-Status: ready for handoff
+Status: active
 
 Source subsystem roadmap:
 

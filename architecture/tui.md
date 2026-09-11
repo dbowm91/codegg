@@ -709,15 +709,19 @@ tui/
 │   ├── prompt_turn.rs      # Prompt submit and route-safe turn start
 │   ├── modal.rs            # FocusManager-backed modal lifecycle
 │   ├── plugin_ui.rs        # Validated plugin UI effect application
-│   └── state/              # 18 state domain modules
+│   └── state/              # state domain modules (see state/ for the current set)
 │       ├── agent.rs        # AgentState (models, agents, snapshot)
 │       ├── async_request.rs # AsyncUiRequestState
+│       ├── chat.rs         # Project-scoped chat projection
 │       ├── diagnostics.rs  # TuiDiagnostics
 │       ├── dialog.rs       # DialogState (all dialog instances)
+│       ├── execution_context.rs # Explicit project execution context
 │       ├── manifest.rs     # Manifest handling
 │       ├── messages.rs     # MessagesState (messages, toasts, spinner)
+│       ├── observe.rs      # Read-only session observation
 │       ├── persistence.rs  # State persistence
 │       ├── plugin_ui.rs    # PluginUiState
+│       ├── presence.rs     # Collaborator presence projection
 │       ├── project_picker.rs # Project picker (Milestone 2)
 │       ├── project_tabs.rs # Multi-project tabs (Milestone 1)
 │       ├── projection_client.rs # Projection client state
@@ -728,21 +732,27 @@ tui/
 │       ├── snapshot.rs     # Remote snapshot building
 │       ├── ui.rs           # UiState (theme, layout, routes, keybindings)
 │       └── view_switch.rs  # Active-view switch coordinator
-├── commands/               # 19 command handler submodules
+├── commands/               # command handler submodules (see mod.rs for the current set)
 │   ├── mod.rs              # Re-exports
 │   ├── agents.rs           # Asset refresh, agent operations
+│   ├── chat.rs             # Project chat commands
 │   ├── diagnostics.rs      # Doctor, diagnostics, tool contracts
 │   ├── git_sidebar.rs      # Git sidebar refresh
 │   ├── goals.rs            # Goal lifecycle, session state refresh
 │   ├── import.rs           # Import preview, confirm
+│   ├── interactive_terminal.rs # Interactive terminal attach/resume
 │   ├── manifest_restore.rs # Manifest restore operations
 │   ├── memory.rs           # Memory summary, search, remember, forget
+│   ├── observe.rs          # Read-only session observation
 │   ├── plugin_management.rs # Plugin management operations
 │   ├── plugins.rs          # Plugin command run, UI effect
+│   ├── presence.rs         # Collaborator presence commands
 │   ├── project_catalog.rs  # Project catalog refresh
 │   ├── project_picker.rs   # Project picker navigation
+│   ├── prompt.rs           # Prompt/session continuation commands
 │   ├── provider_connections.rs # Provider connection lifecycle
 │   ├── research.rs         # Research list runs, load run, load section
+│   ├── run_rerun.rs        # Historical run reruns
 │   ├── security.rs         # Security review dispatch
 │   ├── session_selection.rs # Session selection refresh/load
 │   ├── sessions.rs         # Session CRUD, archive, fork, bulk ops, rename, share

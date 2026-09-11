@@ -18,7 +18,7 @@ best-effort emission, redaction, backpressure, and operator reads).
   sequences with idempotent at-least-once acceptance.
 - Canonical implementation: `crates/codegg-core/src/audit.rs`
   (`AuditStore`, `AuditEventBuilder`, `AuditWriter`).
-- Storage: migration v54 (`STORAGE_LAYOUT_VERSION` 54) creates
+- Storage: introduced by migration v54 (storage layout 54), which creates
   `audit_event` and `audit_body`.
 - Protocol: `AuditQueryRequestDto`, `AuditExportRequestDto`,
   `AuditEventDto`, `AuditCapabilitiesDto` plus

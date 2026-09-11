@@ -1,5 +1,15 @@
 #![allow(clippy::collapsible_match)]
 
+//! Interactive TUI application root (`App`).
+//!
+//! Responsibility is decomposed by module: `commands` (intent/effect
+//! contract), `input` (key handling and bindings), `modal` (dialog
+//! mounting; top-modal-only focus owned by `FocusManager`),
+//! `project_session` (multi-project tab/session lifecycle),
+//! `prompt_turn` (prompt and turn submission lifecycle), `plugin_ui`
+//! (plugin effects), and `render` (frame composition). Shared live
+//! state lives in `state/`; message and dialog types in `types.rs`.
+
 mod commands;
 mod input;
 mod modal;
@@ -332,13 +342,13 @@ pub struct App {
     /// Ordered collection of open project tabs and the active tab id.
     ///
     /// Introduced by `Multi-Project TUI and Session Management
-    /// Roadmap` milestone 1 (`plans/implementation/tui-project-sessions/001-project-aware-state.md`).
-    /// Currently always holds exactly one compatibility tab that
-    /// mirrors the legacy single-project state. The accessor
+    /// Roadmap` milestone 1 (`plans/implementation/tui-project-sessions/001-project-aware-state.md`)
+    /// and extended by the multi-project convergence work into the current
+    /// multi-tab collection. The active tab owns the focused project,
+    /// session, workspace, model, and agent selection. The accessors
     /// `active_tab`, `active_project_id`, `active_session_id`,
     /// `active_workspace_id`, `active_model`, and `active_agent` read
-    /// through this collection so future picker/navigation work does
-    /// not need to rewrite the App surface.
+    /// through this collection.
     pub project_tabs: crate::tui::app::state::ProjectTabs,
     /// Bounded cache of project catalog summaries plus the request
     /// state for the most recent list/get operation. See
@@ -8845,7 +8855,7 @@ impl App {
             .navigate_to(Route::Session(sess_id.clone()));
         // Mirror the selected session into the active tab. This keeps
         // the active-tab accessor in sync with the legacy single-
-        // project surface so future picker/navigation code can rely
+        // project surface so picker/navigation code can rely
         // on `active_session_id()` / `active_project_id()` /
         // `active_workspace_id()` without rewriting the App surface.
         let active_tab = self.project_tabs.active_tab_id().cloned();
@@ -8912,9 +8922,9 @@ impl App {
     // -----------------------------------------------------------------
     // Active-tab accessors (Multi-Project TUI milestone 1 seam)
     //
-    // These read through `project_tabs.active_tab()` so future
-    // picker/navigation work does not need to rewrite the App
-    // surface. During the compatibility phase the active tab
+    // These read through `project_tabs.active_tab()` so picker /
+    // navigation work does not need to rewrite the App
+    // surface. While the compatibility tab is active, the tab
     // mirrors the legacy `session_state` / `agent_state` fields, so
     // these accessors return values consistent with the legacy
     // single-project behavior.

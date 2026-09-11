@@ -109,7 +109,11 @@ Methods:
 
 ### STORAGE_LAYOUT_VERSION
 
-`STORAGE_LAYOUT_VERSION = 49` (`storage/mod.rs:39`) is exported and
+The current layout version is defined by `storage::STORAGE_LAYOUT_VERSION`
+(`storage/mod.rs:39`) and must track the highest migration wired into the
+canonical schema path in `session/schema.rs` (see
+`scripts/check_project_catalog_invariants.py` and the
+`tests/storage_migrations.rs` equality assertion). It is exported and
 referenced from `MigrationMarker.storage_layout_version` for the migration
 tooling that imports legacy project databases. Migration 37 adds canonical
 `agent_task` and `agent_run` tables with typed string IDs, session/root/parent/

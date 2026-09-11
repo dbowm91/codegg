@@ -141,7 +141,8 @@ verified, and content-addressed.
 ### Storage (Phase 3)
 
 `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog.
-`init_legacy_project_store(root)` retains backward compat. `STORAGE_LAYOUT_VERSION = 49`.
+`init_legacy_project_store(root)` retains backward compat. The current layout
+version is defined by `storage::STORAGE_LAYOUT_VERSION`.
 `DaemonPaths` is the single source of truth for catalog and asset paths.
 
 ## Configuration Surface
@@ -165,7 +166,7 @@ callers via `codegg-config::schema::Config`.
 
 ```bash
 cargo test -p codegg-core                    # all core tests
-python3 scripts/check-core-boundary.sh       # boundary enforcement
+bash scripts/check-core-boundary.sh         # boundary enforcement
 ```
 
 Narrowest: `cargo test -p codegg-core -- <module>` for a specific

@@ -24,6 +24,114 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _parse_storage_layout_version(path: Path) -> int:
+    """Parse the canonical layout marker from the storage module."""
+    source = path.read_text(encoding="utf-8")
+    match = re.search(r"STORAGE_LAYOUT_VERSION\s*:\s*u32\s*=\s*(\d+)", source)
+    if not match:
+        raise ValueError(f"STORAGE_LAYOUT_VERSION not found in {path}")
+    return int(match.group(1))
+
+
+def _highest_wired_migration(path: Path) -> int:
+    """Derive the highest migration wired into the canonical schema path.
+
+    Three independent wirings must agree: the sequential `migrate()` upgrade
+    chain (`migrate_and_record(pool, N)`), the `migrate_and_record` dispatch
+    arms (`N => migrate_vN`), and the `migrate_vN` function definitions.
+    Returns the shared maximum; raises `ValueError` on any disagreement so
+    a half-wired migration fails the guard instead of silently passing.
+    """
+    source = path.read_text(encoding="utf-8")
+    chain = {int(v) for v in re.findall(r"migrate_and_record\(pool,\s*(\d+)\)", source)}
+    arms = {
+        (int(key), int(func))
+        for key, func in re.findall(r"(\d+)\s*=>\s*migrate_v(\d+)", source)
+    }
+    defined = {int(v) for v in re.findall(r"async fn migrate_v(\d+)\s*\(", source)}
+    if not chain:
+        raise ValueError(f"no migrate_and_record chain found in {path}")
+    if not arms:
+        raise ValueError(f"no migrate_v dispatch arms found in {path}")
+    if not defined:
+        raise ValueError(f"no migrate_v definitions found in {path}")
+    mismatched_arms = sorted(key for key, func in arms if key != func)
+    if mismatched_arms:
+        raise ValueError(f"dispatch arm(s) {mismatched_arms} do not map to migrate_vN")
+    arm_keys = {key for key, _ in arms}
+    if chain != arm_keys or arm_keys != defined:
+        raise ValueError(
+            "migration wiring disagrees: upgrade chain covers "
+            f"{sorted(chain)}, dispatch arms cover {sorted(arm_keys)}, "
+            f"definitions cover {sorted(defined)}"
+        )
+    highest = max(chain)
+    expected = set(range(1, highest + 1))
+    if chain != expected:
+        raise ValueError(
+            f"migration chain is not contiguous 1..={highest}: "
+            f"missing {sorted(expected - chain)}"
+        )
+    return highest
+
+
+def _self_test() -> int:
+    """Exercise the layout/migration relationship against synthetic sources.
+
+    Proves the guard is future-proof (a matched future-number pair passes
+    without editing the guard) and still sensitive (any mismatch fails).
+    Uses only the standard library and temporary files.
+    """
+    import tempfile
+
+    failures = 0
+
+    def write_pair(tmp: Path, layout: int, wired: int) -> tuple[Path, Path]:
+        storage = tmp / "storage_mod.rs"
+        storage.write_text(
+            f"pub const STORAGE_LAYOUT_VERSION: u32 = {layout};\n", encoding="utf-8"
+        )
+        arms = "\n".join(f"            {v} => migrate_v{v}(&mut tx).await?,"
+                         for v in range(1, wired + 1))
+        chain = "\n".join(f"    if current_version < {v} {{\n"
+                          f"        migrate_and_record(pool, {v}).await?;\n    }}"
+                          for v in range(1, wired + 1))
+        defns = "\n".join(f"async fn migrate_v{v}(tx: &mut Tx) -> Result<()> {{ Ok(()) }}"
+                          for v in range(1, wired + 1))
+        schema = tmp / "schema.rs"
+        schema.write_text(f"{chain}\nmatch version {{\n{arms}\n}}\n{defns}\n",
+                          encoding="utf-8")
+        return storage, schema
+
+    cases = [
+        # (layout, wired, should_pass, description)
+        (56, 56, True, "current matched pair passes"),
+        (99, 99, True, "matched future-number pair passes without guard edits"),
+        (57, 56, False, "layout bumped without migration fails"),
+        (56, 57, False, "migration wired without layout bump fails"),
+    ]
+    for layout, wired, should_pass, description in cases:
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            storage, schema = write_pair(tmp, layout, wired)
+            try:
+                ok = _parse_storage_layout_version(storage) == _highest_wired_migration(
+                    schema
+                )
+            except ValueError:
+                ok = False
+            passed = ok == should_pass
+            print(f"  [{'PASS' if passed else 'FAIL'}] self-test: {description}")
+            if not passed:
+                failures += 1
+
+    if failures:
+        print(f"{failures} self-test case(s) FAILED.")
+        return 1
+    print("All guard self-test cases passed.")
+    return 0
+
+
 def check_catalog_module_exists() -> bool:
     return CATALOG_MODULE.is_file()
 
@@ -181,16 +289,39 @@ def check_catalog_migration_columns() -> bool:
     return True
 
 
-def check_storage_layout_version() -> bool:
-    """Verify STORAGE_LAYOUT_VERSION matches the current catalog layout."""
-    source = _read(STORAGE_MODULE)
-    match = re.search(r"STORAGE_LAYOUT_VERSION\s*:\s*u32\s*=\s*(\d+)", source)
-    if not match:
-        print("  FAIL: STORAGE_LAYOUT_VERSION not found")
+def check_storage_layout_tracks_wired_migrations() -> bool:
+    """Verify the storage layout marker tracks the wired schema migration path.
+
+    The canonical layout marker (`STORAGE_LAYOUT_VERSION` in
+    `crates/codegg-core/src/storage/mod.rs`) must equal the highest schema
+    migration actually wired into the canonical migration path in
+    `crates/codegg-core/src/session/schema.rs`. The executable contract for
+    this relationship also lives in `tests/storage_migrations.rs`, which
+    asserts a fully migrated database reports exactly
+    `STORAGE_LAYOUT_VERSION`.
+
+    This compares two independently derived values, so a future
+    storage-layout increment paired with its migration passes without
+    editing this guard, while bumping one side without the other fails.
+    No volatile expected version number is embedded here.
+    """
+    try:
+        layout_version = _parse_storage_layout_version(STORAGE_MODULE)
+    except ValueError as exc:
+        print(f"  FAIL: {exc}")
         return False
-    version = int(match.group(1))
-    if version != 54:
-        print(f"  FAIL: STORAGE_LAYOUT_VERSION is {version}, expected 54")
+    try:
+        highest = _highest_wired_migration(SCHEMA_MODULE)
+    except ValueError as exc:
+        print(f"  FAIL: {exc}")
+        return False
+    if layout_version != highest:
+        print(
+            "  FAIL: STORAGE_LAYOUT_VERSION "
+            f"({layout_version}) does not match highest wired schema "
+            f"migration ({highest}); bump the layout marker together with "
+            "its migration, or vice versa"
+        )
         return False
     return True
 
@@ -205,6 +336,8 @@ def check_lib_reexport() -> bool:
 
 
 def main() -> int:
+    if "--self-test" in sys.argv:
+        return _self_test()
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     checks: list[tuple[str, callable]] = [
         ("Catalog module file exists", check_catalog_module_exists),
@@ -215,7 +348,10 @@ def main() -> int:
         ("No unwrap_or_default PathBuf anti-pattern", check_no_unwrap_or_default_pathbuf),
         ("catalog/discovery migrations create tables", check_catalog_migration_tables),
         ("v28 migration adds 5 columns to logical_project", check_catalog_migration_columns),
-        ("STORAGE_LAYOUT_VERSION is 54", check_storage_layout_version),
+        (
+            "storage layout marker tracks highest wired schema migration",
+            check_storage_layout_tracks_wired_migrations,
+        ),
         ("lib.rs re-exports project_catalog", check_lib_reexport),
     ]
 

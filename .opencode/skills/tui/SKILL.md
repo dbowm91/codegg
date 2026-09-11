@@ -31,7 +31,7 @@ root and lifecycle modules.
 | `src/tui/app/plugin_ui.rs` | Plugin UI validation and effect application |
 | `src/tui/app/state/` | App state helpers; `execution_context.rs` resolves explicit project scope and `async_request.rs` holds the finish/fail guard |
 | `src/tui/command.rs` | Slash-command registry, scoped catalog, and discovery metadata |
-| `src/tui/commands/` | 19 command-handler submodules (sessions, git_sidebar, research, ...) |
+| `src/tui/commands/` | command-handler submodules (see `mod.rs` for the current set) |
 | `src/tui/runtime/command_dispatch.rs` | `dispatch_tui_command(app, cmd)` - maps `TuiCommand` variants to handlers |
 | `src/tui/runtime/` | Runtime loop and event routing |
 | `src/tui/async_cmd.rs` | `spawn_tui_task` / `spawn_registered_tui_task` |
@@ -83,6 +83,8 @@ root and lifecycle modules.
 - `Dialog::Plugin` is generic: one variant handles every plugin dialog.
 - `DialogType` lives in `src/tui/components/component.rs`, not `types.rs`.
 - Focus management goes through `FocusManager` (`components/component/focus.rs`).
+  Only the top mounted modal receives key input; unhandled keys are dropped,
+  never bubbled to lower modals or the prompt.
 - `FocusManager` owns mounted live modal components. Use its narrow typed
   `with_dialog`, `with_dialog_mut`, or `with_component` helpers for updates;
   do not clone a component into `DialogState` and replace the mounted copy.

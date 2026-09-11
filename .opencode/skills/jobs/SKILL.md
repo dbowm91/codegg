@@ -153,7 +153,7 @@ JobStore owns queue/lifecycle. RunStore owns execution artifacts. They are NOT a
 ## Testing
 
 ```bash
-cargo test --test durable_jobs_phase4          # 42 integration tests
+cargo test --test durable_jobs_phase4          # integration tests
 cargo test -p codegg-core jobs                 # unit tests for state machines, store
 cargo test -p codegg-core schedule             # unit tests for schedule logic
 ```

@@ -1793,7 +1793,10 @@ This pass closes the gap between "implemented by commit message" and "verified b
 - 0 active `/lsp-start` or `/lsp-replay-docs` registrations.
 - 0 active disk cache mode (only `Disabled` and `Memory` variants in `LspCacheMode`).
 
-## Supported Languages (39 servers)
+## Supported Languages
+
+The table below lists commonly used examples; the full registry is
+`server_definitions()` in `crates/egglsp/src/server.rs`.
 
 | Language | Server | Command |
 |----------|--------|---------|

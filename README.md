@@ -44,14 +44,19 @@ Supported hosts:
 
 Latest release (default installs to `~/.local/bin/codegg`):
 
+> **Release availability:** installer support is implemented, but no GitHub
+> releases have been published yet, so there is currently nothing for the
+> installer to download. Until the first release is published, install from
+> source below. Once releases exist, the installer commands apply as written.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | sh
 ```
 
-Pinned version:
+Pinned version (must match a published release tag):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_VERSION=0.1.1 sh
+curl -fsSL https://raw.githubusercontent.com/dbowm91/codegg/main/install.sh | CODEGG_VERSION=0.1.0 sh
 ```
 
 Custom install directory:
@@ -231,6 +236,8 @@ codegg import session.json
 ```
 
 Inside the TUI, the command system exposes session/context controls, agent selection, planning and goals, tasks, testing, diffs, search, LSP controls, MCP/plugin management, themes, keybindings, and diagnostics. Use the in-app help/command discovery rather than treating README keybindings as a fixed API; the TUI command registry is the authoritative surface.
+
+The TUI supports multiple open project tabs with a project picker; execution is always scoped to the active tab's workspace without changing the process working directory. The keyboard-focusable sidebar includes an agent-run tree inspector for nested run inspection. See [`architecture/tui.md`](architecture/tui.md) for internals.
 
 Human shell commands have an explicit context boundary: `!command` runs locally without promoting its output into model context, while `!!command` deliberately promotes the bounded/redacted result. See [`architecture/human_shell.md`](architecture/human_shell.md).
 

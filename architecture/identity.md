@@ -94,7 +94,7 @@ identity.
 
 Identity, authorization, and audit M001 adds `codegg_core::team`, the durable
 canonical principal/project-membership domain. Schema migration v51 creates
-`principal` and `project_membership` tables; `STORAGE_LAYOUT_VERSION` is 51.
+`principal` and `project_membership` tables (introduced at storage layout 51).
 
 - Principals: `Human`, `ServiceAccount`, `Node`, and explicit `LocalOwner`.
   `TeamStore::ensure_local_owner` bootstraps the deterministic
@@ -153,8 +153,8 @@ remains login-free.
   only), `internal_test` (harness only).
 - Tokens: `PersonalTokenStore::create_personal_token` returns the
   one-time `cggt_<token_id>.<secret>` plaintext plus a durable record;
-  only the SHA-256 digest, owner, expiry, and revocation persist (migration
-  v52 `personal_auth_token`; `STORAGE_LAYOUT_VERSION` is 52). Verification
+  only the SHA-256 digest, owner, expiry, and revocation persist (introduced
+  by migration v52 `personal_auth_token` at storage layout 52). Verification
   is constant-time, transactional, and restart-safe; revoked/expired or
   disabled-principal tokens fail new authentication immediately.
 - Binding: `ClientRegistry::register_with_principal` /
@@ -198,8 +198,9 @@ into durable work. Full contract and the 135-row operation matrix live in
   privacy-filtered to `project.read` grants (`visible_projects`);
   `ProjectGet` denies as `project_not_found` so existence is not leaked.
 - Attribution: `OriginAttribution` (bound principal + captured decision)
-  persists per scope (`session`, `turn`, `job`, `provider`) in migration
-  v53 `origin_attribution` (`STORAGE_LAYOUT_VERSION` is 53); first write
+  persists per scope (`session`, `turn`, `job`, `provider`) in the
+  `origin_attribution` table introduced by migration v53 (storage layout 53);
+  first write
   wins. Pre-M003 records use the explicit `legacy-local` provenance
   marker. `ToolExecutionContext` carries `origin_principal` /
   `origin_auth_method` / `origin_decision_id` via `apply_origin`.

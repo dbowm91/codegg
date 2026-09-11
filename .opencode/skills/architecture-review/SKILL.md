@@ -112,9 +112,9 @@ Each subagent must confirm:
 |------|----------|--------|
 | Tool count (base) | ~30 | `src/tool/mod.rs:with_options()` |
 | Tool count (all features) | ~44 | includes 8 always-visible + 5 deferred eggsact deterministic tools |
-| LSP servers | 39 | `crates/egglsp/src/server.rs` (`server_definitions()`) |
-| AppEvent variants | 45 | `crates/codegg-core/src/bus/events.rs` |
-| Built-in commands | 108 | `src/tui/command.rs` (assertion at line 520) |
-| Built-in agents | 9 | `assets/agents/*.toml` |
-| DB tables | ~52 | `crates/codegg-core/src/session/schema.rs` |
+| LSP servers | see `server_definitions()` (40 at last census) | `crates/egglsp/src/server.rs` (`server_definitions()`) |
+| AppEvent variants | 53 at last census | `crates/codegg-core/src/bus/events.rs` |
+| Built-in commands | asserted by `built_in_command_count_matches_release_docs` (139 at last census) | `src/tui/command.rs` |
+| Built-in agents | 10 at last census | `assets/agents/*.toml` |
+| DB tables | see `session/schema.rs` (71 `CREATE TABLE` names at last census) | `crates/codegg-core/src/session/schema.rs` |
 | Workspace crates | 9 members (+ `egglsp-test-server` on disk, not a member) | `crates/` |

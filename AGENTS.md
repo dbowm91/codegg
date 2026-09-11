@@ -112,7 +112,7 @@ See `architecture/testing.md` for the full test resource taxonomy, Tokio runtime
 Run these after changing execution surfaces, agent definitions, or codegg-core:
 
 ```bash
-python3 scripts/check-core-boundary.sh              # codegg-core boundary enforcement
+bash scripts/check-core-boundary.sh                # codegg-core boundary enforcement
 python3 scripts/check_sandbox_contract.py           # Python sandbox contract guard
 python3 scripts/check_daemon_cwd_usage.py           # workspace-bound daemon path guard
 python3 scripts/check_project_agent_pwd_inference.py # project-agent PWD-inference guard
@@ -217,7 +217,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 - **WorkspaceServices**: per-workspace bundle owning `Arc<dyn RunStore>`, `Arc<WorkspacePathPolicy>`, `Arc<WorkspaceLockTable>`, `Arc<WorkspaceConfigSnapshot>`. Constructed by `ProductionWorkspaceServicesFactory` at `<workspace>/.codegg/runs/`.
 - **Storage split** (`crates/codegg-core/src/storage/mod.rs`): `init_daemon_catalog(&DaemonPaths)` owns the user-scoped catalog. `init_legacy_project_store(root)` retains backward compat. `init` is deprecated.
-- **STORAGE_LAYOUT_VERSION = 36**. **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
+- The current storage layout version is defined by `storage::STORAGE_LAYOUT_VERSION` (`crates/codegg-core/src/storage/mod.rs`); it must track the highest migration wired into `crates/codegg-core/src/session/schema.rs` (checked by `scripts/check_project_catalog_invariants.py`). **DaemonPaths** (`crates/codegg-core/src/storage/paths.rs`) is the single source of truth for catalog and asset paths.
 - **Migration tooling** (`crates/codegg-core/src/migration.rs`): `migrate_legacy_project_database` is idempotent.
 - See `crates/codegg-core/src/workspace_services.rs` for the full contract.
 
@@ -255,7 +255,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ### TUI
 
-- **TUI render.rs doesn't exist**: `src/tui/app/` contains `mod.rs` (~15K lines) and `types.rs`. Command handlers are in `src/tui/commands/` (19 submodules). Runtime is in `src/tui/runtime/`.
+- **TUI App is decomposed**: `src/tui/app/` holds `mod.rs` (composition root) plus `commands`, `input`, `modal`, `project_session`, `prompt_turn`, `plugin_ui` (`plugin_ui.rs`), `render`, `state/`, and `types.rs`. Command handlers are in `src/tui/commands/` (see `mod.rs` for the current set). Runtime is in `src/tui/runtime/`.
 - **Custom test command validation is strict argv-prefix**: `src/test_runner/custom.rs::validate_custom_command` is the single source of truth. Rejects shell metacharacters. Argv-token-bounded match, so `pytestevil` and `cargo testify` do NOT match. Both generated and custom commands execute via `Command::new(argv[0]).args(&argv[1..])` -- never via a shell.
 - **Previous-failures index**: `.codegg/test-runs/index.json` stores up to 100 recent test run entries. Written atomically after every test run.
 - **Dialog::Info doesn't exist**: Despite `src/tui/components/dialogs/info.rs` existing, `Dialog::Info` is NOT in the Dialog enum.
@@ -313,8 +313,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ### LSP
 
-- **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`.
-- **39 LSP servers** configured in `crates/egglsp/src/server.rs`.
+- **egglsp is authoritative**: `src/lsp/` is a thin shim. All real LSP logic lives in `crates/egglsp/`. Server definitions live in `crates/egglsp/src/server.rs` (`server_definitions()`).
 - **Preview-only boundary**: `renamePreview`, `formatPreview`, `sourceActionPreview` never write to disk.
 - **LSP tests need `lsp-test-support` feature**: Two fake servers exist. Crate-level tests (`crates/egglsp/tests/`) use `CARGO_BIN_EXE_egglsp-test-server` (bin target of the `egglsp` package); the root-level `tests/lsp_composite_stdio.rs` uses `CARGO_BIN_EXE_codegg-lsp-test-server` (from `crates/egglsp-test-server/`, declared in root `Cargo.toml`). Tests use polling loops, not fixed sleeps.
 - **Preview apply (Phase 9)**: `/lsp-preview-apply` applies patches with SHA-256 hash revalidation. `LspTool` remains read-only.
@@ -388,7 +387,7 @@ CI runs on pull requests and pushes to `main`. One bounded `verify` job checks g
 
 ## Architecture Docs
 
-`architecture/` has 72 docs covering every module. See `architecture/overview.md` for the full module map and navigation index.
+`architecture/` docs cover every module. See `architecture/overview.md` for the full module map and navigation index.
 
 `plans/registry.md` is the planning control surface: active subsystem roadmaps, milestone statuses, blockers, and closure records (`plans/closure/`). Check it before assuming a milestone's state. All major subsystems are currently closed; see `plans/registry.md` for the authoritative status of any roadmap or milestone.
 

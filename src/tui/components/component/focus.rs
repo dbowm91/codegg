@@ -1,7 +1,8 @@
 //! FocusManager - owns live modal components and manages modal focus.
 //!
-//! The FocusManager maintains a stack of Components, with the top component
-//! receiving key events first. If unhandled, events bubble to underlying components.
+//! The FocusManager maintains a stack of Components. Only the top (most
+//! recently mounted) component receives key events; unhandled keys are
+//! dropped, never bubbled to underlying components or the prompt.
 
 use crate::tui::app::TuiMsg;
 use crate::tui::components::component::{Component, DialogType};

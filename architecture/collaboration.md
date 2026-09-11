@@ -40,7 +40,7 @@ crates/codegg-core/src/collaboration/validation.rs
                                           # structural audit metadata
 crates/codegg-core/src/identity.rs        # ChatMessageId (ChannelId reused for channels)
 crates/codegg-core/src/session/schema.rs  # v55 chat tables (additive, IF NOT EXISTS)
-crates/codegg-core/src/storage/mod.rs     # STORAGE_LAYOUT_VERSION = 55
+crates/codegg-core/src/storage/mod.rs     # layout marker at M001 time (see storage::STORAGE_LAYOUT_VERSION for current)
 crates/codegg-core/src/authorization/policy.rs
                                           # chat_* operation descriptors (project.chat),
                                           # re-exported by the authorization facade
@@ -169,7 +169,7 @@ chat body or secret material.
 
 ## Migration and compatibility
 
-- `STORAGE_LAYOUT_VERSION = 55`; `migrate_v55` creates
+- Introduced by `migrate_v55` (storage layout 55 at M001 time), which creates
   `chat_channel`, `chat_message`, `chat_revision`,
   `chat_read_marker` plus indexes (all `IF NOT EXISTS`, restart-safe,
   no data backfill — no legacy chat data exists).
@@ -268,7 +268,7 @@ an idempotency key) can create work.
   projection in `chat_action` (`submitted`/`referenced`), and emits
   audit causation plus `ChatActionUpdated`/`JobCreated` liveness.
   Chat never executes in its own store.
-- **Storage** (`migrate_v56`, `STORAGE_LAYOUT_VERSION = 56`):
+- **Storage** (introduced by `migrate_v56` at storage layout 56):
   `chat_action` with the unique retry backstop; restart preserves
   idempotency via the durable table (composing still drops).
 - **Audit** (`chat_triggered_action`, live-mapped): structural
