@@ -60,6 +60,11 @@ A single user prompt flows through the system along this path:
    work to `DefaultTurnRuntime.run_turn(TurnRunInput)` carrying an immutable,
    `Arc`-wrapped `ExecutionContext` (workspace root, workspace id, session id,
    path policy) — never `std::env::current_dir()` ([workspace.md](workspace.md)).
+   Every request first passes the M003 authorization gate
+   (`operation_descriptor` capability check over a transport-bound principal;
+   denials are side-effect-free) and success decisions are captured as origin
+   attribution; security-relevant actions append to the structural audit store
+   ([authorization.md](authorization.md), [audit.md](audit.md)).
 4. **Agent loop cycle** — `AgentLoop` builds the turn context (asset snapshot,
    instructions, skills, memory, task state), streams an LLM completion through
    a provider ([provider.md](provider.md)), parses tool calls, executes them,
@@ -83,6 +88,10 @@ A single user prompt flows through the system along this path:
    on the bus ([bus.md](bus.md)). A deterministic canonical reducer folds
    events into a frontend-neutral session projection; clients subscribe to
    scoped views and replay durable history ([projection.md](projection.md)).
+   Project chat ([collaboration.md](collaboration.md)) and presence heartbeats
+   ([presence.md](presence.md)) ride the same daemon-owned, authorized,
+   privacy-preserving event path — chat bodies stay inert text, presence stays
+   liveness-only and never authorizes work.
 8. **Persistence** — Sessions, messages, todos, checkpoints, usage, goals,
    research runs, jobs, and schedules persist in SQLite (migration chain in
    `session/schema.rs`, current layout in `storage::STORAGE_LAYOUT_VERSION`)
@@ -183,12 +192,16 @@ The core layer owns the singleton daemon lifecycle, transport adapters, request 
 | Managed Process | Managed process lifecycle with process-group cleanup, timeout, cancellation, descendant tracking | `managed_process.rs` | [scheduler.md](scheduler.md) |
 | Session | SQLite session storage, message history, migrations, analytics, checkpointing | `session/` (codegg-core) | [session.md](session.md) |
 | Storage | SQLite initialization and connection pooling — user-scoped catalog + legacy project store | `storage/` (codegg-core) | [storage.md](storage.md) |
-| Bus | Event bus publish/subscribe (51 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
+| Bus | Event bus publish/subscribe (53 AppEvent variants), PermissionRegistry, QuestionRegistry | `bus/` (codegg-core) | [bus.md](bus.md) |
 | Error | Centralized AppError enum with error classification | `error.rs` | [error.md](error.md) |
 | Projection | Session projection contract — frontend-neutral derived view, deterministic canonical reducer, scoped subscriptions, durable replay (M1-M2) | `projection/` (codegg-protocol), `projection_replay/` (codegg-core) | [projection.md](projection.md) |
 | Project Catalog | Daemon-owned project catalog — list, get, register, archive, restore; path-independent identity, lifecycle management | `project_catalog.rs`, `project_storage.rs` (codegg-core) | [project_catalog.md](project_catalog.md) |
 | Identity | Typed domain identity foundation — opaque string newtypes with UUIDv4, validated parsing, lexical contract | `identity.rs` (codegg-core) | [identity.md](identity.md) |
 | Project Identity Storage | Durable logical-project and repository authority — workspace/session binding, reconciliation, migration | `project_storage.rs` (codegg-core) | [project_identity_storage.md](project_identity_storage.md) |
+| Authorization | Daemon operation-boundary gate — transport-bound principals, `operation_descriptor` capability map, project-scope resolution, origin attribution (M003) | `authorization/` (codegg-core), `src/core/daemon.rs` | [authorization.md](authorization.md) |
+| Audit | Append-only structural audit store + M005 instrumentation coverage — typed attribution, redacted metadata, ordered idempotent query/export | `audit.rs` (codegg-core), migration v54 | [audit.md](audit.md) |
+| Collaboration | Project-scoped channels/messages — threads, mentions, object refs, edits/redactions, read markers, retention, bounded sync (M001); TUI chat + observer routing (M002); structured actions (M003) | `collaboration.rs` (codegg-core), `src/tui/app/state/chat.rs` | [collaboration.md](collaboration.md) |
+| Presence | Ephemeral project-scoped presence — leases, heartbeat/idle/expiry, collaborator surface, read-only observation (M001-M003) | `presence.rs` (codegg-core), `src/core/daemon.rs` | [presence.md](presence.md) |
 | Exec | Non-interactive exec mode for CI/CD with JSON I/O | `exec.rs` | [exec.md](exec.md) |
 
 ### Provider Layer — LLM Backends
@@ -253,6 +266,8 @@ Codegg-side thin wrappers (`src/tool/lsp.rs`, `src/tool/git.rs`, `src/tool/secur
 | Run Store | Persistent run index and artifact storage for commands, scripts, tests | `run_store.rs` (codegg-core) | [run_store.md](run_store.md) |
 | Resilience | Circuit breaker, retry mechanisms | `resilience.rs` (codegg-core) | [resilience.md](resilience.md) |
 | Skills | Runtime skill loader and activation | `skills/` | [skills.md](skills.md) |
+| Context/Compaction Ownership | Single-owner map — `src/context/compaction.rs` owns budgets/triggers/strategy; `eggcontext` is the tokenizer primitive; `agent::compaction` is a compat re-export | `context/compaction.rs`, `agent/compaction.rs`, `eggcontext/` | [context-compaction-ownership.md](context-compaction-ownership.md) |
+| Process/Tool Execution Ownership | Canonical process-ownership map — `ManagedProcessService` owns finite lifecycle; scheduler adapters, interactive PTY, protocol-specialized and standalone exceptions inventoried in `docs/execution-ownership.toml` | `managed_process.rs`, `interactive_process.rs`, `docs/execution-ownership.toml` | [process-tool-execution-ownership.md](process-tool-execution-ownership.md) |
 | TTS | Text-to-speech (macOS `say` command) | `tts/` | [tts.md](tts.md) |
 | Upgrade | Self-upgrade via GitHub releases | `upgrade/` | [upgrade.md](upgrade.md) |
 | Util | Clipboard, fuzzy search, pricing, metrics | `util/` | [util.md](util.md) |
@@ -263,24 +278,24 @@ Counts below were re-verified against the current tree (see source column).
 
 | Item | Count | Source |
 |------|-------|--------|
-| Tools (registration sites) | 50 | `src/tool/mod.rs::with_options()` |
+| Tools (registration statements in `with_options`) | 51 | `src/tool/mod.rs::with_options()` |
 | Tools (always registered core) | ~31 | remainder gated by todo policy / evidence backend / eggsact / context-read config |
 | Eggsact deterministic tools | 8 visible + 5 deferred | `src/tool/deterministic.rs::build_eggsact_tools()` |
-| LSP servers | see `server_definitions()` | `crates/egglsp/src/server.rs` |
+| LSP servers | 40 | `crates/egglsp/src/server.rs::server_definitions()` |
 | Native tool crates | 10 | `crates/` (9 workspace members + test-server binary) |
-| AppEvent variants | 53 | `crates/codegg-core/src/bus/events.rs` |
+| AppEvent variants | 53 | `crates/codegg-core/src/bus/events.rs::AppEvent` |
 | Built-in slash commands | 139 (asserted by `built_in_command_count_matches_release_docs`) | `src/tui/command.rs` |
 | Built-in agents | 10 | `assets/agents/*.toml` |
-| Database tables | see `session/schema.rs` | `crates/codegg-core/src/session/schema.rs` |
-| Storage layout version | current (see `storage::STORAGE_LAYOUT_VERSION`) | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
-| Integration test files | see `tests/` | `tests/*.rs` |
-| Architecture docs | 72 | `architecture/` |
+| Database tables | 71 (`CREATE TABLE` names) | `crates/codegg-core/src/session/schema.rs` |
+| Storage layout version | 56 | `crates/codegg-core/src/storage/mod.rs::STORAGE_LAYOUT_VERSION` |
+| Integration test files | 189 | `tests/*.rs` |
+| Architecture docs | 77 | `architecture/` |
 | Shell projection phases | 10 | `src/shell/` |
 | Python script modes | 3 | `src/python_script/types.rs` (Analyze/Transform/Verify) |
-| Git operation variants | 54 | `crates/codegg-git/src/operation.rs` |
-| Git risk classes | 11 | `crates/codegg-git/src/risk.rs` |
+| Git operation variants | 54 (`GitOperation`) | `crates/codegg-git/src/operation.rs` |
+| Git risk classes | 11 (`GitRiskClass`) | `crates/codegg-git/src/risk.rs` |
 | Providers (env-var auto-registered) | 15 | `crates/codegg-providers/src/provider_core.rs::register_builtin()` |
-| CI guard scripts | 19 | `scripts/` |
+| CI guard scripts (`check_*`) | 21 | `scripts/` |
 
 ## Feature Gates
 
@@ -411,6 +426,10 @@ Deep-dive index. Every architecture document in this directory is listed here.
 - [Project Catalog](project_catalog.md) — Daemon-owned project catalog service
 - [Identity](identity.md) — Typed domain identity foundation
 - [Project Identity Storage](project_identity_storage.md) — Project/repository identity, binding, reconciliation
+- [Authorization](authorization.md) — Daemon operation-boundary gate, principals, capabilities, attribution (M003)
+- [Audit](audit.md) — Append-only audit store and M005 instrumentation coverage
+- [Collaboration](collaboration.md) — Project channels/messages, TUI chat, structured actions (M001-M003)
+- [Presence](presence.md) — Ephemeral presence leases, collaborators, read-only observation (M001-M003)
 
 ### Providers and Config
 - [Provider](provider.md) — LLM provider implementations
@@ -434,6 +453,8 @@ Deep-dive index. Every architecture document in this directory is listed here.
 - [Run Store](run_store.md) — Run index and artifact storage
 - [Resilience](resilience.md) — Circuit breaker, retry
 - [Skills](skills.md) — Runtime skill loader
+- [Context/Compaction Ownership](context-compaction-ownership.md) — Single compaction owner map
+- [Process/Tool Execution Ownership](process-tool-execution-ownership.md) — Canonical process-ownership map
 - [TTS](tts.md) — Text-to-speech
 - [Upgrade](upgrade.md) — Self-upgrade
 - [Util](util.md) — Clipboard, fuzzy search, pricing, metrics
@@ -484,11 +505,14 @@ codegg/
 │   ├── skills/                 # Skill loader
 │   ├── test_runner/            # Test execution, parsing, reporting
 │   ├── theme/                  # Theme system
-│   ├── tool/                   # Built-in tools
+│   ├── tool/                   # Built-in tools (51 registration statements)
 │   ├── tts/                    # Text-to-speech
 │   ├── tui/                    # Terminal UI (Ratatui)
 │   ├── upgrade/                # Self-upgrade
 │   ├── util/                   # Utilities
+│   ├── interactive_process*.rs # PTY lifecycle (M001) + attach protocol (M002)
+│   ├── goal_verification.rs    # Goal verification pass
+│   ├── run_rerun.rs            # Run rerun linkage
 │   ├── git_*.rs                # Git mutations, network, recovery, store
 │   ├── command_*.rs            # Command pipeline (planner, routing, outcome)
 │   ├── job_*.rs                # Job dispatch, recovery
@@ -506,9 +530,9 @@ codegg/
 │   ├── eggsentry/              # Security scanning
 │   ├── eggcontext/             # Token counting
 │   └── egglsp-test-server/     # Fake LSP server for tests (not a member)
-├── tests/                      # Integration tests (167 files)
+├── tests/                      # Integration tests (189 files)
 ├── assets/                     # Agent definitions, prompts, themes
-│   ├── agents/                 # 9 built-in agent TOML definitions
+│   ├── agents/                 # 10 built-in agent TOML definitions
 │   └── prompts/                # Agent prompt templates
 ├── scripts/                    # CI guards, generators, validators
 ├── architecture/               # Architecture documentation (see index below)
@@ -531,4 +555,9 @@ python3 scripts/generate_builtin_agents.py --check  # agent asset staleness + sc
 python3 scripts/check_projection_transport_isolation.py # projection raw-broadcast/identity guard
 ```
 
-See AGENTS.md for the complete guard list.
+Full `check_*` inventory (`scripts/`, 21 guards) additionally covers audit
+coverage/invariants, authorization matrix, discovery invariants, identity path
+usage, project-agent pwd inference, project catalog invariants, projection
+disclosure/publication-seam/transport-lifecycle, provider-connections
+coverage/tombstones, sandbox contract, tool-broker boundary, TUI project
+authority, and websocket bounds. See AGENTS.md for the complete guard list.
