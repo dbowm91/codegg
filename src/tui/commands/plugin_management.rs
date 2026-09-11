@@ -555,7 +555,9 @@ mod tests {
         let mut app = make_test_app();
         apply_plugin_list_finished(&mut app, vec!["a".into(), "b".into()], None);
         let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
-        let dialog_open = app.dialog_state.info_dialog.is_some();
+        let dialog_open = app
+            .focus_manager
+            .has_component::<crate::tui::components::dialogs::info::InfoDialog>();
         assert!(!toasts.is_empty() || dialog_open);
     }
 
@@ -698,7 +700,9 @@ mod tests {
         ];
         apply_plugin_doctor_finished(&mut app, lines, None);
         let toasts: Vec<_> = app.messages_state.toasts.iter().collect();
-        let dialog_open = app.dialog_state.info_dialog.is_some();
+        let dialog_open = app
+            .focus_manager
+            .has_component::<crate::tui::components::dialogs::info::InfoDialog>();
         assert!(!toasts.is_empty() || dialog_open);
     }
 

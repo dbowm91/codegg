@@ -557,12 +557,12 @@ mod shell_dispatch_tests {
             crate::tui::Dialog::ShellShow,
             "dialog should be set to ShellShow"
         );
-        let dialog = app
-            .dialog_state
-            .shell_detail_dialog
-            .as_ref()
-            .expect("shell_detail_dialog should be Some");
-        let content = dialog.content_lines();
+        let content = app
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().to_vec()
+            })
+            .expect("shell detail should be mounted in FocusManager");
         let text = content.join("\n");
         assert!(
             text.contains("cargo test"),
@@ -588,12 +588,12 @@ mod shell_dispatch_tests {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 2, "cargo check", b"", b"error[E0308]\n", Some(1));
         handle_shell_show(&mut app, 2);
-        let dialog = app
-            .dialog_state
-            .shell_detail_dialog
-            .as_ref()
-            .expect("shell_detail_dialog should be Some");
-        let text = dialog.content_lines().join("\n");
+        let text = app
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
         assert!(
             text.contains("Exit:     1"),
             "should show exit code 1, got: {text}"
@@ -615,12 +615,12 @@ mod shell_dispatch_tests {
         };
         app.shell_store.insert_started(&req);
         handle_shell_show(&mut app, 3);
-        let dialog = app
-            .dialog_state
-            .shell_detail_dialog
-            .as_ref()
-            .expect("shell_detail_dialog should be Some");
-        let text = dialog.content_lines().join("\n");
+        let text = app
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
         assert!(
             text.contains("running"),
             "should show running status, got: {text}"
@@ -636,12 +636,12 @@ mod shell_dispatch_tests {
         let mut app = make_test_app();
         insert_completed_entry(&mut app, 4, "true", b"", b"", Some(0));
         handle_shell_show(&mut app, 4);
-        let dialog = app
-            .dialog_state
-            .shell_detail_dialog
-            .as_ref()
-            .expect("shell_detail_dialog should be Some");
-        let text = dialog.content_lines().join("\n");
+        let text = app
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().join("\n")
+            })
+            .expect("shell detail should be mounted in FocusManager");
         assert!(
             text.contains("no output captured"),
             "should show no-output message, got: {text}"

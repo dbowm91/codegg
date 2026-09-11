@@ -58,6 +58,7 @@ pub enum DialogType {
     RunDetail,
     Collaborators,
     ProjectChat,
+    ProjectPicker,
     None,
 }
 
@@ -106,18 +107,62 @@ impl From<DialogType> for Dialog {
             DialogType::DoctorReport => Dialog::DoctorReport,
             DialogType::Plugin => Dialog::Plugin,
             DialogType::RunDetail => Dialog::RunDetail,
-            // Collaborator presence and project chat render through the
-            // generic info dialog (focus-stack slot). There is no
-            // dedicated `Dialog` variant; closing follows the standard
-            // info-dialog path.
-            DialogType::Collaborators => Dialog::None,
-            DialogType::ProjectChat => Dialog::None,
+            DialogType::ProjectPicker => Dialog::ProjectPicker,
+            DialogType::Collaborators => Dialog::Collaborators,
+            DialogType::ProjectChat => Dialog::ProjectChat,
             DialogType::None => Dialog::None,
         }
     }
 }
 
-pub trait Component: Send + Any {
+impl From<Dialog> for DialogType {
+    fn from(dialog: Dialog) -> Self {
+        match dialog {
+            Dialog::None => DialogType::None,
+            Dialog::Model => DialogType::Model,
+            Dialog::Agent => DialogType::Agent,
+            Dialog::Session => DialogType::Session,
+            Dialog::Help => DialogType::Help,
+            Dialog::Tree => DialogType::Tree,
+            Dialog::Theme => DialogType::Theme,
+            Dialog::Question => DialogType::Question,
+            Dialog::Permission => DialogType::Permission,
+            Dialog::Mcp => DialogType::Mcp,
+            Dialog::Keybind => DialogType::Keybind,
+            Dialog::Share => DialogType::Share,
+            Dialog::Import => DialogType::Import,
+            Dialog::Template => DialogType::Template,
+            Dialog::Connect => DialogType::Connect,
+            Dialog::ConnectionSelection => DialogType::ConnectionSelection,
+            Dialog::Context => DialogType::Context,
+            Dialog::Cost => DialogType::Cost,
+            Dialog::Usage => DialogType::Usage,
+            Dialog::Stats => DialogType::Stats,
+            Dialog::Goto => DialogType::Goto,
+            Dialog::Plan => DialogType::Plan,
+            Dialog::Diff => DialogType::Diff,
+            Dialog::Confirm => DialogType::Confirm,
+            Dialog::Review => DialogType::Review,
+            Dialog::ResearchBrowser => DialogType::ResearchBrowser,
+            Dialog::SecurityReview => DialogType::SecurityReview,
+            Dialog::SourcePreview => DialogType::SourcePreview,
+            Dialog::ShellShow => DialogType::ShellShow,
+            Dialog::Terminal => DialogType::Terminal,
+            Dialog::TaskList => DialogType::TaskList,
+            Dialog::WorktreeList => DialogType::WorktreeList,
+            Dialog::GoalShow => DialogType::GoalShow,
+            Dialog::MemoryResults => DialogType::MemoryResults,
+            Dialog::DoctorReport => DialogType::DoctorReport,
+            Dialog::Plugin => DialogType::Plugin,
+            Dialog::RunDetail => DialogType::RunDetail,
+            Dialog::ProjectPicker => DialogType::ProjectPicker,
+            Dialog::Collaborators => DialogType::Collaborators,
+            Dialog::ProjectChat => DialogType::ProjectChat,
+        }
+    }
+}
+
+pub trait Component: Send + Any + AsAny {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
     fn handle_paste(&mut self, _text: String) -> Option<TuiMsg> {
         None
@@ -147,4 +192,76 @@ pub trait Component: Send + Any {
         0
     }
     fn set_focused(&mut self, _idx: usize) {}
+}
+
+/// Object-safe type erasure used by the narrow typed modal accessors.
+pub trait AsAny {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Any> AsAny for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Dialog, DialogType};
+
+    #[test]
+    fn dialog_discriminators_round_trip_exhaustively() {
+        let cases = [
+            (DialogType::Share, Dialog::Share),
+            (DialogType::Model, Dialog::Model),
+            (DialogType::Agent, Dialog::Agent),
+            (DialogType::Session, Dialog::Session),
+            (DialogType::Help, Dialog::Help),
+            (DialogType::Tree, Dialog::Tree),
+            (DialogType::Theme, Dialog::Theme),
+            (DialogType::Permission, Dialog::Permission),
+            (DialogType::Mcp, Dialog::Mcp),
+            (DialogType::Question, Dialog::Question),
+            (DialogType::Diff, Dialog::Diff),
+            (DialogType::Import, Dialog::Import),
+            (DialogType::Template, Dialog::Template),
+            (DialogType::Connect, Dialog::Connect),
+            (DialogType::ConnectionSelection, Dialog::ConnectionSelection),
+            (DialogType::Keybind, Dialog::Keybind),
+            (DialogType::Context, Dialog::Context),
+            (DialogType::Cost, Dialog::Cost),
+            (DialogType::Usage, Dialog::Usage),
+            (DialogType::Stats, Dialog::Stats),
+            (DialogType::Goto, Dialog::Goto),
+            (DialogType::Plan, Dialog::Plan),
+            (DialogType::Review, Dialog::Review),
+            (DialogType::Confirm, Dialog::Confirm),
+            (DialogType::ResearchBrowser, Dialog::ResearchBrowser),
+            (DialogType::SecurityReview, Dialog::SecurityReview),
+            (DialogType::SourcePreview, Dialog::SourcePreview),
+            (DialogType::ShellShow, Dialog::ShellShow),
+            (DialogType::Terminal, Dialog::Terminal),
+            (DialogType::TaskList, Dialog::TaskList),
+            (DialogType::WorktreeList, Dialog::WorktreeList),
+            (DialogType::GoalShow, Dialog::GoalShow),
+            (DialogType::MemoryResults, Dialog::MemoryResults),
+            (DialogType::DoctorReport, Dialog::DoctorReport),
+            (DialogType::Plugin, Dialog::Plugin),
+            (DialogType::RunDetail, Dialog::RunDetail),
+            (DialogType::Collaborators, Dialog::Collaborators),
+            (DialogType::ProjectChat, Dialog::ProjectChat),
+            (DialogType::ProjectPicker, Dialog::ProjectPicker),
+            (DialogType::None, Dialog::None),
+        ];
+
+        for (expected_type, dialog) in cases {
+            assert_eq!(DialogType::from(dialog.clone()), expected_type);
+            assert_eq!(Dialog::from(expected_type), dialog);
+        }
+    }
 }

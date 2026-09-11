@@ -94,19 +94,25 @@ fn active_channel_for(app: &App, project_id: &str) -> Option<String> {
 /// fetch.
 fn refresh_chat_panel(app: &mut App) {
     let showing_chat = app
-        .dialog_state
-        .info_dialog
-        .as_ref()
-        .map(|d| d.info_type() == crate::tui::components::dialogs::info::InfoType::ProjectChat)
+        .focus_manager
+        .with_dialog(
+            crate::tui::components::component::DialogType::ProjectChat,
+            |dialog: &crate::tui::components::dialogs::info::InfoDialog| {
+                dialog.info_type() == crate::tui::components::dialogs::info::InfoType::ProjectChat
+            },
+        )
         .unwrap_or(false);
     if !showing_chat {
         return;
     }
     if let Some(project_id) = app.chat_panel_project.clone() {
         let lines = app.chat.panel_lines(&project_id, now_ms());
-        if let Some(dialog) = app.dialog_state.info_dialog.as_mut() {
-            dialog.set_content(lines);
-        }
+        let _ = app.focus_manager.with_dialog_mut(
+            crate::tui::components::component::DialogType::ProjectChat,
+            |dialog: &mut crate::tui::components::dialogs::info::InfoDialog| {
+                dialog.set_content(lines);
+            },
+        );
     }
 }
 
@@ -1446,11 +1452,8 @@ pub(crate) fn on_chat_message_redacted(
 /// (no polling storm from background typing).
 pub(crate) fn on_chat_composing_hint(app: &mut App, project_id: String, channel_id: String) {
     let panel_showing = app
-        .dialog_state
-        .info_dialog
-        .as_ref()
-        .map(|d| d.info_type() == crate::tui::components::dialogs::info::InfoType::ProjectChat)
-        .unwrap_or(false);
+        .focus_manager
+        .has_dialog(crate::tui::components::component::DialogType::ProjectChat);
     if !panel_showing {
         app.chat.note_hint(&project_id);
         return;

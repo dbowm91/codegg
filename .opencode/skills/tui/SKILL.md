@@ -60,7 +60,12 @@ to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
   otherwise opens a scrollable `InfoDialog`.
 - `Dialog::Plugin` is generic: one variant handles every plugin dialog.
 - `DialogType` lives in `src/tui/components/component.rs`, not `types.rs`.
-- Focus management goes through `FocusManager` (`components/focus.rs`).
+- Focus management goes through `FocusManager` (`components/component/focus.rs`).
+- `FocusManager` owns mounted live modal components. Use its narrow typed
+  `with_dialog`, `with_dialog_mut`, or `with_component` helpers for updates;
+  do not clone a component into `DialogState` and replace the mounted copy.
+  `ui_state.dialog` is a derived compatibility discriminator, while
+  `active_dialog_type()` controls modal lifecycle.
 
 ## Other Invariants
 

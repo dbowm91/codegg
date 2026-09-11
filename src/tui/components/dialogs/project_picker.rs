@@ -94,7 +94,7 @@ impl Component for ProjectPickerDialog {
     }
 
     fn dialog_type(&self) -> DialogType {
-        DialogType::None
+        DialogType::ProjectPicker
     }
 }
 

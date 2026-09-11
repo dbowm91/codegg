@@ -1145,11 +1145,19 @@ fn chat_panel_opens_with_standard_focus_keys_and_stays_bounded() {
     app.show_chat();
     // Panel opens as the standard scrollable info dialog (j/k scroll,
     // Esc/Enter close — no session state mutated).
-    let dialog = app.dialog_state.info_dialog.as_ref().expect("panel open");
     assert_eq!(
-        dialog.info_type(),
-        codegg::tui::components::dialogs::info::InfoType::ProjectChat
+        app.focus_manager.active_dialog_type(),
+        codegg::tui::components::component::DialogType::ProjectChat
     );
+    assert!(app
+        .focus_manager
+        .with_dialog(
+            codegg::tui::components::component::DialogType::ProjectChat,
+            |dialog: &codegg::tui::components::dialogs::info::InfoDialog| {
+                dialog.info_type() == codegg::tui::components::dialogs::info::InfoType::ProjectChat
+            },
+        )
+        .unwrap_or(false));
     assert_eq!(app.chat_panel_project.as_deref(), Some("proj-a"));
     assert_eq!(app.open_tab_count(), 1);
 

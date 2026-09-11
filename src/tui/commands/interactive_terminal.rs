@@ -1082,7 +1082,6 @@ pub(crate) fn apply_terminal_op_finished(
             app.interactive_terminals.apply_removed(&handle);
             if app.dialog_state.terminal_detail_handle.as_deref() == Some(handle.as_str()) {
                 app.dialog_state.terminal_detail_handle = None;
-                app.dialog_state.terminal_dialog = None;
                 if matches!(app.ui_state.dialog, crate::tui::Dialog::Terminal) {
                     app.close_dialog();
                 }
@@ -1123,7 +1122,6 @@ pub(crate) fn handle_terminal_show(app: &mut App, handle: String) {
         return;
     }
     app.interactive_terminals.set_active(&handle);
-    let just_created = app.dialog_state.terminal_dialog.is_none();
     app.dialog_state.terminal_detail_handle = Some(handle);
     let shown = app
         .dialog_state
@@ -1132,11 +1130,6 @@ pub(crate) fn handle_terminal_show(app: &mut App, handle: String) {
         .expect("terminal detail handle just set");
     refresh_terminal_dialog(app, &shown);
     app.ui_state.dialog = crate::tui::Dialog::Terminal;
-    if just_created {
-        if let Some(ref dialog) = app.dialog_state.terminal_dialog {
-            app.focus_manager.push(Box::new(dialog.clone()));
-        }
-    }
 }
 
 /// Re-render the open terminal dialog for `handle` when it is the
@@ -1161,29 +1154,22 @@ pub(crate) fn refresh_terminal_dialog(app: &mut App, handle: &str) {
     }
     let footer =
         "i focus  |  Esc unfocus/close  |  j/k scroll  |  /terminal-resume refresh".to_string();
-    let just_created = app.dialog_state.terminal_dialog.is_none();
-    if just_created {
+    if let Some(dialog) = app
+        .focus_manager
+        .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
+    {
+        dialog.set_info_type(crate::tui::components::dialogs::info::InfoType::TerminalShow);
+        dialog.set_content(lines);
+        dialog.set_theme(&app.ui_state.theme);
+        dialog.set_custom_footer(footer);
+    } else {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
             crate::tui::components::dialogs::info::InfoType::TerminalShow,
             lines,
         );
         dialog.set_custom_footer(footer);
-        app.dialog_state.terminal_dialog = Some(dialog);
-    } else if let Some(ref mut dialog) = app.dialog_state.terminal_dialog {
-        dialog.set_info_type(crate::tui::components::dialogs::info::InfoType::TerminalShow);
-        dialog.set_content(lines);
-        dialog.set_theme(&app.ui_state.theme);
-        dialog.set_custom_footer(footer);
-    }
-    if let Some(ref dialog) = app.dialog_state.terminal_dialog {
-        if !just_created {
-            // Sync the focus stack's clone with the freshly updated
-            // terminal dialog.
-            let dialog_type = dialog.dialog_type_for_info_type();
-            app.focus_manager
-                .replace_top_dialog(dialog_type, Box::new(dialog.clone()));
-        }
+        app.focus_manager.push(Box::new(dialog));
     }
 }
 
@@ -1221,7 +1207,6 @@ pub(crate) fn close_terminal_view(app: &mut App, terminate: bool) {
         }
     }
     app.dialog_state.terminal_detail_handle = None;
-    app.dialog_state.terminal_dialog = None;
 }
 
 /// Route one dialog key through the terminal focus gate.

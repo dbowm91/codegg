@@ -61,7 +61,7 @@ impl UiNodeDialog {
 
 impl Component for UiNodeDialog {
     fn dialog_type(&self) -> DialogType {
-        DialogType::Plugin
+        DialogType::Stats
     }
 
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<TuiMsg> {
@@ -471,7 +471,7 @@ mod tests {
         let theme = test_theme();
         let body = make_text_node("hello");
         let dialog = UiNodeDialog::new("id".into(), "Title".into(), body, Arc::clone(&theme));
-        assert_eq!(dialog.dialog_type(), DialogType::Plugin);
+        assert_eq!(dialog.dialog_type(), DialogType::Stats);
     }
 
     #[test]

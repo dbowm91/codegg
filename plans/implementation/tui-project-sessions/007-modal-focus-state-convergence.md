@@ -1,6 +1,6 @@
 # Multi-Project TUI Frontend Convergence M007 — Modal and Focus State Convergence
 
-Status: ready for handoff
+Status: implemented
 
 Repository baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
@@ -234,4 +234,7 @@ Include implementation commits, modal ownership census/matrix, before/after cano
 
 ## 16. Handoff notes
 
-This plan is independently ready and may be implemented before or after M005. Prefer migrating the highest-synchronization dialogs first so the chosen API is exercised before sweeping the remainder. Avoid splitting source files for size here; M008 owns physical decomposition after state ownership closes.
+Implementation is complete. Closure evidence is recorded in
+`plans/closure/tui-project-sessions/007-status.md`. M008 and M009 may now be
+handed off; M008 remains sequenced after the closed M005-M007 contracts, while
+M010 remains technically ready with M009 as a soft preference.

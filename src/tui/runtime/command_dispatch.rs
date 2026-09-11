@@ -636,12 +636,7 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
         }
         TuiCommand::OpenRunDetailLoaded { mut dialog } => {
             dialog.set_theme(&app.ui_state.theme);
-            app.dialog_state.run_detail_dialog = Some(dialog);
-            if let Some(ref mut dlg) = app.dialog_state.run_detail_dialog {
-                dlg.set_theme(&app.ui_state.theme);
-                app.focus_manager.push(Box::new(dlg.clone()));
-            }
-            app.ui_state.dialog = crate::tui::Dialog::RunDetail;
+            app.push_dialog(crate::tui::Dialog::RunDetail, Box::new(dialog));
         }
         TuiCommand::OpenRunDetailError { error } => {
             app.messages_state.toasts.error(&error);
@@ -998,12 +993,38 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                     dialog.set_selection(sel);
                 }
             }
-            // The focus stack holds a clone pushed at open time; sync it
-            // so the rendered dialog reflects the refreshed state.
-            app.focus_manager.replace_top_dialog(
-                crate::tui::components::component::DialogType::ConnectionSelection,
-                Box::new(dialog.clone()),
-            );
+            // The focus stack owns the rendered instance. Apply the same
+            // authoritative completion directly to that live component.
+            let loading_error = dialog.last_error.clone();
+            let connections = dialog.connections.clone();
+            let models = dialog.models.clone();
+            let selection = dialog.selection.clone();
+            let focused_connection_id = dialog
+                .connections
+                .get(dialog.connection_idx)
+                .map(|connection| connection.id.clone());
+            let _ = app
+                .focus_manager
+                .dialog_mut::<crate::tui::components::dialogs::connection_selection::ConnectionSelectionDialog>(
+                    crate::tui::components::component::DialogType::ConnectionSelection,
+                )
+                .map(|live| {
+                    live.finish_loading();
+                    if let Some(error) = loading_error {
+                        live.set_error(error);
+                    } else {
+                        live.set_connections(connections);
+                        live.set_models(models);
+                        if let Some(focused) = focused_connection_id {
+                            if let Some(idx) = live.connections.iter().position(|c| c.id == focused) {
+                                live.connection_idx = idx;
+                            }
+                        }
+                        if let Some(selection) = selection {
+                            live.set_selection(selection);
+                        }
+                    }
+                });
         }
         TuiCommand::TasksListed {
             request_id,

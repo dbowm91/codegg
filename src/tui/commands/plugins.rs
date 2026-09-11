@@ -1310,12 +1310,13 @@ mod tests {
         assert_eq!(result, PluginUiApplyResult::ChatApplied);
         // Long output opens the info dialog.
         let info = app
-            .dialog_state
-            .info_dialog
-            .as_ref()
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|dialog| {
+                dialog.content_lines().to_vec()
+            })
             .expect("long EmitChat should open the info dialog");
         // The dialog content should include the plugin output.
-        let content_lines = info.content_lines();
+        let content_lines = &info;
         assert!(
             content_lines.iter().any(|l| l.contains("line 0"))
                 || content_lines.iter().any(|l| l.contains("line 9")),
@@ -1346,7 +1347,8 @@ mod tests {
             "empty EmitChat must not produce a toast"
         );
         assert!(
-            app.dialog_state.info_dialog.is_none(),
+            !app.focus_manager
+                .has_component::<crate::tui::components::dialogs::info::InfoDialog>(),
             "empty EmitChat must not open info dialog"
         );
     }
@@ -1386,10 +1388,8 @@ mod tests {
             .collect();
         let in_toast = toast_msgs.iter().any(|m| m.contains("from /quota command"));
         let in_info = app
-            .dialog_state
-            .info_dialog
-            .as_ref()
-            .map(|d| {
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|d| {
                 d.content_lines()
                     .iter()
                     .any(|l| l.contains("from /quota command"))
@@ -1399,7 +1399,8 @@ mod tests {
             in_toast || in_info,
             "EmitChat from PluginResponse must render visibly (toast or info dialog), \
              got toasts: {toast_msgs:?}, info_dialog opened: {}",
-            app.dialog_state.info_dialog.is_some()
+            app.focus_manager
+                .has_component::<crate::tui::components::dialogs::info::InfoDialog>()
         );
     }
 
@@ -1447,10 +1448,10 @@ mod tests {
             .map(|t| t.message.clone())
             .collect();
         let info_lines = app
-            .dialog_state
-            .info_dialog
-            .as_ref()
-            .map(|d| d.content_lines().to_vec());
+            .focus_manager
+            .with_component::<crate::tui::components::dialogs::info::InfoDialog, _>(|d| {
+                d.content_lines().to_vec()
+            });
         let surfaced = toast_msgs.iter().any(|m| m.contains("hello-from-process"))
             || info_lines
                 .as_ref()

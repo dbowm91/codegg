@@ -37,6 +37,14 @@ impl PluginDialog {
         self.lines = lines;
         self.scroll = 0;
     }
+
+    pub fn set_title(&mut self, title: String) {
+        self.title = title;
+    }
+
+    pub fn set_theme(&mut self, theme: &Arc<Theme>) {
+        self.theme = Arc::clone(theme);
+    }
 }
 
 impl Component for PluginDialog {

@@ -510,19 +510,12 @@ pub struct AgentState {
 }
 ```
 
-### DialogState (`src/tui/app/state/dialog.rs:27`)
+### DialogState (`src/tui/app/state/dialog.rs`)
 
-Always instantiated: `model_dialog`, `agent_dialog`, `session_dialog`,
-`tree_dialog`, `command_palette`.
-
-On-demand (Option): `theme_picker`, `question_dialog`,
-`permission_dialog`, `keybind_dialog`, `mcp_dialog`, `share_dialog`,
-`import_dialog`, `template_dialog`, `connect_dialog`,
-`connection_selection_dialog`, `goto_dialog`, `plan_dialog`,
-`diff_dialog`, `review_dialog`, `security_review_dialog`,
-`source_preview_dialog`, `run_detail_dialog`, `research_browser`,
-`help_dialog`, `info_dialog`, `ui_node_dialog`,
-`shell_detail_dialog`, `terminal_dialog`, `project_picker`.
+`DialogState` owns non-visual request metadata, pending authorization, and
+async request generations. Mounted modal components are owned by
+`FocusManager`; it is the only writable owner used for render and input.
+The command palette remains prompt-completion state rather than a modal.
 
 Async request states: `import_request`, `research_request`,
 `session_reload_request`, `task_list_request`, `task_delete_request`,
@@ -550,13 +543,13 @@ pub enum Dialog {
     Context, Cost, Usage, Stats, Goto, Plan, Diff, Confirm,
     Review, ResearchBrowser, SecurityReview, SourcePreview,
     ShellShow, Terminal, TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Plugin, RunDetail, ProjectPicker,
+    DoctorReport, Plugin, RunDetail, ProjectPicker, Collaborators, ProjectChat,
 }
 ```
 
 The `Terminal` dialog renders one interactive terminal view (M003): an
-`InfoDialog` with `InfoType::TerminalShow` driven by
-`DialogState::terminal_dialog` / `terminal_detail_handle`. It is a
+`InfoDialog` with `InfoType::TerminalShow` driven by the live
+`FocusManager` component and `DialogState::terminal_detail_handle`. It is a
 projection of the M002 protocol, not a PTY widget: headers describe
 link/focus/size/cursor state, output shows the newest bounded lines,
 and keyboard bytes reach the process only under explicit focus
@@ -572,17 +565,19 @@ pub enum DialogType {
     Context, Cost, Usage, Stats, Goto, Plan, Review, Confirm,
     ResearchBrowser, SecurityReview, SourcePreview, ShellShow, Terminal,
     TaskList, WorktreeList, GoalShow, MemoryResults,
-    DoctorReport, Plugin, RunDetail, None,
+    DoctorReport, Plugin, RunDetail, Collaborators, ProjectChat,
+    ProjectPicker, None,
 }
 ```
 
-Note: `Dialog::ProjectPicker` has no corresponding `DialogType` variant;
-the picker dialog component returns `DialogType::None`.
+`Dialog` and `DialogType` have exhaustive compatibility conversions. The
+canonical lifecycle identity is the live component's `DialogType`; the
+`ui_state.dialog` value is only a derived compatibility mirror.
 
 ### Component Trait (`src/tui/components/component.rs:110`)
 
 ```rust
-pub trait Component: Send + Any {
+pub trait Component: Send + Any + AsAny {
     fn handle_key(&mut self, key: KeyEvent) -> Option<TuiMsg>;
     fn handle_paste(&mut self, text: String) -> Option<TuiMsg> { None }
     fn update(&mut self, msg: TuiMsg) -> Option<TuiMsg>;
@@ -599,17 +594,20 @@ pub trait Component: Send + Any {
 }
 ```
 
-### FocusManager (`src/tui/components/component/focus.rs:14`)
+### FocusManager (`src/tui/components/component/focus.rs`)
 
 ```rust
 pub struct FocusManager {
     stack: VecDeque<Box<dyn Component>>,
-    focus_index: usize,
 }
 ```
 
 Key methods: `push(component)`, `pop()`, `top()`/`top_mut()`,
-`handle_key(key)`, `active_dialog_type()`, `len()`.
+`with_dialog(_mut)`, `with_component`, `handle_key(key)`,
+`active_dialog_type()`, `len()`. Focus belongs to each component, so nested
+push/pop preserves the underlying modal's selection. `Tab` and `Shift-Tab`
+wrap against the current component count, including zero and one-control
+dialogs.
 
 ### TuiMsg (`src/tui/app/types.rs:86`)
 

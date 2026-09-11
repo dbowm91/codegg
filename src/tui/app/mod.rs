@@ -1654,10 +1654,10 @@ impl App {
                 tree_dialog: TreeDialog::new(Arc::clone(&theme)),
                 theme_picker: None,
                 question_dialog: None,
-                question_session_id: None,
                 command_palette: CommandPalette::new_with_registry(&command_registry),
-                permission_dialog: None,
+                question_session_id: None,
                 permission_perm_id: None,
+                permission_dialog: None,
                 keybind_dialog: None,
                 mcp_dialog: None,
                 share_dialog: None,
@@ -1670,14 +1670,8 @@ impl App {
                 diff_dialog: None,
                 review_dialog: None,
                 security_review_dialog: None,
-                source_preview_dialog: None,
-                run_detail_dialog: None,
                 research_browser: None,
                 help_dialog: None,
-                info_dialog: None,
-                ui_node_dialog: None,
-                shell_detail_dialog: None,
-                terminal_dialog: None,
                 terminal_detail_handle: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
@@ -2135,10 +2129,10 @@ impl App {
                 tree_dialog: TreeDialog::new(Arc::clone(&theme)),
                 theme_picker: None,
                 question_dialog: None,
-                question_session_id: None,
                 command_palette: CommandPalette::new(),
-                permission_dialog: None,
+                question_session_id: None,
                 permission_perm_id: None,
+                permission_dialog: None,
                 keybind_dialog: None,
                 mcp_dialog: None,
                 share_dialog: None,
@@ -2151,14 +2145,8 @@ impl App {
                 diff_dialog: None,
                 review_dialog: None,
                 security_review_dialog: None,
-                source_preview_dialog: None,
-                run_detail_dialog: None,
                 research_browser: None,
                 help_dialog: None,
-                info_dialog: None,
-                ui_node_dialog: None,
-                shell_detail_dialog: None,
-                terminal_dialog: None,
                 terminal_detail_handle: None,
                 pending_delete_session: None,
                 pending_archive_session: None,
@@ -2503,9 +2491,12 @@ impl App {
         &mut self,
         receipt: crate::security::workflow::SecurityReviewReceipt,
     ) {
-        if let Some(ref mut dialog) = self.dialog_state.security_review_dialog {
-            dialog.update_receipt(receipt.clone());
-        }
+        let _ = self.focus_manager.with_dialog_mut(
+            DialogType::SecurityReview,
+            |dialog: &mut crate::tui::components::dialogs::security_review::SecurityReviewDialog| {
+                dialog.update_receipt(receipt.clone());
+            },
+        );
         self.latest_security_review = Some(receipt);
     }
 
@@ -2565,7 +2556,6 @@ impl App {
                 if let Some(idx) = self.agent_state.models.iter().position(|m| m == &saved) {
                     self.agent_state.model_idx = idx;
                 }
-                self.dialog_state.model_dialog.set_current(&saved);
                 self.sidebar.set_model(&saved);
             }
         }
@@ -3325,7 +3315,7 @@ impl App {
         }
 
         // Dialog — failures close only that dialog
-        if self.ui_state.dialog.is_open() {
+        if !self.focus_manager.is_empty() {
             let popup_area = centered_rect(60, 50, area);
             self.dialog_area = Some(popup_area);
             let dialog_result =
@@ -3342,8 +3332,8 @@ impl App {
                 self.ui_state
                     .diagnostics
                     .record_component_render_panic("dialog");
-                self.ui_state.dialog = Dialog::None;
                 self.focus_manager.pop();
+                self.ui_state.dialog = Dialog::from(self.focus_manager.active_dialog_type());
             }
         } else {
             self.dialog_area = None;
@@ -4209,14 +4199,14 @@ impl App {
     }
 
     fn render_dialog(&mut self, frame: &mut Frame, area: Rect) {
-        if self.focus_manager.is_empty() && !self.ui_state.dialog.is_open() {
+        if self.focus_manager.is_empty() {
             return;
         }
 
         // The project picker renders directly from `App::dialog_state.project_picker`
         // because the picker state is owned by the App, not the
         // focus manager.
-        if self.ui_state.dialog == Dialog::ProjectPicker {
+        if self.focus_manager.active_dialog_type() == DialogType::ProjectPicker {
             self.render_project_picker(frame, area);
             return;
         }
@@ -4958,12 +4948,7 @@ impl App {
                     ),
                     None => SourcePreviewDialog::new(Arc::clone(&self.ui_state.theme), path, line),
                 };
-                self.dialog_state.source_preview_dialog = Some(dialog);
-                if let Some(ref mut dlg) = self.dialog_state.source_preview_dialog {
-                    dlg.set_theme(&self.ui_state.theme);
-                    self.focus_manager.push(Box::new(dlg.clone()));
-                }
-                self.ui_state.dialog = crate::tui::Dialog::SourcePreview;
+                self.push_dialog(Dialog::SourcePreview, Box::new(dialog));
             }
             TuiMsg::OpenRunDetail { run_id } => {
                 use crate::tui::components::dialogs::run_detail::RunDetailDialog;
@@ -5104,9 +5089,7 @@ impl App {
 
         // Modal dialogs own input while they are active.
         if !self.focus_manager.is_empty() {
-            if let Some(msg) = self.focus_manager.handle_key(key) {
-                self.process_msg(msg);
-            }
+            self.handle_dialog_key(key);
             return;
         }
 
@@ -5276,7 +5259,36 @@ impl App {
         }
     }
 
+    /// Route modal input through the canonical live component. Dialogs may
+    /// return an application message, but unhandled keys are consumed while
+    /// a modal is open and can never reach the prompt.
     fn handle_dialog_key(&mut self, key: KeyEvent) {
+        match self.focus_manager.active_dialog_type() {
+            DialogType::ProjectPicker => {
+                self.handle_project_picker_key(key);
+                return;
+            }
+            DialogType::Keybind => {
+                self.handle_keybind_key(key);
+                return;
+            }
+            DialogType::Terminal => {
+                if crate::tui::commands::interactive_terminal::handle_terminal_key(self, key) {
+                    return;
+                }
+            }
+            _ => {}
+        }
+        if let Some(msg) = self.focus_manager.handle_key(key) {
+            self.process_msg(msg);
+        }
+    }
+
+    /// Legacy app-side dialog router retained only as source history while
+    /// component dispatch converges. It is intentionally unreachable: the
+    /// FocusManager-owned component is the sole input authority.
+    #[cfg(any())]
+    fn handle_dialog_key_legacy(&mut self, key: KeyEvent) {
         debug_log!(
             "handle_dialog_key: dialog={:?}, key_code={:?}",
             self.ui_state.dialog,
@@ -10085,13 +10097,17 @@ impl App {
         self.agent_state.current_agent = visible[next_pos];
     }
 
-    fn push_dialog(
+    pub(crate) fn push_dialog(
         &mut self,
         dialog: Dialog,
         component: Box<dyn crate::tui::components::component::Component>,
     ) {
-        self.ui_state.dialog = dialog;
-        self.focus_manager.push(component);
+        let dialog_type = crate::tui::components::component::DialogType::from(dialog.clone());
+        if self.focus_manager.push(component) {
+            self.ui_state.dialog = dialog;
+        } else if self.focus_manager.has_dialog(dialog_type.clone()) {
+            self.ui_state.dialog = Dialog::from(dialog_type);
+        }
     }
 
     /// Enqueue a [`TuiCommand`] on the bounded command channel. On
@@ -10116,12 +10132,13 @@ impl App {
     }
 
     pub(crate) fn close_dialog(&mut self) {
+        let closing_dialog = Dialog::from(self.focus_manager.active_dialog_type());
         // If the theme picker was live-previewing, revert to the
         // original theme before closing. Esc and Enter both fire
         // `ThemeRevert`/`ThemeCommit` and tear down the dialog
         // themselves; this path catches every other dismissal (mouse,
         // parent close, etc).
-        if self.ui_state.dialog == Dialog::Theme {
+        if closing_dialog == Dialog::Theme {
             if let Some(picker) = self.dialog_state.theme_picker.as_ref() {
                 if picker.is_previewing() {
                     let target = picker
@@ -10139,7 +10156,7 @@ impl App {
         // the dialog being closed. This ensures stale completions
         // from in-flight requests are ignored.
         use crate::tui::task_lifecycle::TuiTaskKind;
-        match self.ui_state.dialog {
+        match closing_dialog {
             Dialog::Tree => {
                 self.task_registry.cancel_kind(TuiTaskKind::Command);
             }
@@ -10187,7 +10204,6 @@ impl App {
             }
             Dialog::ShellShow => {
                 self.dialog_state.shell_detail_id = None;
-                self.dialog_state.shell_detail_dialog = None;
             }
             Dialog::Terminal => {
                 // UI state only: attachment release is owned by
@@ -10195,11 +10211,8 @@ impl App {
                 // transport disconnect server-side. Clearing here keeps
                 // every dismissal path truthful without double-detach.
                 self.dialog_state.terminal_detail_handle = None;
-                self.dialog_state.terminal_dialog = None;
             }
-            Dialog::RunDetail => {
-                self.dialog_state.run_detail_dialog = None;
-            }
+            Dialog::RunDetail => {}
             _ => {}
         }
 
@@ -10688,23 +10701,26 @@ impl App {
                         ) {
                             let lines = crate::tui::components::ui_node_renderer::UiNodeRenderer::
                                 node_to_lines(&spec.body);
-                            let dialog = crate::tui::components::dialogs::plugin::PluginDialog::new(
-                                spec.id.clone(),
-                                spec.title.clone(),
-                                lines,
-                                Arc::clone(&self.ui_state.theme),
-                            );
-                            if self.ui_state.dialog == Dialog::Plugin {
-                                // Replace the existing plugin entry rather
-                                // than pushing a duplicate so consecutive
-                                // OpenDialog effects cannot grow the stack
-                                // without bound.
-                                self.focus_manager.replace_top_dialog(
+                            if self.focus_manager.active_dialog_type()
+                                == crate::tui::components::component::DialogType::Plugin
+                            {
+                                let _ = self.focus_manager.with_dialog_mut(
                                     crate::tui::components::component::DialogType::Plugin,
-                                    Box::new(dialog),
+                                    |dialog: &mut crate::tui::components::dialogs::plugin::PluginDialog| {
+                                        dialog.update_content(lines);
+                                        dialog.set_title(spec.title.clone());
+                                        dialog.set_theme(&self.ui_state.theme);
+                                    },
                                 );
                             } else {
-                                self.focus_manager.push(Box::new(dialog));
+                                let dialog =
+                                    crate::tui::components::dialogs::plugin::PluginDialog::new(
+                                        spec.id.clone(),
+                                        spec.title.clone(),
+                                        lines,
+                                        Arc::clone(&self.ui_state.theme),
+                                    );
+                                self.push_dialog(Dialog::Plugin, Box::new(dialog));
                             }
                             self.ui_state.dialog = Dialog::Plugin;
                         }
@@ -10918,17 +10934,6 @@ impl App {
     }
 
     #[allow(dead_code)]
-    fn replace_dialog(
-        &mut self,
-        dialog: Dialog,
-        component: Box<dyn crate::tui::components::component::Component>,
-    ) {
-        self.focus_manager.pop();
-        self.ui_state.dialog = dialog;
-        self.focus_manager.push(component);
-    }
-
-    #[allow(dead_code)]
     fn active_dialog_type(&self) -> crate::tui::components::component::DialogType {
         self.focus_manager.active_dialog_type()
     }
@@ -10939,28 +10944,20 @@ impl App {
         lines: Vec<String>,
     ) {
         use crate::tui::components::dialogs::info::InfoDialog;
-        if let Some(ref mut dialog) = self.dialog_state.info_dialog {
-            // Reuse the existing dialog to avoid double-pushing the
-            // focus stack. set_info_type resets scroll position.
-            dialog.set_info_type(info_type);
-            dialog.set_content(lines);
-            dialog.set_theme(&self.ui_state.theme);
-            // The focus stack holds a clone rendered separately; sync it
-            // so the on-screen component reflects the new content.
-            let dialog_type = dialog.dialog_type_for_info_type();
-            if let Some(ref updated) = self.dialog_state.info_dialog {
-                self.focus_manager
-                    .replace_top_dialog(dialog_type, Box::new(updated.clone()));
-            }
+        let dialog = InfoDialog::new(Arc::clone(&self.ui_state.theme), info_type, lines);
+        let dialog_type = dialog.dialog_type_for_info_type();
+        if self.focus_manager.dialog_mut_any::<InfoDialog>().is_some() {
+            let _ = self
+                .focus_manager
+                .dialog_mut_any::<InfoDialog>()
+                .map(|live| {
+                    live.set_info_type(dialog.info_type());
+                    live.set_content(dialog.content_lines().to_vec());
+                    live.set_theme(&self.ui_state.theme);
+                });
+            self.ui_state.dialog = Dialog::from(dialog_type);
         } else {
-            self.dialog_state.info_dialog = Some(InfoDialog::new(
-                Arc::clone(&self.ui_state.theme),
-                info_type,
-                lines,
-            ));
-            if let Some(ref info_dialog) = self.dialog_state.info_dialog {
-                self.focus_manager.push(Box::new(info_dialog.clone()));
-            }
+            self.push_dialog(Dialog::from(dialog_type), Box::new(dialog));
         }
     }
 
@@ -10984,10 +10981,14 @@ impl App {
 
     pub(crate) fn open_ui_node_dialog(&mut self, title: String, body: codegg_protocol::ui::UiNode) {
         use crate::tui::components::dialogs::ui_node::UiNodeDialog;
-        if let Some(ref mut dialog) = self.dialog_state.ui_node_dialog {
-            dialog.update_content(body);
-            dialog.set_title(title);
-            dialog.set_theme(&self.ui_state.theme);
+        if self.focus_manager.has_component::<UiNodeDialog>() {
+            let _ = self
+                .focus_manager
+                .with_component_mut::<UiNodeDialog, _>(|dialog| {
+                    dialog.update_content(body);
+                    dialog.set_title(title);
+                    dialog.set_theme(&self.ui_state.theme);
+                });
         } else {
             let dialog = UiNodeDialog::new(
                 "stats".into(),
@@ -10995,10 +10996,7 @@ impl App {
                 body,
                 Arc::clone(&self.ui_state.theme),
             );
-            self.dialog_state.ui_node_dialog = Some(dialog);
-            if let Some(ref d) = self.dialog_state.ui_node_dialog {
-                self.focus_manager.push(Box::new(d.clone()));
-            }
+            self.push_dialog(Dialog::Stats, Box::new(dialog));
         }
     }
 
@@ -11015,7 +11013,14 @@ impl App {
         let picker =
             crate::tui::app::state::ProjectPickerState::new(transport_local, catalog_generation);
         self.dialog_state.project_picker = Some(picker);
-        self.ui_state.dialog = Dialog::ProjectPicker;
+        self.push_dialog(
+            Dialog::ProjectPicker,
+            Box::new(
+                crate::tui::components::dialogs::project_picker::ProjectPickerDialog::new(
+                    Arc::clone(&self.ui_state.theme),
+                ),
+            ),
+        );
 
         // Trigger a fresh catalog refresh so the picker has current data.
         if self.core_client.is_some() {
@@ -11051,6 +11056,9 @@ impl App {
                     .push(Box::new(self.dialog_state.session_dialog.clone()));
             }
             Dialog::Model => {
+                self.dialog_state
+                    .model_dialog
+                    .set_current(&self.agent_state.current_model);
                 self.dialog_state.model_dialog.initialize_selection();
                 self.focus_manager
                     .push(Box::new(self.dialog_state.model_dialog.clone()));
@@ -11089,33 +11097,7 @@ impl App {
                     _ => crate::tui::components::dialogs::info::InfoType::Context,
                 };
                 let lines = self.get_info_dialog_lines();
-                let focus_was_empty = self.dialog_state.info_dialog.is_none();
-                if focus_was_empty {
-                    self.dialog_state.info_dialog =
-                        Some(crate::tui::components::dialogs::info::InfoDialog::new(
-                            Arc::clone(&self.ui_state.theme),
-                            info_type,
-                            lines,
-                        ));
-                } else if let Some(ref mut info_dialog) = self.dialog_state.info_dialog {
-                    info_dialog.set_info_type(info_type);
-                    info_dialog.set_content(lines);
-                    info_dialog.set_theme(&self.ui_state.theme);
-                }
-                // Only push the focus entry on first creation; reusing
-                // an open info dialog must not double-push the stack.
-                if focus_was_empty {
-                    if let Some(ref info_dialog) = self.dialog_state.info_dialog {
-                        self.focus_manager.push(Box::new(info_dialog.clone()));
-                    }
-                } else if let Some(ref updated) = self.dialog_state.info_dialog {
-                    // The focus stack holds a stale clone; sync it so
-                    // re-opening Cost/Usage/Context in the same session
-                    // does not show the previous report.
-                    let dialog_type = updated.dialog_type_for_info_type();
-                    self.focus_manager
-                        .replace_top_dialog(dialog_type, Box::new(updated.clone()));
-                }
+                self.open_info_dialog(info_type, lines);
             }
             Dialog::Tree => {
                 self.focus_manager
@@ -11324,18 +11306,8 @@ impl App {
                     self.focus_manager.push(Box::new(dialog.clone()));
                 }
             }
-            Dialog::SourcePreview => {
-                if let Some(ref mut dialog) = self.dialog_state.source_preview_dialog {
-                    dialog.set_theme(&self.ui_state.theme);
-                    self.focus_manager.push(Box::new(dialog.clone()));
-                }
-            }
-            Dialog::RunDetail => {
-                if let Some(ref mut dialog) = self.dialog_state.run_detail_dialog {
-                    dialog.set_theme(&self.ui_state.theme);
-                    self.focus_manager.push(Box::new(dialog.clone()));
-                }
-            }
+            Dialog::SourcePreview => {}
+            Dialog::RunDetail => {}
             Dialog::ConnectionSelection => {
                 if let Some(ref dialog) = self.dialog_state.connection_selection_dialog {
                     self.focus_manager.push(Box::new(dialog.clone()));
@@ -11422,6 +11394,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn toggle_show_archived(&mut self) {
         self.dialog_state.session_dialog.toggle_show_archived();
         self.load_sessions_dialog();
@@ -12352,6 +12325,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn fork_tree_session(&mut self) {
         let session_id = match self.dialog_state.tree_dialog.fork_selected() {
             Some(id) => id,

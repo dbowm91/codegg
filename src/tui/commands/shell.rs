@@ -728,38 +728,35 @@ pub(crate) fn handle_shell_show(app: &mut app::App, id: u64) {
         lines.push("(no output captured)".to_string());
     }
 
+    show_shell_detail(
+        app,
+        id,
+        lines,
+        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close",
+    );
+}
+
+fn show_shell_detail(app: &mut app::App, id: u64, lines: Vec<String>, footer: &str) {
     let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
-    let shell_footer =
-        "i include  |  a ask  |  r rerun  |  k kill  |  e expand  |  j/k scroll  |  Esc close"
-            .to_string();
-    let just_created = app.dialog_state.shell_detail_dialog.is_none();
-    if just_created {
+    if let Some(dialog) = app
+        .focus_manager
+        .dialog_mut_any::<crate::tui::components::dialogs::info::InfoDialog>()
+    {
+        dialog.set_info_type(info_type);
+        dialog.set_content(lines);
+        dialog.set_theme(&app.ui_state.theme);
+        dialog.set_custom_footer(footer.to_string());
+    } else {
         let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
             std::sync::Arc::clone(&app.ui_state.theme),
             info_type,
             lines,
         );
-        dialog.set_custom_footer(shell_footer);
-        app.dialog_state.shell_detail_dialog = Some(dialog);
-    } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {
-        dialog.set_info_type(info_type);
-        dialog.set_content(lines);
-        dialog.set_theme(&app.ui_state.theme);
-        dialog.set_custom_footer(shell_footer);
+        dialog.set_custom_footer(footer.to_string());
+        app.focus_manager.push(Box::new(dialog));
     }
-    if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
-        app.dialog_state.shell_detail_id = Some(id);
-        if just_created {
-            app.focus_manager.push(Box::new(dialog.clone()));
-        } else {
-            // Sync the focus stack's clone with the freshly updated
-            // shell detail dialog.
-            let dialog_type = dialog.dialog_type_for_info_type();
-            app.focus_manager
-                .replace_top_dialog(dialog_type, Box::new(dialog.clone()));
-        }
-        app.ui_state.dialog = crate::tui::Dialog::ShellShow;
-    }
+    app.dialog_state.shell_detail_id = Some(id);
+    app.ui_state.dialog = crate::tui::Dialog::ShellShow;
 }
 
 pub(crate) fn format_system_time(t: std::time::SystemTime) -> String {
@@ -863,34 +860,7 @@ pub(crate) fn handle_shell_expand(
                 lines.push(format!("  {}", line));
             }
 
-            let info_type = crate::tui::components::dialogs::info::InfoType::ShellShow;
-            let footer = "j/k scroll  |  / search  |  Esc close".to_string();
-            let just_created = app.dialog_state.shell_detail_dialog.is_none();
-            if just_created {
-                let mut dialog = crate::tui::components::dialogs::info::InfoDialog::new(
-                    std::sync::Arc::clone(&app.ui_state.theme),
-                    info_type,
-                    lines,
-                );
-                dialog.set_custom_footer(footer);
-                app.dialog_state.shell_detail_dialog = Some(dialog);
-            } else if let Some(ref mut dialog) = app.dialog_state.shell_detail_dialog {
-                dialog.set_info_type(info_type);
-                dialog.set_content(lines);
-                dialog.set_theme(&app.ui_state.theme);
-                dialog.set_custom_footer(footer);
-            }
-            if let Some(ref dialog) = app.dialog_state.shell_detail_dialog {
-                app.dialog_state.shell_detail_id = Some(id);
-                if just_created {
-                    app.focus_manager.push(Box::new(dialog.clone()));
-                } else {
-                    let dialog_type = dialog.dialog_type_for_info_type();
-                    app.focus_manager
-                        .replace_top_dialog(dialog_type, Box::new(dialog.clone()));
-                }
-                app.ui_state.dialog = crate::tui::Dialog::ShellShow;
-            }
+            show_shell_detail(app, id, lines, "j/k scroll  |  / search  |  Esc close");
         }
         None => {
             // Command exists in legacy store but not in durable store

@@ -38,6 +38,8 @@ pub enum Dialog {
     Plugin,
     RunDetail,
     ProjectPicker,
+    Collaborators,
+    ProjectChat,
 }
 
 impl Dialog {
@@ -81,6 +83,8 @@ impl Dialog {
                 | Self::Plugin
                 | Self::RunDetail
                 | Self::ProjectPicker
+                | Self::Collaborators
+                | Self::ProjectChat
         )
     }
 }
