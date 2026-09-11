@@ -152,7 +152,7 @@ M009 --soft--> M010
 
 M005-M007 have no unresolved hard dependencies and are closed. M006 is
 hard-dependent on M005 because prompt continuation must resolve/bind the
-correct project/workspace context. M008 is now ready after M005-M007 so
+correct project/workspace context. M008 is now closed after M005-M007: its
 physical movement does not fossilize transitional ownership. M009 is now
 ready after M007 and consumes already-closed projection/agent-run interfaces.
 M010 depends on M005's final scoped command-catalog contract; M009 remains
@@ -323,6 +323,6 @@ The original M001-M004 closure records remain historical evidence and must not b
 | M005 | closed | `plans/implementation/tui-project-sessions/005-project-execution-context-command-scope.md` | `plans/closure/tui-project-sessions/005-status.md` | — |
 | M006 | closed | `plans/implementation/tui-project-sessions/006-nonblocking-session-submit-lifecycle.md` | `plans/closure/tui-project-sessions/006-status.md` | — |
 | M007 | closed | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | `plans/closure/tui-project-sessions/007-status.md` | — |
-| M008 | closing | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | — |
+| M008 | closed | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | — |
 | M009 | ready | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | soft: M005; M009 hard dependency M007 is closed |
 | M010 | ready | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | soft: M009 |
