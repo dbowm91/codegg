@@ -25,7 +25,6 @@ Canonical direction remains in:
 
 | Subsystem | Status | Roadmap | Current milestone | Dependencies or blockers |
 |---|---|---|---|---|
-| Multi-project TUI and sessions — frontend convergence corrective | active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` | M010 active | M005-M009 closed; M010 implementation and closure evidence in progress. |
 | Post-audit maintainability and surface — corrective | closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` | M006/M007 closed | Search/eggsearch configured fallback remains intentionally closed/retained. |
 | Architecture convergence and incomplete verticals | conditionally closed | `plans/subsystems/architecture-convergence-strict-closure-corrective-addendum.md` | M009 conditionally closed | Compatible-host root runtime and strict all-feature Clippy evidence remains outstanding. |
 | Runtime safety, resource control, and footprint | conditionally closed | `plans/subsystems/runtime-safety-resource-footprint-roadmap.md` | C002 conditionally closed | Supported-Linux Landlock fixture evidence remains outstanding. |
@@ -61,13 +60,7 @@ Only plans whose hard dependencies are currently satisfied are listed here.
 
 | Subsystem | Milestone | Class | Implementation plan | Why ready |
 |---|---|---|---|---|
-No dependency-ready implementation plan remains in this subsystem while M010 is active.
-
-## Active implementation and closure work
-
-| Subsystem | Milestone | Status | Implementation plan | Closure record |
-|---|---|---|---|---|
-| Multi-project TUI/frontend convergence | M010 | active | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` |
+No dependency-ready implementation plan remains in this subsystem; M010 is closed.
 
 ## Current execution order and dependency gates
 
@@ -76,7 +69,7 @@ No dependency-ready implementation plan remains in this subsystem while M010 is 
 3. Post-audit M006 and TUI M007 are both closed independently of the TUI sequence. Their corrective evidence is complete; no follow-on post-audit milestone is registered.
 4. M006 is closed: session creation/prompt continuation moved off the event loop with route-generation and exactly-once protection.
 5. M009 is closed: keyboard sidebar plus canonical agent-tree inspection. M007 is closed and M005's soft dependency is also closed.
-6. M010 is active after M005 and the soft M009 sequencing preference closed; its command/action census includes the sidebar and agent-tree actions.
+6. M010 is closed after M005 and the soft M009 sequencing preference closed; its command/action census includes the sidebar and agent-tree actions.
 7. TUI M008 is closed: `App`/dispatch are physically decomposed around the stable M005-M007 contracts without introducing a new state framework. M009 is closed and M010 remains ready.
 8. None of this work authorizes a new daemon, scheduler, service bus, command router, state-management framework, verification framework, release automation, persistent search index, or generic secret-store/DI system.
 
@@ -93,7 +86,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 
 | Subsystem | Status | Controlling evidence |
 |---|---|---|
-| TUI/frontend convergence corrective | M005-M009 closed; M010 active | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
+| TUI/frontend convergence corrective | M005-M010 closed | `plans/subsystems/tui-project-sessions-frontend-convergence-corrective-addendum.md` |
 | Original multi-project TUI | M001-M004 closed | `plans/subsystems/tui-project-sessions-roadmap.md`; `plans/closure/tui-project-sessions/004-status.md` |
 | Post-audit maintainability corrective | M006/M007 closed | `plans/subsystems/post-audit-maintainability-surface-corrective-addendum.md` |
 | Original post-audit maintainability | M001-M005 closed | `plans/closure/post-audit-maintainability-surface/001-status.md` through `005-status.md` |
@@ -120,6 +113,7 @@ Detailed historical milestone history is intentionally not duplicated here. Curr
 | TUI/frontend convergence corrective | M007 modal and focus state convergence | closed | `plans/closure/tui-project-sessions/007-status.md` | this commit |
 | TUI/frontend convergence corrective | M008 App responsibility decomposition and intent/effect contract | closed | `plans/closure/tui-project-sessions/008-status.md` | `73a5a3e` |
 | TUI/frontend convergence corrective | M009 keyboard sidebar and agent-tree inspector | closed | `plans/closure/tui-project-sessions/009-status.md` | `2d10e72` |
+| TUI/frontend convergence corrective | M010 command discovery and keybinding convergence | closed | `plans/closure/tui-project-sessions/010-status.md` | `876a956b` |
 
 Historical closure records MUST NOT be rewritten to conceal predecessor defects or failed verification. The new corrective addenda explicitly preserve the original closed records and own new closure evidence.
 

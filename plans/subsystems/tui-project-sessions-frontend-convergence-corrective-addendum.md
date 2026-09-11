@@ -1,6 +1,6 @@
 # Multi-Project TUI Frontend Convergence Corrective Addendum
 
-Status: active
+Status: closed
 
 Repository audit baseline: `98bc89fa613f5a1390202a90b497f59d5732d431`
 
@@ -325,4 +325,4 @@ The original M001-M004 closure records remain historical evidence and must not b
 | M007 | closed | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | `plans/closure/tui-project-sessions/007-status.md` | — |
 | M008 | closed | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | — |
 | M009 | closed | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | — |
-| M010 | active | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | — |
+| M010 | closed | `plans/implementation/tui-project-sessions/010-command-discovery-keybinding-convergence.md` | `plans/closure/tui-project-sessions/010-status.md` | — |
