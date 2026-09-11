@@ -86,6 +86,7 @@ pub(crate) fn switch_active_tab(
     }
 
     // Begin the switch transaction
+    app.invalidate_pending_session_submit(false);
     let from_tab = current_tab_id.unwrap_or_else(crate::tui::app::state::ProjectTabId::new);
     let _epoch = app
         .view_switch
@@ -658,6 +659,7 @@ pub(crate) fn close_active_project_tab(app: &mut App) {
         None => return,
     };
 
+    app.invalidate_pending_session_submit(false);
     // Bump epoch to invalidate pending loads for the removed tab
     app.view_switch.bump_epoch();
 

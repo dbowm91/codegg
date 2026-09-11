@@ -76,6 +76,14 @@ to avoid breaking invariants that are easy to violate in a 15K-line `mod.rs`.
   session identities and the workspace root. Never use process cwd or the
   legacy `session_state.project_dir` mirror as project authority; do not
   change process cwd to switch tabs.
+- **Prompt/session creation**: `App::send_prompt` captures immutable prompt
+  text and a `ProjectExecutionContext`/`UiRouteToken` when no session exists.
+  The event loop starts the registered `PromptSessionCreated` continuation;
+  it must not await `CoreClient::request`. Completion validates request,
+  tab/project/workspace/view/reconnect scope before calling `set_session` and
+  submitting the captured text exactly once. Failures restore the prompt and
+  explicit retry must not duplicate the already-visible user message. Tab
+  switch/close, reconnect, and shutdown invalidate the continuation.
 
 ## Testing
 

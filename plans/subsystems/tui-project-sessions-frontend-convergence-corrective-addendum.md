@@ -315,7 +315,7 @@ The original M001-M004 closure records remain historical evidence and must not b
 | Milestone | Status | Implementation plan | Closure record | Blockers |
 |---|---|---|---|---|
 | M005 | closed | `plans/implementation/tui-project-sessions/005-project-execution-context-command-scope.md` | `plans/closure/tui-project-sessions/005-status.md` | — |
-| M006 | ready | `plans/implementation/tui-project-sessions/006-nonblocking-session-submit-lifecycle.md` | `plans/closure/tui-project-sessions/006-status.md` | — |
+| M006 | active | `plans/implementation/tui-project-sessions/006-nonblocking-session-submit-lifecycle.md` | `plans/closure/tui-project-sessions/006-status.md` | — |
 | M007 | ready | `plans/implementation/tui-project-sessions/007-modal-focus-state-convergence.md` | `plans/closure/tui-project-sessions/007-status.md` | — |
 | M008 | blocked | `plans/implementation/tui-project-sessions/008-app-domain-decomposition-intent-effect-boundaries.md` | `plans/closure/tui-project-sessions/008-status.md` | hard: M005, M006, M007 |
 | M009 | blocked | `plans/implementation/tui-project-sessions/009-keyboard-sidebar-agent-tree-inspector.md` | `plans/closure/tui-project-sessions/009-status.md` | hard: M007; projection/agent-run interfaces already closed |

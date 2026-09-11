@@ -13,6 +13,7 @@ pub(super) mod plugins;
 pub(super) mod presence;
 pub(super) mod project_catalog;
 pub(super) mod project_picker;
+pub(super) mod prompt;
 pub(super) mod provider_connections;
 pub(super) mod research;
 pub(super) mod run_rerun;

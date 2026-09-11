@@ -5,7 +5,6 @@ use super::command_dispatch;
 use super::render_recovery;
 use crate::bus::events::AppEvent;
 use crate::bus::global::GlobalEventBus;
-use crate::protocol::core::{CoreRequest, CoreResponse};
 use crate::tui::app::state::AppMode;
 use crate::tui::app::SessionStatus;
 use crate::tui::terminal::{create_terminal, TerminalGuard};
@@ -35,69 +34,6 @@ fn render_error(
 ) -> Result<(), Box<dyn std::error::Error>> {
     terminal.draw(|frame| app.render_error(frame, error_msg))?;
     Ok(())
-}
-
-fn latest_user_message_text(app: &app::App) -> String {
-    use crate::tui::components::messages::MessageRole;
-    app.messages_state
-        .messages
-        .messages
-        .iter()
-        .rev()
-        .find(|m| matches!(m.role, MessageRole::User))
-        .map(|m| m.text_content())
-        .unwrap_or_default()
-}
-
-async fn ensure_local_session(app: &mut app::App) {
-    if app.session_state.session.is_some() {
-        return;
-    }
-    tracing::debug!(target: "codegg::tui::session", "no session exists, creating new session");
-    if let Some(core_client) = app.core_client.clone() {
-        let project_dir = app
-            .active_workspace_root()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        let request = crate::core::new_request(
-            format!("session-create-{}", uuid::Uuid::new_v4()),
-            CoreRequest::SessionCreate {
-                directory: project_dir,
-                title: None,
-                project_id: None,
-                workspace_id: None,
-            },
-        );
-        match core_client.request(request).await {
-            Ok(CoreResponse::Session { session }) => {
-                let session_id = session.id.clone();
-                match crate::protocol_conversions::dto_to_session(session) {
-                    Ok(session) => {
-                        app.session_state.session = Some(session);
-                        tracing::debug!(target: "codegg::tui::session", session_id = %session_id, "session created via core");
-                    }
-                    Err(error) => {
-                        tracing::error!(error = %error, session_id = %session_id, "dto_to_session conversion failed");
-                        app.messages_state
-                            .toasts
-                            .error(&format!("Failed to create session: {error}"));
-                    }
-                }
-            }
-            Ok(CoreResponse::Error { code, message }) => {
-                tracing::debug!(target: "codegg::tui::session", code = %code, message = %message, "failed to create session via core");
-            }
-            Ok(_other) => {
-                tracing::debug!(target: "codegg::tui::session", "unexpected session-create response");
-            }
-            Err(e) => {
-                tracing::debug!(target: "codegg::tui::session", error = ?e, "failed to create session via core");
-            }
-        }
-    } else {
-        tracing::debug!(target: "codegg::tui::session", "no core client available for session creation");
-    }
 }
 
 pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppError> {
@@ -234,20 +170,42 @@ pub async fn run_event_loop(app: &mut app::App) -> Result<(), crate::error::AppE
         if !matches!(app.ui_state.mode, AppMode::RemoteCore { .. }) && app.prompt_state.pending_send
         {
             tracing::debug!(target: "codegg::tui::events", "pending_send=true, submitting through core facade");
-            let Some(_) = app.core_client else {
+            if app.prompt_state.pending_session_submit.is_some() {
+                if !app.prompt_state.session_submit_started {
+                    crate::tui::commands::prompt::start_session_create_for_prompt(app);
+                    needs_render = true;
+                }
+            } else {
+                let Some(_) = app.core_client else {
+                    app.prompt_state.pending_send = false;
+                    app.session_state.session_status = SessionStatus::Error;
+                    app.messages_state
+                        .toasts
+                        .error("Core client not configured; cannot execute prompt");
+                    needs_render = true;
+                    continue;
+                };
+                if app.session_state.session.is_some() {
+                    let text = app
+                        .messages_state
+                        .messages
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| {
+                            matches!(
+                                message.role,
+                                crate::tui::components::messages::MessageRole::User
+                            )
+                        })
+                        .map(|message| message.text_content())
+                        .unwrap_or_default();
+                    app.dispatch_turn_submit_request(text);
+                }
                 app.prompt_state.pending_send = false;
-                app.session_state.session_status = SessionStatus::Error;
-                app.messages_state
-                    .toasts
-                    .error("Core client not configured; cannot execute prompt");
                 needs_render = true;
                 continue;
-            };
-            ensure_local_session(app).await;
-            app.dispatch_turn_submit_request(latest_user_message_text(app));
-            app.prompt_state.pending_send = false;
-            needs_render = true;
-            continue;
+            }
         }
 
         let animation_interval = if app.streaming_active

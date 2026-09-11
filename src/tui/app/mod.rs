@@ -675,6 +675,16 @@ pub enum TuiCommand {
         template_name: String,
         error: Option<String>,
     },
+    /// Completion of the nonblocking session creation required by a prompt
+    /// submitted before a session existed.  The route and prompt are carried
+    /// in the completion so apply never consults mutable current prompt state.
+    PromptSessionCreated {
+        request_id: u64,
+        route: crate::tui::app::state::UiRouteToken,
+        prompt: String,
+        session: Option<crate::protocol::dto::Session>,
+        error: Option<String>,
+    },
     /// Completion: a desktop notification has been sent.
     NotificationSent {
         error: Option<String>,
@@ -1628,6 +1638,10 @@ impl App {
                 stashed_prompts: Vec::new(),
                 stash_pos: None,
                 pending_send: false,
+                session_submit_request: AsyncUiRequestState::new(),
+                pending_session_submit: None,
+                session_submit_started: false,
+                retry_without_message: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -2105,6 +2119,10 @@ impl App {
                 stashed_prompts: Vec::new(),
                 stash_pos: None,
                 pending_send: false,
+                session_submit_request: AsyncUiRequestState::new(),
+                pending_session_submit: None,
+                session_submit_started: false,
+                retry_without_message: None,
             },
             messages_state: MessagesState {
                 messages: MessagesWidget::new(Arc::clone(&theme)),
@@ -2346,11 +2364,40 @@ impl App {
             .set_registry(&self.command_registry);
     }
 
+    /// Invalidate the frontend-only SessionCreate continuation.  The daemon
+    /// request is intentionally not undone: it may already have committed a
+    /// durable session, but that session must not be rebound to a new tab or
+    /// retried implicitly by the frontend.
+    pub fn invalidate_pending_session_submit(&mut self, restore_prompt: bool) {
+        let pending = self.prompt_state.cancel_session_submit();
+        if restore_prompt {
+            if let Some(pending) = pending {
+                let current_draft = self.prompt_state.prompt.get_text();
+                if !current_draft.trim().is_empty() && current_draft != pending.prompt {
+                    if self.prompt_state.stashed_prompts.len() >= 100 {
+                        self.prompt_state.stashed_prompts.remove(0);
+                    }
+                    self.prompt_state.stashed_prompts.push(current_draft);
+                }
+                self.prompt_state.prompt.set_text(pending.prompt.clone());
+                self.prompt_state.mark_retry_without_message(pending.prompt);
+                self.messages_state.toasts.warning(
+                    "Session creation was interrupted; review the prompt and press Enter to retry",
+                );
+            }
+        }
+        self.prompt_state.pending_send = false;
+        if matches!(self.session_state.session_status, SessionStatus::Working) {
+            self.session_state.session_status = SessionStatus::Idle;
+        }
+    }
+
     /// Switch the active tab and update projection client state to
     /// match. Returns `true` when the switch succeeded.
     pub fn switch_active_tab(&mut self, tab_id: &ProjectTabId) -> bool {
         let switched = self.project_tabs.set_active(tab_id);
         if switched {
+            self.invalidate_pending_session_submit(false);
             self.projection_client
                 .set_active_tab(Some(tab_id.as_str().to_string()));
             self.refresh_project_command_registry();
@@ -2383,6 +2430,7 @@ impl App {
     /// Re-attach (`/terminal-attach`) resumes from the last cursor when
     /// the process still lives.
     pub fn on_projection_reconnect(&mut self) {
+        self.invalidate_pending_session_submit(true);
         self.projection_client.on_reconnect();
         self.interactive_terminals.note_transport_disconnect();
         // Presence M002: lag/resync replaces stale presentation from the
@@ -3148,6 +3196,7 @@ impl App {
     }
 
     pub fn prepare_shutdown(&mut self) {
+        self.invalidate_pending_session_submit(false);
         // Cancel all registered background tasks
         let active = self.task_registry.active_count();
         if active > 0 {
@@ -9687,6 +9736,13 @@ impl App {
             return;
         }
         if self.prompt_state.pending_send {
+            self.messages_state.toasts.warning(
+                if self.prompt_state.pending_session_submit.is_some() {
+                    "Still creating a session for the previous prompt"
+                } else {
+                    "Still waiting for previous prompt to finish"
+                },
+            );
             debug_log!("send_prompt: returning - pending_send already true");
             return;
         }
@@ -9764,6 +9820,46 @@ impl App {
             crate::shell::types::PromptSubmissionKind::Chat(_) => {}
         }
 
+        // Capture the project/workspace route before mutating the visible
+        // message state.  A no-session prompt must never fall back to the tab
+        // that happens to be active when SessionCreate completes.
+        let needs_session_create = !matches!(self.ui_state.mode, AppMode::RemoteCore { .. })
+            && self.session_state.session.is_none();
+        let pending_session_route = if needs_session_create {
+            let context = match self.project_execution_context() {
+                Ok(context) => context,
+                Err(error) => {
+                    self.messages_state.toasts.error(&error);
+                    return;
+                }
+            };
+            let tab_id = match self.active_tab_id() {
+                Some(tab_id) => tab_id,
+                None => {
+                    self.messages_state
+                        .toasts
+                        .error("No active project tab; choose a project before sending");
+                    return;
+                }
+            };
+            let request_id = self.prompt_state.session_submit_request.begin();
+            Some((
+                context,
+                crate::tui::app::state::UiRouteToken::new(
+                    Some(tab_id),
+                    self.active_project_id().map(str::to_string),
+                    self.active_workspace_id().map(str::to_string),
+                    self.active_session_id().map(str::to_string),
+                    self.view_switch.active_view_epoch,
+                    self.routing_registry.reconnect_epoch,
+                    request_id,
+                ),
+                request_id,
+            ))
+        } else {
+            None
+        };
+
         if let Some(pos) = self
             .session_state
             .history
@@ -9789,9 +9885,12 @@ impl App {
         self.session_state.history = sorted.into();
         self.session_state.history_pos = None;
 
-        self.messages_state
-            .messages
-            .add_user_message(trimmed_text, Some(self.agent_state.plan_mode));
+        let is_retry = self.prompt_state.take_retry_without_message(&trimmed_text);
+        if !is_retry {
+            self.messages_state
+                .messages
+                .add_user_message(trimmed_text.clone(), Some(self.agent_state.plan_mode));
+        }
         self.prompt_state.prompt.clear();
         self.prompt_state.show_completions = false;
         if matches!(self.ui_state.mode, AppMode::RemoteCore { .. }) {
@@ -9801,6 +9900,16 @@ impl App {
             self.prompt_state.pending_send = false;
         } else {
             self.prompt_state.pending_send = true;
+            if let Some((context, route, request_id)) = pending_session_route {
+                self.prompt_state.pending_session_submit =
+                    Some(crate::tui::app::state::PendingSessionSubmit {
+                        request_id,
+                        prompt: trimmed_text.clone(),
+                        context,
+                        route,
+                    });
+                self.prompt_state.prompt.set_waiting(true);
+            }
         }
         self.session_state.session_status = SessionStatus::Working;
         self.reset_live_token_estimate();
@@ -11346,6 +11455,7 @@ impl App {
             }
         }
 
+        self.invalidate_pending_session_submit(false);
         self.session_state.session = None;
         self.messages_state.messages.clear();
         self.session_state.token_in = 0;
@@ -12735,6 +12845,9 @@ impl App {
     }
 
     pub fn set_session(&mut self, sess: Session) {
+        if self.prompt_state.pending_session_submit.is_some() {
+            self.invalidate_pending_session_submit(false);
+        }
         let sess_id = sess.id.clone();
         let session_directory = sess.directory.clone();
         let project_id = if sess.project_id.is_empty() {

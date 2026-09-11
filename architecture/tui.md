@@ -73,6 +73,19 @@ goal operations, task operations, worktree list, template create,
 notification send, plugin commands, project-catalog refresh pair, test
 run, asset refresh, provider connection lifecycle, and session selection.
 
+**Prompt/session continuation**: `App::send_prompt` inserts the user message
+once and, when no session is attached, captures an immutable
+`ProjectExecutionContext` plus `UiRouteToken` in `PromptState`. The event loop
+only starts `commands::prompt::start_session_create_for_prompt`; it never
+awaits `CoreClient::request`. The registered task returns
+`TuiCommand::PromptSessionCreated`, whose apply handler validates the request,
+tab/project/workspace/view/reconnect route, calls canonical `set_session`, and
+submits the captured text once. A second Enter is coalesced. Create failures
+restore the editable prompt and mark the next explicit retry so the visible
+user message is not duplicated. Tab close/switch, reconnect, and shutdown
+invalidate the frontend continuation without deleting a session that may
+already have been committed by the daemon.
+
 **File diff pipeline**: `FileDiffStatsReady` uses a separate
 `spawn_sidebar_diff_stats()` in `src/tui/file_diff.rs`. Bounded by
 semaphore (max 2 concurrent), 1 MiB size caps, binary detection, and

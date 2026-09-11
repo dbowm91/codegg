@@ -1045,6 +1045,17 @@ pub(crate) async fn dispatch_tui_command(app: &mut App, cmd: TuiCommand) {
                 error,
             );
         }
+        TuiCommand::PromptSessionCreated {
+            request_id,
+            route,
+            prompt,
+            session,
+            error,
+        } => {
+            super::super::commands::prompt::apply_session_create_for_prompt(
+                app, request_id, route, prompt, session, error,
+            );
+        }
         TuiCommand::NotificationSent { error } => {
             apply_notification_sent(app, error);
         }
