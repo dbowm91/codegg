@@ -123,3 +123,8 @@ The human shell lets users run shell commands from the TUI prompt without the mo
 
 - **tool::bash** — Agent bash tool uses `ShellOrigin::AgentTool`; separate from human shell
 - **tui** — Renders `MsgPart::ShellCell`, handles `/shell-*` commands via `TuiCommand` variants
+
+## See Also
+
+- [architecture/human_shell.md](../../architecture/human_shell.md) — full module contract (10-phase projection pipeline: `projection.rs`, `projector.rs`, `redactor.rs`, `rtk.rs`, `projection_bridge.rs`)
+- `.skills/tui/SKILL.md` — TUI command registration and async dispatch rules

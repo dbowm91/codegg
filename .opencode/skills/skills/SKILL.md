@@ -1,7 +1,7 @@
 ---
 name: skills
 description: Skills module for specialized capabilities activated via /skill: commands
-version: 2.1.0
+version: 2.2.0
 tags:
   - skills
   - asset-registry
@@ -33,15 +33,17 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | `mod.rs` | Legacy `Skill`, `SkillIndex` facade + re-exports |
 | `registry.rs` | `AssetRegistry` — primary public type; builds an immutable source-aware snapshot (`effective`, `diagnostics`, `sources`) |
 | `candidate.rs` | `SkillCandidate`, `EffectiveSkill`, `ResourceDescriptor`, `ShadowedAlternative` |
-| `source.rs` | `SourceKind`, `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
-| `parser.rs` | Frontmatter/package parsing |
+| `source.rs` | `SourceKind` (10 variants), `SourceRoot`, `SourceSummary`, `AssetDiscoveryConfig` |
+| `parser.rs` | Frontmatter/package parsing, SHA-256 digests, `validate_portable_document` shared proposal seam |
 | `resource.rs` | `ResourceHandle`, `ResourceReadLimits`, bounded resource reads |
 | `compat.rs` | `SkillIndexCompat` — backward-compatible bridge to the legacy `SkillIndex` API |
 | `diagnostic.rs` | `Diagnostic`, `Severity` |
+| `promotion.rs` | User-authorized proposal requests/store and publication provenance (no filesystem writes) |
+| `publish.rs` | Host-only validated proposal publisher, atomic CodeGG-owned writes, reconciliation |
 
 ## Discovery Sources and Precedence
 
-`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden):
+`SourceKind` defines ordered roots (lowest rank wins conflicts; shadowed alternatives are recorded, not hidden). There are 10 variants:
 
 | Rank | Source |
 |------|--------|
@@ -49,10 +51,14 @@ This repository also keeps agent-facing maintenance copies of its own skill docs
 | 10 | `.agents/skills/` (project) |
 | 20 | `.opencode/skills/` (project) |
 | 30 | `.claude/skills/` (project) |
-| 40–70 | Same four roots under the global config directory |
-| 80 | CodeGG native compat location |
+| 35 | `Plugin` contributions (project-native sources outrank) |
+| 40 | CodeGG global (`<config>/codegg/skills/`) |
+| 50 | Agents global (`~/.agents/skills/`) |
+| 60 | OpenCode global (`~/.config/opencode/skills/`) |
+| 70 | Claude global (`~/.claude/skills/`) |
+| 80 | CodeGG native compat (direct `.md` files in `.codegg/skills/`) |
 
-Discovery is bounded by `AssetDiscoveryConfig` (max file size, max frontmatter size, max skills per root, max resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
+Discovery is bounded by `AssetDiscoveryConfig` (max file size 256 KiB, max frontmatter 64 KiB, max 256 skills per root, max 64 resources per skill, name/description length caps). Skill metadata such as `allowed-tools` never grants permissions.
 
 ## Key Types
 
@@ -79,11 +85,12 @@ pub struct AssetRegistry {
 }
 
 impl AssetRegistry {
-    pub fn build(config: AssetDiscoveryConfig, project_root: &Path, global_roots: &[PathBuf]) -> Self;
+    pub fn build(config: &AssetDiscoveryConfig, project_root: &Path, global_roots: &[PathBuf]) -> Self;
+    pub fn build_with_plugin_sources(...) -> Self; // includes Plugin (rank 35) contributions
 }
 ```
 
-Constructed once at startup in `src/tool/skill.rs` (`AssetRegistry::build(&asset_config, workspace_root, &global_roots)`) and surfaced to agents through the asset snapshot (`src/agent/asset_snapshot*.rs`).
+Built via `ProjectAssetSnapshotBuilder::build_skills` (`src/agent/asset_snapshot_builder.rs`), which layers plugin contributions over the filesystem registry, and surfaced to agents through the asset snapshot (`src/agent/asset_snapshot*.rs`). The daemon refreshes the immutable snapshot on session lifecycle and through `/reload`; refresh reports carry names, digests, counts, and diagnostics only. A failed refresh retains the previous valid generation while the published file stays on disk.
 
 ### SkillIndex (legacy facade)
 
@@ -103,21 +110,45 @@ impl SkillIndex {
 
 ## Skill File Format
 
-Skills are markdown files with YAML frontmatter:
+Portable skills are markdown `SKILL.md` packages with YAML frontmatter.
+`name` and `description` are required; `license`, `compatibility`,
+`metadata`, and `allowed-tools` are optional (`allowed-tools` is preserved
+as metadata only, never expanded into permissions):
 
 ```markdown
 ---
-name: git
-description: Advanced git operations
-version: 1.0.0
-tags: [vcs, git]
+name: my-skill
+description: What this skill does
+allowed-tools:
+  - bash
+  - read
 ---
 
-# Git Skill
-...
+# Skill body content
 ```
 
-Loading accepts direct `.md` files and directories containing `SKILL.md` (directory name becomes the skill name when `name` is absent).
+CodeGG-native `.codegg/skills/` additionally accepts legacy frontmatter
+(`name`, `version`, `tags`) and direct `.md` files (directory name becomes
+the skill name when `name` is absent). The parser auto-detects portable vs
+native shape by checking for the portable required fields. Digests are
+SHA-256 over frontmatter bytes + `\n` + LF-normalized body.
+
+## Proposal and Publication Boundary
+
+A proposal is not an effective skill. `validate_portable_document` is the
+single frontmatter/body seam shared by filesystem discovery and proposal
+submission: generated proposals accept one `SKILL.md` only, and
+`allowed-tools`, unsupported frontmatter fields, and `scripts/` /
+`resources/` / sidecar declarations are rejected. Proposal validation never
+writes a skill root and never triggers a refresh.
+
+Publication is host/TUI-only (`/skill-proposal publish <id> project|global`):
+project writes go only to `<project>/.codegg/skills/<name>/SKILL.md`,
+global writes only to `<config>/codegg/skills/<name>/SKILL.md`, via
+same-directory temp file + atomic rename with per-root locking. The
+model-facing proposal tool has no publication action and cannot approve.
+On success the TUI invokes the daemon `/reload` path; active turns keep
+their pinned snapshot, later turns observe the refresh.
 
 ## Runtime Activation
 
@@ -137,9 +168,9 @@ the rendered body. There is no standalone `list_skill_resources()` function.
 
 | Location | Usage |
 |----------|-------|
-| `src/tool/skill.rs` | Builds `AssetRegistry` at startup; provides the `skill` tool |
-| `src/agent/asset_snapshot_builder.rs` / `asset_snapshot.rs` | Surface effective skills to agents |
-| `src/core/daemon.rs` | Daemon-side registry construction |
+| `src/tool/skill.rs` | The `skill` model tool; renders effective skills and their bounded resources |
+| `src/agent/asset_snapshot_builder.rs` | `ProjectAssetSnapshotBuilder::build_skills` — filesystem registry + plugin sources |
+| `src/core/daemon.rs` | Daemon-side registry construction and `/reload` refresh |
 | `src/agent/prompt.rs` | `assemble_system_prompt_with_profile(ctx: PromptContext)` — skill names reach the prompt through the `PromptContext` profile |
 
 ## Skills vs System Prompts

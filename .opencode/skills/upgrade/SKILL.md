@@ -1,7 +1,7 @@
 ---
 name: upgrade
 description: Self-upgrade functionality via GitHub releases
-version: 1.1.0
+version: 1.2.0
 tags: [upgrade, releases, versioning]
 ---
 
@@ -72,6 +72,14 @@ The function:
 5. Returns error if installer fails
 
 **Note**: This function is currently **not called** by `cmd_upgrade()` in `main.rs`. The CLI command only checks and reports, but does not actually perform the upgrade.
+
+**Version-pin caveat**: `upgrade()` exports the target as `INSTALL_VERSION`,
+but the repository `install.sh` honors `CODEGG_VERSION` (not
+`INSTALL_VERSION`). Version pinning therefore depends on the hosted
+`https://codegg.ai/install.sh` honoring `INSTALL_VERSION`; against the repo
+installer the pin is ignored and latest is installed. Do not assume a
+successful `upgrade()` call installed the checked version — re-run
+`check_for_updates()` afterwards to confirm.
 
 ## Module Implementation
 

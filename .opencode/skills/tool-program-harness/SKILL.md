@@ -1,7 +1,7 @@
 ---
 name: tool-program-harness
 description: Reusable harness for evaluating, testing, and validating Tool Programs across deterministic, live-model, and ACP transport modes
-version: 1.0.0
+version: 1.1.0
 process: any
 ---
 
@@ -46,14 +46,18 @@ Requires `CODEGG_EGGPOOL_URL`, `CODEGG_EGGPOOL_API_KEY`, and
 python3 scripts/e2e/tool_program_harness.py --mode eggpool --model mimo-v2.5 --no-model-fallback
 ```
 
-### ACP Mode (when available)
+### ACP Mode (placeholder)
 
 ```bash
 python3 scripts/e2e/tool_program_harness.py --mode acp --scenario all
 ```
 
-ACP is reported as skipped until a production ACP adapter is scheduled; the
-native protocol remains the baseline headless transport.
+The harness `--mode acp` adapter (`run_acp_mode` in
+`scripts/e2e/tool_program_harness.py`) is still a placeholder that reports
+SKIPPED ("ACP adapter not yet available"). This is the *tool-program
+harness transport*, not the `codegg acp` ACP v1 stdio frontend, which
+exists separately (`src/acp.rs`, `architecture/acp.md`). The native
+protocol remains the baseline headless transport for harness evidence.
 
 ## Native source and inspection artifacts
 

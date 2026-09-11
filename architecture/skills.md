@@ -277,4 +277,8 @@ warning, digest stability, digest CRLF normalization, name validation.
 
 - [tool.md](tool.md) — `/skill:` tool
 - `src/skills/` — Runtime implementation
-- `.opencode/skills/*/SKILL.md` — Skill package location
+- `.opencode/skills/*/SKILL.md` — Canonical developer skill-guide location;
+  `.skills` and `.agents/skills` are repository symlinks to it (harness
+  compatibility). These guides are on-demand module references for agents,
+  not user-installed skill packages; keep each guide aligned with its
+  `architecture/` contract when the module changes.

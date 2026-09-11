@@ -100,5 +100,31 @@ fmt, clippy, workspace tests. Everything else is change-triggered (`ls scripts/c
 - `architecture/overview.md` is the module map; one doc per module under `architecture/`.
 - `plans/registry.md` is the authoritative milestone/roadmap status — check it before
   assuming any roadmap state.
-- `.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill tool);
-  when a module contract changes, update the skill and its `architecture/` doc together.
+- `.opencode/skills/*/SKILL.md` are on-demand module guides (load via the skill tool).
+  Canonical location is `.opencode/skills/`; `.skills` and `.agents/skills` are symlinks
+  to it. When a module contract changes, update the skill and its `architecture/` doc together.
+- `docs/`: `execution-ownership.md` (+ `.toml` manifest), `security-semantics.md`,
+  `LSP.md`/`MCP.md`/`PLUGINS.md` (user integration notes; `architecture/` is authoritative),
+  `TROUBLESHOOTING.md`, `dependency-maintenance.md`, `validation/` (historical closure records).
+
+## Skills Index
+
+| Skill | Covers | Primary doc |
+|---|---|---|
+| `architecture-review` | Verifying `architecture/` against code (counts, paths, batches for all 77 docs) | `architecture/overview.md` (Verified Counts) |
+| `context` | Artifact storage, projection, `context_read`, packer, tool-palette policy, volatile-tail | `architecture/context-compaction-ownership.md` |
+| `core` | Core facade, daemon families/lifecycle, transports, workspace registry | `architecture/core.md` |
+| `git` | Typed ops + risk, guarded mutations/network/recovery, forbidden-pattern guard | `architecture/git.md` |
+| `human-shell` | `!`/`!!` promotion model, safety policy, bounded output store | `architecture/human_shell.md` |
+| `jobs` | Durable jobs/schedules/recovery/idempotency (`codegg-core`) | `architecture/jobs.md` |
+| `planning` | `plans/` lifecycle: roadmaps, handoff plans, closure, registry, ADRs, archive | `plans/003-planning-process.md`, `plans/README.md` |
+| `scheduler` | Admission control, fair queue, executors, `JobSubmissionService` | `architecture/scheduler.md` |
+| `server` | Axum HTTP/WS server, routes, `/tui` protocol, auth/rate limits | `architecture/server.md` |
+| `skills` | Skill discovery/precedence, portable schema, proposal/publication boundary | `architecture/skills.md` |
+| `tool-program-harness` | Tool Program scenario/chaos/resource evaluation across harness modes | `architecture/tool_programs.md` |
+| `tui` | TUI commands, sync dispatch, async spawn-and-complete, dialogs, project scope | `architecture/tui.md` |
+| `upgrade` | Self-upgrade check (`codegg upgrade` is check-only; `INSTALL_VERSION` pin caveat) | `architecture/upgrade.md` |
+| `util` | Clipboard, fuzzy, truncate, metrics, interner, pricing | `architecture/util.md` |
+
+No skill exists yet for agent-loop, provider/auth, MCP/plugin, session/storage,
+or bus/projection — use the `architecture/` doc directly for those.

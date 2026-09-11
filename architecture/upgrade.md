@@ -96,6 +96,13 @@ read by `check_for_updates()` or `upgrade()`.
 - **Version comparison is exact string match**: `l != VERSION` — does
   not use semver ordering. Two different strings always trigger
   `needs_update: true`.
+- **Version-pin env mismatch**: `upgrade()` exports the target as
+  `INSTALL_VERSION`, but the repository `install.sh` honors
+  `CODEGG_VERSION`. Pinning depends on the hosted
+  `https://codegg.ai/install.sh` honoring `INSTALL_VERSION`; against the
+  repo installer the pin is ignored and latest is installed. Re-run
+  `check_for_updates()` after any `upgrade()` call to confirm the
+  installed version.
 
 ## Related Docs
 
